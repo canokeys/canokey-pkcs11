@@ -19,21 +19,21 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
       g_free_func = args->free_func;
     }
 
-    // Check if we should enter minidriver mode
+    // Check if we should enter managed mode
     if (args->hSCardCtx != 0 && args->hScard != 0) {
-      // Enter minidriver mode
-      g_is_minidriver_mode = CK_TRUE;
+      // Enter managed mode
+      g_is_managed_mode = CK_TRUE;
       g_pcsc_context = args->hSCardCtx;
       g_scard = args->hScard;
       g_is_initialized = CK_TRUE;
 
-      // In minidriver mode, we don't need to initialize PC/SC
+      // In managed mode, we don't need to initialize PC/SC
       // Initialize the session manager
       return session_manager_init();
     }
   }
 
-  // Standard mode: Initialize the PC/SC subsystem (just establish context, don't list readers yet)
+  // Standalone mode: Initialize the PC/SC subsystem (just establish context, don't list readers yet)
   CK_RV rv = initialize_pcsc();
   if (rv != CKR_OK) {
     return rv;
@@ -51,16 +51,16 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   // Clean up session manager
   session_manager_cleanup();
 
-  // In minidriver mode, we don't clean up PC/SC resources
-  if (g_is_minidriver_mode) {
-    // Reset minidriver mode variables
-    g_is_minidriver_mode = CK_FALSE;
+  // In managed mode, we don't clean up PC/SC resources
+  if (g_is_managed_mode) {
+    // Reset managed mode variables
+    g_is_managed_mode = CK_FALSE;
     g_scard = 0;
     g_is_initialized = CK_FALSE;
     return CKR_OK;
   }
 
-  // Clean up PC/SC resources in standard mode
+  // Clean up PC/SC resources in standalone mode
   cleanup_pcsc();
   return CKR_OK;
 }

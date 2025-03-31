@@ -12,7 +12,7 @@ CK_FREE_FUNC g_free_func = free;
 ReaderInfo *g_readers = NULL; // Array of reader info structs
 CK_ULONG g_num_readers = 0;
 CK_BBOOL g_is_initialized = CK_FALSE;
-CK_BBOOL g_is_minidriver_mode = CK_FALSE;
+CK_BBOOL g_is_managed_mode = CK_FALSE; // False for standalone mode, True for managed mode
 SCARDCONTEXT g_pcsc_context = 0;
 SCARDHANDLE g_scard = 0;
 
@@ -174,8 +174,8 @@ CK_SLOT_ID get_reader_slot_id(CK_ULONG index) {
 
 // Helper function to connect to a card and select the CanoKey AID
 CK_RV connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
-  // In minidriver mode, use the provided card handle
-  if (g_is_minidriver_mode) {
+  // In managed mode, use the provided card handle
+  if (g_is_managed_mode) {
     *phCard = g_scard;
 
     // Begin transaction with default timeout of 2 seconds
@@ -187,7 +187,7 @@ CK_RV connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
     return CKR_OK;
   }
 
-  // Standard mode - initialize PCSC if needed
+  // Standalone mode - initialize PCSC if needed
   if (!g_is_initialized) {
     CK_RV rv = initialize_pcsc();
     if (rv != CKR_OK)
@@ -259,12 +259,12 @@ void disconnect_card(SCARDHANDLE hCard) {
   // End transaction first
   SCardEndTransaction(hCard, SCARD_LEAVE_CARD);
 
-  // In minidriver mode, don't disconnect the card
-  if (g_is_minidriver_mode) {
+  // In managed mode, don't disconnect the card
+  if (g_is_managed_mode) {
     return;
   }
 
-  // In standard mode, disconnect the card
+  // In standalone mode, disconnect the card
   SCardDisconnect(hCard, SCARD_LEAVE_CARD);
 }
 

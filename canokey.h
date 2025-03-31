@@ -10,7 +10,7 @@
 typedef void *(*CK_MALLOC_FUNC)(size_t size);
 typedef void (*CK_FREE_FUNC)(void *ptr);
 
-// Initialization arguments structure
+// Initialization arguments structure, for managed mode
 typedef struct {
   CK_MALLOC_FUNC malloc_func;
   CK_FREE_FUNC free_func;
@@ -28,11 +28,11 @@ typedef struct {
 extern ReaderInfo *g_readers;
 extern CK_ULONG g_num_readers;
 extern CK_BBOOL g_is_initialized;
-extern CK_BBOOL g_is_minidriver_mode;
+extern CK_BBOOL g_is_managed_mode; // True for managed mode, False for standalone mode
 extern SCARDCONTEXT g_pcsc_context;
 extern SCARDHANDLE g_scard;
 
-// Minidriver mode functions
+// Memory management functions
 extern CK_MALLOC_FUNC g_malloc_func;
 extern CK_FREE_FUNC g_free_func;
 
