@@ -1,3 +1,3 @@
 [submodule "external/nsync"]
 	path = external/nsync
-	url = https://github.com/google/nsync.git
+	url = https://github.com/canokeys/nsync.git
