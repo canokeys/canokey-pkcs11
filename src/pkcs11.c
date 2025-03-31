@@ -1,3 +1,4 @@
+#define CRYPTOKI_EXPORTS
 #include "pkcs11.h"
 #include "canokey.h"
 #include "pkcs11_session.h"

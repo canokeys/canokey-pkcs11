@@ -10,10 +10,15 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # Include project directory
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-# Configure nsync from submodule
-set(NSYNC_ENABLE_TESTS OFF)
-add_subdirectory(external/nsync)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/external/nsync/public)
+# Configure nsync from submodule or system
+option(USE_BUNDLED_NSYNC "Use bundled nsync" ON)
+if(USE_BUNDLED_NSYNC)
+  set(NSYNC_ENABLE_TESTS OFF)
+  add_subdirectory(external/nsync)
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/external/nsync/public)
+else()
+  find_package(nsync REQUIRED)
+endif()
 
 set(CNK_PKCS_SRC 
     src/canokey.c
@@ -29,6 +34,12 @@ set(CNK_PKCS_HEADERS
 
 add_library(${CNK_PKCS_TARGET} SHARED ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
 set(CNK_PKCS_LIBS nsync)
+
+# hide all symbols by default
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(${CNK_PKCS_TARGET} PRIVATE "-fvisibility=hidden")
+  target_compile_options(nsync PRIVATE "-fvisibility=hidden")
+endif()
 
 # find PC/SC library on different platforms
 if(WIN32)
@@ -47,6 +58,8 @@ elseif(UNIX)
 else()
   message(FATAL_ERROR "Unsupported platform")
 endif()
+
+target_link_libraries(${CNK_PKCS_TARGET} PRIVATE ${CNK_PKCS_LIBS})
 
 # Set library properties
 set_target_properties(${CNK_PKCS_TARGET} PROPERTIES
