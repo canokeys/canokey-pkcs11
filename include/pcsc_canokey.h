@@ -6,16 +6,16 @@
 #include <winscard.h>
 
 // Function pointer types for memory allocation
-typedef void *(*CK_MALLOC_FUNC)(size_t size);
-typedef void (*CK_FREE_FUNC)(void *ptr);
+typedef void *(*CNK_MALLOC_FUNC)(size_t size);
+typedef void (*CNK_FREE_FUNC)(void *ptr);
 
 // Initialization arguments structure, for managed mode
 typedef struct {
-  CK_MALLOC_FUNC malloc_func;
-  CK_FREE_FUNC free_func;
+  CNK_MALLOC_FUNC malloc_func;
+  CNK_FREE_FUNC free_func;
   SCARDCONTEXT hSCardCtx;
   SCARDHANDLE hScard;
-} CK_INIT_ARGS;
+} CNK_INIT_ARGS;
 
 // Define a struct to store reader information
 typedef struct {
@@ -32,8 +32,8 @@ extern SCARDCONTEXT g_pcsc_context;
 extern SCARDHANDLE g_scard;
 
 // Memory management functions
-extern CK_MALLOC_FUNC g_malloc_func;
-extern CK_FREE_FUNC g_free_func;
+extern CNK_MALLOC_FUNC g_malloc_func;
+extern CNK_FREE_FUNC g_free_func;
 
 // Helper functions for memory allocation
 static inline void *ck_malloc(size_t size) { return g_malloc_func(size); }

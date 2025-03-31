@@ -21,14 +21,20 @@ else()
 endif()
 
 set(CNK_PKCS_SRC 
-    src/canokey.c
-    src/pkcs11.c
+    src/pcsc_canokey.c
+    src/pkcs11_impl.c
     src/pkcs11_session.c
 )
 
-set(CNK_PKCS_HEADERS
-    include/canokey.h
+# these files will be installed
+set(CNK_PKCS_PUBLIC_HEADERS
     include/pkcs11.h
+)
+
+# internally used headers
+set(CNK_PKCS_HEADERS
+    ${CNK_PKCS_PUBLIC_HEADERS}
+    include/pcsc_canokey.h
     include/pkcs11_session.h
 )
 
@@ -66,7 +72,7 @@ set_target_properties(${CNK_PKCS_TARGET} PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 0
     OUTPUT_NAME ${CNK_PKCS_LIB_NAME}
-    PUBLIC_HEADER "$CNK_PKCS_HEADERS"
+    PUBLIC_HEADER ${CNK_PKCS_PUBLIC_HEADERS}
 )
 
 # Install the library

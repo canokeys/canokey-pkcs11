@@ -4,7 +4,6 @@
 #include "pkcs11.h"
 
 #include <nsync_mu.h>
-#include <winscard.h>
 
 // Session states as defined in PKCS#11 standard
 typedef enum {

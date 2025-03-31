@@ -1,8 +1,8 @@
 #define CRYPTOKI_EXPORTS
 
 #include "pkcs11.h"
-#include "canokey.h"
 #include "pkcs11_session.h"
+#include "pcsc_canokey.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -14,7 +14,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   // Check if initialization arguments are provided
   if (pInitArgs != NULL_PTR) {
     // Cast to our custom initialization arguments structure
-    CK_INIT_ARGS *args = (CK_INIT_ARGS *)pInitArgs;
+    CNK_INIT_ARGS *args = (CNK_INIT_ARGS *)pInitArgs;
 
     // Set custom memory allocation functions if provided
     if (args->malloc_func != NULL && args->free_func != NULL) {

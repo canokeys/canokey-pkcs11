@@ -1,4 +1,4 @@
-#include "canokey.h"
+#include "pcsc_canokey.h"
 #include "pkcs11_session.h"
 
 #include <ctype.h>
@@ -7,8 +7,8 @@
 #include <string.h>
 
 // Function pointers for memory allocation (global)
-CK_MALLOC_FUNC g_malloc_func = malloc;
-CK_FREE_FUNC g_free_func = free;
+CNK_MALLOC_FUNC g_malloc_func = malloc;
+CNK_FREE_FUNC g_free_func = free;
 
 // Global variables for reader management
 ReaderInfo *g_readers = NULL; // Array of reader info structs
