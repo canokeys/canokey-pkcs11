@@ -14,6 +14,8 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   // Check if initialization arguments are provided
   if (pInitArgs != NULL_PTR) {
     // Cast to our custom initialization arguments structure
+    // FIXME: spec says pInitArgs either has the value NULL_PTR or points to a CK_C_INITIALIZE_ARGS
+    // WE MUST COMPLY WITH THIS AND REMOVE nsync
     CNK_INIT_ARGS *args = (CNK_INIT_ARGS *)pInitArgs;
 
     // Set custom memory allocation functions if provided
