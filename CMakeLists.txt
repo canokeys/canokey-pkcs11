@@ -1,66 +1,73 @@
 cmake_minimum_required(VERSION 3.10)
-project(canokey_pkcs11 VERSION 0.1.0 LANGUAGES C)
+set(CNK_PKCS_TARGET "canokey_pkcs11")
+set(CNK_PKCS_LIB_NAME "canokey-pkcs11")
+project(${CNK_PKCS_TARGET} VERSION 0.1.0 LANGUAGES C)
 
 # Set C standard
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Include project directory
-include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # Configure nsync from submodule
+set(NSYNC_ENABLE_TESTS OFF)
 add_subdirectory(external/nsync)
-
-# Add nsync include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/external/nsync/public)
 
-# On macOS, PC/SC is provided by the PCSC framework
-if(APPLE)
-  # Create shared library
-  add_library(canokey_pkcs11 SHARED canokey.c pkcs11.c pkcs11_session.c)
-  
-  # Link against the PCSC framework on macOS
-  find_library(PCSC_FRAMEWORK PCSC)
-  if(NOT PCSC_FRAMEWORK)
-    message(FATAL_ERROR "PCSC framework not found")
-  endif()
-  target_link_libraries(canokey_pkcs11 ${PCSC_FRAMEWORK} nsync)
-else()
-  # For non-macOS platforms, use pkg-config to find libpcsclite
+set(CNK_PKCS_SRC 
+    src/canokey.c
+    src/pkcs11.c
+    src/pkcs11_session.c
+)
+
+set(CNK_PKCS_HEADERS
+    include/canokey.h
+    include/pkcs11.h
+    include/pkcs11_session.h
+)
+
+add_library(${CNK_PKCS_TARGET} SHARED ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
+set(CNK_PKCS_LIBS nsync)
+
+# find PC/SC library on different platforms
+if(WIN32)
+  # On Windows, use native PC/SC API
+  set(CNK_PKCS_LIBS ${CNK_PKCS_LIBS} winscard.lib)
+elseif(APPLE)
+  # On macOS, PC/SC is provided by the PCSC framework
+  find_library(PCSC_FRAMEWORK PCSC REQUIRED)
+  set(CNK_PKCS_LIBS ${CNK_PKCS_LIBS} ${PCSC_FRAMEWORK})
+elseif(UNIX)
+  # For other UNIX-like platforms, use pkgconf to find libpcsclite
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(PCSC REQUIRED libpcsclite)
-  
-  # Add include directories
   include_directories(${PCSC_INCLUDE_DIRS})
-  
-  # Create shared library
-  add_library(canokey_pkcs11 SHARED canokey.c pkcs11.c pkcs11_session.c)
-  
-  # Link against PC/SC library
-  target_link_libraries(canokey_pkcs11 ${PCSC_LIBRARIES} nsync)
+  set(CNK_PKCS_LIBS ${CNK_PKCS_LIBS} ${PCSC_LIBRARIES})
+else()
+  message(FATAL_ERROR "Unsupported platform")
 endif()
 
 # Set library properties
-set_target_properties(canokey_pkcs11 PROPERTIES
+set_target_properties(${CNK_PKCS_TARGET} PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 0
-    OUTPUT_NAME "canokey-pkcs11"
-    PREFIX "lib"
+    OUTPUT_NAME ${CNK_PKCS_LIB_NAME}
+    PUBLIC_HEADER "$CNK_PKCS_HEADERS"
 )
 
 # Install the library
-install(TARGETS canokey_pkcs11
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
-    RUNTIME DESTINATION bin
+install(TARGETS ${CNK_PKCS_TARGET}
+    EXPORT "$CNK_PKCS_LIB_NAME"
+    RUNTIME
+    LIBRARY
+    ARCHIVE
+    PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${CNK_PKCS_LIB_NAME}
 )
-
-# Install header files
-install(FILES pkcs11.h pkcs11_session.h canokey.h DESTINATION include/canokey-pkcs11)
 
 # Add a simple test executable if testing is enabled
 option(BUILD_TESTING "Build test programs" OFF)
 if(BUILD_TESTING)
-    add_executable(test_pkcs11 test_pkcs11.c)
-    target_link_libraries(test_pkcs11 canokey_pkcs11 nsync)
+    add_executable(test_pkcs11 test/test_pkcs11.c)
+    target_link_libraries(test_pkcs11 ${CNK_PKCS_TARGET} ${CNK_PKCS_LIBS})
 endif()

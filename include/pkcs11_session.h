@@ -1,8 +1,8 @@
 #ifndef PKCS11_SESSION_H
 #define PKCS11_SESSION_H
 
-#include "external/nsync/public/nsync_mu.h"
 #include "pkcs11.h"
+#include <nsync_mu.h>
 #include <PCSC/pcsclite.h>
 #include <PCSC/winscard.h>
 
