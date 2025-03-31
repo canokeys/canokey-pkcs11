@@ -1,4 +1,5 @@
 #include "canokey.h"
+#include "pkcs11_session.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -266,6 +267,189 @@ void disconnect_card(SCARDHANDLE hCard) {
 
   // In standalone mode, disconnect the card
   SCardDisconnect(hCard, SCARD_LEAVE_CARD);
+}
+
+// PIV application functions
+
+// Select the PIV application using AID A000000308
+CK_RV select_piv_application(SCARDHANDLE hCard) {
+  if (hCard == 0) {
+    return CKR_DEVICE_ERROR;
+  }
+
+  // PIV AID: A0 00 00 03 08
+  BYTE piv_aid[] = {0xA0, 0x00, 0x00, 0x03, 0x08};
+  BYTE select_apdu[11] = {0x00, 0xA4, 0x04, 0x00};
+
+  // Set the length of the AID
+  select_apdu[4] = sizeof(piv_aid);
+
+  // Copy the AID into the APDU
+  memcpy(select_apdu + 5, piv_aid, sizeof(piv_aid));
+
+  // Prepare response buffer
+  BYTE response[258];
+  DWORD response_len = sizeof(response);
+
+  // Send the SELECT command
+  LONG rv = SCardTransmit(hCard, SCARD_PCI_T1, select_apdu, sizeof(select_apdu), NULL, response, &response_len);
+
+  if (rv != SCARD_S_SUCCESS) {
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Check if the command was successful (status words 90 00)
+  if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
+    return CKR_DEVICE_ERROR;
+  }
+
+  return CKR_OK;
+}
+
+// Verify the PIV PIN
+CK_RV verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+  if (hCard == 0 || pPin == NULL) {
+    return CKR_ARGUMENTS_BAD;
+  }
+
+  // PIN length must be between 1 and 8 characters
+  if (ulPinLen < 1 || ulPinLen > 8) {
+    return CKR_PIN_LEN_RANGE;
+  }
+
+  // First select the PIV application
+  CK_RV rv = select_piv_application(hCard);
+  if (rv != CKR_OK) {
+    return rv;
+  }
+
+  // Prepare the VERIFY command: 00 20 00 80 08 [PIN padded with 0xFF]
+  BYTE verify_apdu[14] = {0x00, 0x20, 0x00, 0x80, 0x08};
+
+  // Pad the PIN with 0xFF
+  memset(verify_apdu + 5, 0xFF, 8);
+  memcpy(verify_apdu + 5, pPin, ulPinLen);
+
+  // Prepare response buffer
+  BYTE response[258];
+  DWORD response_len = sizeof(response);
+
+  // Send the VERIFY command
+  LONG pcsc_rv = SCardTransmit(hCard, SCARD_PCI_T1, verify_apdu, sizeof(verify_apdu), NULL, response, &response_len);
+
+  if (pcsc_rv != SCARD_S_SUCCESS) {
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Check if the command was successful (status words 90 00)
+  if (response_len < 2) {
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Check status words
+  if (response[response_len - 2] == 0x90 && response[response_len - 1] == 0x00) {
+    return CKR_OK;
+  } else if (response[response_len - 2] == 0x63) {
+    // PIN verification failed, remaining attempts in low nibble of SW2
+    return CKR_PIN_INCORRECT;
+  } else if (response[response_len - 2] == 0x69 && response[response_len - 1] == 0x83) {
+    // PIN blocked
+    return CKR_PIN_LOCKED;
+  } else {
+    return CKR_DEVICE_ERROR;
+  }
+}
+
+// Logout PIV PIN using APDU 00 20 FF 80
+CK_RV logout_piv_pin(SCARDHANDLE hCard) {
+  if (hCard == 0) {
+    return CKR_DEVICE_ERROR;
+  }
+
+  // First select the PIV application
+  CK_RV rv = select_piv_application(hCard);
+  if (rv != CKR_OK) {
+    return rv;
+  }
+
+  // Prepare the LOGOUT command: 00 20 FF 80 00
+  BYTE logout_apdu[] = {0x00, 0x20, 0xFF, 0x80, 0x00};
+
+  // Prepare response buffer
+  BYTE response[258];
+  DWORD response_len = sizeof(response);
+
+  // Send the LOGOUT command
+  LONG pcsc_rv = SCardTransmit(hCard, SCARD_PCI_T1, logout_apdu, sizeof(logout_apdu), NULL, response, &response_len);
+
+  if (pcsc_rv != SCARD_S_SUCCESS) {
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Check if the command was successful (status words 90 00)
+  if (response_len < 2) {
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Check status words
+  if (response[response_len - 2] == 0x90 && response[response_len - 1] == 0x00) {
+    return CKR_OK;
+  } else {
+    return CKR_DEVICE_ERROR;
+  }
+}
+
+// Logout PIV PIN with session - handles card connection
+CK_RV logout_piv_pin_with_session(CK_SLOT_ID slotID) {
+  // Connect to the card
+  SCARDHANDLE hCard;
+  CK_RV rv = connect_and_select_canokey(slotID, &hCard);
+  if (rv != CKR_OK) {
+    return rv;
+  }
+
+  // Logout the PIN
+  rv = logout_piv_pin(hCard);
+
+  // Disconnect from the card
+  disconnect_card(hCard);
+
+  return rv;
+}
+
+// Verify the PIV PIN with session - handles card connection and caches PIN
+CK_RV verify_piv_pin_with_session(CK_SLOT_ID slotID, PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+  if (session == NULL || (pPin == NULL && ulPinLen > 0)) {
+    return CKR_ARGUMENTS_BAD;
+  }
+
+  // PIN length must be between 1 and 8 characters
+  if (ulPinLen < 1 || ulPinLen > 8) {
+    return CKR_PIN_LEN_RANGE;
+  }
+
+  // Connect to the card
+  SCARDHANDLE hCard;
+  CK_RV rv = connect_and_select_canokey(slotID, &hCard);
+  if (rv != CKR_OK) {
+    return rv;
+  }
+
+  // Verify the PIN
+  rv = verify_piv_pin(hCard, pPin, ulPinLen);
+
+  // If PIN verification was successful, cache the PIN in the session
+  if (rv == CKR_OK) {
+    // Store the PIN in the session
+    memset(session->piv_pin, 0xFF, sizeof(session->piv_pin)); // Pad with 0xFF
+    memcpy(session->piv_pin, pPin, ulPinLen);
+    session->piv_pin_len = ulPinLen;
+  }
+
+  // Disconnect from the card
+  disconnect_card(hCard);
+
+  return rv;
 }
 
 // Helper function to get firmware or hardware version

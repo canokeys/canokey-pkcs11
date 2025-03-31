@@ -109,6 +109,53 @@ int main() {
         printf("      - Hardware slot\n");
     }
 
+    // Open a session with the first slot
+    if (ulSlotCount > 0) {
+      CK_SESSION_HANDLE hSession;
+      CK_FLAGS flags = CKF_SERIAL_SESSION; // Read-only session
+      
+      printf("\nOpening session with slot %lu...\n", pSlotList[0]);
+      rv = pFunctionList->C_OpenSession(pSlotList[0], flags, NULL, NULL, &hSession);
+      if (rv != CKR_OK) {
+        printf("Error opening session: 0x%lx\n", rv);
+      } else {
+        printf("Session opened successfully. Session handle: %lu\n", hSession);
+        
+        // Test C_Login with PIN "123456"
+        CK_UTF8CHAR pin[] = {"123456"};
+        CK_ULONG pinLen = strlen((char*)pin);
+        
+        printf("Logging in with PIN: %s\n", pin);
+        rv = pFunctionList->C_Login(hSession, CKU_USER, pin, pinLen);
+        if (rv == CKR_OK) {
+          printf("Login successful!\n");
+          
+          // Test logout
+          rv = pFunctionList->C_Logout(hSession);
+          if (rv == CKR_OK) {
+            printf("Logout successful!\n");
+          } else {
+            printf("Error logging out: 0x%lx\n", rv);
+          }
+        } else {
+          printf("Login failed: 0x%lx\n", rv);
+          if (rv == CKR_PIN_INCORRECT) {
+            printf("PIN is incorrect.\n");
+          } else if (rv == CKR_PIN_LOCKED) {
+            printf("PIN is locked.\n");
+          }
+        }
+        
+        // Close the session
+        rv = pFunctionList->C_CloseSession(hSession);
+        if (rv != CKR_OK) {
+          printf("Error closing session: 0x%lx\n", rv);
+        } else {
+          printf("Session closed successfully.\n");
+        }
+      }
+    }
+    
     free(pSlotList);
   } else {
     printf("No slots found. Make sure a CanoKey device is connected.\n");

@@ -50,6 +50,19 @@ CK_RV list_readers(void);
 // Clean up PC/SC resources
 void cleanup_pcsc(void);
 
+// PIV application functions
+CK_RV select_piv_application(SCARDHANDLE hCard);
+CK_RV verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen);
+CK_RV logout_piv_pin(SCARDHANDLE hCard);
+
+// Forward declaration for session struct
+typedef struct PKCS11_SESSION PKCS11_SESSION;
+
+// Function to verify PIN with session
+CK_RV verify_piv_pin_with_session(CK_SLOT_ID slotID, PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen);
+// Function to logout PIV PIN with session
+CK_RV logout_piv_pin_with_session(CK_SLOT_ID slotID);
+
 // Get the number of readers
 CK_ULONG get_num_readers(void);
 

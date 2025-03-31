@@ -222,10 +222,87 @@ CK_RV C_SetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationStat
 }
 
 CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
-  return CKR_FUNCTION_NOT_SUPPORTED;
+  // Check if the cryptoki library is initialized
+  if (!g_is_initialized) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+
+  // Validate arguments
+  if (pPin == NULL && ulPinLen > 0) {
+    return CKR_ARGUMENTS_BAD;
+  }
+
+  // Only CKU_USER is supported for PIV
+  if (userType != CKU_USER) {
+    return CKR_USER_TYPE_INVALID;
+  }
+
+  // Find the session
+  PKCS11_SESSION *session;
+  CK_RV rv = session_find(hSession, &session);
+  if (rv != CKR_OK) {
+    return rv;
+  }
+
+  // Check if already logged in (PIN is already cached)
+  if (session->piv_pin_len > 0) {
+    return CKR_USER_ALREADY_LOGGED_IN;
+  }
+
+  // Verify the PIN and cache it in the session
+  rv = verify_piv_pin_with_session(session->slot_id, session, pPin, ulPinLen);
+
+  // If PIN verification was successful, update the session state
+  if (rv == CKR_OK) {
+    // Update session state based on session type
+    if (session->flags & CKF_RW_SESSION) {
+      session->state = SESSION_STATE_RW_USER;
+    } else {
+      session->state = SESSION_STATE_RO_USER;
+    }
+  }
+
+  return rv;
 }
 
-CK_RV C_Logout(CK_SESSION_HANDLE hSession) { return CKR_FUNCTION_NOT_SUPPORTED; }
+CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
+  // Check if the cryptoki library is initialized
+  if (!g_is_initialized) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+
+  // Find the session
+  PKCS11_SESSION *session;
+  CK_RV rv = session_find(hSession, &session);
+  if (rv != CKR_OK) {
+    return rv;
+  }
+
+  // Check if logged in (PIN is cached)
+  if (session->piv_pin_len == 0) {
+    return CKR_USER_NOT_LOGGED_IN;
+  }
+  
+  // Send the logout APDU to the card
+  rv = logout_piv_pin_with_session(session->slot_id);
+  if (rv != CKR_OK) {
+    // Even if the card logout fails, we still clear the cached PIN
+    // to maintain consistent state in the session
+  }
+
+  // Clear the cached PIN
+  memset(session->piv_pin, 0xFF, sizeof(session->piv_pin));
+  session->piv_pin_len = 0;
+
+  // Reset session state based on session type
+  if (session->flags & CKF_RW_SESSION) {
+    session->state = SESSION_STATE_RW_PUBLIC;
+  } else {
+    session->state = SESSION_STATE_RO_PUBLIC;
+  }
+
+  return CKR_OK;
+}
 
 CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                      CK_OBJECT_HANDLE_PTR phObject) {

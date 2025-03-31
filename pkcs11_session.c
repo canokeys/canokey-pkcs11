@@ -161,6 +161,10 @@ CK_RV session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication, 
   session->application = pApplication;
   session->notify = Notify;
   session->is_open = CK_TRUE;
+  
+  // Initialize PIN fields
+  memset(session->piv_pin, 0xFF, sizeof(session->piv_pin));
+  session->piv_pin_len = 0;
 
   // Set the session state based on flags
   if (flags & CKF_RW_SESSION) {
