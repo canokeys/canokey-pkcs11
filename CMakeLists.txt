@@ -13,7 +13,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 # Configure nsync from submodule or system
 option(USE_BUNDLED_NSYNC "Use bundled nsync" ON)
 if(USE_BUNDLED_NSYNC)
-  set(NSYNC_ENABLE_TESTS OFF)
+  set(NSYNC_ENABLE_TESTS OFF CACHE BOOL "Enable for building tests" FORCE)
   add_subdirectory(external/nsync)
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/external/nsync/public)
 else()
