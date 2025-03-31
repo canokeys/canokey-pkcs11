@@ -2,9 +2,8 @@
 #define CANOKEY_H
 
 #include "pkcs11.h"
-#include <PCSC/pcsclite.h>
-#include <PCSC/winscard.h>
-#include <PCSC/wintypes.h>
+
+#include <winscard.h>
 
 // Function pointer types for memory allocation
 typedef void *(*CK_MALLOC_FUNC)(size_t size);

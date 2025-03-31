@@ -1,5 +1,6 @@
 #include "canokey.h"
 #include "pkcs11_session.h"
+
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
