@@ -1,10 +1,10 @@
 #ifndef PKCS11_SESSION_H
 #define PKCS11_SESSION_H
 
+#include "external/nsync/public/nsync_mu.h"
 #include "pkcs11.h"
 #include <PCSC/pcsclite.h>
 #include <PCSC/winscard.h>
-#include <pthread.h>
 
 // Session states as defined in PKCS#11 standard
 typedef enum {
@@ -24,8 +24,9 @@ typedef struct PKCS11_SESSION {
   CK_NOTIFY notify;         // Notification callback
   SessionState state;       // Current session state
   CK_BBOOL is_open;         // Flag indicating if the session is open
-  CK_BYTE piv_pin[8];      // Cached PIV PIN (padded with 0xFF)
-  CK_ULONG piv_pin_len;    // Length of the cached PIV PIN
+  CK_BYTE piv_pin[8];       // Cached PIV PIN (padded with 0xFF)
+  CK_ULONG piv_pin_len;     // Length of the cached PIV PIN
+  nsync_mu lock;            // Session lock using nsync mutex
 } PKCS11_SESSION;
 
 // Initialize the session manager

@@ -8,6 +8,12 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # Include project directory
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
+# Configure nsync from submodule
+add_subdirectory(external/nsync)
+
+# Add nsync include directories
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/external/nsync/public)
+
 # On macOS, PC/SC is provided by the PCSC framework
 if(APPLE)
   # Create shared library
@@ -18,7 +24,7 @@ if(APPLE)
   if(NOT PCSC_FRAMEWORK)
     message(FATAL_ERROR "PCSC framework not found")
   endif()
-  target_link_libraries(canokey_pkcs11 ${PCSC_FRAMEWORK})
+  target_link_libraries(canokey_pkcs11 ${PCSC_FRAMEWORK} nsync)
 else()
   # For non-macOS platforms, use pkg-config to find libpcsclite
   find_package(PkgConfig REQUIRED)
@@ -31,7 +37,7 @@ else()
   add_library(canokey_pkcs11 SHARED canokey.c pkcs11.c pkcs11_session.c)
   
   # Link against PC/SC library
-  target_link_libraries(canokey_pkcs11 ${PCSC_LIBRARIES})
+  target_link_libraries(canokey_pkcs11 ${PCSC_LIBRARIES} nsync)
 endif()
 
 # Set library properties
@@ -56,5 +62,5 @@ install(FILES pkcs11.h pkcs11_session.h canokey.h DESTINATION include/canokey-pk
 option(BUILD_TESTING "Build test programs" OFF)
 if(BUILD_TESTING)
     add_executable(test_pkcs11 test_pkcs11.c)
-    target_link_libraries(test_pkcs11 canokey_pkcs11)
+    target_link_libraries(test_pkcs11 canokey_pkcs11 nsync)
 endif()
