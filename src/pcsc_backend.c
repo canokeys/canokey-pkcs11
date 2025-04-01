@@ -1,5 +1,5 @@
 #include "pcsc_backend.h"
-#include "pkcs11_managed.h"
+#include "pkcs11_canokey.h"
 #include "pkcs11_session.h"
 
 #include <ctype.h>

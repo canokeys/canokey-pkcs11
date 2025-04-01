@@ -2,7 +2,7 @@
 #define PCSC_BACKEND_H
 
 #include "pkcs11.h"
-#include "pkcs11_managed.h"
+#include "pkcs11_canokey.h"
 
 #if defined(__APPLE__) || defined(__MACH__)
 #include <PCSC/PCSC.h>
@@ -31,7 +31,6 @@ extern CNK_FREE_FUNC g_free_func;
 // Helper functions for memory allocation
 static inline void *ck_malloc(size_t size) { return g_malloc_func(size); }
 static inline void ck_free(void *ptr) { g_free_func(ptr); }
-
 
 // Initialize PC/SC context only
 CK_RV initialize_pcsc(void);

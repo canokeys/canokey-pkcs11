@@ -38,6 +38,10 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(nsync PRIVATE "-fvisibility=hidden")
 endif()
 
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+  target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_VERBOSE")
+endif()
+
 # find PC/SC library on different platforms
 if(WIN32)
   # On Windows, use native PC/SC API

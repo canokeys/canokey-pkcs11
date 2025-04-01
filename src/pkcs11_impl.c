@@ -1,8 +1,9 @@
 #define CRYPTOKI_EXPORTS
 
+#include "logging.h"
 #include "pcsc_backend.h"
 #include "pkcs11.h"
-#include "pkcs11_managed.h"
+#include "pkcs11_canokey.h"
 #include "pkcs11_mutex.h"
 #include "pkcs11_session.h"
 
@@ -13,6 +14,9 @@
 static CK_FUNCTION_LIST ck_function_list;
 
 CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
+
+  CNK_DEBUG("C_Initialize called with pInitArgs: %p", pInitArgs);
+
   // Check if the library is already initialized
   if (g_is_initialized)
     return CKR_CRYPTOKI_ALREADY_INITIALIZED;
@@ -25,14 +29,14 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
     // with all fields set to NULL (single-threaded mode)
     mutex_rv = mutex_system_init(NULL);
     if (mutex_rv != CKR_OK) {
-      return CKR_CANT_LOCK;
+      CNK_RETURN(CKR_CANT_LOCK, "cannot init mutex");
     }
   } else {
     CK_C_INITIALIZE_ARGS_PTR args = (CK_C_INITIALIZE_ARGS_PTR)pInitArgs;
 
     // Check for reserved field - must be NULL according to PKCS#11
     if (args->pReserved != NULL_PTR)
-      return CKR_ARGUMENTS_BAD;
+      CNK_RETURN(CKR_ARGUMENTS_BAD, "pReserved not NULL");
 
     // Check for invalid combinations of flags and function pointers
     CK_BBOOL has_os_locking = (args->flags & CKF_OS_LOCKING_OK);
@@ -45,7 +49,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
                              (args->LockMutex == NULL_PTR) && (args->UnlockMutex == NULL_PTR);
 
     if (!all_supplied && !none_supplied)
-      return CKR_ARGUMENTS_BAD;
+      CNK_RETURN(CKR_ARGUMENTS_BAD, "invalid mutex function pointers");
 
     // Handle the four cases as per PKCS#11 specification
 
@@ -61,7 +65,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
     }
 
     if (mutex_rv != CKR_OK) {
-      return CKR_CANT_LOCK;
+      CNK_RETURN(CKR_CANT_LOCK, "cannot init mutex");
     }
   }
 
@@ -69,7 +73,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
     // Standalone mode: Initialize the PC/SC subsystem
     CK_RV rv = initialize_pcsc();
     if (rv != CKR_OK) {
-      return rv;
+      CNK_RETURN(rv, "cannot initialize PC/SC");
     }
   }
 
@@ -79,7 +83,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
     // Mark the library as initialized
     g_is_initialized = CK_TRUE;
   }
-  return rv;
+  CNK_RETURN(rv, "session manager init");
 }
 
 CK_RV C_Finalize(CK_VOID_PTR pReserved) {
