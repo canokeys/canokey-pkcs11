@@ -4,19 +4,19 @@
 #include <stdarg.h>
 #include <time.h>
 
-const char *g_log_level_name[CNK_LOG_LEVEL_SIZE] = {
+const char *g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE] = {
     "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "NONE",
 };
 
 // default values
-int g_log_level = CNK_LOG_LEVEL_WARNING;
-FILE* g_log_file = NULL;
+int g_cnk_log_level = CNK_LOG_LEVEL_WARNING;
+FILE* g_cnk_log_file = NULL;
 
 void cnk_printf(const int level, const char *const format, ...) {
-  if (level < g_log_level) {
+  if (level < g_cnk_log_level) {
     return;
   }
-  FILE *out = g_log_file;
+  FILE *out = g_cnk_log_file;
   if (out == NULL) {
     out = stderr;
   }

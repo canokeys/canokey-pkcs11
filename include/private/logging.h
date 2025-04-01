@@ -15,15 +15,15 @@ enum CNK_LOG_LEVEL {
   CNK_LOG_LEVEL_SIZE,
 };
 
-extern const char *g_log_level_name[CNK_LOG_LEVEL_SIZE];
+extern const char *g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE];
 
-extern FILE *g_log_file;
-extern int g_log_level;
+extern FILE *g_cnk_log_file;
+extern int g_cnk_log_level;
 
 extern void cnk_printf(const int level, const char *format, ...);
 
 #define CNK_PRINTLOGF(level, format, ...)                                                                              \
-  cnk_printf(level, "%-20s(%-20s:%03d)[%-5s]: " format, __FUNCTION__, __FILE__, __LINE__, g_log_level_name[level],     \
+  cnk_printf(level, "%-20s(%-20s:%03d)[%-5s]: " format, __FUNCTION__, __FILE__, __LINE__, g_cnk_log_level_name[level], \
              ##__VA_ARGS__);
 #define CNK_TRACE(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_TRACE, format, ##__VA_ARGS__)
 #define CNK_DEBUG(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_DEBUG, format, ##__VA_ARGS__)

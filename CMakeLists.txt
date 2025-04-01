@@ -32,6 +32,11 @@ file(GLOB_RECURSE CNK_PKCS_HEADERS include/*.h)
 option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
 add_library(${CNK_PKCS_TARGET} ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
 set(CNK_PKCS_LIBS nsync)
+if(BUILD_SHARED_LIBS)
+  target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_LIB_SHARED")
+else()
+  target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_LIB_STATIC")
+endif()
 
 # hide all symbols by default
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
@@ -39,7 +44,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(nsync PRIVATE "-fvisibility=hidden")
 endif()
 
-if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_VERBOSE")
 endif()
 
