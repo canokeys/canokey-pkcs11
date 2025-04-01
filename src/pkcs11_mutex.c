@@ -55,7 +55,7 @@ static CK_RV os_unlock_mutex(void *mutex) {
 }
 
 // Initialize the mutex system
-CK_RV mutex_system_init(CK_C_INITIALIZE_ARGS_PTR mutex_funcs) {
+CK_RV cnk_mutex_system_init(CK_C_INITIALIZE_ARGS_PTR mutex_funcs) {
   if (g_mutex_system_initialized) {
     return CKR_CRYPTOKI_ALREADY_INITIALIZED;
   }
@@ -80,7 +80,7 @@ CK_RV mutex_system_init(CK_C_INITIALIZE_ARGS_PTR mutex_funcs) {
 }
 
 // Clean up the mutex system
-void mutex_system_cleanup(void) {
+void cnk_mutex_system_cleanup(void) {
   g_mutex_system_initialized = CK_FALSE;
   g_using_app_mutexes = CK_FALSE;
   g_create_mutex = NULL;
@@ -90,7 +90,7 @@ void mutex_system_cleanup(void) {
 }
 
 // Create a new mutex
-CK_RV mutex_create(PKCS11_MUTEX *mutex) {
+CK_RV cnk_mutex_create(CNK_PKCS11_MUTEX *mutex) {
   if (mutex == NULL) {
     return CKR_ARGUMENTS_BAD;
   }
@@ -118,7 +118,7 @@ CK_RV mutex_create(PKCS11_MUTEX *mutex) {
 }
 
 // Destroy a mutex
-CK_RV mutex_destroy(PKCS11_MUTEX *mutex) {
+CK_RV cnk_mutex_destroy(CNK_PKCS11_MUTEX *mutex) {
   if (mutex == NULL || mutex->mutex_handle == NULL || mutex->destroy == NULL) {
     return CKR_ARGUMENTS_BAD;
   }
@@ -127,7 +127,7 @@ CK_RV mutex_destroy(PKCS11_MUTEX *mutex) {
 }
 
 // Lock a mutex
-CK_RV mutex_lock(PKCS11_MUTEX *mutex) {
+CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex) {
   if (mutex == NULL || mutex->mutex_handle == NULL || mutex->lock == NULL) {
     return CKR_ARGUMENTS_BAD;
   }
@@ -136,7 +136,7 @@ CK_RV mutex_lock(PKCS11_MUTEX *mutex) {
 }
 
 // Unlock a mutex
-CK_RV mutex_unlock(PKCS11_MUTEX *mutex) {
+CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex) {
   if (mutex == NULL || mutex->mutex_handle == NULL || mutex->unlock == NULL) {
     return CKR_ARGUMENTS_BAD;
   }

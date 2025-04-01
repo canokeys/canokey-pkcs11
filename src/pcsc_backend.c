@@ -8,9 +8,9 @@
 #include <string.h>
 
 // Global variables for reader management
-ReaderInfo *g_readers = NULL; // Array of reader info structs
-CK_ULONG g_num_readers = 0;
-CK_BBOOL g_is_initialized = CK_FALSE;
+ReaderInfo *g_cnk_readers = NULL; // Array of reader info structs
+CK_ULONG g_cnk_num_readers = 0;
+CK_BBOOL g_cnk_is_initialized = CK_FALSE;
 
 // Helper function to check if a string contains 'canokey' (case insensitive)
 static CK_BBOOL contains_canokey(const char *str) {
@@ -32,40 +32,40 @@ static CK_BBOOL contains_canokey(const char *str) {
 }
 
 // Initialize PC/SC context only
-CK_RV initialize_pcsc() {
-  if (g_is_initialized)
+CK_RV cnk_initialize_pcsc() {
+  if (g_cnk_is_initialized)
     return CKR_OK;
 
-  LONG rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &g_pcsc_context);
+  LONG rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &g_cnk_pcsc_context);
   if (rv != SCARD_S_SUCCESS) {
     return CKR_DEVICE_ERROR;
   }
 
-  g_is_initialized = CK_TRUE;
+  g_cnk_is_initialized = CK_TRUE;
   return CKR_OK;
 }
 
-// List readers and populate g_readers
-CK_RV list_readers() {
-  if (!g_is_initialized) {
+// List readers and populate g_cnk_readers
+CK_RV cnk_list_readers() {
+  if (!g_cnk_is_initialized) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
 
   // If readers are already listed, clean them up first
-  if (g_readers) {
-    for (CK_ULONG i = 0; i < g_num_readers; i++) {
-      ck_free(g_readers[i].name);
+  if (g_cnk_readers) {
+    for (CK_ULONG i = 0; i < g_cnk_num_readers; i++) {
+      ck_free(g_cnk_readers[i].name);
     }
-    ck_free(g_readers);
-    g_readers = NULL;
-    g_num_readers = 0;
+    ck_free(g_cnk_readers);
+    g_cnk_readers = NULL;
+    g_cnk_num_readers = 0;
   }
 
   // Get the list of readers
   DWORD readers_len = 0;
 
   // First call to get the needed buffer size
-  LONG rv = SCardListReaders(g_pcsc_context, NULL, NULL, &readers_len);
+  LONG rv = SCardListReaders(g_cnk_pcsc_context, NULL, NULL, &readers_len);
   if (rv != SCARD_S_SUCCESS && rv != SCARD_E_INSUFFICIENT_BUFFER) {
     return CKR_DEVICE_ERROR;
   }
@@ -77,28 +77,28 @@ CK_RV list_readers() {
   }
 
   // Get the actual readers list
-  rv = SCardListReaders(g_pcsc_context, NULL, readers_buf, &readers_len);
+  rv = SCardListReaders(g_cnk_pcsc_context, NULL, readers_buf, &readers_len);
   if (rv != SCARD_S_SUCCESS) {
     ck_free(readers_buf);
     return CKR_DEVICE_ERROR;
   }
 
   // Count the number of readers with 'canokey' in their name
-  g_num_readers = 0;
+  g_cnk_num_readers = 0;
   char *reader = readers_buf;
   while (*reader != '\0') {
     if (contains_canokey(reader)) {
-      g_num_readers++;
+      g_cnk_num_readers++;
     }
     reader += strlen(reader) + 1;
   }
 
   // Allocate memory for the reader info array
-  g_readers = ck_malloc(g_num_readers * sizeof(ReaderInfo));
-  if (g_readers) {
-    memset(g_readers, 0, g_num_readers * sizeof(ReaderInfo));
+  g_cnk_readers = ck_malloc(g_cnk_num_readers * sizeof(ReaderInfo));
+  if (g_cnk_readers) {
+    memset(g_cnk_readers, 0, g_cnk_num_readers * sizeof(ReaderInfo));
   }
-  if (!g_readers) {
+  if (!g_cnk_readers) {
     ck_free(readers_buf);
     return CKR_HOST_MEMORY;
   }
@@ -106,26 +106,26 @@ CK_RV list_readers() {
   // Fill the reader list with readers containing 'canokey' and assign unique IDs
   reader = readers_buf;
   CK_ULONG index = 0;
-  while (*reader != '\0' && index < g_num_readers) {
+  while (*reader != '\0' && index < g_cnk_num_readers) {
     if (contains_canokey(reader)) {
       size_t name_len = strlen(reader) + 1;
-      g_readers[index].name = ck_malloc(name_len);
-      if (g_readers[index].name) {
-        memcpy(g_readers[index].name, reader, name_len);
+      g_cnk_readers[index].name = ck_malloc(name_len);
+      if (g_cnk_readers[index].name) {
+        memcpy(g_cnk_readers[index].name, reader, name_len);
       }
-      if (!g_readers[index].name) {
+      if (!g_cnk_readers[index].name) {
         // Clean up on error
         for (CK_ULONG i = 0; i < index; i++) {
-          ck_free(g_readers[i].name);
+          ck_free(g_cnk_readers[i].name);
         }
-        ck_free(g_readers);
-        g_readers = NULL;
-        g_num_readers = 0;
+        ck_free(g_cnk_readers);
+        g_cnk_readers = NULL;
+        g_cnk_num_readers = 0;
         ck_free(readers_buf);
         return CKR_HOST_MEMORY;
       }
       // Assign a unique ID to this reader (using index as the ID)
-      g_readers[index].slot_id = index;
+      g_cnk_readers[index].slot_id = index;
       index++;
     }
     reader += strlen(reader) + 1;
@@ -136,43 +136,43 @@ CK_RV list_readers() {
 }
 
 // Clean up PC/SC resources
-void cleanup_pcsc() {
-  if (!g_is_initialized)
+void cnk_cleanup_pcsc() {
+  if (!g_cnk_is_initialized)
     return;
 
-  if (g_readers) {
-    for (CK_ULONG i = 0; i < g_num_readers; i++) {
-      ck_free(g_readers[i].name);
+  if (g_cnk_readers) {
+    for (CK_ULONG i = 0; i < g_cnk_num_readers; i++) {
+      ck_free(g_cnk_readers[i].name);
     }
-    ck_free(g_readers);
-    g_readers = NULL;
+    ck_free(g_cnk_readers);
+    g_cnk_readers = NULL;
   }
 
-  if (g_pcsc_context) {
-    SCardReleaseContext(g_pcsc_context);
-    g_pcsc_context = 0;
+  if (g_cnk_pcsc_context) {
+    SCardReleaseContext(g_cnk_pcsc_context);
+    g_cnk_pcsc_context = 0;
   }
 
-  g_num_readers = 0;
-  g_is_initialized = CK_FALSE;
+  g_cnk_num_readers = 0;
+  g_cnk_is_initialized = CK_FALSE;
 }
 
 // Get the number of readers
-CK_ULONG get_num_readers(void) { return g_num_readers; }
+CK_ULONG cnk_get_num_readers(void) { return g_cnk_num_readers; }
 
 // Get the slot ID for a reader at the given index
-CK_SLOT_ID get_reader_slot_id(CK_ULONG index) {
-  if (index >= g_num_readers) {
+CK_SLOT_ID cnk_get_reader_slot_id(CK_ULONG index) {
+  if (index >= g_cnk_num_readers) {
     return (CK_SLOT_ID)-1; // Invalid slot ID
   }
-  return g_readers[index].slot_id;
+  return g_cnk_readers[index].slot_id;
 }
 
 // Helper function to connect to a card and select the CanoKey AID
-CK_RV connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
+CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
   // In managed mode, use the provided card handle
-  if (g_is_managed_mode) {
-    *phCard = g_scard;
+  if (g_cnk_is_managed_mode) {
+    *phCard = g_cnk_scard;
 
     // Begin transaction with default timeout of 2 seconds
     LONG rv = SCardBeginTransaction(*phCard);
@@ -184,33 +184,33 @@ CK_RV connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
   }
 
   // Standalone mode - initialize PCSC if needed
-  if (!g_is_initialized) {
-    CK_RV rv = initialize_pcsc();
+  if (!g_cnk_is_initialized) {
+    CK_RV rv = cnk_initialize_pcsc();
     if (rv != CKR_OK)
       return rv;
   }
 
   // If readers haven't been listed yet, list them now
-  if (g_num_readers == 0 || g_readers == NULL) {
-    CK_RV rv = list_readers();
+  if (g_cnk_num_readers == 0 || g_cnk_readers == NULL) {
+    CK_RV rv = cnk_list_readers();
     if (rv != CKR_OK)
       return rv;
   }
 
   // Find the reader corresponding to the slot ID
   CK_ULONG i;
-  for (i = 0; i < g_num_readers; i++) {
-    if (g_readers[i].slot_id == slotID)
+  for (i = 0; i < g_cnk_num_readers; i++) {
+    if (g_cnk_readers[i].slot_id == slotID)
       break;
   }
 
-  if (i >= g_num_readers) {
+  if (i >= g_cnk_num_readers) {
     return CKR_SLOT_ID_INVALID;
   }
 
   // Connect to the card
   DWORD active_protocol;
-  LONG rv = SCardConnect(g_pcsc_context, g_readers[i].name, SCARD_SHARE_SHARED, SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1,
+  LONG rv = SCardConnect(g_cnk_pcsc_context, g_cnk_readers[i].name, SCARD_SHARE_SHARED, SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1,
                          phCard, &active_protocol);
   if (rv != SCARD_S_SUCCESS) {
     return CKR_DEVICE_ERROR;
@@ -230,24 +230,24 @@ CK_RV connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
 
   rv = SCardTransmit(*phCard, SCARD_PCI_T1, select_apdu, sizeof(select_apdu), NULL, response, &response_len);
   if (rv != SCARD_S_SUCCESS) {
-    disconnect_card(*phCard);
+    cnk_disconnect_card(*phCard);
     return CKR_DEVICE_ERROR;
   }
 
   // Check if the select command was successful (SW1SW2 = 9000)
   if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
-    disconnect_card(*phCard);
+    cnk_disconnect_card(*phCard);
     return CKR_DEVICE_ERROR;
   }
 
   // Note: We don't end the transaction here to allow for subsequent operations
-  // The caller is responsible for calling disconnect_card when done
+  // The caller is responsible for calling cnk_disconnect_card when done
 
   return CKR_OK;
 }
 
 // Disconnect from a card and end any active transaction
-void disconnect_card(SCARDHANDLE hCard) {
+void cnk_disconnect_card(SCARDHANDLE hCard) {
   if (hCard == 0) {
     return;
   }
@@ -256,7 +256,7 @@ void disconnect_card(SCARDHANDLE hCard) {
   SCardEndTransaction(hCard, SCARD_LEAVE_CARD);
 
   // In managed mode, don't disconnect the card
-  if (g_is_managed_mode) {
+  if (g_cnk_is_managed_mode) {
     return;
   }
 
@@ -267,7 +267,7 @@ void disconnect_card(SCARDHANDLE hCard) {
 // PIV application functions
 
 // Select the PIV application using AID A000000308
-CK_RV select_piv_application(SCARDHANDLE hCard) {
+CK_RV cnk_select_piv_application(SCARDHANDLE hCard) {
   if (hCard == 0) {
     return CKR_DEVICE_ERROR;
   }
@@ -302,7 +302,7 @@ CK_RV select_piv_application(SCARDHANDLE hCard) {
 }
 
 // Verify the PIV PIN
-CK_RV verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
   if (hCard == 0 || pPin == NULL) {
     return CKR_ARGUMENTS_BAD;
   }
@@ -313,7 +313,7 @@ CK_RV verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen)
   }
 
   // First select the PIV application
-  CK_RV rv = select_piv_application(hCard);
+  CK_RV rv = cnk_select_piv_application(hCard);
   if (rv != CKR_OK) {
     return rv;
   }
@@ -356,13 +356,13 @@ CK_RV verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen)
 }
 
 // Logout PIV PIN using APDU 00 20 FF 80
-CK_RV logout_piv_pin(SCARDHANDLE hCard) {
+CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard) {
   if (hCard == 0) {
     return CKR_DEVICE_ERROR;
   }
 
   // First select the PIV application
-  CK_RV rv = select_piv_application(hCard);
+  CK_RV rv = cnk_select_piv_application(hCard);
   if (rv != CKR_OK) {
     return rv;
   }
@@ -395,25 +395,25 @@ CK_RV logout_piv_pin(SCARDHANDLE hCard) {
 }
 
 // Logout PIV PIN with session - handles card connection
-CK_RV logout_piv_pin_with_session(CK_SLOT_ID slotID) {
+CK_RV cnk_logout_piv_pin_with_session(CK_SLOT_ID slotID) {
   // Connect to the card
   SCARDHANDLE hCard;
-  CK_RV rv = connect_and_select_canokey(slotID, &hCard);
+  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
   if (rv != CKR_OK) {
     return rv;
   }
 
   // Logout the PIN
-  rv = logout_piv_pin(hCard);
+  rv = cnk_logout_piv_pin(hCard);
 
   // Disconnect from the card
-  disconnect_card(hCard);
+  cnk_disconnect_card(hCard);
 
   return rv;
 }
 
 // Verify the PIV PIN with session - handles card connection and caches PIN
-CK_RV verify_piv_pin_with_session(CK_SLOT_ID slotID, PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
   if (session == NULL || (pPin == NULL && ulPinLen > 0)) {
     return CKR_ARGUMENTS_BAD;
   }
@@ -425,13 +425,13 @@ CK_RV verify_piv_pin_with_session(CK_SLOT_ID slotID, PKCS11_SESSION *session, CK
 
   // Connect to the card
   SCARDHANDLE hCard;
-  CK_RV rv = connect_and_select_canokey(slotID, &hCard);
+  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
   if (rv != CKR_OK) {
     return rv;
   }
 
   // Verify the PIN
-  rv = verify_piv_pin(hCard, pPin, ulPinLen);
+  rv = cnk_verify_piv_pin(hCard, pPin, ulPinLen);
 
   // If PIN verification was successful, cache the PIN in the session
   if (rv == CKR_OK) {
@@ -442,17 +442,17 @@ CK_RV verify_piv_pin_with_session(CK_SLOT_ID slotID, PKCS11_SESSION *session, CK
   }
 
   // Disconnect from the card
-  disconnect_card(hCard);
+  cnk_disconnect_card(hCard);
 
   return rv;
 }
 
 // Helper function to get firmware or hardware version
-CK_RV get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, CK_BYTE *minor) {
+CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, CK_BYTE *minor) {
   SCARDHANDLE hCard;
 
   // Connect to the card for this operation
-  CK_RV rv = connect_and_select_canokey(slotID, &hCard);
+  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
   if (rv != CKR_OK) {
     return rv;
   }
@@ -464,13 +464,13 @@ CK_RV get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, CK_BY
 
   LONG pcsc_rv = SCardTransmit(hCard, SCARD_PCI_T1, version_apdu, sizeof(version_apdu), NULL, response, &response_len);
   if (pcsc_rv != SCARD_S_SUCCESS) {
-    disconnect_card(hCard);
+    cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
   }
 
   // Check if the command was successful and we got at least 5 bytes (3 version bytes + 2 status bytes)
   if (response_len < 5 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
-    disconnect_card(hCard);
+    cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
   }
 
@@ -541,6 +541,6 @@ CK_RV get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, CK_BY
   }
 
   // Disconnect from the card when done
-  disconnect_card(hCard);
+  cnk_disconnect_card(hCard);
   return CKR_OK;
 }

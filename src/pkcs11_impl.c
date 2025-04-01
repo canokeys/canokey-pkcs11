@@ -22,7 +22,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   CNK_DEBUG("C_Initialize called with pInitArgs: %p", pInitArgs);
 
   // Check if the library is already initialized
-  if (g_is_initialized)
+  if (g_cnk_is_initialized)
     return CKR_CRYPTOKI_ALREADY_INITIALIZED;
 
   // Process the initialization arguments
@@ -31,7 +31,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   if (pInitArgs == NULL_PTR) {
     // NULL argument is treated as a pointer to a CK_C_INITIALIZE_ARGS structure
     // with all fields set to NULL (single-threaded mode)
-    mutex_rv = mutex_system_init(NULL);
+    mutex_rv = cnk_mutex_system_init(NULL);
     if (mutex_rv != CKR_OK) {
       CNK_RETURN(CKR_CANT_LOCK, "cannot init mutex");
     }
@@ -61,11 +61,11 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
     if (none_supplied) {
       // Cases 1 & 2: No function pointers supplied
       // Use OS primitives (with minimal locking if single-threaded)
-      mutex_rv = mutex_system_init(NULL);
+      mutex_rv = cnk_mutex_system_init(NULL);
     } else if (all_supplied) {
       // Cases 3 & 4: Function pointers supplied
       // Use application-supplied mutex functions
-      mutex_rv = mutex_system_init(args);
+      mutex_rv = cnk_mutex_system_init(args);
     }
 
     if (mutex_rv != CKR_OK) {
@@ -73,19 +73,19 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
     }
   }
 
-  if (!g_is_managed_mode) {
+  if (!g_cnk_is_managed_mode) {
     // Standalone mode: Initialize the PC/SC subsystem
-    CK_RV rv = initialize_pcsc();
+    CK_RV rv = cnk_initialize_pcsc();
     if (rv != CKR_OK) {
       CNK_RETURN(rv, "cannot initialize PC/SC");
     }
   }
 
   // Initialize the session manager
-  CK_RV rv = session_manager_init();
+  CK_RV rv = cnk_session_manager_init();
   if (rv == CKR_OK) {
     // Mark the library as initialized
-    g_is_initialized = CK_TRUE;
+    g_cnk_is_initialized = CK_TRUE;
   }
   CNK_RETURN(rv, "session manager init");
 }
@@ -96,23 +96,23 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
     return CKR_ARGUMENTS_BAD;
 
   // Clean up session manager
-  session_manager_cleanup();
+  cnk_session_manager_cleanup();
 
   // Clean up mutex system
-  mutex_system_cleanup();
+  cnk_mutex_system_cleanup();
 
   // In managed mode, we don't clean up PC/SC resources
-  if (g_is_managed_mode) {
+  if (g_cnk_is_managed_mode) {
     // Reset managed mode variables
-    g_is_managed_mode = CK_FALSE;
-    g_scard = 0;
-    g_is_initialized = CK_FALSE;
+    g_cnk_is_managed_mode = CK_FALSE;
+    g_cnk_scard = 0;
+    g_cnk_is_initialized = CK_FALSE;
     return CKR_OK;
   }
 
   // Clean up PC/SC resources in standalone mode
-  cleanup_pcsc();
-  g_is_initialized = CK_FALSE;
+  cnk_cleanup_pcsc();
+  g_cnk_is_initialized = CK_FALSE;
   return CKR_OK;
 }
 
@@ -131,33 +131,33 @@ CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PT
     return CKR_ARGUMENTS_BAD;
 
   // Initialize PC/SC if not already initialized
-  CK_RV rv = initialize_pcsc();
+  CK_RV rv = cnk_initialize_pcsc();
   if (rv != CKR_OK)
     return rv;
 
   // List readers
-  rv = list_readers();
+  rv = cnk_list_readers();
   if (rv != CKR_OK)
     return rv;
 
   // If pSlotList is NULL, just return the number of slots
   if (!pSlotList) {
-    *pulCount = g_num_readers;
+    *pulCount = g_cnk_num_readers;
     return CKR_OK;
   }
 
   // Check if the provided buffer is large enough
-  if (*pulCount < g_num_readers) {
-    *pulCount = g_num_readers;
+  if (*pulCount < g_cnk_num_readers) {
+    *pulCount = g_cnk_num_readers;
     return CKR_BUFFER_TOO_SMALL;
   }
 
   // Fill the slot list with the stored slot IDs
-  for (CK_ULONG i = 0; i < g_num_readers; i++) {
-    pSlotList[i] = g_readers[i].slot_id;
+  for (CK_ULONG i = 0; i < g_cnk_num_readers; i++) {
+    pSlotList[i] = g_cnk_readers[i].slot_id;
   }
 
-  *pulCount = g_num_readers;
+  *pulCount = g_cnk_num_readers;
   return CKR_OK;
 }
 
@@ -167,14 +167,14 @@ CK_RV C_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
 
   // Get firmware version directly (it will handle its own connection)
   CK_BYTE fw_major, fw_minor;
-  CK_RV rv = get_version(slotID, 0x00, &fw_major, &fw_minor);
+  CK_RV rv = cnk_get_version(slotID, 0x00, &fw_major, &fw_minor);
   if (rv != CKR_OK) {
     return rv;
   }
 
   // Get hardware version
   CK_BYTE hw_major, hw_minor;
-  rv = get_version(slotID, 0x01, &hw_major, &hw_minor);
+  rv = cnk_get_version(slotID, 0x01, &hw_major, &hw_minor);
   if (rv != CKR_OK) {
     return rv;
   }
@@ -234,7 +234,7 @@ CK_RV C_SetPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pOldPin, CK_ULONG ulO
 
 CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication, CK_NOTIFY Notify,
                     CK_SESSION_HANDLE_PTR phSession) {
-  if (!g_is_initialized) {
+  if (!g_cnk_is_initialized) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
 
@@ -242,23 +242,23 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
     return CKR_ARGUMENTS_BAD;
   }
 
-  return session_open(slotID, flags, pApplication, Notify, phSession);
+  return cnk_session_open(slotID, flags, pApplication, Notify, phSession);
 }
 
 CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
-  if (!g_is_initialized) {
+  if (!g_cnk_is_initialized) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
 
-  return session_close(hSession);
+  return cnk_session_close(hSession);
 }
 
 CK_RV C_CloseAllSessions(CK_SLOT_ID slotID) {
-  if (!g_is_initialized) {
+  if (!g_cnk_is_initialized) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
 
-  return session_close_all(slotID);
+  return cnk_session_close_all(slotID);
 }
 
 CK_RV C_GetSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) { return CKR_FUNCTION_NOT_SUPPORTED; }
@@ -274,7 +274,7 @@ CK_RV C_SetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationStat
 
 CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
   // Check if the cryptoki library is initialized
-  if (!g_is_initialized) {
+  if (!g_cnk_is_initialized) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
 
@@ -289,8 +289,8 @@ CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR
   }
 
   // Find the session
-  PKCS11_SESSION *session;
-  CK_RV rv = session_find(hSession, &session);
+  CNK_PKCS11_SESSION *session;
+  CK_RV rv = cnk_session_find(hSession, &session);
   if (rv != CKR_OK) {
     return rv;
   }
@@ -301,7 +301,7 @@ CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR
   }
 
   // Verify the PIN and cache it in the session
-  rv = verify_piv_pin_with_session(session->slot_id, session, pPin, ulPinLen);
+  rv = cnk_verify_piv_pin_with_session(session->slot_id, session, pPin, ulPinLen);
 
   // If PIN verification was successful, update the session state
   if (rv == CKR_OK) {
@@ -318,13 +318,13 @@ CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR
 
 CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
   // Check if the cryptoki library is initialized
-  if (!g_is_initialized) {
+  if (!g_cnk_is_initialized) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
 
   // Find the session
-  PKCS11_SESSION *session;
-  CK_RV rv = session_find(hSession, &session);
+  CNK_PKCS11_SESSION *session;
+  CK_RV rv = cnk_session_find(hSession, &session);
   if (rv != CKR_OK) {
     return rv;
   }
@@ -335,7 +335,7 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
   }
 
   // Send the logout APDU to the card
-  rv = logout_piv_pin_with_session(session->slot_id);
+  rv = cnk_logout_piv_pin_with_session(session->slot_id);
   if (rv != CKR_OK) {
     // Even if the card logout fails, we still clear the cached PIN
     // to maintain consistent state in the session
