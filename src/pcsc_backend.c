@@ -7,17 +7,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Function pointers for memory allocation (global)
-CNK_MALLOC_FUNC g_malloc_func = malloc;
-CNK_FREE_FUNC g_free_func = free;
-
 // Global variables for reader management
 ReaderInfo *g_readers = NULL; // Array of reader info structs
 CK_ULONG g_num_readers = 0;
 CK_BBOOL g_is_initialized = CK_FALSE;
-CK_BBOOL g_is_managed_mode = CK_FALSE; // False for standalone mode, True for managed mode
-SCARDCONTEXT g_pcsc_context = 0;
-SCARDHANDLE g_scard = 0;
 
 // Helper function to check if a string contains 'canokey' (case insensitive)
 static CK_BBOOL contains_canokey(const char *str) {
