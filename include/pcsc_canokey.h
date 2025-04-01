@@ -3,7 +3,15 @@
 
 #include "pkcs11.h"
 
+#if defined(__APPLE__) || defined(__MACH__)
+#include <PCSC/pcsclite.h>
+#include <PCSC/winscard.h>
+#include <PCSC/wintypes.h>
+#else
+#include <pcsclite.h>
 #include <winscard.h>
+#include <wintypes.h>
+#endif
 
 // Function pointer types for memory allocation
 typedef void *(*CNK_MALLOC_FUNC)(size_t size);

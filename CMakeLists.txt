@@ -87,6 +87,6 @@ install(TARGETS ${CNK_PKCS_TARGET}
 # Add a simple test executable if testing is enabled
 option(BUILD_TESTING "Build test programs" OFF)
 if(BUILD_TESTING)
-    add_executable(test_pkcs11 test/test_pkcs11.c)
+    add_executable(test_pkcs11 tests/test_pkcs11.c)
     target_link_libraries(test_pkcs11 ${CNK_PKCS_TARGET} ${CNK_PKCS_LIBS})
 endif()
