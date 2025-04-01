@@ -113,23 +113,124 @@ int main() {
     if (ulSlotCount > 0) {
       CK_SESSION_HANDLE hSession;
       CK_FLAGS flags = CKF_SERIAL_SESSION; // Read-only session
-      
+
       printf("\nOpening session with slot %lu...\n", pSlotList[0]);
       rv = pFunctionList->C_OpenSession(pSlotList[0], flags, NULL, NULL, &hSession);
       if (rv != CKR_OK) {
         printf("Error opening session: 0x%lx\n", rv);
       } else {
         printf("Session opened successfully. Session handle: %lu\n", hSession);
-        
+
         // Test C_Login with PIN "123456"
         CK_UTF8CHAR pin[] = {"123456"};
-        CK_ULONG pinLen = strlen((char*)pin);
-        
+        CK_ULONG pinLen = strlen((char *)pin);
+
         printf("Logging in with PIN: %s\n", pin);
         rv = pFunctionList->C_Login(hSession, CKU_USER, pin, pinLen);
         if (rv == CKR_OK) {
           printf("Login successful!\n");
-          
+
+          // Test object finding functions
+          printf("\nTesting object finding functions...\n");
+
+          // Test finding all certificates
+          CK_OBJECT_CLASS certClass = CKO_CERTIFICATE;
+          CK_ATTRIBUTE certTemplate[] = {{CKA_CLASS, &certClass, sizeof(certClass)}};
+
+          printf("Finding all certificates...\n");
+          rv = pFunctionList->C_FindObjectsInit(hSession, certTemplate, 1);
+          if (rv != CKR_OK) {
+            printf("Error initializing find operation for certificates: 0x%lx\n", rv);
+          } else {
+            CK_OBJECT_HANDLE certObjects[10];
+            CK_ULONG certCount;
+
+            rv = pFunctionList->C_FindObjects(hSession, certObjects, 10, &certCount);
+            if (rv != CKR_OK) {
+              printf("Error finding certificate objects: 0x%lx\n", rv);
+            } else {
+              printf("Found %lu certificate objects:\n", certCount);
+              for (CK_ULONG i = 0; i < certCount; i++) {
+                printf("  Certificate object handle: %lu\n", certObjects[i]);
+                // Extract and display the slot ID and object ID from the handle
+                CK_SLOT_ID slotId = (certObjects[i] >> 16) & 0xFFFF;
+                CK_BYTE objectId = certObjects[i] & 0xFF;
+                printf("    Slot ID: %lu, Object ID: %u\n", slotId, objectId);
+              }
+            }
+
+            rv = pFunctionList->C_FindObjectsFinal(hSession);
+            if (rv != CKR_OK) {
+              printf("Error finalizing certificate find operation: 0x%lx\n", rv);
+            }
+          }
+
+          // Test finding all private keys
+          CK_OBJECT_CLASS privKeyClass = CKO_PRIVATE_KEY;
+          CK_ATTRIBUTE privKeyTemplate[] = {{CKA_CLASS, &privKeyClass, sizeof(privKeyClass)}};
+
+          printf("\nFinding all private keys...\n");
+          rv = pFunctionList->C_FindObjectsInit(hSession, privKeyTemplate, 1);
+          if (rv != CKR_OK) {
+            printf("Error initializing find operation for private keys: 0x%lx\n", rv);
+          } else {
+            CK_OBJECT_HANDLE privKeyObjects[10];
+            CK_ULONG privKeyCount;
+
+            rv = pFunctionList->C_FindObjects(hSession, privKeyObjects, 10, &privKeyCount);
+            if (rv != CKR_OK) {
+              printf("Error finding private key objects: 0x%lx\n", rv);
+            } else {
+              printf("Found %lu private key objects:\n", privKeyCount);
+              for (CK_ULONG i = 0; i < privKeyCount; i++) {
+                printf("  Private key object handle: %lu\n", privKeyObjects[i]);
+                // Extract and display the slot ID and object ID from the handle
+                CK_SLOT_ID slotId = (privKeyObjects[i] >> 16) & 0xFFFF;
+                CK_BYTE objectId = privKeyObjects[i] & 0xFF;
+                printf("    Slot ID: %lu, Object ID: %u\n", slotId, objectId);
+              }
+            }
+
+            rv = pFunctionList->C_FindObjectsFinal(hSession);
+            if (rv != CKR_OK) {
+              printf("Error finalizing private key find operation: 0x%lx\n", rv);
+            }
+          }
+
+          // Test finding a specific object by ID
+          CK_OBJECT_CLASS pubKeyClass = CKO_PUBLIC_KEY;
+          CK_BYTE objectId = 1; // PIV_SLOT_9A
+          CK_ATTRIBUTE specificTemplate[] = {{CKA_CLASS, &pubKeyClass, sizeof(pubKeyClass)},
+                                             {CKA_ID, &objectId, sizeof(objectId)}};
+
+          printf("\nFinding public key with ID 1 (PIV_SLOT_9A)...\n");
+          rv = pFunctionList->C_FindObjectsInit(hSession, specificTemplate, 2);
+          if (rv != CKR_OK) {
+            printf("Error initializing find operation for specific object: 0x%lx\n", rv);
+          } else {
+            CK_OBJECT_HANDLE specificObjects[1];
+            CK_ULONG specificCount;
+
+            rv = pFunctionList->C_FindObjects(hSession, specificObjects, 1, &specificCount);
+            if (rv != CKR_OK) {
+              printf("Error finding specific object: 0x%lx\n", rv);
+            } else {
+              printf("Found %lu specific objects:\n", specificCount);
+              for (CK_ULONG i = 0; i < specificCount; i++) {
+                printf("  Object handle: %lu\n", specificObjects[i]);
+                // Extract and display the slot ID and object ID from the handle
+                CK_SLOT_ID slotId = (specificObjects[i] >> 16) & 0xFFFF;
+                CK_BYTE objId = specificObjects[i] & 0xFF;
+                printf("    Slot ID: %lu, Object ID: %u\n", slotId, objId);
+              }
+            }
+
+            rv = pFunctionList->C_FindObjectsFinal(hSession);
+            if (rv != CKR_OK) {
+              printf("Error finalizing specific find operation: 0x%lx\n", rv);
+            }
+          }
+
           // Test logout
           rv = pFunctionList->C_Logout(hSession);
           if (rv == CKR_OK) {
@@ -145,7 +246,7 @@ int main() {
             printf("PIN is locked.\n");
           }
         }
-        
+
         // Close the session
         rv = pFunctionList->C_CloseSession(hSession);
         if (rv != CKR_OK) {
@@ -155,7 +256,7 @@ int main() {
         }
       }
     }
-    
+
     free(pSlotList);
   } else {
     printf("No slots found. Make sure a CanoKey device is connected.\n");

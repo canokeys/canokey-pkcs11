@@ -1,4 +1,3 @@
-#include "pkcs11_canokey.h"
 #include "pkcs11_mutex.h"
 #include "pcsc_backend.h"
 

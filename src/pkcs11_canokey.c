@@ -1,9 +1,9 @@
 #define CRYPTOKI_EXPORTS
 
+#include "pkcs11_canokey.h"
 #include "logging.h"
 #include "pcsc_backend.h"
 #include "pkcs11.h"
-#include "pkcs11_canokey.h"
 
 #include <stdlib.h>
 
@@ -42,7 +42,6 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
 }
 
 CK_RV C_CNK_ConfigLogging(int level, FILE *file) {
-
   if (level >= 0 && level < CNK_LOG_LEVEL_SIZE) {
     g_cnk_log_level = level;
   } else if (level != -1) {

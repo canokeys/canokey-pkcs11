@@ -42,7 +42,21 @@ extern void cnk_printf(const int level, const char *format, ...);
 #define CNK_RETURN(ARG, ...) return (ARG);
 #endif // CNK_VERBOSE
 
-// #define CNK_RET_OK CNK_RETURN(SCARD_S_SUCCESS, "success");
-// #define CNK_RET_UNIMPL CNK_RETURN(SCARD_E_UNSUPPORTED_FEATURE, "should be supported (not implemented now)");
+// Function to log APDU commands in a formatted way
+void cnk_log_apdu_command(const unsigned char *command, unsigned long command_len);
+
+// Function to log APDU responses in a formatted way
+void cnk_log_apdu_response(const unsigned char *response, unsigned long response_len);
+
+// Macros to call the APDU logging functions only if the log level is appropriate
+#define CNK_LOG_APDU_COMMAND(command, command_len)                                                                     \
+  if (g_cnk_log_level <= CNK_LOG_LEVEL_DEBUG) {                                                                        \
+    cnk_log_apdu_command(command, command_len);                                                                        \
+  }
+
+#define CNK_LOG_APDU_RESPONSE(response, response_len)                                                                  \
+  if (g_cnk_log_level <= CNK_LOG_LEVEL_DEBUG) {                                                                        \
+    cnk_log_apdu_response(response, response_len);                                                                     \
+  }
 
 #endif // __LOGGING__H__

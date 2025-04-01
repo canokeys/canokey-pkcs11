@@ -14,6 +14,9 @@ typedef enum {
   SESSION_STATE_RW_SO
 } SessionState;
 
+// Maximum number of objects that can be found
+#define MAX_FIND_OBJECTS 6
+
 // Session structure
 typedef struct CNK_PKCS11_SESSION {
   CK_SESSION_HANDLE handle; // Session handle
@@ -25,7 +28,17 @@ typedef struct CNK_PKCS11_SESSION {
   CK_BBOOL is_open;         // Flag indicating if the session is open
   CK_BYTE piv_pin[8];       // Cached PIV PIN (padded with 0xFF)
   CK_ULONG piv_pin_len;     // Length of the cached PIV PIN
-  CNK_PKCS11_MUTEX lock;        // Session lock using abstract mutex
+  CNK_PKCS11_MUTEX lock;    // Session lock using abstract mutex
+
+  // Object finding fields
+  CK_BBOOL find_active;                            // Whether a find operation is active
+  CK_OBJECT_HANDLE find_objects[MAX_FIND_OBJECTS]; // Array of found object handles
+  CK_ULONG find_objects_count;                     // Number of objects found
+  CK_ULONG find_objects_position;                  // Current position in the find_objects array
+  CK_OBJECT_CLASS find_object_class;               // Object class to find
+  CK_BYTE find_object_id;                          // Object ID to find
+  CK_BBOOL find_id_specified;                      // Whether ID was specified in the search template
+  CK_BBOOL find_class_specified;                   // Whether class was specified in the search template
 } CNK_PKCS11_SESSION;
 
 // Initialize the session manager
@@ -36,7 +49,7 @@ void cnk_session_manager_cleanup(void);
 
 // Open a new session
 CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication, CK_NOTIFY Notify,
-                   CK_SESSION_HANDLE_PTR phSession);
+                       CK_SESSION_HANDLE_PTR phSession);
 
 // Close a session
 CK_RV cnk_session_close(CK_SESSION_HANDLE hSession);

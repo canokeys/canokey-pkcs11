@@ -1,5 +1,5 @@
 #include "pcsc_backend.h"
-#include "pkcs11_canokey.h"
+#include "logging.h"
 #include "pkcs11_session.h"
 
 #include <ctype.h>
@@ -210,8 +210,8 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
 
   // Connect to the card
   DWORD active_protocol;
-  LONG rv = SCardConnect(g_cnk_pcsc_context, g_cnk_readers[i].name, SCARD_SHARE_SHARED, SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1,
-                         phCard, &active_protocol);
+  LONG rv = SCardConnect(g_cnk_pcsc_context, g_cnk_readers[i].name, SCARD_SHARE_SHARED,
+                         SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1, phCard, &active_protocol);
   if (rv != SCARD_S_SUCCESS) {
     return CKR_DEVICE_ERROR;
   }
@@ -220,23 +220,6 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
   rv = SCardBeginTransaction(*phCard);
   if (rv != SCARD_S_SUCCESS) {
     SCardDisconnect(*phCard, SCARD_LEAVE_CARD);
-    return CKR_DEVICE_ERROR;
-  }
-
-  // Select the CanoKey AID: F000000000
-  BYTE select_apdu[] = {0x00, 0xA4, 0x04, 0x00, 0x05, 0xF0, 0x00, 0x00, 0x00, 0x00};
-  BYTE response[258];
-  DWORD response_len = sizeof(response);
-
-  rv = SCardTransmit(*phCard, SCARD_PCI_T1, select_apdu, sizeof(select_apdu), NULL, response, &response_len);
-  if (rv != SCARD_S_SUCCESS) {
-    cnk_disconnect_card(*phCard);
-    return CKR_DEVICE_ERROR;
-  }
-
-  // Check if the select command was successful (SW1SW2 = 9000)
-  if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
-    cnk_disconnect_card(*phCard);
     return CKR_DEVICE_ERROR;
   }
 
@@ -264,6 +247,28 @@ void cnk_disconnect_card(SCARDHANDLE hCard) {
   SCardDisconnect(hCard, SCARD_LEAVE_CARD);
 }
 
+// Helper function to transmit APDU commands and log both command and response
+LONG transceive_apdu(SCARDHANDLE hCard, const BYTE *command, DWORD command_len, BYTE *response, DWORD *response_len) {
+  if (hCard == 0 || command == NULL || response == NULL || response_len == NULL) {
+    return SCARD_E_INVALID_PARAMETER;
+  }
+
+  // Log the APDU command
+  CNK_LOG_APDU_COMMAND(command, command_len);
+
+  // Transmit the command
+  LONG rv = SCardTransmit(hCard, SCARD_PCI_T1, command, command_len, NULL, response, response_len);
+
+  // Log the APDU response
+  if (rv == SCARD_S_SUCCESS) {
+    CNK_LOG_APDU_RESPONSE(response, *response_len);
+  } else {
+    CNK_ERROR("SCardTransmit failed with error: 0x%lx", rv);
+  }
+
+  return rv;
+}
+
 // PIV application functions
 
 // Select the PIV application using AID A000000308
@@ -286,8 +291,8 @@ CK_RV cnk_select_piv_application(SCARDHANDLE hCard) {
   BYTE response[258];
   DWORD response_len = sizeof(response);
 
-  // Send the SELECT command
-  LONG rv = SCardTransmit(hCard, SCARD_PCI_T1, select_apdu, sizeof(select_apdu), NULL, response, &response_len);
+  // Send the SELECT command using the transceive function
+  LONG rv = transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len);
 
   if (rv != SCARD_S_SUCCESS) {
     return CKR_DEVICE_ERROR;
@@ -329,8 +334,8 @@ CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPin
   BYTE response[258];
   DWORD response_len = sizeof(response);
 
-  // Send the VERIFY command
-  LONG pcsc_rv = SCardTransmit(hCard, SCARD_PCI_T1, verify_apdu, sizeof(verify_apdu), NULL, response, &response_len);
+  // Send the VERIFY command using the transceive function
+  LONG pcsc_rv = transceive_apdu(hCard, verify_apdu, sizeof(verify_apdu), response, &response_len);
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
     return CKR_DEVICE_ERROR;
@@ -374,8 +379,8 @@ CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard) {
   BYTE response[258];
   DWORD response_len = sizeof(response);
 
-  // Send the LOGOUT command
-  LONG pcsc_rv = SCardTransmit(hCard, SCARD_PCI_T1, logout_apdu, sizeof(logout_apdu), NULL, response, &response_len);
+  // Send the LOGOUT command using the transceive function
+  LONG pcsc_rv = transceive_apdu(hCard, logout_apdu, sizeof(logout_apdu), response, &response_len);
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
     return CKR_DEVICE_ERROR;
@@ -413,7 +418,8 @@ CK_RV cnk_logout_piv_pin_with_session(CK_SLOT_ID slotID) {
 }
 
 // Verify the PIV PIN with session - handles card connection and caches PIN
-CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
+                                      CK_ULONG ulPinLen) {
   if (session == NULL || (pPin == NULL && ulPinLen > 0)) {
     return CKR_ARGUMENTS_BAD;
   }
@@ -447,6 +453,150 @@ CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *ses
   return rv;
 }
 
+// Get PIV data from the CanoKey device
+// If fetch_data is CK_FALSE, only checks for existence and sets data_len to 1 if found, 0 if not
+CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data) {
+  SCARDHANDLE hCard;
+  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
+  if (rv != CKR_OK) {
+    return rv;
+  }
+
+  // Select PIV application
+  rv = cnk_select_piv_application(hCard);
+  if (rv != CKR_OK) {
+    cnk_disconnect_card(hCard);
+    return rv;
+  }
+
+  // Prepare GET DATA APDU
+  // Command: 00 CB 3F FF 05 5C 03 5F C1 xx 00
+  // Where xx is mapped from the PIV tag as follows:
+  // 9A -> 05, 9C -> 0A, 9D -> 0B, 9E -> 01, 82 -> 0D, 83 -> 0E
+  BYTE mapped_tag;
+  switch (tag) {
+  case 0x9A:
+    mapped_tag = 0x05;
+    break;
+  case 0x9C:
+    mapped_tag = 0x0A;
+    break;
+  case 0x9D:
+    mapped_tag = 0x0B;
+    break;
+  case 0x9E:
+    mapped_tag = 0x01;
+    break;
+  case 0x82:
+    mapped_tag = 0x0D;
+    break;
+  case 0x83:
+    mapped_tag = 0x0E;
+    break;
+  default:
+    mapped_tag = tag;
+    break; // Keep original tag if not in mapping
+  }
+
+  // If we're just checking for existence, we can use a smaller buffer
+  BYTE response[fetch_data ? 4096 : 128]; // Smaller buffer if just checking existence
+  DWORD response_len = sizeof(response);
+
+  // For existence check, we can modify the APDU to only request the header
+  // This is more efficient than fetching the entire content
+  BYTE apdu[11] = {0x00, 0xCB, 0x3F, 0xFF, 0x05, 0x5C, 0x03, 0x5F, 0xC1, mapped_tag, fetch_data ? 0x00 : 0x01};
+
+  // Send the get PIV data command using the transceive function
+  LONG pcsc_rv = transceive_apdu(hCard, apdu, sizeof(apdu), response, &response_len);
+
+  if (pcsc_rv != SCARD_S_SUCCESS) {
+    cnk_disconnect_card(hCard);
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Only fetch complete data if fetch_data is true
+  if (fetch_data && response_len >= 2 && response[response_len - 2] == 0x61) {
+    // For large responses, the card will return 61xx, indicating xx more bytes are available
+    // We need to use GET RESPONSE (C0) to fetch the remaining data until we get 9000
+    DWORD data_offset = response_len - 2; // Save the current data length (excluding SW1SW2)
+
+    // Process initial response
+    // Check if we have a 61xx status word (more data available)
+    while (response_len >= 2 && response[response_len - 2] == 0x61) {
+      // Save the current data (excluding SW1SW2)
+      BYTE sw1 = response[response_len - 2];
+      BYTE sw2 = response[response_len - 1];
+
+      // Prepare GET RESPONSE command
+      BYTE get_response[5] = {0x00, 0xC0, 0x00, 0x00, sw2};
+
+      // Get next chunk directly into the response buffer after the current data
+      DWORD next_chunk_len = sizeof(response) - data_offset;
+
+      // Send GET RESPONSE command
+      pcsc_rv = transceive_apdu(hCard, get_response, sizeof(get_response), response + data_offset, &next_chunk_len);
+
+      if (pcsc_rv != SCARD_S_SUCCESS) {
+        cnk_disconnect_card(hCard);
+        return CKR_DEVICE_ERROR;
+      }
+
+      // Update data_offset and response_len
+      if (next_chunk_len >= 2) {
+        data_offset += next_chunk_len - 2; // Exclude SW1SW2 from data length
+        response_len = data_offset + 2;    // Total response length includes SW1SW2
+      }
+    }
+  }
+  // When fetch_data is false, we don't need to call GET RESPONSE - just use the initial response
+
+  cnk_disconnect_card(hCard);
+
+  // Check if the response indicates success
+  if (response_len < 2) {
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Success cases:
+  // 1. SW1SW2 = 9000 (normal success)
+  // 2. SW1 = 61 (more data available) when fetch_data is false (we only care about existence)
+  if (response[response_len - 2] == 0x90 && response[response_len - 1] == 0x00) {
+    // Normal success case - continue processing
+  } else if (!fetch_data && response[response_len - 2] == 0x61) {
+    // When not fetching data, 61XX means the object exists
+    *data = NULL;
+    *data_len = 1; // Indicates that the object exists
+    return CKR_OK;
+  } else if (response[response_len - 2] == 0x6A && response[response_len - 1] == 0x82) {
+    // Object doesn't exist
+    *data = NULL;
+    *data_len = 0;
+    return CKR_OK;
+  } else {
+    // Other error
+    return CKR_DEVICE_ERROR;
+  }
+
+  if (fetch_data) {
+    // Allocate memory for the data (excluding SW1SW2)
+    *data_len = response_len - 2;
+    *data = (CK_BYTE_PTR)ck_malloc(*data_len);
+    if (*data == NULL) {
+      return CKR_HOST_MEMORY;
+    }
+
+    // Copy the data (excluding SW1SW2)
+    memcpy(*data, response, *data_len);
+  } else {
+    // For existence check, just set data_len to 1 to indicate existence
+    // If a cert exists, then the corresponding public key and private key also exist
+    *data = NULL;
+    *data_len = 1; // Indicates that the object exists
+  }
+
+  return CKR_OK;
+}
+
 // Helper function to get firmware or hardware version
 CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, CK_BYTE *minor) {
   SCARDHANDLE hCard;
@@ -457,68 +607,45 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, C
     return rv;
   }
 
-  // Prepare the APDU for getting version
-  BYTE version_apdu[] = {0x00, 0x31, version_type, 0x00, 0x00};
+  // Select the CanoKey AID: F000000000
+  BYTE select_apdu[] = {0x00, 0xA4, 0x04, 0x00, 0x05, 0xF0, 0x00, 0x00, 0x00, 0x00};
   BYTE response[258];
   DWORD response_len = sizeof(response);
 
-  LONG pcsc_rv = SCardTransmit(hCard, SCARD_PCI_T1, version_apdu, sizeof(version_apdu), NULL, response, &response_len);
+  // Use the transceive function to send the command and log both command and response
+  rv = transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len);
+  if (rv != SCARD_S_SUCCESS) {
+    cnk_disconnect_card(hCard);
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Check if the select command was successful (SW1SW2 = 9000)
+  if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
+    cnk_disconnect_card(hCard);
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Prepare the APDU for getting version
+  // 0x00 for firmware version, 0x01 for hardware version
+  BYTE version_apdu[] = {0x00, 0x31, version_type, 0x00, 0x00};
+  response_len = sizeof(response);
+
+  // Send the version command using the transceive function
+  LONG pcsc_rv = transceive_apdu(hCard, version_apdu, sizeof(version_apdu), response, &response_len);
   if (pcsc_rv != SCARD_S_SUCCESS) {
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
   }
 
-  // Check if the command was successful and we got at least 5 bytes (3 version bytes + 2 status bytes)
-  if (response_len < 5 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
+  // Check if the command was successful
+  if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
   }
 
-  // Process hardware version if requested
-  if (version_type == 0x01) {
-    // Get hardware name from the device
-    BYTE hw_name_apdu[] = {0x00, 0x32, 0x00, 0x00, 0x00};
-    BYTE hw_name_response[258];
-    DWORD hw_name_len = sizeof(hw_name_response);
-
-    LONG pcsc_rv =
-        SCardTransmit(hCard, SCARD_PCI_T1, hw_name_apdu, sizeof(hw_name_apdu), NULL, hw_name_response, &hw_name_len);
-    if (pcsc_rv == SCARD_S_SUCCESS && hw_name_len > 2 && hw_name_response[hw_name_len - 2] == 0x90 &&
-        hw_name_response[hw_name_len - 1] == 0x00) {
-
-      // Convert hardware name to null-terminated string for easier processing
-      char hw_name[256] = {0};
-      size_t name_len = hw_name_len - 2; // Exclude status bytes
-      if (name_len > 255)
-        name_len = 255;
-      memcpy(hw_name, hw_name_response, name_len);
-      hw_name[name_len] = '\0';
-
-      // Check if the hardware name contains "Canary"
-      if (strstr(hw_name, "Canary") != NULL) {
-        *major = 3;
-        *minor = 0;
-      }
-      // Check if the hardware name contains "Pigeon"
-      else if (strstr(hw_name, "Pigeon") != NULL) {
-        *major = 2;
-        *minor = 0;
-      }
-      // Otherwise, set to 1.0
-      else {
-        *major = 1;
-        *minor = 0;
-      }
-    } else {
-      // If we can't get the hardware name, use default values
-      *major = 1;
-      *minor = 0;
-    }
-  }
-  // Process firmware version if requested
-  else if (version_type == 0x00) {
-    // The response contains an ASCII encoded version string
-    // Make sure it's null-terminated
+  // Extract version information from the response
+  if (version_type == 0x00) {
+    // Firmware version - parse the version string (format: "X.Y.Z")
     char version_str[16] = {0};
     size_t len = response_len - 2; // Exclude status bytes
     if (len > sizeof(version_str) - 1) {
@@ -527,7 +654,6 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, C
     memcpy(version_str, response, len);
     version_str[len] = '\0';
 
-    // Parse the version string (format: "X.Y.Z")
     int v_major, v_minor, v_patch;
     if (sscanf(version_str, "%d.%d.%d", &v_major, &v_minor, &v_patch) == 3) {
       // For firmware version: major is the first part, minor is the second part * 10 + the third part
@@ -538,6 +664,35 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, C
       *major = 0;
       *minor = 0;
     }
+  } else if (version_type == 0x01) {
+    // Hardware version - the response contains hardware name
+    // Convert hardware name to null-terminated string for easier processing
+    char hw_name[256] = {0};
+    size_t name_len = response_len - 2; // Exclude status bytes
+    if (name_len > 255)
+      name_len = 255;
+
+    hw_name[name_len] = '\0';
+
+    // Check if the hardware name contains "Canary"
+    if (strstr(hw_name, "Canary") != NULL) {
+      *major = 3;
+      *minor = 0;
+    }
+    // Check if the hardware name contains "Pigeon"
+    else if (strstr(hw_name, "Pigeon") != NULL) {
+      *major = 2;
+      *minor = 0;
+    }
+    // Otherwise, use 1.0
+    else {
+      *major = 1;
+      *minor = 0;
+    }
+  } else {
+    // Unknown version type
+    *major = 0;
+    *minor = 0;
   }
 
   // Disconnect from the card when done

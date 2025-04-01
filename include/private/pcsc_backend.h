@@ -28,6 +28,14 @@ extern SCARDHANDLE g_cnk_scard;
 extern CNK_MALLOC_FUNC g_cnk_malloc_func;
 extern CNK_FREE_FUNC g_cnk_free_func;
 
+// PIV slots mapping to CKA_ID values
+#define PIV_SLOT_9A 1
+#define PIV_SLOT_9C 2
+#define PIV_SLOT_9D 3
+#define PIV_SLOT_9E 4
+#define PIV_SLOT_82 5
+#define PIV_SLOT_83 6
+
 // Helper functions for memory allocation
 static inline void *ck_malloc(size_t size) { return g_cnk_malloc_func(size); }
 static inline void ck_free(void *ptr) { g_cnk_free_func(ptr); }
@@ -50,7 +58,8 @@ CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard);
 typedef struct CNK_PKCS11_SESSION CNK_PKCS11_SESSION;
 
 // Function to verify PIN with session
-CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen);
+CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
+                                      CK_ULONG ulPinLen);
 // Function to logout PIV PIN with session
 CK_RV cnk_logout_piv_pin_with_session(CK_SLOT_ID slotID);
 
@@ -68,5 +77,9 @@ void cnk_disconnect_card(SCARDHANDLE hCard);
 
 // Get firmware or hardware version
 CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, CK_BYTE *minor);
+
+// Get PIV data from the CanoKey device
+// If fetch_data is CK_FALSE, only checks for existence and sets data_len to 1 if found, 0 if not
+CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data);
 
 #endif /* PCSC_BACKEND_H */

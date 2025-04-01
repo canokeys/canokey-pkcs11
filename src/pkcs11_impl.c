@@ -27,7 +27,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
 
   // Process the initialization arguments
   CK_RV mutex_rv;
-  
+
   if (pInitArgs == NULL_PTR) {
     // NULL argument is treated as a pointer to a CK_C_INITIALIZE_ARGS structure
     // with all fields set to NULL (single-threaded mode)
@@ -51,7 +51,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
 
     CK_BBOOL none_supplied = (args->CreateMutex == NULL_PTR) && (args->DestroyMutex == NULL_PTR) &&
                              (args->LockMutex == NULL_PTR) && (args->UnlockMutex == NULL_PTR);
-    
+
     // check consistency
     if (!all_supplied && !none_supplied) {
       CNK_RETURN(CKR_ARGUMENTS_BAD, "invalid mutex function pointers");
@@ -404,15 +404,242 @@ CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 }
 
 CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
-  return CKR_FUNCTION_NOT_SUPPORTED;
+  // Check if the library is initialized
+  if (!g_cnk_is_initialized)
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+
+  // Find the session
+  CNK_PKCS11_SESSION *session;
+  CK_RV rv = cnk_session_find(hSession, &session);
+  if (rv != CKR_OK)
+    return rv;
+
+  // Lock the session
+  cnk_mutex_lock(&session->lock);
+
+  // Check if a find operation is already active
+  if (session->find_active) {
+    cnk_mutex_unlock(&session->lock);
+    return CKR_OPERATION_ACTIVE;
+  }
+
+  // Reset find operation state
+  session->find_active = CK_TRUE;
+  session->find_objects_count = 0;
+  session->find_objects_position = 0;
+  session->find_id_specified = CK_FALSE;
+  session->find_class_specified = CK_FALSE;
+
+  // Parse the template
+  for (CK_ULONG i = 0; i < ulCount; i++) {
+    if (pTemplate[i].type == CKA_CLASS && pTemplate[i].pValue != NULL &&
+        pTemplate[i].ulValueLen == sizeof(CK_OBJECT_CLASS)) {
+      session->find_object_class = *((CK_OBJECT_CLASS *)pTemplate[i].pValue);
+      session->find_class_specified = CK_TRUE;
+    } else if (pTemplate[i].type == CKA_ID && pTemplate[i].pValue != NULL &&
+               pTemplate[i].ulValueLen == sizeof(CK_BYTE)) {
+      session->find_object_id = *((CK_BYTE *)pTemplate[i].pValue);
+      session->find_id_specified = CK_TRUE;
+    }
+  }
+
+  // If no class is specified, we can't search
+  if (!session->find_class_specified) {
+    session->find_active = CK_FALSE;
+    cnk_mutex_unlock(&session->lock);
+    return CKR_OK; // Return OK but with no results
+  }
+
+  // Check if the specified class is supported
+  if (session->find_class_specified && session->find_object_class != CKO_CERTIFICATE &&
+      session->find_object_class != CKO_PUBLIC_KEY && session->find_object_class != CKO_PRIVATE_KEY &&
+      session->find_object_class != CKO_DATA) {
+    session->find_active = CK_FALSE;
+    cnk_mutex_unlock(&session->lock);
+    return CKR_OK; // Return OK but with no results
+  }
+
+  // If an ID is specified, we only need to check that specific ID
+  if (session->find_id_specified) {
+    // Check if the ID is valid (1-6)
+    if (session->find_object_id < 1 || session->find_object_id > 6) {
+      session->find_active = CK_FALSE;
+      cnk_mutex_unlock(&session->lock);
+      return CKR_OK; // Return OK but with no results
+    }
+
+    // Map CKA_ID to PIV tag
+    CK_BYTE piv_tag;
+    switch (session->find_object_id) {
+    case PIV_SLOT_9A:
+      piv_tag = 0x9A;
+      break;
+    case PIV_SLOT_9C:
+      piv_tag = 0x9C;
+      break;
+    case PIV_SLOT_9D:
+      piv_tag = 0x9D;
+      break;
+    case PIV_SLOT_9E:
+      piv_tag = 0x9E;
+      break;
+    case PIV_SLOT_82:
+      piv_tag = 0x82;
+      break;
+    case PIV_SLOT_83:
+      piv_tag = 0x83;
+      break;
+    default:
+      session->find_active = CK_FALSE;
+      cnk_mutex_unlock(&session->lock);
+      return CKR_OK; // Return OK but with no results
+    }
+
+    // Try to get the data for this tag
+    CK_BYTE_PTR data = NULL;
+    CK_ULONG data_len = 0;
+    rv = cnk_get_piv_data(session->slot_id, piv_tag, &data, &data_len, CK_FALSE); // Just check existence
+
+    if (rv != CKR_OK) {
+      session->find_active = CK_FALSE;
+      cnk_mutex_unlock(&session->lock);
+      return rv;
+    }
+
+    // If data exists, add this object to the results
+    if (data != NULL && data_len > 0) {
+      // Create a handle for this object: slot_id | object_class | object_id
+      // This will allow us to identify the object in future operations
+      CK_OBJECT_HANDLE handle =
+          (session->slot_id << 16) | ((CK_ULONG)session->find_object_class << 8) | session->find_object_id;
+      session->find_objects[session->find_objects_count++] = handle;
+      ck_free(data);
+    }
+  } else {
+    // No ID specified, check all possible IDs (1-6)
+    for (CK_BYTE id = 1; id <= 6; id++) {
+      // Map ID to PIV tag
+      CK_BYTE piv_tag;
+      switch (id) {
+      case PIV_SLOT_9A:
+        piv_tag = 0x9A;
+        break;
+      case PIV_SLOT_9C:
+        piv_tag = 0x9C;
+        break;
+      case PIV_SLOT_9D:
+        piv_tag = 0x9D;
+        break;
+      case PIV_SLOT_9E:
+        piv_tag = 0x9E;
+        break;
+      case PIV_SLOT_82:
+        piv_tag = 0x82;
+        break;
+      case PIV_SLOT_83:
+        piv_tag = 0x83;
+        break;
+      default:
+        continue;
+      }
+
+      // Try to get the data for this tag
+      CK_BYTE_PTR data = NULL;
+      CK_ULONG data_len = 0;
+      rv = cnk_get_piv_data(session->slot_id, piv_tag, &data, &data_len, CK_FALSE); // Just check existence
+
+      if (rv != CKR_OK) {
+        session->find_active = CK_FALSE;
+        cnk_mutex_unlock(&session->lock);
+        return rv;
+      }
+
+      // If data exists, add this object to the results
+      if (data_len > 0) {
+        // Create a handle for this object: slot_id | object_class | object_id
+        CK_OBJECT_HANDLE handle = (session->slot_id << 16) | ((CK_ULONG)session->find_object_class << 8) | id;
+        session->find_objects[session->find_objects_count++] = handle;
+        ck_free(data);
+      }
+    }
+  }
+
+  cnk_mutex_unlock(&session->lock);
+  return CKR_OK;
 }
 
 CK_RV C_FindObjects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject, CK_ULONG ulMaxObjectCount,
                     CK_ULONG_PTR pulObjectCount) {
-  return CKR_FUNCTION_NOT_SUPPORTED;
+  // Check if the library is initialized
+  if (!g_cnk_is_initialized)
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+
+  // Validate parameters
+  if (!phObject || !pulObjectCount)
+    return CKR_ARGUMENTS_BAD;
+
+  // Find the session
+  CNK_PKCS11_SESSION *session;
+  CK_RV rv = cnk_session_find(hSession, &session);
+  if (rv != CKR_OK)
+    return rv;
+
+  // Lock the session
+  cnk_mutex_lock(&session->lock);
+
+  // Check if a find operation is active
+  if (!session->find_active) {
+    cnk_mutex_unlock(&session->lock);
+    return CKR_OPERATION_NOT_INITIALIZED;
+  }
+
+  // Calculate how many objects to return
+  CK_ULONG remaining = session->find_objects_count - session->find_objects_position;
+  CK_ULONG count = (remaining < ulMaxObjectCount) ? remaining : ulMaxObjectCount;
+
+  // Copy the object handles
+  for (CK_ULONG i = 0; i < count; i++) {
+    phObject[i] = session->find_objects[session->find_objects_position + i];
+  }
+
+  // Update the position
+  session->find_objects_position += count;
+
+  // Return the number of objects copied
+  *pulObjectCount = count;
+
+  cnk_mutex_unlock(&session->lock);
+  return CKR_OK;
 }
 
-CK_RV C_FindObjectsFinal(CK_SESSION_HANDLE hSession) { return CKR_FUNCTION_NOT_SUPPORTED; }
+CK_RV C_FindObjectsFinal(CK_SESSION_HANDLE hSession) {
+  // Check if the library is initialized
+  if (!g_cnk_is_initialized)
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+
+  // Find the session
+  CNK_PKCS11_SESSION *session;
+  CK_RV rv = cnk_session_find(hSession, &session);
+  if (rv != CKR_OK)
+    return rv;
+
+  // Lock the session
+  cnk_mutex_lock(&session->lock);
+
+  // Check if a find operation is active
+  if (!session->find_active) {
+    cnk_mutex_unlock(&session->lock);
+    return CKR_OPERATION_NOT_INITIALIZED;
+  }
+
+  // End the find operation
+  session->find_active = CK_FALSE;
+  session->find_objects_count = 0;
+  session->find_objects_position = 0;
+
+  cnk_mutex_unlock(&session->lock);
+  return CKR_OK;
+}
 
 CK_RV C_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {
   return CKR_FUNCTION_NOT_SUPPORTED;
