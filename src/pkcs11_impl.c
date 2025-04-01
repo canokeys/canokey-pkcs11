@@ -43,7 +43,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
       CNK_RETURN(CKR_ARGUMENTS_BAD, "pReserved not NULL");
 
     // Check for invalid combinations of flags and function pointers
-    CK_BBOOL has_os_locking = (args->flags & CKF_OS_LOCKING_OK);
+    CK_BBOOL can_use_os_locking = (args->flags & CKF_OS_LOCKING_OK);
 
     // Check if all or none of the mutex function pointers are supplied
     CK_BBOOL all_supplied = (args->CreateMutex != NULL_PTR) && (args->DestroyMutex != NULL_PTR) &&
@@ -51,21 +51,43 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
 
     CK_BBOOL none_supplied = (args->CreateMutex == NULL_PTR) && (args->DestroyMutex == NULL_PTR) &&
                              (args->LockMutex == NULL_PTR) && (args->UnlockMutex == NULL_PTR);
-
-    if (!all_supplied && !none_supplied)
+    
+    // check consistency
+    if (!all_supplied && !none_supplied) {
       CNK_RETURN(CKR_ARGUMENTS_BAD, "invalid mutex function pointers");
+    }
 
     // Handle the four cases as per PKCS#11 specification
 
     // Initialize mutex system based on the provided arguments
     if (none_supplied) {
-      // Cases 1 & 2: No function pointers supplied
-      // Use OS primitives (with minimal locking if single-threaded)
-      mutex_rv = cnk_mutex_system_init(NULL);
+      if (can_use_os_locking) {
+        // Case 2:
+        // the application will be performing multi-threaded Cryptoki access,
+        // and the library needs to use the native operating system primitives
+        // to ensure safe multi-threaded access
+        mutex_rv = cnk_mutex_system_init(NULL); // only nsync available
+      } else {
+        // Case 1:
+        // the application won’t be accessing the Cryptoki library from multiple
+        // threads simultaneously
+        mutex_rv = CKR_OK; // no need to do anything
+      }
     } else if (all_supplied) {
-      // Cases 3 & 4: Function pointers supplied
-      // Use application-supplied mutex functions
-      mutex_rv = cnk_mutex_system_init(args);
+      if (can_use_os_locking) {
+        // Case 4:
+        // the application will be performing multi-threaded Cryptoki access,
+        // and the library needs to use either the native operating system primitives
+        // or the supplied function pointers for mutex-handling to ensure safe
+        // multi-threaded access
+        mutex_rv = cnk_mutex_system_init(NULL); // use nsync first
+      } else {
+        // Case 3:
+        // the application will be performing multi-threaded Cryptoki access,
+        // and the library needs to use the supplied function pointers for
+        // mutex-handling to ensure safe multi-threaded access
+        mutex_rv = cnk_mutex_system_init(args); // only UDF available
+      }
     }
 
     if (mutex_rv != CKR_OK) {
