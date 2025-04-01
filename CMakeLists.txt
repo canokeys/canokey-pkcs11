@@ -4,7 +4,7 @@ set(CNK_PKCS_LIB_NAME "canokey-pkcs11")
 project(${CNK_PKCS_TARGET} VERSION 0.1.0 LANGUAGES C)
 
 # Set C standard
-set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Include project directory
@@ -23,7 +23,7 @@ endif()
 
 file(GLOB CNK_PKCS_SRC src/*.c)
 
-# these files will be installed
+# these files will be installed (excluding include/private)
 file(GLOB CNK_PKCS_PUBLIC_HEADERS include/*.h)
 
 # all headers used (including private ones)
@@ -38,8 +38,8 @@ else()
   target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_LIB_STATIC")
 endif()
 
-# hide all symbols by default
-if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+# hide all symbols by default (clang-cl does not support this)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_C_SIMULATE_ID MATCHES "MSVC")
   target_compile_options(${CNK_PKCS_TARGET} PRIVATE "-fvisibility=hidden")
   target_compile_options(nsync PRIVATE "-fvisibility=hidden")
 endif()
@@ -78,7 +78,7 @@ set_target_properties(${CNK_PKCS_TARGET} PROPERTIES
 
 # Install the library
 install(TARGETS ${CNK_PKCS_TARGET}
-    EXPORT "$CNK_PKCS_LIB_NAME"
+    EXPORT "${CNK_PKCS_LIB_NAME}"
     RUNTIME
     LIBRARY
     ARCHIVE
