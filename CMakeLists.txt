@@ -29,7 +29,8 @@ file(GLOB CNK_PKCS_PUBLIC_HEADERS include/*.h)
 # all headers used (including private ones)
 file(GLOB_RECURSE CNK_PKCS_HEADERS include/*.h)
 
-add_library(${CNK_PKCS_TARGET} SHARED ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
+option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
+add_library(${CNK_PKCS_TARGET} ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
 set(CNK_PKCS_LIBS nsync)
 
 # hide all symbols by default
