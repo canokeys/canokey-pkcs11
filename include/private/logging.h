@@ -1,6 +1,7 @@
 #ifndef __LOGGING__H__
 #define __LOGGING__H__
 
+#define _CRT_SECURE_NO_WARNINGS // make MSVC happy
 #include <stdio.h>
 
 enum CNK_LOG_LEVEL {

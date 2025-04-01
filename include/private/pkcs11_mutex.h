@@ -3,6 +3,8 @@
 
 #include "pkcs11.h"
 
+#undef CreateMutex // avoid conflicts with Windows API
+
 // Mutex abstraction structure
 typedef struct PKCS11_MUTEX {
   // Mutex handle - opaque pointer to the actual mutex implementation
