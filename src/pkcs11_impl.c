@@ -14,6 +14,10 @@
 static CK_FUNCTION_LIST ck_function_list;
 
 CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
+#ifdef CNK_VERBOSE
+  // forcibly enable debug logging, can be overridden by C_CNK_ConfigLogging later
+  C_CNK_ConfigLogging(CNK_LOG_LEVEL_DEBUG, NULL);
+#endif
 
   CNK_DEBUG("C_Initialize called with pInitArgs: %p", pInitArgs);
 
