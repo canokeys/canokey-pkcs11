@@ -1,8 +1,9 @@
 #define CRYPTOKI_EXPORTS
 
-#include "pkcs11.h"
-#include "pkcs11_session.h"
 #include "pcsc_canokey.h"
+#include "pkcs11.h"
+#include "pkcs11_mutex.h"
+#include "pkcs11_session.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -10,42 +11,97 @@
 // Forward declaration of the function list
 static CK_FUNCTION_LIST ck_function_list;
 
-CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
+CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
+  // Check if the library is already initialized
+  if (g_is_initialized)
+    return CKR_CRYPTOKI_ALREADY_INITIALIZED;
+
   // Check if initialization arguments are provided
   if (pInitArgs != NULL_PTR) {
-    // Cast to our custom initialization arguments structure
-    // FIXME: spec says pInitArgs either has the value NULL_PTR or points to a CK_C_INITIALIZE_ARGS
-    // WE MUST COMPLY WITH THIS AND REMOVE nsync
-    CNK_INIT_ARGS *args = (CNK_INIT_ARGS *)pInitArgs;
-
-    // Set custom memory allocation functions if provided
-    if (args->malloc_func != NULL && args->free_func != NULL) {
-      g_malloc_func = args->malloc_func;
-      g_free_func = args->free_func;
+    if (pInitArgs->malloc_func == NULL || pInitArgs->free_func == NULL || pInitArgs->hSCardCtx == 0 ||
+        pInitArgs->hScard == 0) {
+      return CKR_ARGUMENTS_BAD;
     }
 
-    // Check if we should enter managed mode
-    if (args->hSCardCtx != 0 && args->hScard != 0) {
-      // Enter managed mode
-      g_is_managed_mode = CK_TRUE;
-      g_pcsc_context = args->hSCardCtx;
-      g_scard = args->hScard;
-      g_is_initialized = CK_TRUE;
+    g_is_managed_mode = CK_TRUE;
+    g_malloc_func = pInitArgs->malloc_func;
+    g_free_func = pInitArgs->free_func;
+    g_pcsc_context = pInitArgs->hSCardCtx;
+    g_scard = pInitArgs->hScard;
+    return CKR_OK;
+  }
 
-      // In managed mode, we don't need to initialize PC/SC
-      // Initialize the session manager
-      return session_manager_init();
+  return CKR_ARGUMENTS_BAD;
+}
+
+CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
+  // Check if the library is already initialized
+  if (g_is_initialized)
+    return CKR_CRYPTOKI_ALREADY_INITIALIZED;
+
+  // Process the initialization arguments
+  CK_RV mutex_rv;
+  
+  if (pInitArgs == NULL_PTR) {
+    // NULL argument is treated as a pointer to a CK_C_INITIALIZE_ARGS structure
+    // with all fields set to NULL (single-threaded mode)
+    mutex_rv = mutex_system_init(NULL);
+    if (mutex_rv != CKR_OK) {
+      return CKR_CANT_LOCK;
+    }
+  } else {
+    CK_C_INITIALIZE_ARGS_PTR args = (CK_C_INITIALIZE_ARGS_PTR)pInitArgs;
+
+    // Check for reserved field - must be NULL according to PKCS#11
+    if (args->pReserved != NULL_PTR)
+      return CKR_ARGUMENTS_BAD;
+
+    // Check for invalid combinations of flags and function pointers
+    CK_BBOOL has_os_locking = (args->flags & CKF_OS_LOCKING_OK);
+
+    // Check if all or none of the mutex function pointers are supplied
+    CK_BBOOL all_supplied = (args->CreateMutex != NULL_PTR) && (args->DestroyMutex != NULL_PTR) &&
+                            (args->LockMutex != NULL_PTR) && (args->UnlockMutex != NULL_PTR);
+
+    CK_BBOOL none_supplied = (args->CreateMutex == NULL_PTR) && (args->DestroyMutex == NULL_PTR) &&
+                             (args->LockMutex == NULL_PTR) && (args->UnlockMutex == NULL_PTR);
+
+    if (!all_supplied && !none_supplied)
+      return CKR_ARGUMENTS_BAD;
+
+    // Handle the four cases as per PKCS#11 specification
+
+    // Initialize mutex system based on the provided arguments
+    if (none_supplied) {
+      // Cases 1 & 2: No function pointers supplied
+      // Use OS primitives (with minimal locking if single-threaded)
+      mutex_rv = mutex_system_init(NULL);
+    } else if (all_supplied) {
+      // Cases 3 & 4: Function pointers supplied
+      // Use application-supplied mutex functions
+      mutex_rv = mutex_system_init(args);
+    }
+
+    if (mutex_rv != CKR_OK) {
+      return CKR_CANT_LOCK;
     }
   }
 
-  // Standalone mode: Initialize the PC/SC subsystem (just establish context, don't list readers yet)
-  CK_RV rv = initialize_pcsc();
-  if (rv != CKR_OK) {
-    return rv;
+  if (!g_is_managed_mode) {
+    // Standalone mode: Initialize the PC/SC subsystem
+    CK_RV rv = initialize_pcsc();
+    if (rv != CKR_OK) {
+      return rv;
+    }
   }
 
   // Initialize the session manager
-  return session_manager_init();
+  CK_RV rv = session_manager_init();
+  if (rv == CKR_OK) {
+    // Mark the library as initialized
+    g_is_initialized = CK_TRUE;
+  }
+  return rv;
 }
 
 CK_RV C_Finalize(CK_VOID_PTR pReserved) {
@@ -55,6 +111,9 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
 
   // Clean up session manager
   session_manager_cleanup();
+
+  // Clean up mutex system
+  mutex_system_cleanup();
 
   // In managed mode, we don't clean up PC/SC resources
   if (g_is_managed_mode) {
@@ -67,6 +126,7 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
 
   // Clean up PC/SC resources in standalone mode
   cleanup_pcsc();
+  g_is_initialized = CK_FALSE;
   return CKR_OK;
 }
 
@@ -287,7 +347,7 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
   if (session->piv_pin_len == 0) {
     return CKR_USER_NOT_LOGGED_IN;
   }
-  
+
   // Send the logout APDU to the card
   rv = logout_piv_pin_with_session(session->slot_id);
   if (rv != CKR_OK) {

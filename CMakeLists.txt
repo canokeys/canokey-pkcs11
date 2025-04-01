@@ -24,6 +24,7 @@ set(CNK_PKCS_SRC
     src/pcsc_canokey.c
     src/pkcs11_impl.c
     src/pkcs11_session.c
+    src/pkcs11_mutex.c
 )
 
 # these files will be installed
@@ -36,6 +37,7 @@ set(CNK_PKCS_HEADERS
     ${CNK_PKCS_PUBLIC_HEADERS}
     include/pcsc_canokey.h
     include/pkcs11_session.h
+    include/pkcs11_mutex.h
 )
 
 add_library(${CNK_PKCS_TARGET} SHARED ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})

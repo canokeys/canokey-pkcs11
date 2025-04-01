@@ -89,7 +89,7 @@ extern "C" {
 
 #else
 
-#define CK_SPEC __attribute__ ((visibility ("default")))
+#define CK_SPEC __attribute__((visibility("default")))
 
 #endif
 

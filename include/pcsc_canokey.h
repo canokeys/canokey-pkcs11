@@ -4,13 +4,9 @@
 #include "pkcs11.h"
 
 #if defined(__APPLE__) || defined(__MACH__)
-#include <PCSC/pcsclite.h>
-#include <PCSC/winscard.h>
-#include <PCSC/wintypes.h>
+#include <PCSC/PCSC.h>
 #else
 #include <pcsclite.h>
-#include <winscard.h>
-#include <wintypes.h>
 #endif
 
 // Function pointer types for memory allocation
@@ -23,7 +19,9 @@ typedef struct {
   CNK_FREE_FUNC free_func;
   SCARDCONTEXT hSCardCtx;
   SCARDHANDLE hScard;
-} CNK_INIT_ARGS;
+} CNK_MANAGED_MODE_INIT_ARGS;
+
+typedef CNK_MANAGED_MODE_INIT_ARGS *CNK_MANAGED_MODE_INIT_ARGS_PTR;
 
 // Define a struct to store reader information
 typedef struct {
@@ -47,6 +45,9 @@ extern CNK_FREE_FUNC g_free_func;
 static inline void *ck_malloc(size_t size) { return g_malloc_func(size); }
 
 static inline void ck_free(void *ptr) { g_free_func(ptr); }
+
+// Enable managed mode
+CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs);
 
 // Initialize PC/SC context only
 CK_RV initialize_pcsc(void);

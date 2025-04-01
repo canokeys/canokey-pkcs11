@@ -9,35 +9,43 @@ static PKCS11_SESSION **session_table = NULL;
 static CK_ULONG session_table_size = 0;
 static CK_ULONG session_count = 0;
 static CK_SESSION_HANDLE next_handle = 1; // Start from 1, 0 is invalid
-static nsync_mu session_mutex = NSYNC_MU_INIT;
+static PKCS11_MUTEX session_mutex;
 
 // Initialize the session manager
 CK_RV session_manager_init(void) {
-  nsync_mu_lock(&session_mutex);
+  // Initialize the session mutex
+  CK_RV rv = mutex_create(&session_mutex);
+  if (rv != CKR_OK) {
+    return rv;
+  }
+
+  mutex_lock(&session_mutex);
 
   // Initial allocation for the session table
   if (session_table == NULL) {
     session_table_size = 10; // Initial size, will grow as needed
     session_table = (PKCS11_SESSION **)ck_malloc(session_table_size * sizeof(PKCS11_SESSION *));
     if (session_table == NULL) {
-      nsync_mu_unlock(&session_mutex);
+      mutex_unlock(&session_mutex);
       return CKR_HOST_MEMORY;
     }
     memset(session_table, 0, session_table_size * sizeof(PKCS11_SESSION *));
   }
 
-  nsync_mu_unlock(&session_mutex);
+  mutex_unlock(&session_mutex);
   return CKR_OK;
 }
 
 // Clean up the session manager
 void session_manager_cleanup(void) {
-  nsync_mu_lock(&session_mutex);
+  mutex_lock(&session_mutex);
 
   if (session_table != NULL) {
     // Free all session structures
     for (CK_ULONG i = 0; i < session_table_size; i++) {
       if (session_table[i] != NULL) {
+        // Destroy the session mutex
+        mutex_destroy(&session_table[i]->lock);
         ck_free(session_table[i]);
         session_table[i] = NULL;
       }
@@ -51,7 +59,10 @@ void session_manager_cleanup(void) {
     next_handle = 1;
   }
 
-  nsync_mu_unlock(&session_mutex);
+  mutex_unlock(&session_mutex);
+
+  // Destroy the session manager mutex
+  mutex_destroy(&session_mutex);
 }
 
 // Helper function to resize the session table if needed
@@ -122,13 +133,13 @@ CK_RV session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication, 
     return CKR_SESSION_PARALLEL_NOT_SUPPORTED;
   }
 
-  nsync_mu_lock(&session_mutex);
+  mutex_lock(&session_mutex);
 
   // Initialize session manager if needed
   if (session_table == NULL) {
     CK_RV rv = session_manager_init();
     if (rv != CKR_OK) {
-      nsync_mu_unlock(&session_mutex);
+      mutex_unlock(&session_mutex);
       return rv;
     }
   }
@@ -136,21 +147,21 @@ CK_RV session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication, 
   // Resize session table if needed
   CK_RV rv = resize_session_table();
   if (rv != CKR_OK) {
-    nsync_mu_unlock(&session_mutex);
+    mutex_unlock(&session_mutex);
     return rv;
   }
-  
+
   // Find a free slot in the session table
   CK_LONG slot = find_free_slot();
   if (slot < 0) {
-    nsync_mu_unlock(&session_mutex);
+    mutex_unlock(&session_mutex);
     return CKR_HOST_MEMORY;
   }
 
   // Allocate a new session
   PKCS11_SESSION *session = (PKCS11_SESSION *)ck_malloc(sizeof(PKCS11_SESSION));
   if (session == NULL) {
-    nsync_mu_unlock(&session_mutex);
+    mutex_unlock(&session_mutex);
     return CKR_HOST_MEMORY;
   }
 
@@ -162,10 +173,18 @@ CK_RV session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication, 
   session->application = pApplication;
   session->notify = Notify;
   session->is_open = CK_TRUE;
-  
+
   // Initialize PIN fields
   memset(session->piv_pin, 0xFF, sizeof(session->piv_pin));
   session->piv_pin_len = 0;
+
+  // Initialize the session mutex
+  rv = mutex_create(&session->lock);
+  if (rv != CKR_OK) {
+    ck_free(session);
+    mutex_unlock(&session_mutex);
+    return rv;
+  }
 
   // Set the session state based on flags
   if (flags & CKF_RW_SESSION) {
@@ -181,13 +200,13 @@ CK_RV session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication, 
   // Return the session handle
   *phSession = session->handle;
 
-  nsync_mu_unlock(&session_mutex);
+  mutex_unlock(&session_mutex);
   return CKR_OK;
 }
 
 // Close a session
 CK_RV session_close(CK_SESSION_HANDLE hSession) {
-  nsync_mu_lock(&session_mutex);
+  mutex_lock(&session_mutex);
 
   // Find the session
   CK_BBOOL found = CK_FALSE;
@@ -202,7 +221,7 @@ CK_RV session_close(CK_SESSION_HANDLE hSession) {
   }
 
   if (!found) {
-    nsync_mu_unlock(&session_mutex);
+    mutex_unlock(&session_mutex);
     return CKR_SESSION_HANDLE_INVALID;
   }
 
@@ -213,13 +232,13 @@ CK_RV session_close(CK_SESSION_HANDLE hSession) {
   session_table[index] = NULL;
   session_count--;
 
-  nsync_mu_unlock(&session_mutex);
+  mutex_unlock(&session_mutex);
   return CKR_OK;
 }
 
 // Close all sessions for a slot
 CK_RV session_close_all(CK_SLOT_ID slotID) {
-  nsync_mu_lock(&session_mutex);
+  mutex_lock(&session_mutex);
 
   // Check if the slot ID is valid
   CK_ULONG i;
@@ -232,7 +251,7 @@ CK_RV session_close_all(CK_SLOT_ID slotID) {
   }
 
   if (!slot_found) {
-    nsync_mu_unlock(&session_mutex);
+    mutex_unlock(&session_mutex);
     return CKR_SLOT_ID_INVALID;
   }
 
@@ -248,7 +267,7 @@ CK_RV session_close_all(CK_SLOT_ID slotID) {
     }
   }
 
-  nsync_mu_unlock(&session_mutex);
+  mutex_unlock(&session_mutex);
   return CKR_OK;
 }
 
@@ -258,7 +277,7 @@ CK_RV session_get_info(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
     return CKR_ARGUMENTS_BAD;
   }
 
-  nsync_mu_lock(&session_mutex);
+  mutex_lock(&session_mutex);
 
   // Find the session
   PKCS11_SESSION *session = NULL;
@@ -273,7 +292,7 @@ CK_RV session_get_info(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
   }
 
   if (!found) {
-    nsync_mu_unlock(&session_mutex);
+    mutex_unlock(&session_mutex);
     return CKR_SESSION_HANDLE_INVALID;
   }
 
@@ -283,7 +302,7 @@ CK_RV session_get_info(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
   pInfo->flags = session->flags;
   pInfo->ulDeviceError = 0;
 
-  nsync_mu_unlock(&session_mutex);
+  mutex_unlock(&session_mutex);
   return CKR_OK;
 }
 
@@ -293,7 +312,7 @@ CK_RV session_find(CK_SESSION_HANDLE hSession, PKCS11_SESSION **session) {
     return CKR_ARGUMENTS_BAD;
   }
 
-  nsync_mu_lock(&session_mutex);
+  mutex_lock(&session_mutex);
 
   // Find the session
   CK_BBOOL found = CK_FALSE;
@@ -306,7 +325,7 @@ CK_RV session_find(CK_SESSION_HANDLE hSession, PKCS11_SESSION **session) {
     }
   }
 
-  nsync_mu_unlock(&session_mutex);
+  mutex_unlock(&session_mutex);
 
   if (!found) {
     return CKR_SESSION_HANDLE_INVALID;
