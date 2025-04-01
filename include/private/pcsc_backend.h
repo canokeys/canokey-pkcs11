@@ -1,27 +1,14 @@
-#ifndef CANOKEY_H
-#define CANOKEY_H
+#ifndef PCSC_BACKEND_H
+#define PCSC_BACKEND_H
 
 #include "pkcs11.h"
+#include "pkcs11_managed.h"
 
 #if defined(__APPLE__) || defined(__MACH__)
 #include <PCSC/PCSC.h>
 #else
-#include <pcsclite.h>
+#include <winscard.h> // pcsc-lite also provides it
 #endif
-
-// Function pointer types for memory allocation
-typedef void *(*CNK_MALLOC_FUNC)(size_t size);
-typedef void (*CNK_FREE_FUNC)(void *ptr);
-
-// Initialization arguments structure, for managed mode
-typedef struct {
-  CNK_MALLOC_FUNC malloc_func;
-  CNK_FREE_FUNC free_func;
-  SCARDCONTEXT hSCardCtx;
-  SCARDHANDLE hScard;
-} CNK_MANAGED_MODE_INIT_ARGS;
-
-typedef CNK_MANAGED_MODE_INIT_ARGS *CNK_MANAGED_MODE_INIT_ARGS_PTR;
 
 // Define a struct to store reader information
 typedef struct {
@@ -33,7 +20,7 @@ typedef struct {
 extern ReaderInfo *g_readers;
 extern CK_ULONG g_num_readers;
 extern CK_BBOOL g_is_initialized;
-extern CK_BBOOL g_is_managed_mode; // True for managed mode, False for standalone mode
+extern CK_BBOOL g_is_managed_mode; // true for managed mode, false for standalone mode
 extern SCARDCONTEXT g_pcsc_context;
 extern SCARDHANDLE g_scard;
 
@@ -43,11 +30,8 @@ extern CNK_FREE_FUNC g_free_func;
 
 // Helper functions for memory allocation
 static inline void *ck_malloc(size_t size) { return g_malloc_func(size); }
-
 static inline void ck_free(void *ptr) { g_free_func(ptr); }
 
-// Enable managed mode
-CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs);
 
 // Initialize PC/SC context only
 CK_RV initialize_pcsc(void);
@@ -86,4 +70,4 @@ void disconnect_card(SCARDHANDLE hCard);
 // Get firmware or hardware version
 CK_RV get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, CK_BYTE *minor);
 
-#endif /* CANOKEY_H */
+#endif /* PCSC_BACKEND_H */

@@ -1,7 +1,8 @@
 #define CRYPTOKI_EXPORTS
 
-#include "pcsc_canokey.h"
+#include "pcsc_backend.h"
 #include "pkcs11.h"
+#include "pkcs11_managed.h"
 #include "pkcs11_mutex.h"
 #include "pkcs11_session.h"
 

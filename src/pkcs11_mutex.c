@@ -1,5 +1,5 @@
+#include "pkcs11_managed.h"
 #include "pkcs11_mutex.h"
-#include "pcsc_canokey.h"
 
 #include <nsync_mu.h>
 #include <stdlib.h>

@@ -9,6 +9,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Include project directory
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include/private)
 
 # Configure nsync from submodule or system
 option(USE_BUNDLED_NSYNC "Use bundled nsync" ON)
@@ -20,25 +21,13 @@ else()
   find_package(nsync REQUIRED)
 endif()
 
-set(CNK_PKCS_SRC 
-    src/pcsc_canokey.c
-    src/pkcs11_impl.c
-    src/pkcs11_session.c
-    src/pkcs11_mutex.c
-)
+file(GLOB CNK_PKCS_SRC src/*.c)
 
 # these files will be installed
-set(CNK_PKCS_PUBLIC_HEADERS
-    include/pkcs11.h
-)
+file(GLOB CNK_PKCS_PUBLIC_HEADERS include/*.h)
 
-# internally used headers
-set(CNK_PKCS_HEADERS
-    ${CNK_PKCS_PUBLIC_HEADERS}
-    include/pcsc_canokey.h
-    include/pkcs11_session.h
-    include/pkcs11_mutex.h
-)
+# all headers used (including private ones)
+file(GLOB_RECURSE CNK_PKCS_HEADERS include/*.h)
 
 add_library(${CNK_PKCS_TARGET} SHARED ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
 set(CNK_PKCS_LIBS nsync)
@@ -74,7 +63,7 @@ set_target_properties(${CNK_PKCS_TARGET} PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 0
     OUTPUT_NAME ${CNK_PKCS_LIB_NAME}
-    PUBLIC_HEADER ${CNK_PKCS_PUBLIC_HEADERS}
+    PUBLIC_HEADER "${CNK_PKCS_PUBLIC_HEADERS}"
 )
 
 # Install the library
