@@ -507,7 +507,7 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
     }
 
     // If data exists, add this object to the results
-    if (data != NULL && data_len > 0) {
+    if (data_len > 0) {
       // Create a handle for this object: slot_id | object_class | object_id
       // This will allow us to identify the object in future operations
       CK_OBJECT_HANDLE handle =
