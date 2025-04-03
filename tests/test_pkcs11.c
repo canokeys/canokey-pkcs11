@@ -231,6 +231,144 @@ int main() {
             }
           }
 
+          // Test C_GetAttributeValue function
+          printf("\nTesting C_GetAttributeValue function...\n");
+
+          // First, find a certificate object to test with
+          CK_OBJECT_CLASS attrTestCertClass = CKO_CERTIFICATE;
+          CK_ATTRIBUTE attrTestCertTemplate[] = {{CKA_CLASS, &attrTestCertClass, sizeof(attrTestCertClass)}};
+
+          rv = pFunctionList->C_FindObjectsInit(hSession, attrTestCertTemplate, 1);
+          if (rv != CKR_OK) {
+            printf("Error initializing find operation for certificates: 0x%lx\n", rv);
+          } else {
+            CK_OBJECT_HANDLE certObjects[10];
+            CK_ULONG certCount;
+
+            rv = pFunctionList->C_FindObjects(hSession, certObjects, 10, &certCount);
+            if (rv != CKR_OK) {
+              printf("Error finding certificate objects: 0x%lx\n", rv);
+            } else if (certCount > 0) {
+              printf("Found %lu certificate objects for attribute testing\n", certCount);
+
+              // Test getting basic attributes
+              printf("Testing basic attributes for certificate object handle: %lu\n", certObjects[0]);
+
+              // Test 1: Get CKA_CLASS attribute
+              CK_OBJECT_CLASS objClass;
+              CK_ATTRIBUTE classTemplate[] = {{CKA_CLASS, &objClass, sizeof(objClass)}};
+
+              rv = pFunctionList->C_GetAttributeValue(hSession, certObjects[0], classTemplate, 1);
+              if (rv == CKR_OK) {
+                printf("  CKA_CLASS: %lu (expected %lu for CKO_CERTIFICATE)\n", objClass, CKO_CERTIFICATE);
+              } else {
+                printf("  Error getting CKA_CLASS: 0x%lx\n", rv);
+              }
+
+              // Test 2: Get CKA_TOKEN attribute
+              CK_BBOOL isToken;
+              CK_ATTRIBUTE tokenTemplate[] = {{CKA_TOKEN, &isToken, sizeof(isToken)}};
+
+              rv = pFunctionList->C_GetAttributeValue(hSession, certObjects[0], tokenTemplate, 1);
+              if (rv == CKR_OK) {
+                printf("  CKA_TOKEN: %s (expected CK_TRUE)\n", isToken ? "CK_TRUE" : "CK_FALSE");
+              } else {
+                printf("  Error getting CKA_TOKEN: 0x%lx\n", rv);
+              }
+
+              // Test 3: Get CKA_LABEL attribute
+              char label[64] = {0};
+              CK_ATTRIBUTE labelTemplate[] = {{CKA_LABEL, label, sizeof(label)}};
+
+              rv = pFunctionList->C_GetAttributeValue(hSession, certObjects[0], labelTemplate, 1);
+              if (rv == CKR_OK) {
+                printf("  CKA_LABEL: '%s'\n", label);
+              } else {
+                printf("  Error getting CKA_LABEL: 0x%lx\n", rv);
+              }
+
+              // Test 4: Get CKA_ID attribute
+              CK_BYTE id;
+              CK_ATTRIBUTE idTemplate[] = {{CKA_ID, &id, sizeof(id)}};
+
+              rv = pFunctionList->C_GetAttributeValue(hSession, certObjects[0], idTemplate, 1);
+              if (rv == CKR_OK) {
+                printf("  CKA_ID: %u\n", id);
+              } else {
+                printf("  Error getting CKA_ID: 0x%lx\n", rv);
+              }
+
+              // Test 5: Get multiple attributes at once
+              CK_BBOOL isPrivate;
+              CK_BBOOL isModifiable;
+              CK_ATTRIBUTE multiTemplate[] = {
+                  {CKA_CLASS, &objClass, sizeof(objClass)},
+                  {CKA_TOKEN, &isToken, sizeof(isToken)},
+                  {CKA_PRIVATE, &isPrivate, sizeof(isPrivate)},
+                  // {CKA_MODIFIABLE, &isModifiable, sizeof(isModifiable)}
+              };
+
+              rv = pFunctionList->C_GetAttributeValue(hSession, certObjects[0], multiTemplate, 3);
+              if (rv == CKR_OK) {
+                printf("  Multiple attributes retrieved successfully:\n");
+                printf("    CKA_CLASS: %lu\n", objClass);
+                printf("    CKA_TOKEN: %s\n", isToken ? "CK_TRUE" : "CK_FALSE");
+                printf("    CKA_PRIVATE: %s\n", isPrivate ? "CK_TRUE" : "CK_FALSE");
+                printf("    CKA_MODIFIABLE: %s\n", isModifiable ? "CK_TRUE" : "CK_FALSE");
+              } else {
+                printf("  Error getting multiple attributes: 0x%lx\n", rv);
+              }
+
+              // Test 6: Test buffer size handling - first get the size, then the value
+              CK_ATTRIBUTE sizeTemplate[] = {{CKA_LABEL, NULL, 0}};
+
+              rv = pFunctionList->C_GetAttributeValue(hSession, certObjects[0], sizeTemplate, 1);
+              if (rv == CKR_OK) {
+                printf("  CKA_LABEL size: %lu bytes\n", sizeTemplate[0].ulValueLen);
+
+                // Now allocate the right buffer size and get the value
+                char *dynamicLabel = (char *)malloc(sizeTemplate[0].ulValueLen + 1);
+                if (dynamicLabel) {
+                  memset(dynamicLabel, 0, sizeTemplate[0].ulValueLen + 1);
+
+                  CK_ATTRIBUTE valueTemplate[] = {{CKA_LABEL, dynamicLabel, sizeTemplate[0].ulValueLen}};
+                  rv = pFunctionList->C_GetAttributeValue(hSession, certObjects[0], valueTemplate, 1);
+                  if (rv == CKR_OK) {
+                    printf("  CKA_LABEL (dynamic allocation): '%s'\n", dynamicLabel);
+                  } else {
+                    printf("  Error getting CKA_LABEL with dynamic allocation: 0x%lx\n", rv);
+                  }
+
+                  free(dynamicLabel);
+                } else {
+                  printf("  Memory allocation failed for dynamic label\n");
+                }
+              } else {
+                printf("  Error getting CKA_LABEL size: 0x%lx\n", rv);
+              }
+
+              // Test 7: Test with an invalid attribute type
+              CK_ULONG invalidValue;
+              CK_ATTRIBUTE invalidTemplate[] = {{0xFFFFFFFF, &invalidValue, sizeof(invalidValue)}};
+
+              rv = pFunctionList->C_GetAttributeValue(hSession, certObjects[0], invalidTemplate, 1);
+              printf("  Invalid attribute test result: 0x%lx (expected CKR_ATTRIBUTE_TYPE_INVALID)\n", rv);
+
+              // Test 8: Test with an invalid object handle
+              CK_OBJECT_HANDLE invalidHandle = 0xFFFFFFFF;
+
+              rv = pFunctionList->C_GetAttributeValue(hSession, invalidHandle, classTemplate, 1);
+              printf("  Invalid handle test result: 0x%lx (expected CKR_OBJECT_HANDLE_INVALID)\n", rv);
+            } else {
+              printf("No certificate objects found for attribute testing\n");
+            }
+
+            rv = pFunctionList->C_FindObjectsFinal(hSession);
+            if (rv != CKR_OK) {
+              printf("Error finalizing certificate find operation: 0x%lx\n", rv);
+            }
+          }
+
           // Test logout
           rv = pFunctionList->C_Logout(hSession);
           if (rv == CKR_OK) {

@@ -13,6 +13,13 @@
 // Forward declaration of the function list
 static CK_FUNCTION_LIST ck_function_list;
 
+// Forward declarations for attribute handler functions
+static CK_RV handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE_PTR data, CK_ULONG data_len);
+static CK_RV handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_KEY_TYPE key_type,
+                                         CK_MECHANISM_TYPE mech_type, CK_SLOT_ID slot_id);
+static CK_RV handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_KEY_TYPE key_type,
+                                          CK_MECHANISM_TYPE mech_type, CK_SLOT_ID slot_id);
+
 CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
 #ifdef CNK_VERBOSE
   // forcibly enable debug logging, can be overridden by C_CNK_ConfigLogging later
@@ -395,7 +402,428 @@ CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_U
 
 CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                           CK_ULONG ulCount) {
-  return CKR_FUNCTION_NOT_SUPPORTED;
+  CNK_DEBUG("C_GetAttributeValue called with session %lu, object handle %lu, and %lu attributes\n", hSession, hObject,
+            ulCount);
+
+  // Check if the library is initialized
+  if (!g_cnk_is_initialized)
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+
+  // Validate parameters
+  if (!pTemplate && ulCount > 0)
+    return CKR_ARGUMENTS_BAD;
+
+  // Find the session
+  CNK_PKCS11_SESSION *session;
+  CK_RV rv = cnk_session_find(hSession, &session);
+  if (rv != CKR_OK)
+    return rv;
+
+  // Extract object information from the handle
+  // Object handle format: slot_id (16 bits) | object_class (8 bits) | object_id (8 bits)
+  CK_SLOT_ID slot_id = (hObject >> 16) & 0xFFFF;
+  CK_OBJECT_CLASS obj_class = (hObject >> 8) & 0xFF;
+  CK_BYTE obj_id = hObject & 0xFF;
+
+  CNK_DEBUG("Object handle: slot %lu, class %lu, id %lu\n", slot_id, obj_class, obj_id);
+
+  // Verify the slot ID matches the session's slot ID
+  if (slot_id != session->slot_id) {
+    return CKR_OBJECT_HANDLE_INVALID;
+  }
+
+  // Map object ID to PIV tag
+  CK_BYTE piv_tag;
+  switch (obj_id) {
+  case PIV_SLOT_9A:
+    piv_tag = 0x9A;
+    break;
+  case PIV_SLOT_9C:
+    piv_tag = 0x9C;
+    break;
+  case PIV_SLOT_9D:
+    piv_tag = 0x9D;
+    break;
+  case PIV_SLOT_9E:
+    piv_tag = 0x9E;
+    break;
+  case PIV_SLOT_82:
+    piv_tag = 0x82;
+    break;
+  case PIV_SLOT_83:
+    piv_tag = 0x83;
+    break;
+  default:
+    return CKR_OBJECT_HANDLE_INVALID;
+  }
+
+  // Fetch the PIV data for this object
+  CK_ULONG data_len = 0;
+  CK_BYTE_PTR data = NULL;
+
+  rv = cnk_get_piv_data(slot_id, piv_tag, &data, &data_len, CK_FALSE);
+  if (rv != CKR_OK) {
+    return rv;
+  }
+
+  // If no data was found, the object doesn't exist
+  if (data_len == 0) {
+    return CKR_OBJECT_HANDLE_INVALID;
+  }
+
+  // Get key metadata if this is a key object
+  CK_MECHANISM_TYPE mech_type = CKM_VENDOR_DEFINED;
+  CK_KEY_TYPE key_type = CKK_VENDOR_DEFINED;
+
+  if (obj_class == CKO_PUBLIC_KEY || obj_class == CKO_PRIVATE_KEY) {
+    rv = cnk_get_metadata(slot_id, piv_tag, &mech_type, &key_type);
+    if (rv != CKR_OK) {
+      CNK_DEBUG("Failed to get metadata for PIV tag 0x%02X: %lu\n", piv_tag, rv);
+      // Continue anyway, we'll use default values
+    } else {
+      CNK_DEBUG("Retrieved key type %lu for PIV tag 0x%02X\n", key_type, piv_tag);
+    }
+  }
+
+  // Process each attribute in the template
+  CK_RV return_rv = CKR_OK; // Final return value
+
+  for (CK_ULONG i = 0; i < ulCount; i++) {
+    // Set default values for attributes that are not found
+    pTemplate[i].ulValueLen = CK_UNAVAILABLE_INFORMATION;
+    rv = CKR_ATTRIBUTE_TYPE_INVALID; // Default to attribute not found
+
+    // Common attributes for all object types
+    switch (pTemplate[i].type) {
+    case CKA_CLASS:
+      if (pTemplate[i].pValue) {
+        if (pTemplate[i].ulValueLen >= sizeof(CK_OBJECT_CLASS)) {
+          *((CK_OBJECT_CLASS *)pTemplate[i].pValue) = obj_class;
+        } else {
+          rv = CKR_BUFFER_TOO_SMALL;
+        }
+      }
+      pTemplate[i].ulValueLen = sizeof(CK_OBJECT_CLASS);
+      rv = CKR_OK;
+      break;
+
+    case CKA_TOKEN:
+      if (pTemplate[i].pValue) {
+        if (pTemplate[i].ulValueLen >= sizeof(CK_BBOOL)) {
+          *((CK_BBOOL *)pTemplate[i].pValue) = CK_TRUE;
+        } else {
+          rv = CKR_BUFFER_TOO_SMALL;
+        }
+      }
+      pTemplate[i].ulValueLen = sizeof(CK_BBOOL);
+      rv = CKR_OK;
+      break;
+
+    case CKA_PRIVATE:
+      if (pTemplate[i].pValue) {
+        if (pTemplate[i].ulValueLen >= sizeof(CK_BBOOL)) {
+          // Only private keys are private objects
+          *((CK_BBOOL *)pTemplate[i].pValue) = (obj_class == CKO_PRIVATE_KEY) ? CK_TRUE : CK_FALSE;
+        } else {
+          rv = CKR_BUFFER_TOO_SMALL;
+        }
+      }
+      pTemplate[i].ulValueLen = sizeof(CK_BBOOL);
+      rv = CKR_OK;
+      break;
+
+    case CKA_ID:
+      if (pTemplate[i].pValue) {
+        if (pTemplate[i].ulValueLen >= sizeof(CK_BYTE)) {
+          *((CK_BYTE *)pTemplate[i].pValue) = obj_id;
+        } else {
+          rv = CKR_BUFFER_TOO_SMALL;
+        }
+      }
+      pTemplate[i].ulValueLen = sizeof(CK_BYTE);
+      rv = CKR_OK;
+      break;
+
+    case CKA_LABEL: {
+      // Create a label based on the object type and ID
+      char label[32];
+      const char *type_str = "Unknown";
+
+      switch (obj_class) {
+      case CKO_CERTIFICATE:
+        type_str = "Certificate";
+        break;
+      case CKO_PUBLIC_KEY:
+        type_str = "Public Key";
+        break;
+      case CKO_PRIVATE_KEY:
+        type_str = "Private Key";
+        break;
+      case CKO_DATA:
+        type_str = "Data";
+        break;
+      }
+
+      snprintf(label, sizeof(label), "PIV %s %02X", type_str, piv_tag);
+      CK_ULONG label_len = strlen(label);
+
+      if (pTemplate[i].pValue) {
+        if (pTemplate[i].ulValueLen >= label_len) {
+          memcpy(pTemplate[i].pValue, label, label_len);
+        } else {
+          rv = CKR_BUFFER_TOO_SMALL;
+        }
+      }
+      pTemplate[i].ulValueLen = label_len;
+      rv = CKR_OK;
+      break;
+    }
+
+    default:
+      // Not a common attribute, handle based on object class
+      break;
+    }
+
+    // If we've already handled this attribute, continue to the next one
+    if (rv != CKR_ATTRIBUTE_TYPE_INVALID) {
+      if (rv != CKR_OK && return_rv == CKR_OK) {
+        return_rv = rv; // Update return value if we had an error
+      }
+      continue;
+    }
+
+    // Object class specific attributes
+    switch (obj_class) {
+    case CKO_CERTIFICATE:
+      rv = handle_certificate_attribute(pTemplate[i], piv_tag, data, data_len);
+      break;
+
+    case CKO_PUBLIC_KEY:
+      rv = handle_public_key_attribute(pTemplate[i], piv_tag, key_type, mech_type, slot_id);
+      break;
+
+    case CKO_PRIVATE_KEY:
+      rv = handle_private_key_attribute(pTemplate[i], piv_tag, key_type, mech_type, slot_id);
+      break;
+
+    default:
+      // Unsupported object class
+      rv = CKR_ATTRIBUTE_TYPE_INVALID;
+      break;
+    }
+
+    // Update the return value if needed
+    if (rv != CKR_OK && return_rv == CKR_OK) {
+      return_rv = rv;
+    }
+  }
+
+  // Free the PIV data if it was allocated
+  if (data != NULL) {
+    ck_free(data);
+  }
+
+  return return_rv;
+}
+
+// Handle certificate-specific attributes
+static CK_RV handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE_PTR data,
+                                          CK_ULONG data_len) {
+  CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
+
+  switch (attribute.type) {
+  case CKA_CERTIFICATE_TYPE:
+    if (attribute.pValue) {
+      if (attribute.ulValueLen >= sizeof(CK_CERTIFICATE_TYPE)) {
+        *((CK_CERTIFICATE_TYPE *)attribute.pValue) = CKC_X_509;
+      } else {
+        rv = CKR_BUFFER_TOO_SMALL;
+      }
+    }
+    attribute.ulValueLen = sizeof(CK_CERTIFICATE_TYPE);
+    rv = CKR_OK;
+    break;
+
+  case CKA_VALUE:
+    // For certificates, return the raw certificate data
+    if (attribute.pValue) {
+      if (attribute.ulValueLen >= data_len) {
+        memcpy(attribute.pValue, data, data_len);
+      } else {
+        rv = CKR_BUFFER_TOO_SMALL;
+      }
+    }
+    attribute.ulValueLen = data_len;
+    rv = CKR_OK;
+    break;
+
+    // Add other certificate attributes as needed
+    // CKA_SUBJECT, CKA_ISSUER, CKA_SERIAL_NUMBER would require parsing the certificate
+
+  default:
+    rv = CKR_ATTRIBUTE_TYPE_INVALID;
+    break;
+  }
+
+  return rv;
+}
+
+// Handle public key specific attributes
+static CK_RV handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_KEY_TYPE key_type,
+                                         CK_MECHANISM_TYPE mech_type, CK_SLOT_ID slot_id) {
+  CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
+
+  switch (attribute.type) {
+  case CKA_KEY_TYPE:
+    if (attribute.pValue) {
+      if (attribute.ulValueLen >= sizeof(CK_KEY_TYPE)) {
+        *((CK_KEY_TYPE *)attribute.pValue) = key_type;
+      } else {
+        rv = CKR_BUFFER_TOO_SMALL;
+      }
+    }
+    attribute.ulValueLen = sizeof(CK_KEY_TYPE);
+    rv = CKR_OK;
+    break;
+
+  case CKA_VERIFY:
+    // Public keys can be used for verification
+    if (attribute.pValue) {
+      if (attribute.ulValueLen >= sizeof(CK_BBOOL)) {
+        *((CK_BBOOL *)attribute.pValue) = CK_TRUE;
+      } else {
+        rv = CKR_BUFFER_TOO_SMALL;
+      }
+    }
+    attribute.ulValueLen = sizeof(CK_BBOOL);
+    rv = CKR_OK;
+    break;
+
+  case CKA_ENCRYPT:
+    // Only RSA public keys can encrypt
+    if (attribute.pValue) {
+      if (attribute.ulValueLen >= sizeof(CK_BBOOL)) {
+        *((CK_BBOOL *)attribute.pValue) = (key_type == CKK_RSA) ? CK_TRUE : CK_FALSE;
+      } else {
+        rv = CKR_BUFFER_TOO_SMALL;
+      }
+    }
+    attribute.ulValueLen = sizeof(CK_BBOOL);
+    rv = CKR_OK;
+    break;
+
+  case CKA_MODULUS_BITS:
+    if (key_type == CKK_RSA) {
+      // For RSA keys, we can determine the modulus bits
+      CK_ULONG modulus_bits = 2048; // Default for PIV
+
+      if (attribute.pValue) {
+        if (attribute.ulValueLen >= sizeof(CK_ULONG)) {
+          *((CK_ULONG *)attribute.pValue) = modulus_bits;
+        } else {
+          rv = CKR_BUFFER_TOO_SMALL;
+        }
+      }
+      attribute.ulValueLen = sizeof(CK_ULONG);
+      rv = CKR_OK;
+    } else {
+      // Not applicable for non-RSA keys
+      rv = CKR_ATTRIBUTE_TYPE_INVALID;
+    }
+    break;
+
+    // Add other public key attributes as needed
+    // For a complete implementation, you would need to handle attributes like
+    // CKA_MODULUS, CKA_PUBLIC_EXPONENT for RSA or CKA_EC_PARAMS, CKA_EC_POINT for EC
+
+  default:
+    rv = CKR_ATTRIBUTE_TYPE_INVALID;
+    break;
+  }
+
+  return rv;
+}
+
+// Handle private key specific attributes
+static CK_RV handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_KEY_TYPE key_type,
+                                          CK_MECHANISM_TYPE mech_type, CK_SLOT_ID slot_id) {
+  CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
+
+  switch (attribute.type) {
+  case CKA_KEY_TYPE:
+    if (attribute.pValue) {
+      if (attribute.ulValueLen >= sizeof(CK_KEY_TYPE)) {
+        *((CK_KEY_TYPE *)attribute.pValue) = key_type;
+      } else {
+        rv = CKR_BUFFER_TOO_SMALL;
+      }
+    }
+    attribute.ulValueLen = sizeof(CK_KEY_TYPE);
+    rv = CKR_OK;
+    break;
+
+  case CKA_SIGN:
+    // Private keys can be used for signing
+    if (attribute.pValue) {
+      if (attribute.ulValueLen >= sizeof(CK_BBOOL)) {
+        *((CK_BBOOL *)attribute.pValue) = CK_TRUE;
+      } else {
+        rv = CKR_BUFFER_TOO_SMALL;
+      }
+    }
+    attribute.ulValueLen = sizeof(CK_BBOOL);
+    rv = CKR_OK;
+    break;
+
+  case CKA_DECRYPT:
+    // Only RSA private keys can decrypt
+    if (attribute.pValue) {
+      if (attribute.ulValueLen >= sizeof(CK_BBOOL)) {
+        *((CK_BBOOL *)attribute.pValue) = (key_type == CKK_RSA) ? CK_TRUE : CK_FALSE;
+      } else {
+        rv = CKR_BUFFER_TOO_SMALL;
+      }
+    }
+    attribute.ulValueLen = sizeof(CK_BBOOL);
+    rv = CKR_OK;
+    break;
+
+  case CKA_SENSITIVE:
+  case CKA_ALWAYS_SENSITIVE:
+    // Private keys are always sensitive
+    if (attribute.pValue) {
+      if (attribute.ulValueLen >= sizeof(CK_BBOOL)) {
+        *((CK_BBOOL *)attribute.pValue) = CK_TRUE;
+      } else {
+        rv = CKR_BUFFER_TOO_SMALL;
+      }
+    }
+    attribute.ulValueLen = sizeof(CK_BBOOL);
+    rv = CKR_OK;
+    break;
+
+  case CKA_EXTRACTABLE:
+  case CKA_NEVER_EXTRACTABLE:
+    // Private keys on PIV are never extractable
+    if (attribute.pValue) {
+      if (attribute.ulValueLen >= sizeof(CK_BBOOL)) {
+        *((CK_BBOOL *)attribute.pValue) = (attribute.type == CKA_EXTRACTABLE) ? CK_FALSE : CK_TRUE;
+      } else {
+        rv = CKR_BUFFER_TOO_SMALL;
+      }
+    }
+    attribute.ulValueLen = sizeof(CK_BBOOL);
+    rv = CKR_OK;
+    break;
+
+    // Add other private key attributes as needed
+
+  default:
+    rv = CKR_ATTRIBUTE_TYPE_INVALID;
+    break;
+  }
+
+  return rv;
 }
 
 CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,

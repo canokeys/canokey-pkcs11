@@ -699,3 +699,168 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, C
   cnk_disconnect_card(hCard);
   return CKR_OK;
 }
+
+/**
+ * Get metadata for a PIV key or object
+ * 
+ * This function retrieves metadata from a PIV key or object using the PIV metadata APDU command.
+ * The metadata is returned as a TLV (Tag-Length-Value) structure that contains information
+ * about the key or object such as algorithm, key type, etc.
+ * 
+ * @param slotID The slot ID of the card
+ * @param piv_tag The PIV tag (slot) to get metadata for (e.g., 0x9A, 0x9C, etc.)
+ * @param algorithm_type Pointer to store the algorithm type (CKM_*)
+ * @param key_type Pointer to store the key type (CKK_*)
+ * @return CKR_OK on success, or an error code on failure
+ */
+CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR algorithm_type, CK_KEY_TYPE *key_type) {
+  SCARDHANDLE hCard;
+  CK_RV rv;
+  
+  // Initialize output parameters
+  if (algorithm_type) *algorithm_type = CKM_VENDOR_DEFINED;
+  if (key_type) *key_type = CKK_VENDOR_DEFINED;
+
+  // Connect to the card for this operation
+  rv = cnk_connect_and_select_canokey(slotID, &hCard);
+  if (rv != CKR_OK) {
+    return rv;
+  }
+
+  // Select the PIV application
+  rv = cnk_select_piv_application(hCard);
+  if (rv != CKR_OK) {
+    cnk_disconnect_card(hCard);
+    return rv;
+  }
+
+  // Prepare the APDU for getting metadata
+  // Command: 00 F7 00 XX where XX is the PIV tag
+  BYTE metadata_apdu[] = {0x00, 0xF7, 0x00, piv_tag};
+  BYTE response[258]; // Maximum response size
+  DWORD response_len = sizeof(response);
+
+  // Send the metadata command
+  CNK_DEBUG("Sending metadata command for PIV tag 0x%02X\n", piv_tag);
+  LONG pcsc_rv = transceive_apdu(hCard, metadata_apdu, sizeof(metadata_apdu), response, &response_len);
+  if (pcsc_rv != SCARD_S_SUCCESS) {
+    CNK_ERROR("Failed to send metadata command: %ld\n", pcsc_rv);
+    cnk_disconnect_card(hCard);
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Check if the command was successful (SW1SW2 = 9000)
+  if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
+    CNK_ERROR("Metadata command failed with status: %02X%02X\n", 
+              response_len >= 2 ? response[response_len - 2] : 0, 
+              response_len >= 1 ? response[response_len - 1] : 0);
+    cnk_disconnect_card(hCard);
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Process the response data (excluding the status bytes)
+  CK_ULONG data_len = response_len - 2;
+  CK_BYTE *data = response;
+  CK_ULONG pos = 0;
+  
+  CNK_DEBUG("Metadata response length: %lu bytes\n", data_len);
+
+  // Parse the TLV data
+  while (pos < data_len) {
+    // Get the tag
+    CK_BYTE tag = data[pos++];
+    if (pos >= data_len) break;
+    
+    // Get the length (handle DER encoding)
+    CK_ULONG length = 0;
+    CK_BYTE len_byte = data[pos++];
+    
+    if (len_byte <= 0x7F) {
+      // Short form: length is directly in the byte
+      length = len_byte;
+    } else if (len_byte == 0x81 && pos < data_len) {
+      // Long form: next byte contains the length (up to 255)
+      length = data[pos++];
+    } else if (len_byte == 0x82 && pos + 1 < data_len) {
+      // Longer form: next two bytes contain the length (up to 65535)
+      length = (data[pos] << 8) | data[pos + 1];
+      pos += 2;
+    } else {
+      // Invalid or unsupported length encoding
+      CNK_ERROR("Invalid length encoding in metadata response\n");
+      cnk_disconnect_card(hCard);
+      return CKR_DEVICE_ERROR;
+    }
+    
+    // Make sure we have enough data for the value
+    if (pos + length > data_len) {
+      CNK_ERROR("Incomplete TLV data in metadata response\n");
+      cnk_disconnect_card(hCard);
+      return CKR_DEVICE_ERROR;
+    }
+    
+    // Process the tag-value pair
+    switch (tag) {
+      case 0x01: // Algorithm reference
+        if (length == 1 && algorithm_type != NULL) {
+          CK_BYTE alg_ref = data[pos];
+          CNK_DEBUG("Algorithm reference: 0x%02X\n", alg_ref);
+          
+          // Map algorithm reference to PKCS#11 mechanism type
+          switch (alg_ref) {
+            case 0x07: // RSA 2048
+              *algorithm_type = CKM_RSA_PKCS;
+              if (key_type) *key_type = CKK_RSA;
+              break;
+            case 0x11: // ECC P-256
+              *algorithm_type = CKM_ECDSA;
+              if (key_type) *key_type = CKK_EC;
+              break;
+            case 0x14: // ECC P-384
+              *algorithm_type = CKM_ECDSA;
+              if (key_type) *key_type = CKK_EC;
+              break;
+            default:
+              CNK_DEBUG("Unknown algorithm reference: 0x%02X\n", alg_ref);
+              break;
+          }
+        }
+        break;
+        
+      case 0x02: // Key type and storage
+        if (length >= 2) {
+          CNK_DEBUG("Key type and storage: 0x%02X 0x%02X\n", data[pos], data[pos+1]);
+          // First byte is key type, second byte is storage location
+          // We don't need to process this further as we already have the key type from tag 0x01
+        }
+        break;
+        
+      case 0x03: // Key usage
+        if (length >= 1) {
+          CNK_DEBUG("Key usage: 0x%02X\n", data[pos]);
+          // This indicates what the key can be used for (signing, encryption, etc.)
+          // We don't need to process this for CKA_KEY_TYPE determination
+        }
+        break;
+        
+      case 0x04: // Public key encoding
+        if (length > 0) {
+          CNK_DEBUG("Public key data present, length: %lu bytes\n", length);
+          // This contains the encoded public key
+          // We don't need to process this for CKA_KEY_TYPE determination
+        }
+        break;
+        
+      default:
+        CNK_DEBUG("Unhandled metadata tag: 0x%02X, length: %lu\n", tag, length);
+        break;
+    }
+    
+    // Move to the next TLV
+    pos += length;
+  }
+
+  // Disconnect from the card when done
+  cnk_disconnect_card(hCard);
+  return CKR_OK;
+}

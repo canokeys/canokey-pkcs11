@@ -82,4 +82,8 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, C
 // If fetch_data is CK_FALSE, only checks for existence and sets data_len to 1 if found, 0 if not
 CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data);
 
+// Get metadata for a PIV key or object
+// This function retrieves metadata from a PIV key or object using the PIV metadata APDU command
+CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR algorithm_type, CK_KEY_TYPE *key_type);
+
 #endif /* PCSC_BACKEND_H */
