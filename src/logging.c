@@ -68,7 +68,7 @@ void cnk_log_apdu_command(const unsigned char *command, unsigned long command_le
     fprintf(out, "%02X %02X %02X %02X", command[0], command[1], command[2], command[3]);
   } else {
     // Incomplete APDU
-    fprintf(out, "Incomplete APDU: ");
+    fprintf(out, "Incomplete APDU Command: ");
     for (unsigned long i = 0; i < command_len; i++) {
       fprintf(out, "%02X ", command[i]);
     }
@@ -158,7 +158,7 @@ void cnk_log_apdu_response(const unsigned char *response, unsigned long response
 
   // Check if we have at least status words (SW1 SW2)
   if (response_len < 2) {
-    fprintf(out, "Incomplete response: ");
+    fprintf(out, "Incomplete APDU Response: ");
     for (unsigned long i = 0; i < response_len; i++) {
       fprintf(out, "%02X ", response[i]);
     }

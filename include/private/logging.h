@@ -36,8 +36,9 @@ extern void cnk_printf(const int level, const char *format, ...);
 // #define FUNC_TRACE(CALL) dbg(CALL)
 #define CNK_RETURN(ARG, REASON)                                                                                        \
   do {                                                                                                                 \
-    CNK_DEBUG("Returning value %s = %d with reason \"%s\"\n", #ARG, (ARG), REASON);                                    \
-    return (ARG);                                                                                                      \
+    int ret = (ARG);                                                                                                   \
+    CNK_DEBUG("Returning value %s = %d with reason \"%s\"\n", #ARG, ret, REASON);                                      \
+    return ret;                                                                                                        \
   } while (0)
 #else
 // #define FUNC_TRACE(CALL) CALL
