@@ -307,7 +307,7 @@ void cnk_disconnect_card(SCARDHANDLE hCard) {
 }
 
 // Helper function to transmit APDU commands and log both command and response
-LONG transceive_apdu(SCARDHANDLE hCard, const BYTE *command, DWORD command_len, BYTE *response, DWORD *response_len) {
+LONG transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, DWORD command_len, CK_BYTE *response, DWORD *response_len) {
   if (hCard == 0 || command == NULL || response == NULL || response_len == NULL) {
     return SCARD_E_INVALID_PARAMETER;
   }
@@ -337,8 +337,8 @@ CK_RV cnk_select_piv_application(SCARDHANDLE hCard) {
   }
 
   // PIV AID: A0 00 00 03 08
-  BYTE piv_aid[] = {0xA0, 0x00, 0x00, 0x03, 0x08};
-  BYTE select_apdu[11] = {0x00, 0xA4, 0x04, 0x00};
+  CK_BYTE piv_aid[] = {0xA0, 0x00, 0x00, 0x03, 0x08};
+  CK_BYTE select_apdu[11] = {0x00, 0xA4, 0x04, 0x00};
 
   // Set the length of the AID
   select_apdu[4] = sizeof(piv_aid);
@@ -347,7 +347,7 @@ CK_RV cnk_select_piv_application(SCARDHANDLE hCard) {
   memcpy(select_apdu + 5, piv_aid, sizeof(piv_aid));
 
   // Prepare response buffer
-  BYTE response[258];
+  CK_BYTE response[258];
   DWORD response_len = sizeof(response);
 
   // Send the SELECT command using the transceive function
@@ -383,14 +383,14 @@ CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPin
   }
 
   // Prepare the VERIFY command: 00 20 00 80 08 [PIN padded with 0xFF]
-  BYTE verify_apdu[14] = {0x00, 0x20, 0x00, 0x80, 0x08};
+  CK_BYTE verify_apdu[14] = {0x00, 0x20, 0x00, 0x80, 0x08};
 
   // Pad the PIN with 0xFF
   memset(verify_apdu + 5, 0xFF, 8);
   memcpy(verify_apdu + 5, pPin, ulPinLen);
 
   // Prepare response buffer
-  BYTE response[258];
+  CK_BYTE response[258];
   DWORD response_len = sizeof(response);
 
   // Send the VERIFY command using the transceive function
@@ -432,10 +432,10 @@ CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard) {
   }
 
   // Prepare the LOGOUT command: 00 20 FF 80 00
-  BYTE logout_apdu[] = {0x00, 0x20, 0xFF, 0x80, 0x00};
+  CK_BYTE logout_apdu[] = {0x00, 0x20, 0xFF, 0x80, 0x00};
 
   // Prepare response buffer
-  BYTE response[258];
+  CK_BYTE response[258];
   DWORD response_len = sizeof(response);
 
   // Send the LOGOUT command using the transceive function
@@ -478,7 +478,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
   // Command: 00 CB 3F FF 05 5C 03 5F C1 xx 00
   // Where xx is mapped from the PIV tag as follows:
   // 9A -> 05, 9C -> 0A, 9D -> 0B, 9E -> 01, 82 -> 0D, 83 -> 0E
-  BYTE mapped_tag;
+  CK_BYTE mapped_tag;
   switch (tag) {
   case 0x9A:
     mapped_tag = 0x05;
@@ -504,12 +504,12 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
   }
 
   // If we're just checking for existence, we can use a smaller buffer
-  BYTE response[fetch_data ? 4096 : 128]; // Smaller buffer if just checking existence
+  CK_BYTE response[fetch_data ? 4096 : 128]; // Smaller buffer if just checking existence
   DWORD response_len = sizeof(response);
 
   // For existence check, we can modify the APDU to only request the header
   // This is more efficient than fetching the entire content
-  BYTE apdu[11] = {0x00, 0xCB, 0x3F, 0xFF, 0x05, 0x5C, 0x03, 0x5F, 0xC1, mapped_tag, fetch_data ? 0x00 : 0x01};
+  CK_BYTE apdu[11] = {0x00, 0xCB, 0x3F, 0xFF, 0x05, 0x5C, 0x03, 0x5F, 0xC1, mapped_tag, fetch_data ? 0x00 : 0x01};
 
   // Send the get PIV data command using the transceive function
   LONG pcsc_rv = transceive_apdu(hCard, apdu, sizeof(apdu), response, &response_len);
@@ -529,11 +529,11 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
     // Check if we have a 61xx status word (more data available)
     while (response_len >= 2 && response[response_len - 2] == 0x61) {
       // Save the current data (excluding SW1SW2)
-      BYTE sw1 = response[response_len - 2];
-      BYTE sw2 = response[response_len - 1];
+      CK_BYTE sw1 = response[response_len - 2];
+      CK_BYTE sw2 = response[response_len - 1];
 
       // Prepare GET RESPONSE command
-      BYTE get_response[5] = {0x00, 0xC0, 0x00, 0x00, sw2};
+      CK_BYTE get_response[5] = {0x00, 0xC0, 0x00, 0x00, sw2};
 
       // Get next chunk directly into the response buffer after the current data
       DWORD next_chunk_len = sizeof(response) - data_offset;
@@ -613,8 +613,8 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, C
   }
 
   // Select the CanoKey AID: F000000000
-  BYTE select_apdu[] = {0x00, 0xA4, 0x04, 0x00, 0x05, 0xF0, 0x00, 0x00, 0x00, 0x00};
-  BYTE response[258];
+  CK_BYTE select_apdu[] = {0x00, 0xA4, 0x04, 0x00, 0x05, 0xF0, 0x00, 0x00, 0x00, 0x00};
+  CK_BYTE response[258];
   DWORD response_len = sizeof(response);
 
   // Use the transceive function to send the command and log both command and response
@@ -632,7 +632,7 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, C
 
   // Prepare the APDU for getting version
   // 0x00 for firmware version, 0x01 for hardware version
-  BYTE version_apdu[] = {0x00, 0x31, version_type, 0x00, 0x00};
+  CK_BYTE version_apdu[] = {0x00, 0x31, version_type, 0x00, 0x00};
   response_len = sizeof(response);
 
   // Send the version command using the transceive function
@@ -749,7 +749,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   // The format is: 00 01 FF FF ... FF 00 [ASN.1 DigestInfo] [hash]
 
   // For RSA 2048, the formatted data is always 256 bytes
-  BYTE formatted_data[256];
+  CK_BYTE formatted_data[256];
   memset(formatted_data, 0, sizeof(formatted_data));
 
   // The data passed in is expected to be the raw data to be signed (not a hash)
@@ -778,7 +778,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
 
   // Now construct the PIV TLV structure for GENERAL AUTHENTICATE
   // Buffer for TLV data structure (tag + length + value)
-  BYTE tlv_data[512]; // Increased buffer size for safety
+  CK_BYTE tlv_data[512]; // Increased buffer size for safety
   CK_ULONG tlv_len = 0;
 
   // Start with the outer Dynamic Authentication Template (tag 0x7C)
@@ -816,20 +816,20 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
     tlv_data[len_pos] = 0x82; // Two-byte length marker
     len_pos++;
 
-    tlv_data[len_pos] = (BYTE)((content_len >> 8) & 0xFF); // Length high byte
+    tlv_data[len_pos] = (CK_BYTE)((content_len >> 8) & 0xFF); // Length high byte
     len_pos++;
 
-    tlv_data[len_pos] = (BYTE)(content_len & 0xFF); // Length low byte
+    tlv_data[len_pos] = (CK_BYTE)(content_len & 0xFF); // Length low byte
     len_pos++;
 
     tlv_len += 2; // Adjust total length for the extra length bytes
   } else {
-    tlv_data[len_pos] = (BYTE)(tlv_len - len_pos - 1);
+    tlv_data[len_pos] = (CK_BYTE)(tlv_len - len_pos - 1);
   }
 
   // Build the GENERAL AUTHENTICATE APDU
   // Increased buffer size for Extended APDU (4 header + 3 Lc + ~500 data + 3 Le)
-  BYTE auth_apdu[550];
+  CK_BYTE auth_apdu[550];
   CK_ULONG apdu_len = 0;
 
   // APDU header
@@ -841,15 +841,15 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   // Handle Lc, Data, and Le based on APDU format and using the TLV data
   if (tlv_len <= 255) {
     // Standard APDU format
-    auth_apdu[apdu_len++] = (BYTE)tlv_len;           // Lc
+    auth_apdu[apdu_len++] = (CK_BYTE)tlv_len;           // Lc
     memcpy(auth_apdu + apdu_len, tlv_data, tlv_len); // Data
     apdu_len += tlv_len;
     auth_apdu[apdu_len++] = 0x00; // Le (request max available)
   } else {
     // Extended APDU format
     auth_apdu[apdu_len++] = 0x00;                          // Extended length marker
-    auth_apdu[apdu_len++] = (BYTE)((tlv_len >> 8) & 0xFF); // Lc high byte
-    auth_apdu[apdu_len++] = (BYTE)(tlv_len & 0xFF);        // Lc low byte
+    auth_apdu[apdu_len++] = (CK_BYTE)((tlv_len >> 8) & 0xFF); // Lc high byte
+    auth_apdu[apdu_len++] = (CK_BYTE)(tlv_len & 0xFF);        // Lc low byte
     memcpy(auth_apdu + apdu_len, tlv_data, tlv_len);       // Data
     apdu_len += tlv_len;
     auth_apdu[apdu_len++] = 0x00; // Le high byte (request max available)
@@ -857,7 +857,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   }
 
   // Send the GENERAL AUTHENTICATE command
-  BYTE response[270];
+  CK_BYTE response[270];
   DWORD response_len = sizeof(response);
 
   CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command for signing\n");
@@ -952,14 +952,14 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR
 
   // Prepare the APDU for getting metadata
   // Command: 00 F7 00 XX 00 where XX is the PIV tag
-  BYTE metadata_apdu[] = {0x00, 0xF7, 0x00, piv_tag, 0x00};
+  CK_BYTE metadata_apdu[] = {0x00, 0xF7, 0x00, piv_tag, 0x00};
 
   // Buffer to hold the complete response (up to 1024 bytes)
-  BYTE complete_response[1024];
+  CK_BYTE complete_response[1024];
   CK_ULONG complete_response_len = 0;
 
   // Temporary buffer for receiving responses
-  BYTE response[258]; // Maximum single response size
+  CK_BYTE response[258]; // Maximum single response size
   DWORD response_len = sizeof(response);
 
   // Send the metadata command
@@ -979,8 +979,8 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR
   }
 
   // Check for success (9000) or more data available (61XX)
-  BYTE sw1 = response[response_len - 2];
-  BYTE sw2 = response[response_len - 1];
+  CK_BYTE sw1 = response[response_len - 2];
+  CK_BYTE sw2 = response[response_len - 1];
 
   if (sw1 == 0x90 && sw2 == 0x00) {
     // Success - copy the data (excluding status bytes) to the complete response buffer
@@ -996,7 +996,7 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR
     }
 
     // Use GET RESPONSE to fetch remaining data
-    BYTE get_response_apdu[] = {0x00, 0xC0, 0x00, 0x00, 0x00}; // GET RESPONSE command
+    CK_BYTE get_response_apdu[] = {0x00, 0xC0, 0x00, 0x00, 0x00}; // GET RESPONSE command
 
     // Continue fetching data while the card returns 61XX
     while (sw1 == 0x61) {
