@@ -35,6 +35,80 @@ static void extract_object_info(CK_OBJECT_HANDLE hObject, CK_SLOT_ID *slot_id, C
   }
 }
 
+// Helper function to map object ID to PIV tag
+static CK_RV obj_id_to_piv_tag(CK_BYTE obj_id, CK_BYTE *piv_tag) {
+  switch (obj_id) {
+  case PIV_SLOT_9A:
+    *piv_tag = 0x9A;
+    break;
+  case PIV_SLOT_9C:
+    *piv_tag = 0x9C;
+    break;
+  case PIV_SLOT_9D:
+    *piv_tag = 0x9D;
+    break;
+  case PIV_SLOT_9E:
+    *piv_tag = 0x9E;
+    break;
+  case PIV_SLOT_82:
+    *piv_tag = 0x82;
+    break;
+  case PIV_SLOT_83:
+    *piv_tag = 0x83;
+    break;
+  default:
+    return CKR_OBJECT_HANDLE_INVALID;
+  }
+  return CKR_OK;
+}
+
+// Helper function to set attribute values with proper buffer checking
+static CK_RV set_attribute_value(CK_ATTRIBUTE_PTR attribute, const void *value, CK_ULONG value_size) {
+  attribute->ulValueLen = value_size;
+
+  if (attribute->pValue) {
+    if (attribute->ulValueLen >= value_size) {
+      memcpy(attribute->pValue, value, value_size);
+    } else {
+      return CKR_BUFFER_TOO_SMALL;
+    }
+  }
+
+  return CKR_OK;
+}
+
+// Helper function to check basic library and session state
+static CK_RV validate_session(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session) {
+  // Check if the library is initialized
+  if (!g_cnk_is_initialized)
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+
+  // Find the session
+  return cnk_session_find(hSession, session);
+}
+
+// Helper function to validate an object handle against a session and expected class
+static CK_RV validate_object(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS expected_class,
+                             CK_BYTE *obj_id) {
+  // Extract object information from the handle
+  CK_SLOT_ID slot_id;
+  CK_OBJECT_CLASS obj_class;
+
+  extract_object_info(hObject, &slot_id, &obj_class, obj_id);
+
+  // Verify the slot ID matches the session's slot ID
+  if (slot_id != session->slot_id) {
+    return CKR_OBJECT_HANDLE_INVALID;
+  }
+
+  // Verify the object class if expected_class is not 0
+  if (expected_class != 0 && obj_class != expected_class) {
+    return CKR_KEY_TYPE_INCONSISTENT;
+  }
+
+  return CKR_OK;
+}
+
 CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
 #ifdef CNK_VERBOSE
   // forcibly enable debug logging, can be overridden by C_CNK_ConfigLogging later
@@ -420,63 +494,38 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CNK_DEBUG("C_GetAttributeValue called with session %lu, object handle %lu, and %lu attributes\n", hSession, hObject,
             ulCount);
 
-  // Check if the library is initialized
-  if (!g_cnk_is_initialized)
-    return CKR_CRYPTOKI_NOT_INITIALIZED;
-
   // Validate parameters
   if (!pTemplate && ulCount > 0)
     return CKR_ARGUMENTS_BAD;
 
-  // Find the session
+  // Validate session
   CNK_PKCS11_SESSION *session;
-  CK_RV rv = cnk_session_find(hSession, &session);
+  CK_RV rv = validate_session(hSession, &session);
   if (rv != CKR_OK)
     return rv;
 
-  // Extract object information from the handle
-  CK_SLOT_ID slot_id;
+  // Extract and validate object information
   CK_OBJECT_CLASS obj_class;
   CK_BYTE obj_id;
-  extract_object_info(hObject, &slot_id, &obj_class, &obj_id);
+  rv = validate_object(hObject, session, 0, &obj_id);
+  if (rv != CKR_OK)
+    return rv;
 
-  CNK_DEBUG("Object handle: slot %lu, class %lu, id %lu\n", slot_id, obj_class, obj_id);
-
-  // Verify the slot ID matches the session's slot ID
-  if (slot_id != session->slot_id) {
-    return CKR_OBJECT_HANDLE_INVALID;
-  }
+  // Get object class from handle
+  extract_object_info(hObject, NULL, &obj_class, NULL);
+  CNK_DEBUG("Object handle: slot %lu, class %lu, id %lu\n", session->slot_id, obj_class, obj_id);
 
   // Map object ID to PIV tag
   CK_BYTE piv_tag;
-  switch (obj_id) {
-  case PIV_SLOT_9A:
-    piv_tag = 0x9A;
-    break;
-  case PIV_SLOT_9C:
-    piv_tag = 0x9C;
-    break;
-  case PIV_SLOT_9D:
-    piv_tag = 0x9D;
-    break;
-  case PIV_SLOT_9E:
-    piv_tag = 0x9E;
-    break;
-  case PIV_SLOT_82:
-    piv_tag = 0x82;
-    break;
-  case PIV_SLOT_83:
-    piv_tag = 0x83;
-    break;
-  default:
-    return CKR_OBJECT_HANDLE_INVALID;
-  }
+  rv = obj_id_to_piv_tag(obj_id, &piv_tag);
+  if (rv != CKR_OK)
+    return rv;
 
   // Fetch the PIV data for this object
   CK_ULONG data_len = 0;
   CK_BYTE_PTR data = NULL;
 
-  rv = cnk_get_piv_data(slot_id, piv_tag, &data, &data_len, CK_FALSE);
+  rv = cnk_get_piv_data(session->slot_id, piv_tag, &data, &data_len, CK_FALSE);
   if (rv != CKR_OK) {
     return rv;
   }
@@ -491,7 +540,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CK_KEY_TYPE key_type = CKK_VENDOR_DEFINED;
 
   if (obj_class == CKO_PUBLIC_KEY || obj_class == CKO_PRIVATE_KEY) {
-    rv = cnk_get_metadata(slot_id, piv_tag, &mech_type, &key_type);
+    rv = cnk_get_metadata(session->slot_id, piv_tag, &mech_type, &key_type);
     if (rv != CKR_OK) {
       CNK_DEBUG("Failed to get metadata for PIV tag 0x%02X: %lu\n", piv_tag, rv);
       // Continue anyway, we'll use default values
@@ -614,11 +663,11 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       break;
 
     case CKO_PUBLIC_KEY:
-      rv = handle_public_key_attribute(pTemplate[i], piv_tag, key_type, mech_type, slot_id);
+      rv = handle_public_key_attribute(pTemplate[i], piv_tag, key_type, mech_type, session->slot_id);
       break;
 
     case CKO_PRIVATE_KEY:
-      rv = handle_private_key_attribute(pTemplate[i], piv_tag, key_type, mech_type, slot_id);
+      rv = handle_private_key_attribute(pTemplate[i], piv_tag, key_type, mech_type, session->slot_id);
       break;
 
     default:
@@ -647,29 +696,15 @@ static CK_RV handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_ta
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
 
   switch (attribute.type) {
-  case CKA_CERTIFICATE_TYPE:
-    if (attribute.pValue) {
-      if (attribute.ulValueLen >= sizeof(CK_CERTIFICATE_TYPE)) {
-        *((CK_CERTIFICATE_TYPE *)attribute.pValue) = CKC_X_509;
-      } else {
-        rv = CKR_BUFFER_TOO_SMALL;
-      }
-    }
-    attribute.ulValueLen = sizeof(CK_CERTIFICATE_TYPE);
-    rv = CKR_OK;
+  case CKA_CERTIFICATE_TYPE: {
+    CK_CERTIFICATE_TYPE cert_type = CKC_X_509;
+    rv = set_attribute_value(&attribute, &cert_type, sizeof(cert_type));
     break;
+  }
 
   case CKA_VALUE:
     // For certificates, return the raw certificate data
-    if (attribute.pValue) {
-      if (attribute.ulValueLen >= data_len) {
-        memcpy(attribute.pValue, data, data_len);
-      } else {
-        rv = CKR_BUFFER_TOO_SMALL;
-      }
-    }
-    attribute.ulValueLen = data_len;
-    rv = CKR_OK;
+    rv = set_attribute_value(&attribute, data, data_len);
     break;
 
     // Add other certificate attributes as needed
@@ -690,57 +725,28 @@ static CK_RV handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag
 
   switch (attribute.type) {
   case CKA_KEY_TYPE:
-    if (attribute.pValue) {
-      if (attribute.ulValueLen >= sizeof(CK_KEY_TYPE)) {
-        *((CK_KEY_TYPE *)attribute.pValue) = key_type;
-      } else {
-        rv = CKR_BUFFER_TOO_SMALL;
-      }
-    }
-    attribute.ulValueLen = sizeof(CK_KEY_TYPE);
-    rv = CKR_OK;
+    rv = set_attribute_value(&attribute, &key_type, sizeof(key_type));
     break;
 
-  case CKA_VERIFY:
+  case CKA_VERIFY: {
     // Public keys can be used for verification
-    if (attribute.pValue) {
-      if (attribute.ulValueLen >= sizeof(CK_BBOOL)) {
-        *((CK_BBOOL *)attribute.pValue) = CK_TRUE;
-      } else {
-        rv = CKR_BUFFER_TOO_SMALL;
-      }
-    }
-    attribute.ulValueLen = sizeof(CK_BBOOL);
-    rv = CKR_OK;
+    CK_BBOOL value = CK_TRUE;
+    rv = set_attribute_value(&attribute, &value, sizeof(value));
     break;
+  }
 
-  case CKA_ENCRYPT:
+  case CKA_ENCRYPT: {
     // Only RSA public keys can encrypt
-    if (attribute.pValue) {
-      if (attribute.ulValueLen >= sizeof(CK_BBOOL)) {
-        *((CK_BBOOL *)attribute.pValue) = (key_type == CKK_RSA) ? CK_TRUE : CK_FALSE;
-      } else {
-        rv = CKR_BUFFER_TOO_SMALL;
-      }
-    }
-    attribute.ulValueLen = sizeof(CK_BBOOL);
-    rv = CKR_OK;
+    CK_BBOOL value = (key_type == CKK_RSA) ? CK_TRUE : CK_FALSE;
+    rv = set_attribute_value(&attribute, &value, sizeof(value));
     break;
+  }
 
   case CKA_MODULUS_BITS:
     if (key_type == CKK_RSA) {
       // For RSA keys, we can determine the modulus bits
       CK_ULONG modulus_bits = 2048; // Default for PIV
-
-      if (attribute.pValue) {
-        if (attribute.ulValueLen >= sizeof(CK_ULONG)) {
-          *((CK_ULONG *)attribute.pValue) = modulus_bits;
-        } else {
-          rv = CKR_BUFFER_TOO_SMALL;
-        }
-      }
-      attribute.ulValueLen = sizeof(CK_ULONG);
-      rv = CKR_OK;
+      rv = set_attribute_value(&attribute, &modulus_bits, sizeof(modulus_bits));
     } else {
       // Not applicable for non-RSA keys
       rv = CKR_ATTRIBUTE_TYPE_INVALID;
@@ -766,70 +772,38 @@ static CK_RV handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_ta
 
   switch (attribute.type) {
   case CKA_KEY_TYPE:
-    if (attribute.pValue) {
-      if (attribute.ulValueLen >= sizeof(CK_KEY_TYPE)) {
-        *((CK_KEY_TYPE *)attribute.pValue) = key_type;
-      } else {
-        rv = CKR_BUFFER_TOO_SMALL;
-      }
-    }
-    attribute.ulValueLen = sizeof(CK_KEY_TYPE);
-    rv = CKR_OK;
+    rv = set_attribute_value(&attribute, &key_type, sizeof(key_type));
     break;
 
-  case CKA_SIGN:
+  case CKA_SIGN: {
     // Private keys can be used for signing
-    if (attribute.pValue) {
-      if (attribute.ulValueLen >= sizeof(CK_BBOOL)) {
-        *((CK_BBOOL *)attribute.pValue) = CK_TRUE;
-      } else {
-        rv = CKR_BUFFER_TOO_SMALL;
-      }
-    }
-    attribute.ulValueLen = sizeof(CK_BBOOL);
-    rv = CKR_OK;
+    CK_BBOOL value = CK_TRUE;
+    rv = set_attribute_value(&attribute, &value, sizeof(value));
     break;
+  }
 
-  case CKA_DECRYPT:
+  case CKA_DECRYPT: {
     // Only RSA private keys can decrypt
-    if (attribute.pValue) {
-      if (attribute.ulValueLen >= sizeof(CK_BBOOL)) {
-        *((CK_BBOOL *)attribute.pValue) = (key_type == CKK_RSA) ? CK_TRUE : CK_FALSE;
-      } else {
-        rv = CKR_BUFFER_TOO_SMALL;
-      }
-    }
-    attribute.ulValueLen = sizeof(CK_BBOOL);
-    rv = CKR_OK;
+    CK_BBOOL value = (key_type == CKK_RSA) ? CK_TRUE : CK_FALSE;
+    rv = set_attribute_value(&attribute, &value, sizeof(value));
     break;
+  }
 
   case CKA_SENSITIVE:
-  case CKA_ALWAYS_SENSITIVE:
+  case CKA_ALWAYS_SENSITIVE: {
     // Private keys are always sensitive
-    if (attribute.pValue) {
-      if (attribute.ulValueLen >= sizeof(CK_BBOOL)) {
-        *((CK_BBOOL *)attribute.pValue) = CK_TRUE;
-      } else {
-        rv = CKR_BUFFER_TOO_SMALL;
-      }
-    }
-    attribute.ulValueLen = sizeof(CK_BBOOL);
-    rv = CKR_OK;
+    CK_BBOOL value = CK_TRUE;
+    rv = set_attribute_value(&attribute, &value, sizeof(value));
     break;
+  }
 
   case CKA_EXTRACTABLE:
-  case CKA_NEVER_EXTRACTABLE:
+  case CKA_NEVER_EXTRACTABLE: {
     // Private keys on PIV are never extractable
-    if (attribute.pValue) {
-      if (attribute.ulValueLen >= sizeof(CK_BBOOL)) {
-        *((CK_BBOOL *)attribute.pValue) = (attribute.type == CKA_EXTRACTABLE) ? CK_FALSE : CK_TRUE;
-      } else {
-        rv = CKR_BUFFER_TOO_SMALL;
-      }
-    }
-    attribute.ulValueLen = sizeof(CK_BBOOL);
-    rv = CKR_OK;
+    CK_BBOOL value = (attribute.type == CKA_EXTRACTABLE) ? CK_FALSE : CK_TRUE;
+    rv = set_attribute_value(&attribute, &value, sizeof(value));
     break;
+  }
 
     // Add other private key attributes as needed
 
@@ -847,13 +821,9 @@ CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 }
 
 CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
-  // Check if the library is initialized
-  if (!g_cnk_is_initialized)
-    return CKR_CRYPTOKI_NOT_INITIALIZED;
-
-  // Find the session
+  // Validate the session
   CNK_PKCS11_SESSION *session;
-  CK_RV rv = cnk_session_find(hSession, &session);
+  CK_RV rv = validate_session(hSession, &session);
   if (rv != CKR_OK)
     return rv;
 
@@ -913,26 +883,8 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
 
     // Map CKA_ID to PIV tag
     CK_BYTE piv_tag;
-    switch (session->find_object_id) {
-    case PIV_SLOT_9A:
-      piv_tag = 0x9A;
-      break;
-    case PIV_SLOT_9C:
-      piv_tag = 0x9C;
-      break;
-    case PIV_SLOT_9D:
-      piv_tag = 0x9D;
-      break;
-    case PIV_SLOT_9E:
-      piv_tag = 0x9E;
-      break;
-    case PIV_SLOT_82:
-      piv_tag = 0x82;
-      break;
-    case PIV_SLOT_83:
-      piv_tag = 0x83;
-      break;
-    default:
+    rv = obj_id_to_piv_tag(session->find_object_id, &piv_tag);
+    if (rv != CKR_OK) {
       session->find_active = CK_FALSE;
       cnk_mutex_unlock(&session->lock);
       return CKR_OK; // Return OK but with no results
@@ -963,26 +915,7 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
     for (CK_BYTE id = 1; id <= 6; id++) {
       // Map ID to PIV tag
       CK_BYTE piv_tag;
-      switch (id) {
-      case PIV_SLOT_9A:
-        piv_tag = 0x9A;
-        break;
-      case PIV_SLOT_9C:
-        piv_tag = 0x9C;
-        break;
-      case PIV_SLOT_9D:
-        piv_tag = 0x9D;
-        break;
-      case PIV_SLOT_9E:
-        piv_tag = 0x9E;
-        break;
-      case PIV_SLOT_82:
-        piv_tag = 0x82;
-        break;
-      case PIV_SLOT_83:
-        piv_tag = 0x83;
-        break;
-      default:
+      if (obj_id_to_piv_tag(id, &piv_tag) != CKR_OK) {
         continue;
       }
 
@@ -1145,9 +1078,9 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   if (!pMechanism)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pMechanism is NULL");
 
-  // Find the session
+  // Validate session
   CNK_PKCS11_SESSION *session;
-  CK_RV rv = cnk_session_find(hSession, &session);
+  CK_RV rv = validate_session(hSession, &session);
   if (rv != CKR_OK)
     CNK_RETURN(rv, "session not found");
 
@@ -1155,46 +1088,26 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   if (pMechanism->mechanism != CKM_RSA_PKCS)
     CNK_RETURN(CKR_MECHANISM_INVALID, "only CKM_RSA_PKCS is supported");
 
-  // Extract object information from the handle
-  CK_SLOT_ID key_slot_id;
-  CK_OBJECT_CLASS key_class;
+  // Validate the key object
   CK_BYTE obj_id;
-  extract_object_info(hKey, &key_slot_id, &key_class, &obj_id);
-
-  CNK_DEBUG("Key handle: slot %lu, class %lu, id %u\n", key_slot_id, key_class, obj_id);
-
-  // Verify the slot ID matches the session's slot ID
-  if (key_slot_id != session->slot_id) {
-    CNK_RETURN(CKR_KEY_HANDLE_INVALID, "key slot ID does not match session slot ID");
+  rv = validate_object(hKey, session, CKO_PRIVATE_KEY, &obj_id);
+  if (rv != CKR_OK) {
+    if (rv == CKR_KEY_TYPE_INCONSISTENT) {
+      CNK_RETURN(rv, "key is not a private key");
+    } else {
+      CNK_RETURN(CKR_KEY_HANDLE_INVALID, "invalid key handle");
+    }
   }
 
-  // Verify this is a private key
-  if (key_class != CKO_PRIVATE_KEY) {
-    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not a private key");
-  }
+  // Get key class for debug log
+  CK_OBJECT_CLASS key_class;
+  extract_object_info(hKey, NULL, &key_class, NULL);
+  CNK_DEBUG("Key handle: slot %lu, class %lu, id %u\n", session->slot_id, key_class, obj_id);
 
-  // Validate the key ID and map to PIV tag
+  // Map object ID to PIV tag
   CK_BYTE piv_tag;
-  switch (obj_id) {
-  case PIV_SLOT_9A:
-    piv_tag = 0x9A;
-    break;
-  case PIV_SLOT_9C:
-    piv_tag = 0x9C;
-    break;
-  case PIV_SLOT_9D:
-    piv_tag = 0x9D;
-    break;
-  case PIV_SLOT_9E:
-    piv_tag = 0x9E;
-    break;
-  case PIV_SLOT_82:
-    piv_tag = 0x82;
-    break;
-  case PIV_SLOT_83:
-    piv_tag = 0x83;
-    break;
-  default:
+  rv = obj_id_to_piv_tag(obj_id, &piv_tag);
+  if (rv != CKR_OK) {
     CNK_RETURN(CKR_KEY_HANDLE_INVALID, "invalid key ID");
   }
 
@@ -1227,9 +1140,9 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   if (!pulSignatureLen)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pulSignatureLen is NULL");
 
-  // Find the session
+  // Validate the session
   CNK_PKCS11_SESSION *session;
-  CK_RV rv = cnk_session_find(hSession, &session);
+  CK_RV rv = validate_session(hSession, &session);
   if (rv != CKR_OK)
     CNK_RETURN(rv, "session not found");
 
@@ -1245,46 +1158,26 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   if (session->active_key == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called - no active key");
 
-  // Extract object information from the active key handle
-  CK_SLOT_ID key_slot_id;
-  CK_OBJECT_CLASS key_class;
+  // Validate the active key object
   CK_BYTE obj_id;
-  extract_object_info(session->active_key, &key_slot_id, &key_class, &obj_id);
-
-  CNK_DEBUG("Active key handle: slot %lu, class %lu, id %u\n", key_slot_id, key_class, obj_id);
-
-  // Verify the slot ID matches the session's slot ID
-  if (key_slot_id != session->slot_id) {
-    CNK_RETURN(CKR_KEY_HANDLE_INVALID, "key slot ID does not match session slot ID");
+  rv = validate_object(session->active_key, session, CKO_PRIVATE_KEY, &obj_id);
+  if (rv != CKR_OK) {
+    if (rv == CKR_KEY_TYPE_INCONSISTENT) {
+      CNK_RETURN(rv, "key is not a private key");
+    } else {
+      CNK_RETURN(CKR_KEY_HANDLE_INVALID, "invalid key handle");
+    }
   }
 
-  // Verify this is a private key
-  if (key_class != CKO_PRIVATE_KEY) {
-    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not a private key");
-  }
+  // Get object class for debug log
+  CK_OBJECT_CLASS key_class;
+  extract_object_info(session->active_key, NULL, &key_class, NULL);
+  CNK_DEBUG("Active key handle: slot %lu, class %lu, id %u\n", session->slot_id, key_class, obj_id);
 
   // Map the object ID to PIV tag
   CK_BYTE piv_tag;
-  switch (obj_id) {
-  case PIV_SLOT_9A:
-    piv_tag = 0x9A;
-    break;
-  case PIV_SLOT_9C:
-    piv_tag = 0x9C;
-    break;
-  case PIV_SLOT_9D:
-    piv_tag = 0x9D;
-    break;
-  case PIV_SLOT_9E:
-    piv_tag = 0x9E;
-    break;
-  case PIV_SLOT_82:
-    piv_tag = 0x82;
-    break;
-  case PIV_SLOT_83:
-    piv_tag = 0x83;
-    break;
-  default:
+  rv = obj_id_to_piv_tag(obj_id, &piv_tag);
+  if (rv != CKR_OK) {
     CNK_RETURN(CKR_KEY_HANDLE_INVALID, "invalid key ID");
   }
 
