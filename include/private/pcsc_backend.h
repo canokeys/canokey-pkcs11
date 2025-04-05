@@ -60,6 +60,11 @@ typedef struct CNK_PKCS11_SESSION CNK_PKCS11_SESSION;
 // Function to verify PIN with session
 CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
                                       CK_ULONG ulPinLen);
+
+// Extended version of verify PIN with option to control card disconnection
+CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
+                                        CK_ULONG ulPinLen, CK_BBOOL disconnect_card, SCARDHANDLE *out_card);
+
 // Function to logout PIV PIN with session
 CK_RV cnk_logout_piv_pin_with_session(CK_SLOT_ID slotID);
 
@@ -85,5 +90,11 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
 // Get metadata for a PIV key or object
 // This function retrieves metadata from a PIV key or object using the PIV metadata APDU command
 CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR algorithm_type, CK_KEY_TYPE *key_type);
+
+// Sign data using PIV key
+// This function signs data using the PIV GENERAL AUTHENTICATE command
+// Currently only supports RSA 2048 with PKCS#1 v1.5 padding
+CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_tag, CK_BYTE_PTR pData,
+                   CK_ULONG ulDataLen, CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen);
 
 #endif /* PCSC_BACKEND_H */

@@ -305,7 +305,6 @@ int main() {
                   {CKA_CLASS, &objClass, sizeof(objClass)},
                   {CKA_TOKEN, &isToken, sizeof(isToken)},
                   {CKA_PRIVATE, &isPrivate, sizeof(isPrivate)},
-                  // {CKA_MODIFIABLE, &isModifiable, sizeof(isModifiable)}
               };
 
               rv = pFunctionList->C_GetAttributeValue(hSession, certObjects[0], multiTemplate, 3);
@@ -314,7 +313,6 @@ int main() {
                 printf("    CKA_CLASS: %lu\n", objClass);
                 printf("    CKA_TOKEN: %s\n", isToken ? "CK_TRUE" : "CK_FALSE");
                 printf("    CKA_PRIVATE: %s\n", isPrivate ? "CK_TRUE" : "CK_FALSE");
-                printf("    CKA_MODIFIABLE: %s\n", isModifiable ? "CK_TRUE" : "CK_FALSE");
               } else {
                 printf("  Error getting multiple attributes: 0x%lx\n", rv);
               }
@@ -366,6 +364,93 @@ int main() {
             rv = pFunctionList->C_FindObjectsFinal(hSession);
             if (rv != CKR_OK) {
               printf("Error finalizing certificate find operation: 0x%lx\n", rv);
+            }
+          }
+
+          // Test signing functionality
+          printf("\nTesting RSA signing functionality...\n");
+
+          // First, find a private key to use for signing
+          CK_OBJECT_CLASS signKeyClass = CKO_PRIVATE_KEY;
+          CK_BYTE signKeyId = 1; // PIV_SLOT_9A (Authentication key)
+          CK_ATTRIBUTE signKeyTemplate[] = {{CKA_CLASS, &signKeyClass, sizeof(signKeyClass)},
+                                            {CKA_ID, &signKeyId, sizeof(signKeyId)}};
+
+          rv = pFunctionList->C_FindObjectsInit(hSession, signKeyTemplate, 2);
+          if (rv != CKR_OK) {
+            printf("Error initializing find operation for signing key: 0x%lx\n", rv);
+          } else {
+            CK_OBJECT_HANDLE signKeyObjects[1];
+            CK_ULONG signKeyCount;
+
+            rv = pFunctionList->C_FindObjects(hSession, signKeyObjects, 1, &signKeyCount);
+            if (rv != CKR_OK) {
+              printf("Error finding signing key: 0x%lx\n", rv);
+            } else if (signKeyCount > 0) {
+              printf("Found signing key with handle: %lu\n", signKeyObjects[0]);
+
+              // Initialize signing operation with RSA-PKCS mechanism
+              CK_MECHANISM signMechanism = {CKM_RSA_PKCS, NULL, 0};
+
+              rv = pFunctionList->C_SignInit(hSession, &signMechanism, signKeyObjects[0]);
+              if (rv != CKR_OK) {
+                printf("Error initializing signing operation: 0x%lx\n", rv);
+              } else {
+                printf("C_SignInit successful with CKM_RSA_PKCS mechanism\n");
+
+                // Data to sign (simple test message)
+                CK_BYTE dataToSign[] = "Test message for RSA signing";
+                CK_ULONG dataLen = strlen((char *)dataToSign);
+
+                // First call to get signature length
+                CK_BYTE signature[256]; // Buffer for RSA 2048 signature
+                CK_ULONG signatureLen = sizeof(signature);
+
+                printf("Signing data: '%s'\n", dataToSign);
+
+                rv = pFunctionList->C_Sign(hSession, dataToSign, dataLen, NULL, &signatureLen);
+                if (rv != CKR_OK) {
+                  printf("Error getting signature length: 0x%lx\n", rv);
+                } else {
+                  printf("Signature length: %lu bytes\n", signatureLen);
+
+                  // Second call to get the actual signature
+                  rv = pFunctionList->C_Sign(hSession, dataToSign, dataLen, signature, &signatureLen);
+                  if (rv != CKR_OK) {
+                    printf("Error performing signing operation: 0x%lx\n", rv);
+                  } else {
+                    printf("Signing operation successful!\n");
+                    printf("Signature (first 16 bytes): ");
+                    for (int i = 0; i < 16 && i < signatureLen; i++) {
+                      printf("%02X ", signature[i]);
+                    }
+                    printf("...\n");
+
+                    // If we had a public key, we would verify the signature here
+                    // But for now, we'll just check that we got a non-zero signature
+                    CK_BBOOL nonZeroFound = CK_FALSE;
+                    for (CK_ULONG i = 0; i < signatureLen; i++) {
+                      if (signature[i] != 0) {
+                        nonZeroFound = CK_TRUE;
+                        break;
+                      }
+                    }
+
+                    if (nonZeroFound) {
+                      printf("Signature contains non-zero bytes (as expected)\n");
+                    } else {
+                      printf("ERROR: Signature contains all zeros!\n");
+                    }
+                  }
+                }
+              }
+            } else {
+              printf("No signing key found with ID %d\n", signKeyId);
+            }
+
+            rv = pFunctionList->C_FindObjectsFinal(hSession);
+            if (rv != CKR_OK) {
+              printf("Error finalizing signing key find operation: 0x%lx\n", rv);
             }
           }
 

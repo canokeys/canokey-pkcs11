@@ -12,22 +12,81 @@ ReaderInfo *g_cnk_readers = NULL; // Array of reader info structs
 CK_ULONG g_cnk_num_readers = 0;
 CK_BBOOL g_cnk_is_initialized = CK_FALSE;
 
+// Function pointer type for card operations
+typedef CK_RV (*CardOperationFunc)(SCARDHANDLE hCard, void *context);
+
+// Utility function to handle card connection, operation, and disconnection
+static CK_RV cnk_with_card(CK_SLOT_ID slotID, CardOperationFunc operation, void *context, CK_BBOOL select_piv,
+                           SCARDHANDLE *out_card) {
+  if (!operation) {
+    return CKR_ARGUMENTS_BAD;
+  }
+
+  SCARDHANDLE hCard;
+  CK_RV rv;
+
+  // Connect to card
+  rv = cnk_connect_and_select_canokey(slotID, &hCard);
+  if (rv != CKR_OK) {
+    return rv;
+  }
+
+  // Select PIV application if requested
+  if (select_piv) {
+    rv = cnk_select_piv_application(hCard);
+    if (rv != CKR_OK) {
+      cnk_disconnect_card(hCard);
+      return rv;
+    }
+  }
+
+  // Return the card handle if requested
+  if (out_card != NULL) {
+    *out_card = hCard;
+    // Don't disconnect - caller is responsible
+    return operation(hCard, context);
+  }
+
+  // Perform the operation
+  rv = operation(hCard, context);
+
+  // Disconnect when done
+  cnk_disconnect_card(hCard);
+
+  return rv;
+}
+
 // Helper function to check if a string contains 'canokey' (case insensitive)
 static CK_BBOOL contains_canokey(const char *str) {
   if (!str)
     return CK_FALSE;
 
-  // Convert to lowercase for case-insensitive comparison
-  char *lowercase = strdup(str);
-  if (!lowercase)
-    return CK_FALSE;
+  // Use stack buffer for most reader names to avoid heap allocation
+  char buffer[256];
+  char *lowercase;
+  CK_BBOOL need_free = CK_FALSE;
 
-  for (size_t i = 0; lowercase[i]; i++) {
-    lowercase[i] = tolower(lowercase[i]);
+  size_t len = strlen(str);
+  if (len < sizeof(buffer)) {
+    lowercase = buffer;
+  } else {
+    // Only allocate for unusually long strings
+    lowercase = (char *)malloc(len + 1);
+    if (!lowercase)
+      return CK_FALSE;
+    need_free = CK_TRUE;
+  }
+
+  // Copy and convert to lowercase
+  for (size_t i = 0; i <= len; i++) {
+    lowercase[i] = tolower((unsigned char)str[i]);
   }
 
   CK_BBOOL result = (strstr(lowercase, "canokey") != NULL);
-  free(lowercase);
+
+  if (need_free)
+    free(lowercase);
+
   return result;
 }
 
@@ -263,7 +322,7 @@ LONG transceive_apdu(SCARDHANDLE hCard, const BYTE *command, DWORD command_len, 
   if (rv == SCARD_S_SUCCESS) {
     CNK_LOG_APDU_RESPONSE(response, *response_len);
   } else {
-    CNK_ERROR("SCardTransmit failed with error: 0x%lx", rv);
+    CNK_ERROR("SCardTransmit failed with error: 0x%lx\n", rv);
   }
 
   return rv;
@@ -397,60 +456,6 @@ CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard) {
   } else {
     return CKR_DEVICE_ERROR;
   }
-}
-
-// Logout PIV PIN with session - handles card connection
-CK_RV cnk_logout_piv_pin_with_session(CK_SLOT_ID slotID) {
-  // Connect to the card
-  SCARDHANDLE hCard;
-  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
-  if (rv != CKR_OK) {
-    return rv;
-  }
-
-  // Logout the PIN
-  rv = cnk_logout_piv_pin(hCard);
-
-  // Disconnect from the card
-  cnk_disconnect_card(hCard);
-
-  return rv;
-}
-
-// Verify the PIV PIN with session - handles card connection and caches PIN
-CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
-                                      CK_ULONG ulPinLen) {
-  if (session == NULL || (pPin == NULL && ulPinLen > 0)) {
-    return CKR_ARGUMENTS_BAD;
-  }
-
-  // PIN length must be between 1 and 8 characters
-  if (ulPinLen < 1 || ulPinLen > 8) {
-    return CKR_PIN_LEN_RANGE;
-  }
-
-  // Connect to the card
-  SCARDHANDLE hCard;
-  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
-  if (rv != CKR_OK) {
-    return rv;
-  }
-
-  // Verify the PIN
-  rv = cnk_verify_piv_pin(hCard, pPin, ulPinLen);
-
-  // If PIN verification was successful, cache the PIN in the session
-  if (rv == CKR_OK) {
-    // Store the PIN in the session
-    memset(session->piv_pin, 0xFF, sizeof(session->piv_pin)); // Pad with 0xFF
-    memcpy(session->piv_pin, pPin, ulPinLen);
-    session->piv_pin_len = ulPinLen;
-  }
-
-  // Disconnect from the card
-  cnk_disconnect_card(hCard);
-
-  return rv;
 }
 
 // Get PIV data from the CanoKey device
@@ -700,26 +705,237 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, C
   return CKR_OK;
 }
 
-/**
- * Get metadata for a PIV key or object
- * 
- * This function retrieves metadata from a PIV key or object using the PIV metadata APDU command.
- * The metadata is returned as a TLV (Tag-Length-Value) structure that contains information
- * about the key or object such as algorithm, key type, etc.
- * 
- * @param slotID The slot ID of the card
- * @param piv_tag The PIV tag (slot) to get metadata for (e.g., 0x9A, 0x9C, etc.)
- * @param algorithm_type Pointer to store the algorithm type (CKM_*)
- * @param key_type Pointer to store the key type (CKK_*)
- * @return CKR_OK on success, or an error code on failure
- */
-CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR algorithm_type, CK_KEY_TYPE *key_type) {
+// Sign data using PIV key
+// This function signs data using the PIV GENERAL AUTHENTICATE command
+// Currently only supports RSA 2048 with PKCS#1 v1.5 padding
+CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_tag, CK_BYTE_PTR pData,
+                   CK_ULONG ulDataLen, CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen) {
+  SCARDHANDLE hCard;
+  LONG pcsc_rv;
+  CK_RV rv;
+
+  // For RSA 2048 with PKCS#1 v1.5 padding, we need to format the data
+  // The GENERAL AUTHENTICATE command requires specific formatting
+
+  // Check if we're just getting the signature length
+  if (pSignature == NULL_PTR) {
+    // RSA 2048 signature is 256 bytes
+    *pulSignatureLen = 256;
+    return CKR_OK;
+  }
+
+  // Check if the buffer is large enough
+  if (*pulSignatureLen < 256) {
+    *pulSignatureLen = 256;
+    CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Signature buffer too small");
+  }
+
+  // Verify PIN before signing
+  if (session->piv_pin_len == 0) {
+    CNK_ERROR("PIN verification required before signing\n");
+    return CKR_PIN_INCORRECT;
+  }
+
+  // Use the extended version to keep the card connection open
+  rv = cnk_verify_piv_pin_with_session_ex(slotID, session, session->piv_pin, session->piv_pin_len, CK_FALSE, &hCard);
+  if (rv != CKR_OK) {
+    CNK_ERROR("Failed to verify PIN\n");
+    cnk_disconnect_card(hCard);
+    return rv;
+  }
+
+  // Format the data for RSA PKCS#1 v1.5 padding
+  // For RSA 2048, we need to create a properly padded hash according to PKCS#1 v1.5
+  // The format is: 00 01 FF FF ... FF 00 [ASN.1 DigestInfo] [hash]
+
+  // For RSA 2048, the formatted data is always 256 bytes
+  BYTE formatted_data[256];
+  memset(formatted_data, 0, sizeof(formatted_data));
+
+  // The data passed in is expected to be the raw data to be signed (not a hash)
+  // For PIV, we'll use the data directly without additional hashing
+
+  // Format the data with PKCS#1 v1.5 padding for RSA 2048
+  // Format: 00 01 [FF...FF] 00 [data]
+  formatted_data[0] = 0x00;
+  formatted_data[1] = 0x01;
+
+  // Calculate padding length to ensure the total is 256 bytes
+  // We need space for: 00 01 [FF...FF] 00 [data]
+  // So padding length = 256 - 3 - data_length (3 bytes for 00 01 00)
+  size_t padding_len = 256 - 3 - ulDataLen;
+
+  // Fill with 0xFF padding
+  for (size_t i = 0; i < padding_len; i++) {
+    formatted_data[2 + i] = 0xFF;
+  }
+
+  // Add 00 separator after padding
+  formatted_data[2 + padding_len] = 0x00;
+
+  // Copy the data
+  memcpy(formatted_data + 2 + padding_len + 1, pData, ulDataLen);
+
+  // Now construct the PIV TLV structure for GENERAL AUTHENTICATE
+  // Buffer for TLV data structure (tag + length + value)
+  BYTE tlv_data[512]; // Increased buffer size for safety
+  CK_ULONG tlv_len = 0;
+
+  // Start with the outer Dynamic Authentication Template (tag 0x7C)
+  tlv_data[tlv_len++] = 0x7C;
+  // We'll fill in the length later once we know the total length
+  CK_ULONG len_pos = tlv_len++;
+
+  // Add the Response tag (0x82) with zero length
+  tlv_data[tlv_len++] = 0x82;
+  tlv_data[tlv_len++] = 0x00;
+
+  // Add the Challenge tag (0x81) with the formatted data
+  tlv_data[tlv_len++] = 0x81;
+
+  // For RSA 2048, the formatted data is always 256 bytes
+  // Use two-byte length encoding for 256 bytes
+  tlv_data[tlv_len++] = 0x82; // Two-byte length marker
+  tlv_data[tlv_len++] = 0x01; // Length high byte (256 = 0x0100)
+  tlv_data[tlv_len++] = 0x00; // Length low byte
+
+  // Copy the formatted data (always 256 bytes for RSA 2048)
+  memcpy(tlv_data + tlv_len, formatted_data, 256);
+  tlv_len += 256;
+
+  // Now fill in the length of the outer template
+  // The length needs to be updated based on the total length of the contents
+  if (tlv_len - len_pos - 1 > 0xFF) {
+    // Need to shift everything to make room for 3-byte length
+    memmove(tlv_data + len_pos + 3, tlv_data + len_pos + 1, tlv_len - len_pos - 1);
+
+    // Store the original calculated length before modification
+    CK_ULONG content_len = tlv_len - len_pos - 1;
+
+    // Update positions sequentially to avoid undefined behavior
+    tlv_data[len_pos] = 0x82; // Two-byte length marker
+    len_pos++;
+
+    tlv_data[len_pos] = (BYTE)((content_len >> 8) & 0xFF); // Length high byte
+    len_pos++;
+
+    tlv_data[len_pos] = (BYTE)(content_len & 0xFF); // Length low byte
+    len_pos++;
+
+    tlv_len += 2; // Adjust total length for the extra length bytes
+  } else {
+    tlv_data[len_pos] = (BYTE)(tlv_len - len_pos - 1);
+  }
+
+  // Build the GENERAL AUTHENTICATE APDU
+  // Increased buffer size for Extended APDU (4 header + 3 Lc + ~500 data + 3 Le)
+  BYTE auth_apdu[550];
+  CK_ULONG apdu_len = 0;
+
+  // APDU header
+  auth_apdu[apdu_len++] = 0x00;    // CLA
+  auth_apdu[apdu_len++] = 0x87;    // INS - GENERAL AUTHENTICATE
+  auth_apdu[apdu_len++] = 0x07;    // P1 - Algorithm (RSA 2048)
+  auth_apdu[apdu_len++] = piv_tag; // P2 - Key reference (PIV slot)
+
+  // Handle Lc, Data, and Le based on APDU format and using the TLV data
+  if (tlv_len <= 255) {
+    // Standard APDU format
+    auth_apdu[apdu_len++] = (BYTE)tlv_len;           // Lc
+    memcpy(auth_apdu + apdu_len, tlv_data, tlv_len); // Data
+    apdu_len += tlv_len;
+    auth_apdu[apdu_len++] = 0x00; // Le (request max available)
+  } else {
+    // Extended APDU format
+    auth_apdu[apdu_len++] = 0x00;                          // Extended length marker
+    auth_apdu[apdu_len++] = (BYTE)((tlv_len >> 8) & 0xFF); // Lc high byte
+    auth_apdu[apdu_len++] = (BYTE)(tlv_len & 0xFF);        // Lc low byte
+    memcpy(auth_apdu + apdu_len, tlv_data, tlv_len);       // Data
+    apdu_len += tlv_len;
+    auth_apdu[apdu_len++] = 0x00; // Le high byte (request max available)
+    auth_apdu[apdu_len++] = 0x00; // Le low byte
+  }
+
+  // Send the GENERAL AUTHENTICATE command
+  BYTE response[270];
+  DWORD response_len = sizeof(response);
+
+  CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command for signing\n");
+  pcsc_rv = transceive_apdu(hCard, auth_apdu, apdu_len, response, &response_len);
+
+  if (pcsc_rv != SCARD_S_SUCCESS) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to send GENERAL AUTHENTICATE command");
+  }
+
+  // Check the response status
+  if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "GENERAL AUTHENTICATE command failed");
+  }
+
+  // Parse the response
+  // The signature is returned in the format: 7C len1 82 len2 <signature>
+  // For RSA 2048: 7C 82 01 04 82 82 01 00 <256-byte signature>
+
+  // Check if we have enough data
+  if (response_len < 10) { // 8 bytes header + 2 bytes status
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format");
+  }
+
+  // Verify the response format
+  if (response[0] != 0x7C) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: missing 7C tag");
+  }
+
+  // Find the signature data
+  size_t offset = 0;
+
+  // Skip the outer TLV header
+  if (response[1] == 0x82) { // Extended length (2 bytes)
+    offset = 4;              // Skip 7C 82 xx xx
+  } else {
+    offset = 2; // Skip 7C xx
+  }
+
+  // Check for the inner 82 tag
+  if (response[offset] != 0x82) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: missing 82 tag");
+  }
+
+  // Skip the inner TLV header
+  if (response[offset + 1] == 0x82) { // Extended length (2 bytes)
+    offset += 4;                      // Skip 82 82 xx xx
+  } else {
+    offset += 2; // Skip 82 xx
+  }
+
+  // Copy the signature
+  size_t sig_len = response_len - offset - 2; // Subtract status bytes
+  if (sig_len > 256) {
+    sig_len = 256; // Limit to 256 bytes (RSA 2048)
+  }
+
+  memcpy(pSignature, response + offset, sig_len);
+  *pulSignatureLen = sig_len;
+
+  cnk_disconnect_card(hCard);
+  return CKR_OK;
+}
+
+CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR algorithm_type,
+                       CK_KEY_TYPE *key_type) {
   SCARDHANDLE hCard;
   CK_RV rv;
-  
+
   // Initialize output parameters
-  if (algorithm_type) *algorithm_type = CKM_VENDOR_DEFINED;
-  if (key_type) *key_type = CKK_VENDOR_DEFINED;
+  if (algorithm_type)
+    *algorithm_type = CKM_VENDOR_DEFINED;
+  if (key_type)
+    *key_type = CKK_VENDOR_DEFINED;
 
   // Connect to the card for this operation
   rv = cnk_connect_and_select_canokey(slotID, &hCard);
@@ -735,9 +951,15 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR
   }
 
   // Prepare the APDU for getting metadata
-  // Command: 00 F7 00 XX where XX is the PIV tag
-  BYTE metadata_apdu[] = {0x00, 0xF7, 0x00, piv_tag};
-  BYTE response[258]; // Maximum response size
+  // Command: 00 F7 00 XX 00 where XX is the PIV tag
+  BYTE metadata_apdu[] = {0x00, 0xF7, 0x00, piv_tag, 0x00};
+
+  // Buffer to hold the complete response (up to 1024 bytes)
+  BYTE complete_response[1024];
+  CK_ULONG complete_response_len = 0;
+
+  // Temporary buffer for receiving responses
+  BYTE response[258]; // Maximum single response size
   DWORD response_len = sizeof(response);
 
   // Send the metadata command
@@ -749,32 +971,104 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR
     return CKR_DEVICE_ERROR;
   }
 
-  // Check if the command was successful (SW1SW2 = 9000)
-  if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
-    CNK_ERROR("Metadata command failed with status: %02X%02X\n", 
-              response_len >= 2 ? response[response_len - 2] : 0, 
-              response_len >= 1 ? response[response_len - 1] : 0);
+  // Process the initial response
+  if (response_len < 2) {
+    CNK_ERROR("Response too short\n");
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
   }
 
-  // Process the response data (excluding the status bytes)
-  CK_ULONG data_len = response_len - 2;
-  CK_BYTE *data = response;
+  // Check for success (9000) or more data available (61XX)
+  BYTE sw1 = response[response_len - 2];
+  BYTE sw2 = response[response_len - 1];
+
+  if (sw1 == 0x90 && sw2 == 0x00) {
+    // Success - copy the data (excluding status bytes) to the complete response buffer
+    if (response_len > 2) {
+      memcpy(complete_response, response, response_len - 2);
+      complete_response_len = response_len - 2;
+    }
+  } else if (sw1 == 0x61) {
+    // More data available - copy the initial data (excluding status bytes)
+    if (response_len > 2) {
+      memcpy(complete_response, response, response_len - 2);
+      complete_response_len = response_len - 2;
+    }
+
+    // Use GET RESPONSE to fetch remaining data
+    BYTE get_response_apdu[] = {0x00, 0xC0, 0x00, 0x00, 0x00}; // GET RESPONSE command
+
+    // Continue fetching data while the card returns 61XX
+    while (sw1 == 0x61) {
+      // Set the expected length in the GET RESPONSE command
+      get_response_apdu[4] = sw2;
+
+      // Send GET RESPONSE command
+      CNK_DEBUG("Sending GET RESPONSE command for %d bytes\n", sw2);
+      response_len = sizeof(response);
+      pcsc_rv = transceive_apdu(hCard, get_response_apdu, sizeof(get_response_apdu), response, &response_len);
+
+      if (pcsc_rv != SCARD_S_SUCCESS) {
+        CNK_ERROR("Failed to send GET RESPONSE command: %ld\n", pcsc_rv);
+        cnk_disconnect_card(hCard);
+        return CKR_DEVICE_ERROR;
+      }
+
+      if (response_len < 2) {
+        CNK_ERROR("GET RESPONSE returned too short response\n");
+        cnk_disconnect_card(hCard);
+        return CKR_DEVICE_ERROR;
+      }
+
+      // Update status bytes
+      sw1 = response[response_len - 2];
+      sw2 = response[response_len - 1];
+
+      // Check if we have enough space in the complete response buffer
+      if (complete_response_len + response_len - 2 > sizeof(complete_response)) {
+        CNK_ERROR("Response too large for buffer\n");
+        cnk_disconnect_card(hCard);
+        return CKR_DEVICE_ERROR;
+      }
+
+      // Append the data (excluding status bytes) to the complete response
+      if (response_len > 2) {
+        memcpy(complete_response + complete_response_len, response, response_len - 2);
+        complete_response_len += response_len - 2;
+      }
+    }
+
+    // Final check - the last response should be 9000
+    if (sw1 != 0x90 || sw2 != 0x00) {
+      CNK_ERROR("Final GET RESPONSE returned error status: %02X%02X\n", sw1, sw2);
+      cnk_disconnect_card(hCard);
+      return CKR_DEVICE_ERROR;
+    }
+  } else {
+    // Error status
+    CNK_ERROR("Metadata command failed with status: %02X%02X\n", sw1, sw2);
+    cnk_disconnect_card(hCard);
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Process the complete response data
+  CK_ULONG data_len = complete_response_len;
+  CK_BYTE *data = complete_response;
   CK_ULONG pos = 0;
-  
-  CNK_DEBUG("Metadata response length: %lu bytes\n", data_len);
+
+  CNK_DEBUG("Complete metadata response length: %lu bytes\n", data_len);
 
   // Parse the TLV data
   while (pos < data_len) {
     // Get the tag
     CK_BYTE tag = data[pos++];
-    if (pos >= data_len) break;
-    
+    if (pos >= data_len)
+      break;
+
     // Get the length (handle DER encoding)
     CK_ULONG length = 0;
     CK_BYTE len_byte = data[pos++];
-    
+
     if (len_byte <= 0x7F) {
       // Short form: length is directly in the byte
       length = len_byte;
@@ -791,71 +1085,74 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR
       cnk_disconnect_card(hCard);
       return CKR_DEVICE_ERROR;
     }
-    
+
     // Make sure we have enough data for the value
     if (pos + length > data_len) {
       CNK_ERROR("Incomplete TLV data in metadata response\n");
       cnk_disconnect_card(hCard);
       return CKR_DEVICE_ERROR;
     }
-    
+
     // Process the tag-value pair
     switch (tag) {
-      case 0x01: // Algorithm reference
-        if (length == 1 && algorithm_type != NULL) {
-          CK_BYTE alg_ref = data[pos];
-          CNK_DEBUG("Algorithm reference: 0x%02X\n", alg_ref);
-          
-          // Map algorithm reference to PKCS#11 mechanism type
-          switch (alg_ref) {
-            case 0x07: // RSA 2048
-              *algorithm_type = CKM_RSA_PKCS;
-              if (key_type) *key_type = CKK_RSA;
-              break;
-            case 0x11: // ECC P-256
-              *algorithm_type = CKM_ECDSA;
-              if (key_type) *key_type = CKK_EC;
-              break;
-            case 0x14: // ECC P-384
-              *algorithm_type = CKM_ECDSA;
-              if (key_type) *key_type = CKK_EC;
-              break;
-            default:
-              CNK_DEBUG("Unknown algorithm reference: 0x%02X\n", alg_ref);
-              break;
-          }
+    case 0x01: // Algorithm reference
+      if (length == 1 && algorithm_type != NULL) {
+        CK_BYTE alg_ref = data[pos];
+        CNK_DEBUG("Algorithm reference: 0x%02X\n", alg_ref);
+
+        // Map algorithm reference to PKCS#11 mechanism type
+        switch (alg_ref) {
+        case 0x07: // RSA 2048
+          *algorithm_type = CKM_RSA_PKCS;
+          if (key_type)
+            *key_type = CKK_RSA;
+          break;
+        case 0x11: // ECC P-256
+          *algorithm_type = CKM_ECDSA;
+          if (key_type)
+            *key_type = CKK_EC;
+          break;
+        case 0x14: // ECC P-384
+          *algorithm_type = CKM_ECDSA;
+          if (key_type)
+            *key_type = CKK_EC;
+          break;
+        default:
+          CNK_DEBUG("Unknown algorithm reference: 0x%02X\n", alg_ref);
+          break;
         }
-        break;
-        
-      case 0x02: // Key type and storage
-        if (length >= 2) {
-          CNK_DEBUG("Key type and storage: 0x%02X 0x%02X\n", data[pos], data[pos+1]);
-          // First byte is key type, second byte is storage location
-          // We don't need to process this further as we already have the key type from tag 0x01
-        }
-        break;
-        
-      case 0x03: // Key usage
-        if (length >= 1) {
-          CNK_DEBUG("Key usage: 0x%02X\n", data[pos]);
-          // This indicates what the key can be used for (signing, encryption, etc.)
-          // We don't need to process this for CKA_KEY_TYPE determination
-        }
-        break;
-        
-      case 0x04: // Public key encoding
-        if (length > 0) {
-          CNK_DEBUG("Public key data present, length: %lu bytes\n", length);
-          // This contains the encoded public key
-          // We don't need to process this for CKA_KEY_TYPE determination
-        }
-        break;
-        
-      default:
-        CNK_DEBUG("Unhandled metadata tag: 0x%02X, length: %lu\n", tag, length);
-        break;
+      }
+      break;
+
+    case 0x02: // Key type and storage
+      if (length >= 2) {
+        CNK_DEBUG("Key type and storage: 0x%02X 0x%02X\n", data[pos], data[pos + 1]);
+        // First byte is key type, second byte is storage location
+        // We don't need to process this further as we already have the key type from tag 0x01
+      }
+      break;
+
+    case 0x03: // Key usage
+      if (length >= 1) {
+        CNK_DEBUG("Key usage: 0x%02X\n", data[pos]);
+        // This indicates what the key can be used for (signing, encryption, etc.)
+        // We don't need to process this for CKA_KEY_TYPE determination
+      }
+      break;
+
+    case 0x04: // Public key encoding
+      if (length > 0) {
+        CNK_DEBUG("Public key data present, length: %lu bytes\n", length);
+        // This contains the encoded public key
+        // We don't need to process this for CKA_KEY_TYPE determination
+      }
+      break;
+
+    default:
+      CNK_DEBUG("Unhandled metadata tag: 0x%02X, length: %lu\n", tag, length);
+      break;
     }
-    
+
     // Move to the next TLV
     pos += length;
   }
@@ -863,4 +1160,78 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR
   // Disconnect from the card when done
   cnk_disconnect_card(hCard);
   return CKR_OK;
+}
+
+// Logout context structure
+typedef struct {
+  // No additional context needed for logout operation
+  int placeholder;
+} LogoutContext;
+
+// Card operation function for logout
+static CK_RV logout_card_operation(SCARDHANDLE hCard, void *context) {
+  // Unused parameter
+  (void)context;
+
+  // Logout the PIN
+  return cnk_logout_piv_pin(hCard);
+}
+
+// Logout PIV PIN with session - handles card connection
+CK_RV cnk_logout_piv_pin_with_session(CK_SLOT_ID slotID) {
+  // Use the card operation utility function
+  return cnk_with_card(slotID, logout_card_operation, NULL, CK_TRUE, NULL);
+}
+
+// Context structure for PIN verification
+typedef struct {
+  CNK_PKCS11_SESSION *session;
+  CK_UTF8CHAR_PTR pin;
+  CK_ULONG pin_len;
+} VerifyPinContext;
+
+// Card operation function for PIN verification
+static CK_RV verify_pin_card_operation(SCARDHANDLE hCard, void *context) {
+  VerifyPinContext *ctx = (VerifyPinContext *)context;
+  if (!ctx) {
+    return CKR_ARGUMENTS_BAD;
+  }
+
+  // Verify the PIN
+  CK_RV rv = cnk_verify_piv_pin(hCard, ctx->pin, ctx->pin_len);
+
+  // If PIN verification was successful, cache the PIN in the session
+  if (rv == CKR_OK && ctx->session != NULL) {
+    // Store the PIN in the session
+    memset(ctx->session->piv_pin, 0xFF, sizeof(ctx->session->piv_pin)); // Pad with 0xFF
+    memcpy(ctx->session->piv_pin, ctx->pin, ctx->pin_len);
+    ctx->session->piv_pin_len = ctx->pin_len;
+  }
+
+  return rv;
+}
+
+// Extended version of verify PIN with option to control card disconnection
+CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
+                                         CK_ULONG ulPinLen, CK_BBOOL disconnect_card, SCARDHANDLE *out_card) {
+  if (session == NULL || (pPin == NULL && ulPinLen > 0)) {
+    return CKR_ARGUMENTS_BAD;
+  }
+
+  // PIN length must be between 1 and 8 characters
+  if (ulPinLen < 1 || ulPinLen > 8) {
+    return CKR_PIN_LEN_RANGE;
+  }
+
+  // Set up the context for the operation
+  VerifyPinContext ctx = {.session = session, .pin = pPin, .pin_len = ulPinLen};
+
+  // Use the card operation utility function
+  return cnk_with_card(slotID, verify_pin_card_operation, &ctx, CK_TRUE, out_card);
+}
+
+// Verify the PIV PIN with session - handles card connection and caches PIN
+CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
+                                      CK_ULONG ulPinLen) {
+  return cnk_verify_piv_pin_with_session_ex(slotID, session, pPin, ulPinLen, CK_TRUE, NULL);
 }

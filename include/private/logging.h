@@ -35,8 +35,10 @@ extern void cnk_printf(const int level, const char *format, ...);
 #ifdef CNK_VERBOSE
 // #define FUNC_TRACE(CALL) dbg(CALL)
 #define CNK_RETURN(ARG, REASON)                                                                                        \
-  CNK_DEBUG("Returning value %s = %d with reason \"%s\"\n", #ARG, (ARG), REASON);                                      \
-  return (ARG);
+  do {                                                                                                                 \
+    CNK_DEBUG("Returning value %s = %d with reason \"%s\"\n", #ARG, (ARG), REASON);                                    \
+    return (ARG);                                                                                                      \
+  } while (0)
 #else
 // #define FUNC_TRACE(CALL) CALL
 #define CNK_RETURN(ARG, ...) return (ARG);

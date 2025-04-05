@@ -39,6 +39,10 @@ typedef struct CNK_PKCS11_SESSION {
   CK_BYTE find_object_id;                          // Object ID to find
   CK_BBOOL find_id_specified;                      // Whether ID was specified in the search template
   CK_BBOOL find_class_specified;                   // Whether class was specified in the search template
+
+  // Cryptographic operation fields
+  CK_OBJECT_HANDLE active_key;                     // Active key for crypto operations
+  CK_MECHANISM_TYPE active_mechanism;              // Active mechanism for crypto operations
 } CNK_PKCS11_SESSION;
 
 // Initialize the session manager

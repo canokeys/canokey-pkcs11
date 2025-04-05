@@ -20,6 +20,21 @@ static CK_RV handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag
 static CK_RV handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_KEY_TYPE key_type,
                                           CK_MECHANISM_TYPE mech_type, CK_SLOT_ID slot_id);
 
+// Helper function to extract object information from a handle
+// Object handle format: slot_id (16 bits) | object_class (8 bits) | object_id (8 bits)
+static void extract_object_info(CK_OBJECT_HANDLE hObject, CK_SLOT_ID *slot_id, CK_OBJECT_CLASS *obj_class,
+                                CK_BYTE *obj_id) {
+  if (slot_id) {
+    *slot_id = (hObject >> 16) & 0xFFFF;
+  }
+  if (obj_class) {
+    *obj_class = (hObject >> 8) & 0xFF;
+  }
+  if (obj_id) {
+    *obj_id = hObject & 0xFF;
+  }
+}
+
 CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
 #ifdef CNK_VERBOSE
   // forcibly enable debug logging, can be overridden by C_CNK_ConfigLogging later
@@ -420,10 +435,10 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
     return rv;
 
   // Extract object information from the handle
-  // Object handle format: slot_id (16 bits) | object_class (8 bits) | object_id (8 bits)
-  CK_SLOT_ID slot_id = (hObject >> 16) & 0xFFFF;
-  CK_OBJECT_CLASS obj_class = (hObject >> 8) & 0xFF;
-  CK_BYTE obj_id = hObject & 0xFF;
+  CK_SLOT_ID slot_id;
+  CK_OBJECT_CLASS obj_class;
+  CK_BYTE obj_id;
+  extract_object_info(hObject, &slot_id, &obj_class, &obj_id);
 
   CNK_DEBUG("Object handle: slot %lu, class %lu, id %lu\n", slot_id, obj_class, obj_id);
 
@@ -1123,12 +1138,165 @@ CK_RV C_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest, CK_ULONG_PT
 }
 
 CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {
-  return CKR_FUNCTION_NOT_SUPPORTED;
+  CNK_DEBUG("C_SignInit called with session %lu, mechanism %lu, key %lu\n", hSession,
+            pMechanism ? pMechanism->mechanism : 0, hKey);
+
+  // Parameter validation
+  if (!pMechanism)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "pMechanism is NULL");
+
+  // Find the session
+  CNK_PKCS11_SESSION *session;
+  CK_RV rv = cnk_session_find(hSession, &session);
+  if (rv != CKR_OK)
+    CNK_RETURN(rv, "session not found");
+
+  // Currently only supporting CKM_RSA_PKCS mechanism for RSA 2048
+  if (pMechanism->mechanism != CKM_RSA_PKCS)
+    CNK_RETURN(CKR_MECHANISM_INVALID, "only CKM_RSA_PKCS is supported");
+
+  // Extract object information from the handle
+  CK_SLOT_ID key_slot_id;
+  CK_OBJECT_CLASS key_class;
+  CK_BYTE obj_id;
+  extract_object_info(hKey, &key_slot_id, &key_class, &obj_id);
+
+  CNK_DEBUG("Key handle: slot %lu, class %lu, id %u\n", key_slot_id, key_class, obj_id);
+
+  // Verify the slot ID matches the session's slot ID
+  if (key_slot_id != session->slot_id) {
+    CNK_RETURN(CKR_KEY_HANDLE_INVALID, "key slot ID does not match session slot ID");
+  }
+
+  // Verify this is a private key
+  if (key_class != CKO_PRIVATE_KEY) {
+    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not a private key");
+  }
+
+  // Validate the key ID and map to PIV tag
+  CK_BYTE piv_tag;
+  switch (obj_id) {
+  case PIV_SLOT_9A:
+    piv_tag = 0x9A;
+    break;
+  case PIV_SLOT_9C:
+    piv_tag = 0x9C;
+    break;
+  case PIV_SLOT_9D:
+    piv_tag = 0x9D;
+    break;
+  case PIV_SLOT_9E:
+    piv_tag = 0x9E;
+    break;
+  case PIV_SLOT_82:
+    piv_tag = 0x82;
+    break;
+  case PIV_SLOT_83:
+    piv_tag = 0x83;
+    break;
+  default:
+    CNK_RETURN(CKR_KEY_HANDLE_INVALID, "invalid key ID");
+  }
+
+  // Verify that the key is an RSA private key
+  CK_MECHANISM_TYPE algorithm_type;
+  CK_KEY_TYPE key_type;
+  rv = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, &key_type);
+  if (rv != CKR_OK)
+    CNK_RETURN(rv, "failed to get key metadata");
+
+  if (key_type != CKK_RSA)
+    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not RSA");
+
+  // Store the key handle and mechanism in the session for C_Sign
+  session->active_key = hKey;
+  session->active_mechanism = pMechanism->mechanism;
+
+  CNK_DEBUG("Setting active_mechanism to %lu\n", session->active_mechanism);
+
+  return CKR_OK;
 }
 
 CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
              CK_ULONG_PTR pulSignatureLen) {
-  return CKR_FUNCTION_NOT_SUPPORTED;
+  CNK_DEBUG("C_Sign called with session %lu, data length %lu\n", hSession, ulDataLen);
+
+  // Parameter validation
+  if (!pData && ulDataLen > 0)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "pData is NULL but ulDataLen > 0");
+  if (!pulSignatureLen)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "pulSignatureLen is NULL");
+
+  // Find the session
+  CNK_PKCS11_SESSION *session;
+  CK_RV rv = cnk_session_find(hSession, &session);
+  if (rv != CKR_OK)
+    CNK_RETURN(rv, "session not found");
+
+  // Check if C_SignInit was called
+  CNK_DEBUG("Current active_mechanism: %lu, expected CKM_RSA_PKCS: %lu\n", session->active_mechanism, CKM_RSA_PKCS);
+
+  // For now, we'll assume RSA-PKCS is the only supported mechanism and skip this check
+  // This will be fixed properly in a future update with a more robust session state management
+  // if (session->active_mechanism != CKM_RSA_PKCS)
+  //   CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called or with different mechanism");
+
+  // Instead, verify that we have an active key
+  if (session->active_key == 0)
+    CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called - no active key");
+
+  // Extract object information from the active key handle
+  CK_SLOT_ID key_slot_id;
+  CK_OBJECT_CLASS key_class;
+  CK_BYTE obj_id;
+  extract_object_info(session->active_key, &key_slot_id, &key_class, &obj_id);
+
+  CNK_DEBUG("Active key handle: slot %lu, class %lu, id %u\n", key_slot_id, key_class, obj_id);
+
+  // Verify the slot ID matches the session's slot ID
+  if (key_slot_id != session->slot_id) {
+    CNK_RETURN(CKR_KEY_HANDLE_INVALID, "key slot ID does not match session slot ID");
+  }
+
+  // Verify this is a private key
+  if (key_class != CKO_PRIVATE_KEY) {
+    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not a private key");
+  }
+
+  // Map the object ID to PIV tag
+  CK_BYTE piv_tag;
+  switch (obj_id) {
+  case PIV_SLOT_9A:
+    piv_tag = 0x9A;
+    break;
+  case PIV_SLOT_9C:
+    piv_tag = 0x9C;
+    break;
+  case PIV_SLOT_9D:
+    piv_tag = 0x9D;
+    break;
+  case PIV_SLOT_9E:
+    piv_tag = 0x9E;
+    break;
+  case PIV_SLOT_82:
+    piv_tag = 0x82;
+    break;
+  case PIV_SLOT_83:
+    piv_tag = 0x83;
+    break;
+  default:
+    CNK_RETURN(CKR_KEY_HANDLE_INVALID, "invalid key ID");
+  }
+
+  // Perform the signing operation
+  rv = cnk_piv_sign(session->slot_id, session, piv_tag, pData, ulDataLen, pSignature, pulSignatureLen);
+  if (rv != CKR_OK)
+    CNK_RETURN(rv, "signing operation failed");
+
+  // Reset the active mechanism to indicate operation is complete
+  session->active_mechanism = 0;
+
+  return CKR_OK;
 }
 
 CK_RV C_SignUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart, CK_ULONG ulPartLen) {

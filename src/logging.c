@@ -37,6 +37,7 @@ void cnk_printf(const int level, const char *const format, ...) {
 /**
  * Log an APDU command in a formatted way.
  * Format: CLA INS P1 P2 [Lc] [Data] [Le]
+ * For extended APDUs: CLA INS P1 P2 00 [Lc_h Lc_l] [Data] [00 Le_h Le_l]
  *
  * @param command The APDU command buffer
  * @param command_len The length of the command buffer
@@ -78,20 +79,47 @@ void cnk_log_apdu_command(const unsigned char *command, unsigned long command_le
 
   // Check if there's Lc (data length)
   if (command_len > 4) {
-    unsigned char lc = command[4];
-    fprintf(out, " %02X", lc);
+    // Check if it's an extended APDU (5th byte is 0x00)
+    if (command[4] == 0x00 && command_len >= 7) {
+      // Extended APDU format
+      unsigned long ext_lc = (command[5] << 8) | command[6];
+      fprintf(out, " %02X %02X %02X", command[4], command[5], command[6]);
 
-    // Print data if present
-    if (lc > 0 && command_len > 5) {
-      fprintf(out, " ");
-      unsigned long data_len = (command_len > (5 + lc)) ? lc : (command_len - 5);
-      for (unsigned long i = 0; i < data_len; i++) {
-        fprintf(out, "%02X", command[5 + i]);
+      // Print data if present
+      if (ext_lc > 0 && command_len > 7) {
+        fprintf(out, " ");
+        unsigned long data_len = (command_len > (7 + ext_lc)) ? ext_lc : (command_len - 7);
+        for (unsigned long i = 0; i < data_len; i++) {
+          fprintf(out, "%02X", command[7 + i]);
+        }
+
+        // Print Le if present (extended format)
+        if (command_len > (7 + ext_lc) && command_len >= (7 + ext_lc + 3)) {
+          fprintf(out, " %02X %02X %02X", command[7 + ext_lc], command[7 + ext_lc + 1], command[7 + ext_lc + 2]);
+        } else if (command_len > (7 + ext_lc)) {
+          // Partial Le field
+          for (unsigned long i = 7 + ext_lc; i < command_len; i++) {
+            fprintf(out, " %02X", command[i]);
+          }
+        }
       }
+    } else {
+      // Standard APDU format
+      unsigned char lc = command[4];
+      fprintf(out, " %02X", lc);
 
-      // Print Le if present
-      if (command_len > (5 + lc)) {
-        fprintf(out, " %02X", command[5 + lc]);
+      // Print data if present
+      if (lc > 0 && command_len > 5) {
+        fprintf(out, " ");
+        unsigned long data_len = (command_len > (5 + lc)) ? lc : (command_len - 5);
+        for (unsigned long i = 0; i < data_len; i++) {
+          fprintf(out, "%02X", command[5 + i]);
+        }
+
+        // Print Le if present
+        if (command_len > (5 + lc)) {
+          fprintf(out, " %02X", command[5 + lc]);
+        }
       }
     }
   }
