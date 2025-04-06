@@ -1,3 +1,7 @@
+#ifndef _MSC_VER
+#define _GNU_SOURCE
+#include <string.h>
+#endif
 #include <ctype.h>
 #include <stdlib.h>
 
