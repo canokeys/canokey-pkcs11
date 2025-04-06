@@ -21,6 +21,30 @@ else()
   find_package(nsync REQUIRED)
 endif()
 
+# Configure mbedtls from submodule or system
+option(USE_BUNDLED_MBEDTLS "Use bundled mbedtls" ON)
+if(USE_BUNDLED_MBEDTLS)
+  set(OLD_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+  set(OLD_ENABLE_TESTING ${ENABLE_TESTING})
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE) # we must build mbedtls as static library
+  set(ENABLE_TESTING OFF CACHE BOOL "" FORCE) # disable mbedtls tests
+  set(ENABLE_PROGRAMS OFF CACHE BOOL "Build Mbed TLS programs." FORCE) # disable mbedtls programs
+  set(MBEDTLS_USER_CONFIG_FILE "mbedtls_config_cnk.h" CACHE FILEPATH "" FORCE) # add user config
+
+  add_subdirectory(external/mbedtls)
+
+  set(BUILD_SHARED_LIBS ${OLD_BUILD_SHARED_LIBS} CACHE BOOL "" FORCE) # restore original value
+  set(ENABLE_TESTING ${OLD_ENABLE_TESTING} CACHE BOOL "" FORCE) # restore original value
+
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/external/mbedtls/include)
+  set(MBEDTLS_LIBRARIES mbedcrypto mbedtls)
+else()
+  find_package(MbedTLS REQUIRED)
+  set(MBEDTLS_LIBRARIES MBedTLS::mbedcrypto MBedTLS::mbedtls)
+endif()
+
+set(CNK_PKCS_LIBS nsync ${MBEDTLS_LIBRARIES})
+
 file(GLOB CNK_PKCS_SRC src/*.c)
 
 # these files will be installed (excluding include/private)
@@ -31,7 +55,7 @@ file(GLOB_RECURSE CNK_PKCS_HEADERS include/*.h)
 
 option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
 add_library(${CNK_PKCS_TARGET} ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
-set(CNK_PKCS_LIBS nsync)
+
 if(BUILD_SHARED_LIBS)
   target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_LIB_SHARED")
 else()
