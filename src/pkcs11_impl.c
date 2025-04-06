@@ -115,7 +115,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   C_CNK_ConfigLogging(CNK_LOG_LEVEL_DEBUG, NULL);
 #endif
 
-  CNK_DEBUG("C_Initialize called with pInitArgs: %p", pInitArgs);
+  CNK_DEBUG("C_Initialize called with pInitArgs: %p\n", pInitArgs);
 
   // Check if the library is already initialized
   if (g_cnk_is_initialized)
@@ -234,7 +234,54 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   return CKR_OK;
 }
 
-CK_RV C_GetInfo(CK_INFO_PTR pInfo) { return CKR_FUNCTION_NOT_SUPPORTED; }
+CK_RV C_GetInfo(CK_INFO_PTR pInfo) {
+  CNK_DEBUG("C_GetInfo called with pInfo: %p\n", pInfo);
+
+  // Check if the library is initialized
+  if (!g_cnk_is_initialized) {
+    CNK_ERROR("C_GetInfo called while library is not initialized\n");
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+
+  // Validate arguments
+  if (pInfo == NULL_PTR) {
+    CNK_ERROR("C_GetInfo called with NULL_PTR\n");
+    return CKR_ARGUMENTS_BAD;
+  }
+
+  // Fill in the CK_INFO structure
+  // Cryptoki version (PKCS#11 v2.40)
+  pInfo->cryptokiVersion.major = 2;
+  pInfo->cryptokiVersion.minor = 40;
+
+  // Manufacturer ID (padded with spaces)
+  memset(pInfo->manufacturerID, ' ', sizeof(pInfo->manufacturerID));
+  const char *manufacturer = "canokeys.org";
+  size_t manufacturer_len = strlen(manufacturer);
+  if (manufacturer_len > sizeof(pInfo->manufacturerID)) {
+    manufacturer_len = sizeof(pInfo->manufacturerID);
+  }
+  memcpy(pInfo->manufacturerID, manufacturer, manufacturer_len);
+
+  // No flags
+  pInfo->flags = 0;
+
+  // Library description (padded with spaces)
+  memset(pInfo->libraryDescription, ' ', sizeof(pInfo->libraryDescription));
+  const char *description = "CanoKey PKCS#11 Library";
+  size_t description_len = strlen(description);
+  if (description_len > sizeof(pInfo->libraryDescription)) {
+    description_len = sizeof(pInfo->libraryDescription);
+  }
+  memcpy(pInfo->libraryDescription, description, description_len);
+
+  // Library version
+  pInfo->libraryVersion.major = 1;
+  pInfo->libraryVersion.minor = 0;
+
+  CNK_DEBUG("C_GetInfo completed successfully\n");
+  return CKR_OK;
+}
 
 CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList) {
   if (ppFunctionList == NULL_PTR)
@@ -280,32 +327,32 @@ CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PT
 }
 
 CK_RV C_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
-  if (!pInfo)
-    return CKR_ARGUMENTS_BAD;
+  CNK_DEBUG("C_GetSlotInfo called with slotID: %lu, pInfo: %p\n", slotID, pInfo);
 
-  // Get firmware version directly (it will handle its own connection)
-  CK_BYTE fw_major, fw_minor;
-  CK_RV rv = cnk_get_version(slotID, 0x00, &fw_major, &fw_minor);
-  if (rv != CKR_OK) {
-    return rv;
+  if (!pInfo) {
+    CNK_ERROR("C_GetSlotInfo called with NULL pInfo\n");
+    return CKR_ARGUMENTS_BAD;
   }
 
-  // Get hardware version
-  CK_BYTE hw_major, hw_minor;
-  rv = cnk_get_version(slotID, 0x01, &hw_major, &hw_minor);
+  // Get firmware version and hardware name
+  CK_BYTE fw_major, fw_minor;
+  char hw_name[64] = {0}; // Buffer for hardware name
+  CK_RV rv = cnk_get_version(slotID, &fw_major, &fw_minor, hw_name, sizeof(hw_name));
   if (rv != CKR_OK) {
+    CNK_ERROR("C_GetSlotInfo: Failed to get firmware version, rv = 0x%lx\n", rv);
     return rv;
   }
 
   // Fill in the slot info structure
   memset(pInfo, 0, sizeof(CK_SLOT_INFO));
 
-  // Set the slot description
-  char desc[64];
-  snprintf(desc, sizeof(desc), "CanoKey (FW: %d.%d, HW: %d.%d)", fw_major, fw_minor, hw_major, hw_minor);
+  // Set the slot description to hardware name
   memset(pInfo->slotDescription, ' ', sizeof(pInfo->slotDescription));
-  memcpy(pInfo->slotDescription, desc,
-         strlen(desc) > sizeof(pInfo->slotDescription) ? sizeof(pInfo->slotDescription) : strlen(desc));
+  size_t name_len = strlen(hw_name);
+  if (name_len > sizeof(pInfo->slotDescription)) {
+    name_len = sizeof(pInfo->slotDescription);
+  }
+  memcpy(pInfo->slotDescription, hw_name, name_len);
 
   // Set the manufacturer ID
   memset(pInfo->manufacturerID, ' ', sizeof(pInfo->manufacturerID));
@@ -316,18 +363,117 @@ CK_RV C_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
   // Set flags
   pInfo->flags = CKF_REMOVABLE_DEVICE | CKF_HW_SLOT | CKF_TOKEN_PRESENT;
 
-  // Set hardware version
-  pInfo->hardwareVersion.major = hw_major;
-  pInfo->hardwareVersion.minor = hw_minor;
+  // Always set hardware version to 1.0
+  pInfo->hardwareVersion.major = 1;
+  pInfo->hardwareVersion.minor = 0;
 
   // Set firmware version
   pInfo->firmwareVersion.major = fw_major;
   pInfo->firmwareVersion.minor = fw_minor;
 
+  CNK_DEBUG("C_GetSlotInfo: Hardware name: %s, FW version: %d.%d\n", hw_name, fw_major, fw_minor);
   return CKR_OK;
 }
 
-CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) { return CKR_FUNCTION_NOT_SUPPORTED; }
+CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
+  CNK_DEBUG("C_GetTokenInfo: slotID = %lu\n", slotID);
+
+  // Check parameters
+  if (!g_cnk_is_initialized) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+
+  if (!pInfo) {
+    return CKR_ARGUMENTS_BAD;
+  }
+
+  // Check if the slot ID is valid
+  if (slotID >= g_cnk_num_readers) {
+    return CKR_SLOT_ID_INVALID;
+  }
+
+  // Get the serial number
+  CK_ULONG serial_number;
+  CK_RV rv = cnk_get_serial_number(slotID, &serial_number);
+  if (rv != CKR_OK) {
+    CNK_ERROR("C_GetTokenInfo: Failed to get serial number, rv = 0x%lx\n", rv);
+    return rv;
+  }
+
+  // Clear the structure
+  memset(pInfo, 0, sizeof(CK_TOKEN_INFO));
+
+  // Create the token label with serial number
+  char label[32];
+  snprintf(label, sizeof(label), "CanoKey PIV #%lu", serial_number);
+
+  // Set the token label (padded with spaces)
+  memset(pInfo->label, ' ', sizeof(pInfo->label));
+  size_t label_len = strlen(label);
+  if (label_len > sizeof(pInfo->label)) {
+    label_len = sizeof(pInfo->label);
+  }
+  memcpy(pInfo->label, label, label_len);
+
+  // Set the manufacturer ID (padded with spaces)
+  memset(pInfo->manufacturerID, ' ', sizeof(pInfo->manufacturerID));
+  const char *manufacturer = "canokeys.org";
+  size_t manufacturer_len = strlen(manufacturer);
+  if (manufacturer_len > sizeof(pInfo->manufacturerID)) {
+    manufacturer_len = sizeof(pInfo->manufacturerID);
+  }
+  memcpy(pInfo->manufacturerID, manufacturer, manufacturer_len);
+
+  // Set the serial number (padded with spaces)
+  memset(pInfo->serialNumber, ' ', sizeof(pInfo->serialNumber));
+  char serial_str[16];
+  snprintf(serial_str, sizeof(serial_str), "%lu", serial_number);
+  size_t serial_len = strlen(serial_str);
+  if (serial_len > sizeof(pInfo->serialNumber)) {
+    serial_len = sizeof(pInfo->serialNumber);
+  }
+  memcpy(pInfo->serialNumber, serial_str, serial_len);
+
+  // Set the flags as requested
+  pInfo->flags = CKF_RNG | CKF_LOGIN_REQUIRED | CKF_USER_PIN_INITIALIZED | CKF_TOKEN_INITIALIZED;
+
+  // Set session counts
+  pInfo->ulMaxSessionCount = CK_EFFECTIVELY_INFINITE;
+  pInfo->ulSessionCount = 0; // Will be updated if we implement session tracking
+  pInfo->ulMaxRwSessionCount = CK_EFFECTIVELY_INFINITE;
+  pInfo->ulRwSessionCount = 0; // Will be updated if we implement session tracking
+
+  // Set PIN constraints
+  pInfo->ulMaxPinLen = 8; // PIV PIN is 8 digits max
+  pInfo->ulMinPinLen = 6; // PIV PIN is 6 digits min
+
+  // Memory info - not applicable for a smart card, set to effectively infinite
+  pInfo->ulTotalPublicMemory = CK_UNAVAILABLE_INFORMATION;
+  pInfo->ulFreePublicMemory = CK_UNAVAILABLE_INFORMATION;
+  pInfo->ulTotalPrivateMemory = CK_UNAVAILABLE_INFORMATION;
+  pInfo->ulFreePrivateMemory = CK_UNAVAILABLE_INFORMATION;
+
+  // Get firmware version
+  CK_BYTE fw_major, fw_minor;
+  rv = cnk_get_version(slotID, &fw_major, &fw_minor, (char *)pInfo->model, sizeof(pInfo->model));
+  if (rv != CKR_OK) {
+    // If we can't get the version, default to 1.0
+    fw_major = 1;
+    fw_minor = 0;
+  }
+
+  // Set hardware and firmware versions
+  pInfo->hardwareVersion.major = 1;
+  pInfo->hardwareVersion.minor = 0;
+  pInfo->firmwareVersion.major = fw_major;
+  pInfo->firmwareVersion.minor = fw_minor;
+
+  // UTC time - not supported
+  memset(pInfo->utcTime, 0, sizeof(pInfo->utcTime));
+
+  CNK_DEBUG("C_GetTokenInfo: Serial number: %lu, Label: %s\n", serial_number, label);
+  return CKR_OK;
+}
 
 CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList, CK_ULONG_PTR pulCount) {
   return CKR_FUNCTION_NOT_SUPPORTED;
@@ -379,7 +525,52 @@ CK_RV C_CloseAllSessions(CK_SLOT_ID slotID) {
   return cnk_session_close_all(slotID);
 }
 
-CK_RV C_GetSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) { return CKR_FUNCTION_NOT_SUPPORTED; }
+CK_RV C_GetSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
+  CNK_DEBUG("C_GetSessionInfo: hSession = %lu\n", hSession);
+
+  // Check if the cryptoki library is initialized
+  if (!g_cnk_is_initialized) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+
+  // Validate arguments
+  if (pInfo == NULL) {
+    return CKR_ARGUMENTS_BAD;
+  }
+
+  // Find the session
+  CNK_PKCS11_SESSION *session;
+  CK_RV rv = cnk_session_find(hSession, &session);
+  if (rv != CKR_OK) {
+    CNK_ERROR("C_GetSessionInfo: Invalid session handle %lu, rv = 0x%lx\n", hSession, rv);
+    return rv;
+  }
+
+  // Fill in the session info structure
+  pInfo->slotID = session->slot_id;
+
+  // Set the session flags (only support read-only for now)
+  pInfo->flags = CKF_SERIAL_SESSION; // Always set for PKCS#11 v2.x
+  // We don't support read-write sessions for now
+  // if (session->flags & CKF_RW_SESSION) {
+  //   pInfo->flags |= CKF_RW_SESSION;
+  // }
+
+  // Determine the state based on PIN cache status
+  if (session->piv_pin_len > 0) {
+    // User is logged in
+    pInfo->state = CKS_RO_USER_FUNCTIONS;
+  } else {
+    // User is not logged in
+    pInfo->state = CKS_RO_PUBLIC_SESSION;
+  }
+
+  // No device errors
+  pInfo->ulDeviceError = 0;
+
+  CNK_DEBUG("C_GetSessionInfo: slotID = %lu, state = %lu, flags = 0x%lx\n", pInfo->slotID, pInfo->state, pInfo->flags);
+  return CKR_OK;
+}
 
 CK_RV C_GetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationState, CK_ULONG_PTR pulOperationStateLen) {
   return CKR_FUNCTION_NOT_SUPPORTED;

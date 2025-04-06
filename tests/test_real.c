@@ -1,0 +1,397 @@
+#include "../include/pkcs11.h"
+#include <dlfcn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// Function pointer type for C_GetFunctionList
+typedef CK_RV (*C_GetFunctionList_t)(CK_FUNCTION_LIST_PTR_PTR);
+
+int main(int argc, char *argv[]) {
+  // Path to the PKCS#11 library
+  const char *libraryPath = NULL;
+
+  // Check if a library path was provided as a command line argument
+  if (argc > 1) {
+    libraryPath = argv[1];
+  }
+
+  printf("Using PKCS#11 library: %s\n", libraryPath);
+
+  // Load the PKCS#11 library dynamically
+  void *library = dlopen(libraryPath, RTLD_LAZY);
+  if (!library) {
+    printf("Error loading library: %s\n", dlerror());
+    return 1;
+  }
+
+  // Get the C_GetFunctionList function
+  C_GetFunctionList_t getFunc = (C_GetFunctionList_t)dlsym(library, "C_GetFunctionList");
+  if (!getFunc) {
+    printf("Error getting C_GetFunctionList function: %s\n", dlerror());
+    dlclose(library);
+    return 1;
+  }
+
+  // Get the function list
+  CK_FUNCTION_LIST_PTR pFunctionList = NULL;
+  CK_RV rv = getFunc(&pFunctionList);
+  if (rv != CKR_OK) {
+    printf("Error getting function list: 0x%lx\n", rv);
+    dlclose(library);
+    return 1;
+  }
+
+  printf("Successfully loaded PKCS#11 library\n");
+
+  // Initialize the library
+  rv = pFunctionList->C_Initialize(NULL);
+  if (rv != CKR_OK) {
+    printf("Error initializing library: 0x%lx\n", rv);
+    dlclose(library);
+    return 1;
+  }
+
+  printf("Library initialized successfully\n");
+
+  // Get library information
+  CK_INFO info;
+  rv = pFunctionList->C_GetInfo(&info);
+  if (rv != CKR_OK) {
+    printf("Error getting library info: 0x%lx\n", rv);
+  } else {
+    // Convert fixed-length fields to null-terminated strings
+    char manufacturerID[33] = {0};
+    char libraryDescription[33] = {0};
+
+    memcpy(manufacturerID, info.manufacturerID, sizeof(info.manufacturerID));
+    memcpy(libraryDescription, info.libraryDescription, sizeof(info.libraryDescription));
+
+    // Trim trailing spaces
+    for (int i = sizeof(info.manufacturerID) - 1; i >= 0; i--) {
+      if (manufacturerID[i] == ' ') {
+        manufacturerID[i] = '\0';
+      } else {
+        break;
+      }
+    }
+
+    for (int i = sizeof(info.libraryDescription) - 1; i >= 0; i--) {
+      if (libraryDescription[i] == ' ') {
+        libraryDescription[i] = '\0';
+      } else {
+        break;
+      }
+    }
+
+    printf("PKCS#11 Library Information:\n");
+    printf("  Cryptoki Version: %d.%d\n", info.cryptokiVersion.major, info.cryptokiVersion.minor);
+    printf("  Manufacturer: %s\n", manufacturerID);
+    printf("  Library Description: %s\n", libraryDescription);
+    printf("  Library Version: %d.%d\n", info.libraryVersion.major, info.libraryVersion.minor);
+  }
+
+  // Get the number of slots
+  CK_ULONG ulSlotCount = 0;
+  rv = pFunctionList->C_GetSlotList(CK_FALSE, NULL, &ulSlotCount);
+  if (rv != CKR_OK) {
+    printf("Error getting slot count: 0x%lx\n", rv);
+    pFunctionList->C_Finalize(NULL);
+    dlclose(library);
+    return 1;
+  }
+
+  printf("Number of slots: %lu\n", ulSlotCount);
+
+  if (ulSlotCount > 0) {
+    // Allocate memory for the slot list
+    CK_SLOT_ID_PTR pSlotList = (CK_SLOT_ID_PTR)malloc(ulSlotCount * sizeof(CK_SLOT_ID));
+    if (!pSlotList) {
+      printf("Memory allocation failed\n");
+      pFunctionList->C_Finalize(NULL);
+      dlclose(library);
+      return 1;
+    }
+
+    // Get the slot list
+    rv = pFunctionList->C_GetSlotList(CK_FALSE, pSlotList, &ulSlotCount);
+    if (rv != CKR_OK) {
+      printf("Error getting slot list: 0x%lx\n", rv);
+      free(pSlotList);
+      pFunctionList->C_Finalize(NULL);
+      dlclose(library);
+      return 1;
+    }
+
+    // Print the slot IDs and get slot info for each slot
+    printf("Slot IDs:\n");
+    for (CK_ULONG i = 0; i < ulSlotCount; i++) {
+      printf("  Slot %lu: ID = %lu\n", i, pSlotList[i]);
+
+      // Get and display slot info
+      CK_SLOT_INFO slotInfo;
+      rv = pFunctionList->C_GetSlotInfo(pSlotList[i], &slotInfo);
+      if (rv != CKR_OK) {
+        printf("    Error getting slot info: 0x%lx\n", rv);
+        continue;
+      }
+
+      // Convert the fixed-length fields to null-terminated strings for display
+      char description[65] = {0};
+      char manufacturer[33] = {0};
+
+      memcpy(description, slotInfo.slotDescription, sizeof(slotInfo.slotDescription));
+      description[sizeof(slotInfo.slotDescription)] = '\0';
+      // Trim trailing spaces
+      for (int j = sizeof(slotInfo.slotDescription) - 1; j >= 0; j--) {
+        if (description[j] == ' ') {
+          description[j] = '\0';
+        } else {
+          break;
+        }
+      }
+
+      memcpy(manufacturer, slotInfo.manufacturerID, sizeof(slotInfo.manufacturerID));
+      manufacturer[sizeof(slotInfo.manufacturerID)] = '\0';
+      // Trim trailing spaces
+      for (int j = sizeof(slotInfo.manufacturerID) - 1; j >= 0; j--) {
+        if (manufacturer[j] == ' ') {
+          manufacturer[j] = '\0';
+        } else {
+          break;
+        }
+      }
+
+      printf("    Description: %s\n", description);
+      printf("    Manufacturer: %s\n", manufacturer);
+      printf("    Hardware Version: %d.%d\n", slotInfo.hardwareVersion.major, slotInfo.hardwareVersion.minor);
+      printf("    Firmware Version: %d.%d\n", slotInfo.firmwareVersion.major, slotInfo.firmwareVersion.minor);
+      printf("    Flags: 0x%lx\n", slotInfo.flags);
+
+      // Interpret flags
+      if (slotInfo.flags & CKF_TOKEN_PRESENT)
+        printf("      - Token present\n");
+      if (slotInfo.flags & CKF_REMOVABLE_DEVICE)
+        printf("      - Removable device\n");
+      if (slotInfo.flags & CKF_HW_SLOT)
+        printf("      - Hardware slot\n");
+
+      // Get token info if a token is present
+      if (slotInfo.flags & CKF_TOKEN_PRESENT) {
+        CK_TOKEN_INFO tokenInfo;
+        rv = pFunctionList->C_GetTokenInfo(pSlotList[i], &tokenInfo);
+        if (rv != CKR_OK) {
+          printf("    Error getting token info: 0x%lx\n", rv);
+          continue;
+        }
+
+        // Convert fixed-length fields to null-terminated strings
+        char tokenLabel[33] = {0};
+        char tokenManufacturer[33] = {0};
+        char tokenModel[17] = {0};
+        char tokenSerialNumber[17] = {0};
+
+        memcpy(tokenLabel, tokenInfo.label, sizeof(tokenInfo.label));
+        memcpy(tokenManufacturer, tokenInfo.manufacturerID, sizeof(tokenInfo.manufacturerID));
+        memcpy(tokenModel, tokenInfo.model, sizeof(tokenInfo.model));
+        memcpy(tokenSerialNumber, tokenInfo.serialNumber, sizeof(tokenInfo.serialNumber));
+
+        // Trim trailing spaces
+        for (int j = sizeof(tokenInfo.label) - 1; j >= 0; j--) {
+          if (tokenLabel[j] == ' ') {
+            tokenLabel[j] = '\0';
+          } else {
+            break;
+          }
+        }
+
+        for (int j = sizeof(tokenInfo.manufacturerID) - 1; j >= 0; j--) {
+          if (tokenManufacturer[j] == ' ') {
+            tokenManufacturer[j] = '\0';
+          } else {
+            break;
+          }
+        }
+
+        for (int j = sizeof(tokenInfo.model) - 1; j >= 0; j--) {
+          if (tokenModel[j] == ' ') {
+            tokenModel[j] = '\0';
+          } else {
+            break;
+          }
+        }
+
+        for (int j = sizeof(tokenInfo.serialNumber) - 1; j >= 0; j--) {
+          if (tokenSerialNumber[j] == ' ') {
+            tokenSerialNumber[j] = '\0';
+          } else {
+            break;
+          }
+        }
+
+        printf("    Token Information:\n");
+        printf("      Label: %s\n", tokenLabel);
+        printf("      Manufacturer: %s\n", tokenManufacturer);
+        printf("      Model: %s\n", tokenModel);
+        printf("      Serial Number: %s\n", tokenSerialNumber);
+        printf("      Hardware Version: %d.%d\n", tokenInfo.hardwareVersion.major, tokenInfo.hardwareVersion.minor);
+        printf("      Firmware Version: %d.%d\n", tokenInfo.firmwareVersion.major, tokenInfo.firmwareVersion.minor);
+
+        // Print token flags
+        printf("      Flags: 0x%lx\n", tokenInfo.flags);
+        if (tokenInfo.flags & CKF_RNG)
+          printf("        - Has random number generator\n");
+        if (tokenInfo.flags & CKF_WRITE_PROTECTED)
+          printf("        - Write protected\n");
+        if (tokenInfo.flags & CKF_LOGIN_REQUIRED)
+          printf("        - Login required\n");
+        if (tokenInfo.flags & CKF_USER_PIN_INITIALIZED)
+          printf("        - User PIN initialized\n");
+        if (tokenInfo.flags & CKF_PROTECTED_AUTHENTICATION_PATH)
+          printf("        - Protected authentication path\n");
+        if (tokenInfo.flags & CKF_TOKEN_INITIALIZED)
+          printf("        - Token initialized\n");
+
+        // Try to open a session with this token
+        CK_SESSION_HANDLE hSession;
+        rv = pFunctionList->C_OpenSession(pSlotList[i], CKF_SERIAL_SESSION, NULL, NULL, &hSession);
+        if (rv != CKR_OK) {
+          printf("    Error opening session: 0x%lx\n", rv);
+          continue;
+        }
+
+        printf("    Session opened successfully. Session handle: %lu\n", hSession);
+
+        // Get session info
+        CK_SESSION_INFO sessionInfo;
+        rv = pFunctionList->C_GetSessionInfo(hSession, &sessionInfo);
+        if (rv == CKR_OK) {
+          printf("    Session Information:\n");
+          printf("      Slot ID: %lu\n", sessionInfo.slotID);
+          printf("      State: ");
+          switch (sessionInfo.state) {
+          case CKS_RO_PUBLIC_SESSION:
+            printf("Read-only public session\n");
+            break;
+          case CKS_RO_USER_FUNCTIONS:
+            printf("Read-only user session\n");
+            break;
+          case CKS_RW_PUBLIC_SESSION:
+            printf("Read-write public session\n");
+            break;
+          case CKS_RW_USER_FUNCTIONS:
+            printf("Read-write user session\n");
+            break;
+          case CKS_RW_SO_FUNCTIONS:
+            printf("Read-write security officer session\n");
+            break;
+          default:
+            printf("Unknown state (%lu)\n", sessionInfo.state);
+            break;
+          }
+          printf("      Flags: 0x%lx\n", sessionInfo.flags);
+          if (sessionInfo.flags & CKF_RW_SESSION)
+            printf("        - Read-write session\n");
+          if (sessionInfo.flags & CKF_SERIAL_SESSION)
+            printf("        - Serial session\n");
+        } else {
+          printf("    Error getting session info: 0x%lx\n", rv);
+        }
+
+        // Try to get the mechanism list
+        CK_ULONG ulMechCount;
+        rv = pFunctionList->C_GetMechanismList(pSlotList[i], NULL, &ulMechCount);
+        if (rv == CKR_OK) {
+          printf("    Supported mechanisms: %lu\n", ulMechCount);
+
+          if (ulMechCount > 0) {
+            CK_MECHANISM_TYPE_PTR pMechanismList =
+                (CK_MECHANISM_TYPE_PTR)malloc(ulMechCount * sizeof(CK_MECHANISM_TYPE));
+            if (pMechanismList) {
+              rv = pFunctionList->C_GetMechanismList(pSlotList[i], pMechanismList, &ulMechCount);
+              if (rv == CKR_OK) {
+                printf("    Mechanism list:\n");
+                for (CK_ULONG j = 0; j < ulMechCount; j++) {
+                  printf("      %lu: 0x%lx", j, pMechanismList[j]);
+
+                  // Print known mechanism names
+                  switch (pMechanismList[j]) {
+                  case CKM_RSA_PKCS:
+                    printf(" (CKM_RSA_PKCS)\n");
+                    break;
+                  case CKM_RSA_PKCS_KEY_PAIR_GEN:
+                    printf(" (CKM_RSA_PKCS_KEY_PAIR_GEN)\n");
+                    break;
+                  case CKM_SHA1_RSA_PKCS:
+                    printf(" (CKM_SHA1_RSA_PKCS)\n");
+                    break;
+                  case CKM_SHA256_RSA_PKCS:
+                    printf(" (CKM_SHA256_RSA_PKCS)\n");
+                    break;
+                  case CKM_SHA384_RSA_PKCS:
+                    printf(" (CKM_SHA384_RSA_PKCS)\n");
+                    break;
+                  case CKM_SHA512_RSA_PKCS:
+                    printf(" (CKM_SHA512_RSA_PKCS)\n");
+                    break;
+                  case CKM_ECDSA:
+                    printf(" (CKM_ECDSA)\n");
+                    break;
+                  case CKM_ECDSA_SHA1:
+                    printf(" (CKM_ECDSA_SHA1)\n");
+                    break;
+                  case CKM_ECDSA_SHA256:
+                    printf(" (CKM_ECDSA_SHA256)\n");
+                    break;
+                  case CKM_EC_KEY_PAIR_GEN:
+                    printf(" (CKM_EC_KEY_PAIR_GEN)\n");
+                    break;
+                  default:
+                    printf(" (Unknown)\n");
+                    break;
+                  }
+                }
+              } else {
+                printf("    Error getting mechanism list: 0x%lx\n", rv);
+              }
+
+              free(pMechanismList);
+            } else {
+              printf("    Memory allocation failed for mechanism list\n");
+            }
+          }
+        } else {
+          printf("    Error getting mechanism count: 0x%lx\n", rv);
+        }
+
+        // Close the session
+        rv = pFunctionList->C_CloseSession(hSession);
+        if (rv != CKR_OK) {
+          printf("    Error closing session: 0x%lx\n", rv);
+        } else {
+          printf("    Session closed successfully.\n");
+        }
+      }
+    }
+
+    free(pSlotList);
+  } else {
+    printf("No slots found. Make sure a PKCS#11 device is connected.\n");
+  }
+
+  // Finalize the library
+  rv = pFunctionList->C_Finalize(NULL);
+  if (rv != CKR_OK) {
+    printf("Error finalizing library: 0x%lx\n", rv);
+    dlclose(library);
+    return 1;
+  }
+
+  printf("Library finalized successfully\n");
+
+  // Close the library
+  dlclose(library);
+  printf("Library unloaded\n");
+
+  return 0;
+}

@@ -63,7 +63,7 @@ CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *ses
 
 // Extended version of verify PIN with option to control card disconnection
 CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
-                                        CK_ULONG ulPinLen, CK_BBOOL disconnect_card, SCARDHANDLE *out_card);
+                                         CK_ULONG ulPinLen, CK_BBOOL disconnect_card, SCARDHANDLE *out_card);
 
 // Function to logout PIV PIN with session
 CK_RV cnk_logout_piv_pin_with_session(CK_SLOT_ID slotID);
@@ -80,8 +80,17 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard);
 // Disconnect from a card and end any active transaction
 void cnk_disconnect_card(SCARDHANDLE hCard);
 
-// Get firmware or hardware version
-CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, CK_BYTE *minor);
+// Get firmware version and hardware name
+CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, char *hw_name, size_t hw_name_len);
+
+// Get serial number (4-byte big endian number)
+CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number);
+
+// Check if the library is initialized
+CK_BBOOL cnk_is_initialized(void);
+
+// Get the number of available slots
+CK_ULONG cnk_get_slot_count(void);
 
 // Get PIV data from the CanoKey device
 // If fetch_data is CK_FALSE, only checks for existence and sets data_len to 1 if found, 0 if not

@@ -603,8 +603,116 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
   return CKR_OK;
 }
 
-// Helper function to get firmware or hardware version
-CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, CK_BYTE *minor) {
+// Helper function to get firmware version and hardware name
+CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, char *hw_name_out, size_t hw_name_len) {
+  SCARDHANDLE hCard;
+  char local_hw_name[256] = {0}; // Local buffer for hardware name
+
+  // Connect to the card for this operation
+  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
+  if (rv != CKR_OK) {
+    return rv;
+  }
+
+  // Select the CanoKey AID: F000000000
+  CK_BYTE select_apdu[] = {0x00, 0xA4, 0x04, 0x00, 0x05, 0xF0, 0x00, 0x00, 0x00, 0x00};
+  CK_BYTE response[258];
+  DWORD response_len = sizeof(response);
+
+  // Use the transceive function to send the command and log both command and response
+  rv = cnk_transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len);
+  if (rv != SCARD_S_SUCCESS) {
+    cnk_disconnect_card(hCard);
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Check if the select command was successful (SW1SW2 = 9000)
+  if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
+    cnk_disconnect_card(hCard);
+    return CKR_DEVICE_ERROR;
+  }
+
+  // First get the hardware name
+  CK_BYTE hw_version_apdu[] = {0x00, 0x31, 0x01, 0x00, 0x00};
+  response_len = sizeof(response);
+
+  // Send the hardware version command
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, hw_version_apdu, sizeof(hw_version_apdu), response, &response_len);
+  if (pcsc_rv == SCARD_S_SUCCESS && response_len >= 2 && response[response_len - 2] == 0x90 &&
+      response[response_len - 1] == 0x00) {
+
+    // Extract hardware name
+    size_t name_len = response_len - 2; // Exclude status bytes
+    if (name_len > sizeof(local_hw_name) - 1) {
+      name_len = sizeof(local_hw_name) - 1;
+    }
+    memcpy(local_hw_name, response, name_len);
+    local_hw_name[name_len] = '\0';
+  } else {
+    // If hardware name retrieval fails, set a default
+    strcpy(local_hw_name, "CanoKey");
+  }
+
+  // Now get the firmware version
+  CK_BYTE fw_version_apdu[] = {0x00, 0x31, 0x00, 0x00, 0x00};
+  response_len = sizeof(response);
+
+  // Send the firmware version command
+  pcsc_rv = cnk_transceive_apdu(hCard, fw_version_apdu, sizeof(fw_version_apdu), response, &response_len);
+  if (pcsc_rv != SCARD_S_SUCCESS) {
+    cnk_disconnect_card(hCard);
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Check if the command was successful
+  if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
+    cnk_disconnect_card(hCard);
+    return CKR_DEVICE_ERROR;
+  }
+
+  // Parse firmware version string (format: "X.Y.Z")
+  char version_str[16] = {0};
+  size_t len = response_len - 2; // Exclude status bytes
+  if (len > sizeof(version_str) - 1) {
+    len = sizeof(version_str) - 1;
+  }
+  memcpy(version_str, response, len);
+  version_str[len] = '\0';
+
+  int v_major, v_minor, v_patch;
+  if (sscanf(version_str, "%d.%d.%d", &v_major, &v_minor, &v_patch) == 3) {
+    // For firmware version: major is the first part, minor is the second part * 10 + the third part
+    *fw_major = v_major;
+    *fw_minor = v_minor * 10 + v_patch;
+  } else {
+    // Fallback if parsing fails
+    *fw_major = 0;
+    *fw_minor = 0;
+  }
+
+  // Copy the hardware name to the output buffer if provided
+  if (hw_name_out != NULL && hw_name_len > 0) {
+    strncpy(hw_name_out, local_hw_name, hw_name_len - 1);
+    hw_name_out[hw_name_len - 1] = '\0'; // Ensure null termination
+  }
+
+  // Disconnect from the card when done
+  cnk_disconnect_card(hCard);
+  return CKR_OK;
+}
+
+// Check if the library is initialized
+CK_BBOOL cnk_is_initialized(void) {
+  return g_cnk_is_initialized;
+}
+
+// Get the number of available slots
+CK_ULONG cnk_get_slot_count(void) {
+  return g_cnk_num_readers;
+}
+
+// Get serial number (4-byte big endian number)
+CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
   SCARDHANDLE hCard;
 
   // Connect to the card for this operation
@@ -631,74 +739,32 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, C
     return CKR_DEVICE_ERROR;
   }
 
-  // Prepare the APDU for getting version
-  // 0x00 for firmware version, 0x01 for hardware version
-  CK_BYTE version_apdu[] = {0x00, 0x31, version_type, 0x00, 0x00};
+  // Send the get serial number command: 00 32 00 00 00
+  CK_BYTE sn_apdu[] = {0x00, 0x32, 0x00, 0x00, 0x00};
   response_len = sizeof(response);
 
-  // Send the version command using the transceive function
-  LONG pcsc_rv = cnk_transceive_apdu(hCard, version_apdu, sizeof(version_apdu), response, &response_len);
+  // Send the command
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, sn_apdu, sizeof(sn_apdu), response, &response_len);
   if (pcsc_rv != SCARD_S_SUCCESS) {
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
   }
 
   // Check if the command was successful
-  if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
+  if (response_len < 6 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
   }
 
-  // Extract version information from the response
-  if (version_type == 0x00) {
-    // Firmware version - parse the version string (format: "X.Y.Z")
-    char version_str[16] = {0};
-    size_t len = response_len - 2; // Exclude status bytes
-    if (len > sizeof(version_str) - 1) {
-      len = sizeof(version_str) - 1;
-    }
-    memcpy(version_str, response, len);
-    version_str[len] = '\0';
-
-    int v_major, v_minor, v_patch;
-    if (sscanf(version_str, "%d.%d.%d", &v_major, &v_minor, &v_patch) == 3) {
-      // For firmware version: major is the first part, minor is the second part * 10 + the third part
-      *major = v_major;
-      *minor = v_minor * 10 + v_patch;
-    } else {
-      // Fallback if parsing fails
-      *major = 0;
-      *minor = 0;
-    }
-  } else if (version_type == 0x01) {
-    // Hardware version - the response contains hardware name
-    // Convert hardware name to null-terminated string for easier processing
-    char hw_name[256] = {0};
-    size_t name_len = response_len - 2; // Exclude status bytes
-    if (name_len > 255)
-      name_len = 255;
-
-    hw_name[name_len] = '\0';
-
-    // Check if the hardware name contains "Canary"
-    if (strstr(hw_name, "Canary") != NULL) {
-      *major = 3;
-      *minor = 0;
-    }
-    // Check if the hardware name contains "Pigeon"
-    else if (strstr(hw_name, "Pigeon") != NULL) {
-      *major = 2;
-      *minor = 0;
-    }
-    // Otherwise, use 1.0
-    else {
-      *major = 1;
-      *minor = 0;
-    }
+  // Parse the 4-byte big endian serial number
+  if (response_len >= 6) { // 4 bytes + 2 status bytes
+    *serial_number = ((CK_ULONG)response[0] << 24) |
+                     ((CK_ULONG)response[1] << 16) |
+                     ((CK_ULONG)response[2] << 8) |
+                     (CK_ULONG)response[3];
   } else {
-    // Unknown version type
-    *major = 0;
-    *minor = 0;
+    // Fallback if response is too short
+    *serial_number = 0;
   }
 
   // Disconnect from the card when done
