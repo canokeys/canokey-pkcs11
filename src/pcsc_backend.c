@@ -71,7 +71,7 @@ static CK_BBOOL contains_canokey(const char *str) {
     lowercase = buffer;
   } else {
     // Only allocate for unusually long strings
-    lowercase = (char *)malloc(len + 1);
+    lowercase = (char *)ck_malloc(len + 1);
     if (!lowercase)
       return CK_FALSE;
     need_free = CK_TRUE;
@@ -85,7 +85,7 @@ static CK_BBOOL contains_canokey(const char *str) {
   CK_BBOOL result = (strstr(lowercase, "canokey") != NULL);
 
   if (need_free)
-    free(lowercase);
+    ck_free(lowercase);
 
   return result;
 }
@@ -307,7 +307,8 @@ void cnk_disconnect_card(SCARDHANDLE hCard) {
 }
 
 // Helper function to transmit APDU commands and log both command and response
-LONG transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, DWORD command_len, CK_BYTE *response, DWORD *response_len) {
+LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, DWORD command_len, CK_BYTE *response,
+                         DWORD *response_len) {
   if (hCard == 0 || command == NULL || response == NULL || response_len == NULL) {
     return SCARD_E_INVALID_PARAMETER;
   }
@@ -351,7 +352,7 @@ CK_RV cnk_select_piv_application(SCARDHANDLE hCard) {
   DWORD response_len = sizeof(response);
 
   // Send the SELECT command using the transceive function
-  LONG rv = transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len);
+  LONG rv = cnk_transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len);
 
   if (rv != SCARD_S_SUCCESS) {
     return CKR_DEVICE_ERROR;
@@ -394,7 +395,7 @@ CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPin
   DWORD response_len = sizeof(response);
 
   // Send the VERIFY command using the transceive function
-  LONG pcsc_rv = transceive_apdu(hCard, verify_apdu, sizeof(verify_apdu), response, &response_len);
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, verify_apdu, sizeof(verify_apdu), response, &response_len);
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
     return CKR_DEVICE_ERROR;
@@ -439,7 +440,7 @@ CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard) {
   DWORD response_len = sizeof(response);
 
   // Send the LOGOUT command using the transceive function
-  LONG pcsc_rv = transceive_apdu(hCard, logout_apdu, sizeof(logout_apdu), response, &response_len);
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, logout_apdu, sizeof(logout_apdu), response, &response_len);
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
     return CKR_DEVICE_ERROR;
@@ -512,7 +513,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
   CK_BYTE apdu[11] = {0x00, 0xCB, 0x3F, 0xFF, 0x05, 0x5C, 0x03, 0x5F, 0xC1, mapped_tag, fetch_data ? 0x00 : 0x01};
 
   // Send the get PIV data command using the transceive function
-  LONG pcsc_rv = transceive_apdu(hCard, apdu, sizeof(apdu), response, &response_len);
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, apdu, sizeof(apdu), response, &response_len);
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
     cnk_disconnect_card(hCard);
@@ -539,7 +540,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
       DWORD next_chunk_len = sizeof(response) - data_offset;
 
       // Send GET RESPONSE command
-      pcsc_rv = transceive_apdu(hCard, get_response, sizeof(get_response), response + data_offset, &next_chunk_len);
+      pcsc_rv = cnk_transceive_apdu(hCard, get_response, sizeof(get_response), response + data_offset, &next_chunk_len);
 
       if (pcsc_rv != SCARD_S_SUCCESS) {
         cnk_disconnect_card(hCard);
@@ -618,7 +619,7 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, C
   DWORD response_len = sizeof(response);
 
   // Use the transceive function to send the command and log both command and response
-  rv = transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len);
+  rv = cnk_transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len);
   if (rv != SCARD_S_SUCCESS) {
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
@@ -636,7 +637,7 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE version_type, CK_BYTE *major, C
   response_len = sizeof(response);
 
   // Send the version command using the transceive function
-  LONG pcsc_rv = transceive_apdu(hCard, version_apdu, sizeof(version_apdu), response, &response_len);
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, version_apdu, sizeof(version_apdu), response, &response_len);
   if (pcsc_rv != SCARD_S_SUCCESS) {
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
@@ -841,16 +842,16 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   // Handle Lc, Data, and Le based on APDU format and using the TLV data
   if (tlv_len <= 255) {
     // Standard APDU format
-    auth_apdu[apdu_len++] = (CK_BYTE)tlv_len;           // Lc
+    auth_apdu[apdu_len++] = (CK_BYTE)tlv_len;        // Lc
     memcpy(auth_apdu + apdu_len, tlv_data, tlv_len); // Data
     apdu_len += tlv_len;
     auth_apdu[apdu_len++] = 0x00; // Le (request max available)
   } else {
     // Extended APDU format
-    auth_apdu[apdu_len++] = 0x00;                          // Extended length marker
+    auth_apdu[apdu_len++] = 0x00;                             // Extended length marker
     auth_apdu[apdu_len++] = (CK_BYTE)((tlv_len >> 8) & 0xFF); // Lc high byte
     auth_apdu[apdu_len++] = (CK_BYTE)(tlv_len & 0xFF);        // Lc low byte
-    memcpy(auth_apdu + apdu_len, tlv_data, tlv_len);       // Data
+    memcpy(auth_apdu + apdu_len, tlv_data, tlv_len);          // Data
     apdu_len += tlv_len;
     auth_apdu[apdu_len++] = 0x00; // Le high byte (request max available)
     auth_apdu[apdu_len++] = 0x00; // Le low byte
@@ -861,7 +862,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   DWORD response_len = sizeof(response);
 
   CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command for signing\n");
-  pcsc_rv = transceive_apdu(hCard, auth_apdu, apdu_len, response, &response_len);
+  pcsc_rv = cnk_transceive_apdu(hCard, auth_apdu, apdu_len, response, &response_len);
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
     cnk_disconnect_card(hCard);
@@ -964,7 +965,7 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR
 
   // Send the metadata command
   CNK_DEBUG("Sending metadata command for PIV tag 0x%02X\n", piv_tag);
-  LONG pcsc_rv = transceive_apdu(hCard, metadata_apdu, sizeof(metadata_apdu), response, &response_len);
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, metadata_apdu, sizeof(metadata_apdu), response, &response_len);
   if (pcsc_rv != SCARD_S_SUCCESS) {
     CNK_ERROR("Failed to send metadata command: %ld\n", pcsc_rv);
     cnk_disconnect_card(hCard);
@@ -1006,7 +1007,7 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR
       // Send GET RESPONSE command
       CNK_DEBUG("Sending GET RESPONSE command for %d bytes\n", sw2);
       response_len = sizeof(response);
-      pcsc_rv = transceive_apdu(hCard, get_response_apdu, sizeof(get_response_apdu), response, &response_len);
+      pcsc_rv = cnk_transceive_apdu(hCard, get_response_apdu, sizeof(get_response_apdu), response, &response_len);
 
       if (pcsc_rv != SCARD_S_SUCCESS) {
         CNK_ERROR("Failed to send GET RESPONSE command: %ld\n", pcsc_rv);
@@ -1161,12 +1162,6 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR
   cnk_disconnect_card(hCard);
   return CKR_OK;
 }
-
-// Logout context structure
-typedef struct {
-  // No additional context needed for logout operation
-  int placeholder;
-} LogoutContext;
 
 // Card operation function for logout
 static CK_RV logout_card_operation(SCARDHANDLE hCard, void *context) {
