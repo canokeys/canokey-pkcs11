@@ -11,6 +11,18 @@ const char *g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE] = {
 int g_cnk_log_level = CNK_LOG_LEVEL_WARNING;
 FILE *g_cnk_log_file = NULL;
 
+static void print_time(FILE* out) {
+  char time[16];
+  struct timespec ts;
+  if (timespec_get(&ts, TIME_UTC) == 0) {
+    strftime(time, sizeof(time), "%H:%M:%S", localtime(&ts.tv_sec));
+    sprintf(time + 8, ".%03ld", ts.tv_nsec / 1000000);
+    fprintf(out, "%s - ", time);
+  } else {
+    fprintf(out, "!!:!!:!!.!!! - ");
+  }
+}
+
 void cnk_printf(const int level, const char *const format, ...) {
   if (level < g_cnk_log_level) {
     return;
@@ -19,13 +31,7 @@ void cnk_printf(const int level, const char *const format, ...) {
   if (out == NULL) {
     out = stderr;
   }
-  // print current time at the beginning of the log line
-  char time[16];
-  struct timespec ts;
-  timespec_get(&ts, TIME_UTC);
-  strftime(time, sizeof(time), "%H:%M:%S", localtime(&ts.tv_sec));
-  sprintf(time + 8, ".%03ld", ts.tv_nsec / 1000000);
-  fprintf(out, "%s - ", time);
+  print_time(out);
   // print the log line
   va_list args;
   va_start(args, format);
@@ -52,13 +58,7 @@ void cnk_log_apdu_command(const unsigned char *command, unsigned long command_le
     out = stderr;
   }
 
-  // Print current time at the beginning of the log line
-  char time[16];
-  struct timespec ts;
-  timespec_get(&ts, TIME_UTC);
-  strftime(time, sizeof(time), "%H:%M:%S", localtime(&ts.tv_sec));
-  sprintf(time + 8, ".%03ld", ts.tv_nsec / 1000000);
-  fprintf(out, "%s - ", time);
+  print_time(out);
 
   // Print APDU command header
   fprintf(out, "APDU Command: ");
@@ -111,14 +111,14 @@ void cnk_log_apdu_command(const unsigned char *command, unsigned long command_le
       // Print data if present
       if (lc > 0 && command_len > 5) {
         fprintf(out, " ");
-        unsigned long data_len = (command_len > (5 + lc)) ? lc : (command_len - 5);
+        unsigned long data_len = (command_len > (5ul + lc)) ? lc : (command_len - 5);
         for (unsigned long i = 0; i < data_len; i++) {
-          fprintf(out, "%02X", command[5 + i]);
+          fprintf(out, "%02X", command[5ul + i]);
         }
 
         // Print Le if present
-        if (command_len > (5 + lc)) {
-          fprintf(out, " %02X", command[5 + lc]);
+        if (command_len > (5ul + lc)) {
+          fprintf(out, " %02X", command[5ul + lc]);
         }
       }
     }
@@ -145,13 +145,7 @@ void cnk_log_apdu_response(const unsigned char *response, unsigned long response
     out = stderr;
   }
 
-  // Print current time at the beginning of the log line
-  char time[16];
-  struct timespec ts;
-  timespec_get(&ts, TIME_UTC);
-  strftime(time, sizeof(time), "%H:%M:%S", localtime(&ts.tv_sec));
-  sprintf(time + 8, ".%03ld", ts.tv_nsec / 1000000);
-  fprintf(out, "%s - ", time);
+  print_time(out);
 
   // Print APDU response header
   fprintf(out, "APDU Response: ");

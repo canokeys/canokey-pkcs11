@@ -1,5 +1,6 @@
-#include "pcsc_backend.h"
 #include "logging.h"
+#include "utils.h"
+#include "pcsc_backend.h"
 #include "pkcs11_session.h"
 
 #include <ctype.h>
@@ -57,7 +58,7 @@ static CK_RV cnk_with_card(CK_SLOT_ID slotID, CardOperationFunc operation, void 
 }
 
 // Helper function to check if a string contains 'canokey' (case insensitive)
-static CK_BBOOL contains_canokey(const char *str) { return str && strcasestr(str, "canokey") ? CK_TRUE : CK_FALSE; }
+static CK_BBOOL contains_canokey(const char *str) { return str && ck_strcasestr(str, "canokey") ? CK_TRUE : CK_FALSE; }
 
 // Initialize PC/SC context only
 CK_RV cnk_initialize_pcsc() {
@@ -225,6 +226,11 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
       return rv;
   }
 
+  if (g_cnk_readers == NULL) {
+    CNK_ERROR("No readers found after listing\n");
+    return CKR_SLOT_ID_INVALID;
+  }
+
   // Find the reader corresponding to the slot ID
   CK_ULONG i;
   for (i = 0; i < g_cnk_num_readers; i++) {
@@ -329,7 +335,7 @@ CK_RV cnk_select_piv_application(SCARDHANDLE hCard) {
 
   // Check if the command was successful (status words 90 00)
   if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
-    return CKR_DEVICE_ERROR;
+    CNK_RETURN(CKR_DEVICE_ERROR, "Select PIV application failed");
   }
 
   return CKR_OK;
@@ -433,15 +439,18 @@ CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard) {
 CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data) {
   SCARDHANDLE hCard;
   CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
+  CK_BBOOL need_disconnect = CK_FALSE;
   if (rv != CKR_OK) {
-    return rv;
+    CNK_ERROR("Connect to card failed\n");
+    goto cleanup;
   }
+  need_disconnect = CK_TRUE;
 
   // Select PIV application
   rv = cnk_select_piv_application(hCard);
   if (rv != CKR_OK) {
-    cnk_disconnect_card(hCard);
-    return rv;
+    CNK_ERROR("Select PIV application failed\n");
+    goto cleanup;
   }
 
   // Prepare GET DATA APDU
@@ -474,8 +483,21 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
   }
 
   // If we're just checking for existence, we can use a smaller buffer
-  CK_BYTE response[fetch_data ? 4096 : 128]; // Smaller buffer if just checking existence
-  DWORD response_len = sizeof(response);
+  CK_BYTE response_buf[128];
+  CK_BYTE_PTR response = response_buf;
+  DWORD response_len = sizeof(response_buf);
+  CK_BBOOL response_on_heap = CK_FALSE;
+  if (fetch_data) {
+    response_len = 4096;
+    response = (CK_BYTE_PTR)ck_malloc(response_len); // Allocate larger buffer for data
+    if (response == NULL) {
+      CNK_ERROR("ck_malloc failed\n");
+      rv = CKR_HOST_MEMORY;
+      goto cleanup;
+    }
+    memset(response, 0, response_len);
+    response_on_heap = CK_TRUE;
+  }
 
   // For existence check, we can modify the APDU to only request the header
   // This is more efficient than fetching the entire content
@@ -485,8 +507,9 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
   LONG pcsc_rv = cnk_transceive_apdu(hCard, apdu, sizeof(apdu), response, &response_len);
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
-    cnk_disconnect_card(hCard);
-    return CKR_DEVICE_ERROR;
+    CNK_ERROR("transceive failure: %lu\n", pcsc_rv);
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
   }
 
   // Only fetch complete data if fetch_data is true
@@ -512,8 +535,9 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
       pcsc_rv = cnk_transceive_apdu(hCard, get_response, sizeof(get_response), response + data_offset, &next_chunk_len);
 
       if (pcsc_rv != SCARD_S_SUCCESS) {
-        cnk_disconnect_card(hCard);
-        return CKR_DEVICE_ERROR;
+        CNK_ERROR("transceive failure: %lu\n", pcsc_rv);
+        rv = CKR_DEVICE_ERROR;
+        goto cleanup;
       }
 
       // Update data_offset and response_len
@@ -526,10 +550,13 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
   // When fetch_data is false, we don't need to call GET RESPONSE - just use the initial response
 
   cnk_disconnect_card(hCard);
+  need_disconnect = CK_FALSE;
 
   // Check if the response indicates success
   if (response_len < 2) {
-    return CKR_DEVICE_ERROR;
+    CNK_ERROR("transceive response too short: %lu\n", response_len);
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
   }
 
   // Success cases:
@@ -539,17 +566,23 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
     // Normal success case - continue processing
   } else if (!fetch_data && response[response_len - 2] == 0x61) {
     // When not fetching data, 61XX means the object exists
+    CNK_DEBUG("Object exists, but not fetching data\n");
     *data = NULL;
     *data_len = 1; // Indicates that the object exists
-    return CKR_OK;
+    rv = CKR_OK;
+    goto cleanup;
   } else if (response[response_len - 2] == 0x6A && response[response_len - 1] == 0x82) {
     // Object doesn't exist
+    CNK_ERROR("Object not found\n");
     *data = NULL;
     *data_len = 0;
-    return CKR_OK;
+    rv = CKR_OK;
+    goto cleanup;
   } else {
     // Other error
-    return CKR_DEVICE_ERROR;
+    CNK_ERROR("transceive failure\n")
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
   }
 
   if (fetch_data) {
@@ -557,7 +590,9 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
     *data_len = response_len - 2;
     *data = (CK_BYTE_PTR)ck_malloc(*data_len);
     if (*data == NULL) {
-      return CKR_HOST_MEMORY;
+      CNK_ERROR("ck_malloc failed\n");
+      rv = CKR_HOST_MEMORY;
+      goto cleanup;
     }
 
     // Copy the data (excluding SW1SW2)
@@ -569,7 +604,14 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
     *data_len = 1; // Indicates that the object exists
   }
 
-  return CKR_OK;
+cleanup:
+  if (need_disconnect) {
+    cnk_disconnect_card(hCard);
+  }
+  if (response_on_heap) {
+    ck_free(response);
+  }
+  return rv;
 }
 
 // Helper function to get firmware version and hardware name
@@ -950,7 +992,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   }
 
   memcpy(pSignature, response + offset, sig_len);
-  *pulSignatureLen = sig_len;
+  *pulSignatureLen = (CK_ULONG)sig_len;
 
   cnk_disconnect_card(hCard);
   return CKR_OK;

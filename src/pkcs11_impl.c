@@ -886,7 +886,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       }
 
       snprintf(label, sizeof(label), "PIV %s %02X", type_str, piv_tag);
-      CK_ULONG label_len = strlen(label);
+      CK_ULONG label_len = (CK_ULONG)strlen(label);
 
       if (pTemplate[i].pValue) {
         if (pTemplate[i].ulValueLen >= label_len) {

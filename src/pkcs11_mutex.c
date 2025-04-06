@@ -4,6 +4,8 @@
 #include <nsync_mu.h>
 #include <stdlib.h>
 
+#undef CreateMutex // avoid conflicts with Windows API
+
 // Global variables for mutex system
 static CK_BBOOL g_mutex_system_initialized = CK_FALSE;
 static CK_BBOOL g_using_app_mutexes = CK_FALSE;
