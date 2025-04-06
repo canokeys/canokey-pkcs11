@@ -484,9 +484,27 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
 
   // Define the supported mechanisms
   static const CK_MECHANISM_TYPE supported_mechanisms[] = {
-      CKM_RSA_PKCS,    // RSA PKCS #1 v1.5
-      CKM_RSA_X_509,   // Raw RSA
-      CKM_RSA_PKCS_PSS // RSA PSS
+      CKM_RSA_PKCS_KEY_PAIR_GEN, // RSA key pair generation
+      CKM_RSA_PKCS,              // RSA PKCS #1 v1.5
+      CKM_RSA_X_509,             // Raw RSA
+      CKM_RSA_PKCS_OAEP,         // RSA OAEP
+      CKM_RSA_PKCS_PSS,          // RSA PSS
+      CKM_SHA1_RSA_PKCS,         // RSA PKCS #1 v1.5 with SHA-1
+      CKM_SHA1_RSA_PKCS_PSS,     // RSA PKCS #1 v1.5 with SHA-1 and PSS
+      CKM_SHA256_RSA_PKCS,       // RSA PKCS #1 v1.5 with SHA-256
+      CKM_SHA256_RSA_PKCS_PSS,   // RSA PKCS #1 v1.5 with SHA-256 and PSS
+      CKM_SHA384_RSA_PKCS,       // RSA PKCS #1 v1.5 with SHA-384
+      CKM_SHA384_RSA_PKCS_PSS,   // RSA PKCS #1 v1.5 with SHA-384 and PSS
+      CKM_SHA512_RSA_PKCS,       // RSA PKCS #1 v1.5 with SHA-512
+      CKM_SHA512_RSA_PKCS_PSS,   // RSA PKCS #1 v1.5 with SHA-512 and PSS
+      CKM_SHA224_RSA_PKCS,       // RSA PKCS #1 v1.5 with SHA-224
+      CKM_SHA224_RSA_PKCS_PSS,   // RSA PKCS #1 v1.5 with SHA-224 and PSS
+      CKM_SHA3_256_RSA_PKCS,     // RSA PKCS #1 v1.5 with SHA3-256
+      CKM_SHA3_384_RSA_PKCS,     // RSA PKCS #1 v1.5 with SHA3-384
+      CKM_SHA3_512_RSA_PKCS,     // RSA PKCS #1 v1.5 with SHA3-512
+
+      CKM_ECDSA_KEY_PAIR_GEN, // ECDSA key pair generation
+      CKM_ECDSA               // ECDSA
   };
 
   const CK_ULONG num_mechanisms = sizeof(supported_mechanisms) / sizeof(supported_mechanisms[0]);
@@ -522,23 +540,45 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
 
   // Set mechanism info based on type
   switch (type) {
-  case CKM_RSA_PKCS:
-    pInfo->flags = CKF_SIGN | CKF_VERIFY;
+  case CKM_RSA_PKCS_KEY_PAIR_GEN:
+    pInfo->flags = CKF_GENERATE_KEY_PAIR;
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = 2048;
+    pInfo->ulMaxKeySize = 4096;
     break;
 
   case CKM_RSA_X_509:
-    pInfo->flags = CKF_SIGN | CKF_VERIFY;
+  case CKM_RSA_PKCS:
+    pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT | CKF_SIGN | CKF_VERIFY;
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = 2048;
+    pInfo->ulMaxKeySize = 4096;
+    break;
+
+  case CKM_RSA_PKCS_OAEP:
+    pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT;
+    pInfo->ulMinKeySize = 2048;
+    pInfo->ulMaxKeySize = 4096;
     break;
 
   case CKM_RSA_PKCS_PSS:
+  case CKM_SHA1_RSA_PKCS:
+  case CKM_SHA1_RSA_PKCS_PSS:
+  case CKM_SHA256_RSA_PKCS:
+  case CKM_SHA256_RSA_PKCS_PSS:
+  case CKM_SHA384_RSA_PKCS:
+  case CKM_SHA384_RSA_PKCS_PSS:
+  case CKM_SHA512_RSA_PKCS:
+  case CKM_SHA512_RSA_PKCS_PSS:
+  case CKM_SHA224_RSA_PKCS:
+  case CKM_SHA224_RSA_PKCS_PSS:
+  case CKM_SHA3_256_RSA_PKCS:
+  case CKM_SHA3_384_RSA_PKCS:
+  case CKM_SHA3_512_RSA_PKCS:
     pInfo->flags = CKF_SIGN | CKF_VERIFY;
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = 2048;
+    pInfo->ulMaxKeySize = 4096;
     break;
+
+    // TODO: add ECDSA
 
   default:
     return CKR_MECHANISM_INVALID;
