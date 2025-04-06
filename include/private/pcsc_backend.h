@@ -38,6 +38,7 @@ extern CNK_FREE_FUNC g_cnk_free_func;
 
 // Helper functions for memory allocation
 static inline void *ck_malloc(size_t size) { return g_cnk_malloc_func(size); }
+static inline void *ck_calloc(size_t num, size_t size) { return g_cnk_malloc_func(num * size); }
 static inline void ck_free(void *ptr) { g_cnk_free_func(ptr); }
 
 // Initialize PC/SC context only
