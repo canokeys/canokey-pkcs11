@@ -4,6 +4,7 @@
 #include "pcsc_backend.h"
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
+#include "pkcs11_macros.h"
 #include "pkcs11_mutex.h"
 #include "pkcs11_session.h"
 
@@ -476,11 +477,76 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
 }
 
 CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList, CK_ULONG_PTR pulCount) {
-  return CKR_FUNCTION_NOT_SUPPORTED;
+  CNK_DEBUG("C_GetMechanismList: slotID = %lu\n", slotID);
+
+  // Validate common parameters
+  PKCS11_VALIDATE(pulCount, slotID);
+
+  // Define the supported mechanisms
+  static const CK_MECHANISM_TYPE supported_mechanisms[] = {
+      CKM_RSA_PKCS,    // RSA PKCS #1 v1.5
+      CKM_RSA_X_509,   // Raw RSA
+      CKM_RSA_PKCS_PSS // RSA PSS
+  };
+
+  const CK_ULONG num_mechanisms = sizeof(supported_mechanisms) / sizeof(supported_mechanisms[0]);
+
+  // If pMechanismList is NULL, just return the number of mechanisms
+  if (pMechanismList == NULL) {
+    *pulCount = num_mechanisms;
+    return CKR_OK;
+  }
+
+  // Check if the provided buffer is large enough
+  if (*pulCount < num_mechanisms) {
+    *pulCount = num_mechanisms;
+    return CKR_BUFFER_TOO_SMALL;
+  }
+
+  // Copy the mechanism list to the provided buffer
+  memcpy(pMechanismList, supported_mechanisms, sizeof(supported_mechanisms));
+  *pulCount = num_mechanisms;
+
+  CNK_DEBUG("C_GetMechanismList: Returned %lu mechanisms\n", num_mechanisms);
+  return CKR_OK;
 }
 
 CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM_INFO_PTR pInfo) {
-  return CKR_FUNCTION_NOT_SUPPORTED;
+  CNK_DEBUG("C_GetMechanismInfo: slotID = %lu, type = %lu\n", slotID, type);
+
+  // Validate common parameters
+  PKCS11_VALIDATE(pInfo, slotID);
+
+  // Clear the mechanism info structure
+  memset(pInfo, 0, sizeof(CK_MECHANISM_INFO));
+
+  // Set mechanism info based on type
+  switch (type) {
+  case CKM_RSA_PKCS:
+    pInfo->flags = CKF_SIGN | CKF_VERIFY;
+    pInfo->ulMinKeySize = 2048;
+    pInfo->ulMaxKeySize = 2048;
+    break;
+
+  case CKM_RSA_X_509:
+    pInfo->flags = CKF_SIGN | CKF_VERIFY;
+    pInfo->ulMinKeySize = 2048;
+    pInfo->ulMaxKeySize = 2048;
+    break;
+
+  case CKM_RSA_PKCS_PSS:
+    pInfo->flags = CKF_SIGN | CKF_VERIFY;
+    pInfo->ulMinKeySize = 2048;
+    pInfo->ulMaxKeySize = 2048;
+    break;
+
+  default:
+    return CKR_MECHANISM_INVALID;
+  }
+
+  CNK_DEBUG("C_GetMechanismInfo: Mechanism %lu, flags = 0x%lx, min key size = %lu, max key size = %lu\n", type,
+            pInfo->flags, pInfo->ulMinKeySize, pInfo->ulMaxKeySize);
+  return CKR_OK;
 }
 
 CK_RV C_InitToken(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_UTF8CHAR_PTR pLabel) {

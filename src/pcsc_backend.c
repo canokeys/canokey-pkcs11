@@ -57,38 +57,7 @@ static CK_RV cnk_with_card(CK_SLOT_ID slotID, CardOperationFunc operation, void 
 }
 
 // Helper function to check if a string contains 'canokey' (case insensitive)
-static CK_BBOOL contains_canokey(const char *str) {
-  if (!str)
-    return CK_FALSE;
-
-  // Use stack buffer for most reader names to avoid heap allocation
-  char buffer[256];
-  char *lowercase;
-  CK_BBOOL need_free = CK_FALSE;
-
-  size_t len = strlen(str);
-  if (len < sizeof(buffer)) {
-    lowercase = buffer;
-  } else {
-    // Only allocate for unusually long strings
-    lowercase = (char *)ck_malloc(len + 1);
-    if (!lowercase)
-      return CK_FALSE;
-    need_free = CK_TRUE;
-  }
-
-  // Copy and convert to lowercase
-  for (size_t i = 0; i <= len; i++) {
-    lowercase[i] = tolower((unsigned char)str[i]);
-  }
-
-  CK_BBOOL result = (strstr(lowercase, "canokey") != NULL);
-
-  if (need_free)
-    ck_free(lowercase);
-
-  return result;
-}
+static CK_BBOOL contains_canokey(const char *str) { return str && strcasestr(str, "canokey") ? CK_TRUE : CK_FALSE; }
 
 // Initialize PC/SC context only
 CK_RV cnk_initialize_pcsc() {
@@ -702,14 +671,10 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, c
 }
 
 // Check if the library is initialized
-CK_BBOOL cnk_is_initialized(void) {
-  return g_cnk_is_initialized;
-}
+CK_BBOOL cnk_is_initialized(void) { return g_cnk_is_initialized; }
 
 // Get the number of available slots
-CK_ULONG cnk_get_slot_count(void) {
-  return g_cnk_num_readers;
-}
+CK_ULONG cnk_get_slot_count(void) { return g_cnk_num_readers; }
 
 // Get serial number (4-byte big endian number)
 CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
@@ -758,9 +723,7 @@ CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
 
   // Parse the 4-byte big endian serial number
   if (response_len >= 6) { // 4 bytes + 2 status bytes
-    *serial_number = ((CK_ULONG)response[0] << 24) |
-                     ((CK_ULONG)response[1] << 16) |
-                     ((CK_ULONG)response[2] << 8) |
+    *serial_number = ((CK_ULONG)response[0] << 24) | ((CK_ULONG)response[1] << 16) | ((CK_ULONG)response[2] << 8) |
                      (CK_ULONG)response[3];
   } else {
     // Fallback if response is too short
