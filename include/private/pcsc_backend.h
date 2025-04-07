@@ -36,6 +36,17 @@ extern CNK_FREE_FUNC g_cnk_free_func;
 #define PIV_SLOT_82 5
 #define PIV_SLOT_83 6
 
+// Algorithm types for PIV
+#define PIV_ALG_RSA_2048 0x07
+#define PIV_ALG_ECC_256 0x11
+#define PIV_ALG_ECC_384 0x14
+#define PIV_ALG_ED25519 0xE0
+#define PIV_ALG_RSA_3072 0x05
+#define PIV_ALG_RSA_4096 0x16
+#define PIV_ALG_X25519 0xE1
+#define PIV_ALG_SECP256K1 0x53
+#define PIV_ALG_SM2 0x54
+
 // Helper functions for memory allocation
 static inline void *ck_malloc(size_t size) { return g_cnk_malloc_func(size); }
 static inline void *ck_calloc(size_t num, size_t size) { return g_cnk_malloc_func(num * size); }
@@ -99,7 +110,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
 
 // Get metadata for a PIV key or object
 // This function retrieves metadata from a PIV key or object using the PIV metadata APDU command
-CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_MECHANISM_TYPE_PTR algorithm_type, CK_KEY_TYPE *key_type);
+CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm_type);
 
 // Sign data using PIV key
 // This function signs data using the PIV GENERAL AUTHENTICATE command

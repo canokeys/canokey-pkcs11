@@ -16,10 +16,10 @@ static CK_FUNCTION_LIST ck_function_list;
 
 // Forward declarations for attribute handler functions
 static CK_RV handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE_PTR data, CK_ULONG data_len);
-static CK_RV handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_KEY_TYPE key_type,
-                                         CK_MECHANISM_TYPE mech_type, CK_SLOT_ID slot_id);
-static CK_RV handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_KEY_TYPE key_type,
-                                          CK_MECHANISM_TYPE mech_type, CK_SLOT_ID slot_id);
+static CK_RV handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
+                                         CK_SLOT_ID slot_id);
+static CK_RV handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
+                                          CK_SLOT_ID slot_id);
 
 // Helper function to extract object information from a handle
 // Object handle format: slot_id (16 bits) | object_class (8 bits) | object_id (8 bits)
@@ -833,16 +833,15 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   }
 
   // Get key metadata if this is a key object
-  CK_MECHANISM_TYPE mech_type = CKM_VENDOR_DEFINED;
-  CK_KEY_TYPE key_type = CKK_VENDOR_DEFINED;
+  CK_BYTE algorithm_type;
 
   if (obj_class == CKO_PUBLIC_KEY || obj_class == CKO_PRIVATE_KEY) {
-    rv = cnk_get_metadata(session->slot_id, piv_tag, &mech_type, &key_type);
+    rv = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type);
     if (rv != CKR_OK) {
       CNK_DEBUG("Failed to get metadata for PIV tag 0x%02X: %lu\n", piv_tag, rv);
       // Continue anyway, we'll use default values
     } else {
-      CNK_DEBUG("Retrieved key type %lu for PIV tag 0x%02X\n", key_type, piv_tag);
+      CNK_DEBUG("Retrieved algorithm type %u for PIV tag 0x%02X\n", algorithm_type, piv_tag);
     }
   }
 
@@ -960,11 +959,11 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       break;
 
     case CKO_PUBLIC_KEY:
-      rv = handle_public_key_attribute(pTemplate[i], piv_tag, key_type, mech_type, session->slot_id);
+      rv = handle_public_key_attribute(pTemplate[i], piv_tag, algorithm_type, session->slot_id);
       break;
 
     case CKO_PRIVATE_KEY:
-      rv = handle_private_key_attribute(pTemplate[i], piv_tag, key_type, mech_type, session->slot_id);
+      rv = handle_private_key_attribute(pTemplate[i], piv_tag, algorithm_type, session->slot_id);
       break;
 
     default:
@@ -985,6 +984,28 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   }
 
   return return_rv;
+}
+
+static CK_KEY_TYPE algo_type_to_key_type(CK_BYTE algorithm_type) {
+  switch (algorithm_type) {
+  case PIV_ALG_RSA_2048:
+  case PIV_ALG_RSA_3072:
+  case PIV_ALG_RSA_4096:
+    return CKK_RSA;
+
+  case PIV_ALG_ECC_256:
+  case PIV_ALG_ECC_384:
+  case PIV_ALG_SECP256K1:
+  case PIV_ALG_SM2:
+    return CKK_EC;
+
+  case PIV_ALG_ED25519:
+  case PIV_ALG_X25519:
+    return CKK_EC_EDWARDS;
+
+  default:
+    return CKK_VENDOR_DEFINED;
+  }
 }
 
 // Handle certificate-specific attributes
@@ -1016,9 +1037,10 @@ static CK_RV handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_ta
 }
 
 // Handle public key specific attributes
-static CK_RV handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_KEY_TYPE key_type,
-                                         CK_MECHANISM_TYPE mech_type, CK_SLOT_ID slot_id) {
+static CK_RV handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
+                                         CK_SLOT_ID slot_id) {
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
+  CK_KEY_TYPE key_type = algo_type_to_key_type(algorithm_type);
 
   switch (attribute.type) {
   case CKA_KEY_TYPE:
@@ -1043,6 +1065,11 @@ static CK_RV handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag
     if (key_type == CKK_RSA) {
       // For RSA keys, we can determine the modulus bits
       CK_ULONG modulus_bits = 2048; // Default for PIV
+      if (algorithm_type == PIV_ALG_RSA_3072) {
+        modulus_bits = 3072;
+      } else if (algorithm_type == PIV_ALG_RSA_4096) {
+        modulus_bits = 4096;
+      }
       rv = set_attribute_value(&attribute, &modulus_bits, sizeof(modulus_bits));
     } else {
       // Not applicable for non-RSA keys
@@ -1063,9 +1090,10 @@ static CK_RV handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag
 }
 
 // Handle private key specific attributes
-static CK_RV handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_KEY_TYPE key_type,
-                                          CK_MECHANISM_TYPE mech_type, CK_SLOT_ID slot_id) {
+static CK_RV handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
+                                          CK_SLOT_ID slot_id) {
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
+  CK_KEY_TYPE key_type = algo_type_to_key_type(algorithm_type);
 
   switch (attribute.type) {
   case CKA_KEY_TYPE:
@@ -1094,10 +1122,9 @@ static CK_RV handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_ta
     break;
   }
 
-  case CKA_EXTRACTABLE:
-  case CKA_NEVER_EXTRACTABLE: {
+  case CKA_EXTRACTABLE: {
     // Private keys on PIV are never extractable
-    CK_BBOOL value = (attribute.type == CKA_EXTRACTABLE) ? CK_FALSE : CK_TRUE;
+    CK_BBOOL value = CK_FALSE;
     rv = set_attribute_value(&attribute, &value, sizeof(value));
     break;
   }
@@ -1381,10 +1408,6 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   if (rv != CKR_OK)
     CNK_RETURN(rv, "session not found");
 
-  // Currently only supporting CKM_RSA_PKCS mechanism for RSA 2048
-  if (pMechanism->mechanism != CKM_RSA_PKCS)
-    CNK_RETURN(CKR_MECHANISM_INVALID, "only CKM_RSA_PKCS is supported");
-
   // Validate the key object
   CK_BYTE obj_id;
   rv = validate_object(hKey, session, CKO_PRIVATE_KEY, &obj_id);
@@ -1408,15 +1431,37 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
     CNK_RETURN(CKR_KEY_HANDLE_INVALID, "invalid key ID");
   }
 
-  // Verify that the key is an RSA private key
-  CK_MECHANISM_TYPE algorithm_type;
-  CK_KEY_TYPE key_type;
-  rv = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, &key_type);
+  // Verify that the key matches the mechanism
+  CK_BYTE algorithm_type;
+  rv = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type);
   if (rv != CKR_OK)
     CNK_RETURN(rv, "failed to get key metadata");
 
-  if (key_type != CKK_RSA)
-    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not RSA");
+  // Check if the mechanism is supported
+  switch (pMechanism->mechanism) {
+  case CKM_RSA_X_509:
+  case CKM_RSA_PKCS:
+  case CKM_RSA_PKCS_PSS:
+  case CKM_SHA1_RSA_PKCS:
+  case CKM_SHA1_RSA_PKCS_PSS:
+  case CKM_SHA256_RSA_PKCS:
+  case CKM_SHA256_RSA_PKCS_PSS:
+  case CKM_SHA384_RSA_PKCS:
+  case CKM_SHA384_RSA_PKCS_PSS:
+  case CKM_SHA512_RSA_PKCS:
+  case CKM_SHA512_RSA_PKCS_PSS:
+  case CKM_SHA224_RSA_PKCS:
+  case CKM_SHA224_RSA_PKCS_PSS:
+  case CKM_SHA3_256_RSA_PKCS:
+  case CKM_SHA3_384_RSA_PKCS:
+  case CKM_SHA3_512_RSA_PKCS:
+    if (algorithm_type != PIV_ALG_RSA_2048 && algorithm_type != PIV_ALG_RSA_3072 && algorithm_type != PIV_ALG_RSA_4096)
+      CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not RSA");
+    break;
+
+  default:
+    CNK_RETURN(CKR_MECHANISM_INVALID, "unsupported mechanism");
+  }
 
   // Store the key handle and mechanism in the session for C_Sign
   session->active_key = hKey;
