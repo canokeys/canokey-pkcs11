@@ -11,10 +11,10 @@ const char *g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE] = {
 int g_cnk_log_level = CNK_LOG_LEVEL_WARNING;
 FILE *g_cnk_log_file = NULL;
 
-static void print_time(FILE* out) {
+static void print_time(FILE *out) {
   char time[16];
   struct timespec ts;
-  if (timespec_get(&ts, TIME_UTC) == 0) {
+  if (timespec_get(&ts, TIME_UTC) == TIME_UTC) {
     strftime(time, sizeof(time), "%H:%M:%S", localtime(&ts.tv_sec));
     sprintf(time + 8, ".%03ld", ts.tv_nsec / 1000000);
     fprintf(out, "%s - ", time);
