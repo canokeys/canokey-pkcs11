@@ -501,7 +501,7 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
   memcpy(pMechanismList, supported_mechanisms, sizeof(supported_mechanisms));
   *pulCount = num_mechanisms;
 
-  CNK_DEBUG("C_GetMechanismList: Returned %lu mechanisms\n", num_mechanisms);
+  CNK_DEBUG("Returned %lu mechanisms\n", num_mechanisms);
   CNK_RET_OK;
 }
 

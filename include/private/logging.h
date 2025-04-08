@@ -23,8 +23,8 @@ extern int g_cnk_log_level;
 extern void cnk_printf(const int level, const char *format, ...);
 
 #define CNK_PRINTLOGF(level, format, ...)                                                                              \
-  cnk_printf(level, "%-20s(%-20s:%03d)[%-5s]: " format, __FUNCTION__, __FILE__, __LINE__, g_cnk_log_level_name[level], \
-             ##__VA_ARGS__);
+  cnk_printf(level, "%-20s(%-20s:%03d)[%-5s]: ", __FUNCTION__, __FILE__, __LINE__, g_cnk_log_level_name[level]);       \
+  cnk_printf(level, format, ##__VA_ARGS__);
 #define CNK_TRACE(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_TRACE, format, ##__VA_ARGS__)
 #define CNK_DEBUG(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_DEBUG, format, ##__VA_ARGS__)
 #define CNK_INFO(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_INFO, format, ##__VA_ARGS__)
