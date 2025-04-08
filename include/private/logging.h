@@ -40,10 +40,27 @@ extern void cnk_printf(const int level, const char *format, ...);
     CNK_DEBUG("Returning value %s = %d with reason \"%s\"\n", #ARG, ret, REASON);                                      \
     return ret;                                                                                                        \
   } while (0)
+#define CNK_LOG_FUNC(name, ...) CNK_DEBUG(#name " called" __VA_ARGS__)
 #else
 // #define FUNC_TRACE(CALL) CALL
 #define CNK_RETURN(ARG, ...) return (ARG);
+#define CNK_LOG_FUNC(name, ...)
 #endif // CNK_VERBOSE
+
+#define CNK_RET_OK CNK_RETURN(CKR_OK, "Success")
+#define CNK_RET_UNIMPL CNK_RETURN(CKR_FUNCTION_NOT_SUPPORTED, "Not implemented")
+#define CNK_ENSURE_EQUAL_REASON(EXP, EXPECTED, REASON)                                                                 \
+  if ((EXP) != (EXPECTED)) {                                                                                           \
+    CNK_RETURN(CKR_ARGUMENTS_BAD, REASON);                                                                             \
+  }
+#define CNK_ENSURE_EQUAL(EXP, EXPECTED) CNK_ENSURE_EQUAL_REASON(EXP, EXPECTED, #EXP " != " #EXPECTED)
+#define CNK_ENSURE_NONNULL(PTR) CNK_ENSURE_EQUAL_REASON(!!(PTR), !!NULL, #PTR " is NULL")
+#define CHK_ENSURE_NULL(PTR) CNK_ENSURE_EQUAL_REASON((PTR), NULL, #PTR " is not NULL")
+#define CNK_ENSURE_OK(EXP)                                                                                             \
+  ({                                                                                                                   \
+    CNK_ENSURE_EQUAL_REASON((EXP), CKR_OK, #EXP " returned failure");                                                  \
+    CKR_OK;                                                                                                            \
+  })
 
 // Function to log APDU commands in a formatted way
 void cnk_log_apdu_command(const unsigned char *command, unsigned long command_len);
