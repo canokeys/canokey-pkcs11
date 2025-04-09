@@ -116,7 +116,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   C_CNK_ConfigLogging(CNK_LOG_LEVEL_DEBUG, NULL);
 #endif
 
-  CNK_LOG_FUNC(C_Initialize, ", pInitArgs: %p", pInitArgs);
+  CNK_LOG_FUNC(C_Initialize, ", pInitArgs: %p\n", pInitArgs);
 
   // Check if the library is already initialized
   if (g_cnk_is_initialized)
@@ -203,7 +203,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
 }
 
 CK_RV C_Finalize(CK_VOID_PTR pReserved) {
-  CNK_LOG_FUNC(C_Finalize, ", pReserved: %p", pReserved);
+  CNK_LOG_FUNC(C_Finalize, ", pReserved: %p\n", pReserved);
 
   // According to PKCS#11, pReserved must be NULL_PTR
   CHK_ENSURE_NULL(pReserved);
@@ -230,7 +230,7 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
 }
 
 CK_RV C_GetInfo(CK_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetInfo, ", pInfo: %p", pInfo);
+  CNK_LOG_FUNC(C_GetInfo, ", pInfo: %p\n", pInfo);
 
   // Check if the library is initialized
   if (!g_cnk_is_initialized) {
@@ -274,7 +274,7 @@ CK_RV C_GetInfo(CK_INFO_PTR pInfo) {
 }
 
 CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList) {
-  CNK_LOG_FUNC(C_GetFunctionList, ", ppFunctionList: %p", ppFunctionList);
+  CNK_LOG_FUNC(C_GetFunctionList, ", ppFunctionList: %p\n", ppFunctionList);
 
   CNK_ENSURE_NONNULL(ppFunctionList);
 
@@ -283,7 +283,7 @@ CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList) {
 }
 
 CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PTR pulCount) {
-  CNK_LOG_FUNC(C_GetSlotList, ", tokenPresent: %d, pSlotList: %p, pulCount: %p", tokenPresent, pSlotList, pulCount);
+  CNK_LOG_FUNC(C_GetSlotList, ", tokenPresent: %d, pSlotList: %p, pulCount: %p\n", tokenPresent, pSlotList, pulCount);
 
   // Parameter validation
   CNK_ENSURE_NONNULL(pulCount);
@@ -316,7 +316,7 @@ CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PT
 }
 
 CK_RV C_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetSlotInfo, ", slotID: %lu, pInfo: %p", slotID, pInfo);
+  CNK_LOG_FUNC(C_GetSlotInfo, ", slotID: %lu, pInfo: %p\n", slotID, pInfo);
 
   CNK_ENSURE_NONNULL(pInfo);
 
@@ -358,7 +358,7 @@ CK_RV C_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
 }
 
 CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetTokenInfo, ", slotID: %lu", slotID);
+  CNK_LOG_FUNC(C_GetTokenInfo, ", slotID: %lu\n", slotID);
 
   // Check parameters
   if (!g_cnk_is_initialized) {
@@ -453,7 +453,7 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
 }
 
 CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList, CK_ULONG_PTR pulCount) {
-  CNK_LOG_FUNC(C_GetMechanismList, ", slotID: %lu", slotID);
+  CNK_LOG_FUNC(C_GetMechanismList, ", slotID: %lu\n", slotID);
 
   // Validate common parameters
   PKCS11_VALIDATE(pulCount, slotID);
@@ -506,7 +506,7 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
 }
 
 CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetMechanismInfo, ", slotID: %lu, type: %lu, pInfo: %p", slotID, type, pInfo);
+  CNK_LOG_FUNC(C_GetMechanismInfo, ", slotID: %lu, type: %lu, pInfo: %p\n", slotID, type, pInfo);
 
   // Validate common parameters
   PKCS11_VALIDATE(pInfo, slotID);
@@ -566,12 +566,12 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
 }
 
 CK_RV C_InitToken(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_UTF8CHAR_PTR pLabel) {
-  CNK_LOG_FUNC(C_InitToken, ", slotID: %lu", slotID);
+  CNK_LOG_FUNC(C_InitToken, ", slotID: %lu\n", slotID);
   CNK_RET_UNIMPL;
 }
 
 CK_RV C_InitPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
-  CNK_LOG_FUNC(C_InitPIN, ", hSession: %lu", hSession);
+  CNK_LOG_FUNC(C_InitPIN, ", hSession: %lu\n", hSession);
   CNK_RET_UNIMPL;
 }
 
@@ -608,7 +608,7 @@ CK_RV C_CloseAllSessions(CK_SLOT_ID slotID) {
 }
 
 CK_RV C_GetSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetSessionInfo, ", hSession: %lu", hSession);
+  CNK_LOG_FUNC(C_GetSessionInfo, ", hSession: %lu\n", hSession);
 
   // Check if the cryptoki library is initialized
   if (!g_cnk_is_initialized) {
@@ -658,6 +658,8 @@ CK_RV C_SetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationStat
 }
 
 CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+  CNK_LOG_FUNC(C_Login, ", hSession: %lu, userType: %lu, ulPinLen: %lu\n", hSession, userType, ulPinLen);
+
   // Check if the cryptoki library is initialized
   if (!g_cnk_is_initialized) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -699,6 +701,8 @@ CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR
 }
 
 CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
+  CNK_LOG_FUNC(C_Logout, ", hSession: %lu\n", hSession);
+
   // Check if the cryptoki library is initialized
   if (!g_cnk_is_initialized) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -747,7 +751,7 @@ CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_U
 
 CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                           CK_ULONG ulCount) {
-  CNK_LOG_FUNC(C_GetAttributeValue, ", hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
+  CNK_LOG_FUNC(C_GetAttributeValue, ", hSession: %lu, hObject: %lu, ulCount: %lu\n", hSession, hObject, ulCount);
 
   // Validate parameters
   if (!pTemplate && ulCount > 0)
@@ -1094,6 +1098,8 @@ CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 }
 
 CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
+  CNK_LOG_FUNC(C_FindObjectsInit, ", hSession: %lu, ulCount: %lu\n", hSession, ulCount);
+
   // Validate the session
   CNK_PKCS11_SESSION *session;
   CK_RV rv = CNK_ENSURE_OK(validate_session(hSession, &session));
@@ -1217,6 +1223,8 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
 
 CK_RV C_FindObjects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject, CK_ULONG ulMaxObjectCount,
                     CK_ULONG_PTR pulObjectCount) {
+  CNK_LOG_FUNC(C_FindObjects, ", hSession: %lu, ulMaxObjectCount: %lu\n", hSession, ulMaxObjectCount);
+
   // Check if the library is initialized
   if (!g_cnk_is_initialized)
     return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -1258,6 +1266,8 @@ CK_RV C_FindObjects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject, C
 }
 
 CK_RV C_FindObjectsFinal(CK_SESSION_HANDLE hSession) {
+  CNK_LOG_FUNC(C_FindObjectsFinal, ", hSession: %lu\n", hSession);
+
   // Check if the library is initialized
   if (!g_cnk_is_initialized)
     return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -1328,11 +1338,11 @@ CK_RV C_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey) { CNK_RET_U
 CK_RV C_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest, CK_ULONG_PTR pulDigestLen) { CNK_RET_UNIMPL; }
 
 CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {
-  CNK_LOG_FUNC(C_SignInit, ", hSession: %lu, pMechanism: %lu, hKey: %lu", hSession,
+  CNK_LOG_FUNC(C_SignInit, ", hSession: %lu, pMechanism: %lu, hKey: %lu\n", hSession,
                pMechanism ? pMechanism->mechanism : 0, hKey);
 
-  // Parameter validation
-  CNK_ENSURE_NONNULL(pMechanism->pParameter);
+  // Validate mechanism
+  CNK_ENSURE_NONNULL(pMechanism);
 
   // Validate session
   CNK_PKCS11_SESSION *session;
@@ -1348,11 +1358,6 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
       CNK_RETURN(CKR_KEY_HANDLE_INVALID, "invalid key handle");
     }
   }
-
-  // Get key class for debug log
-  CK_OBJECT_CLASS key_class;
-  extract_object_info(hKey, NULL, &key_class, NULL);
-  CNK_DEBUG("Key handle: slot %lu, class %lu, id %u\n", session->slot_id, key_class, obj_id);
 
   // Map object ID to PIV tag
   CK_BYTE piv_tag;
@@ -1388,67 +1393,300 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
     CNK_RETURN(CKR_MECHANISM_INVALID, "unsupported mechanism");
   }
 
-  // Store the key handle and mechanism in the session for C_Sign
+  // Store the key handle, mechanism, and validated info in the session for C_Sign
   session->active_key = hKey;
   session->active_mechanism = pMechanism->mechanism;
+  session->active_key_piv_tag = piv_tag;
+  session->active_key_algorithm_type = algorithm_type;
 
-  CNK_DEBUG("Setting active_mechanism to %lu\n", session->active_mechanism);
+  CNK_DEBUG("Setting active_mechanism to %lu, PIV tag %u, algorithm type %u\n", session->active_mechanism, piv_tag,
+            algorithm_type);
 
   CNK_RET_OK;
 }
 
+// Helper function to compute digest based on mechanism
+static CK_RV cnk_compute_digest(CK_MECHANISM_TYPE mechanism, CK_BYTE_PTR pData, CK_ULONG ulDataLen, CK_BYTE_PTR pDigest,
+                                CK_ULONG_PTR pulDigestLen) {
+  CK_RV rv = CKR_OK;
+
+  switch (mechanism) {
+  case CKM_SHA1_RSA_PKCS:
+  case CKM_SHA1_RSA_PKCS_PSS:
+    // SHA-1 (20 bytes)
+    *pulDigestLen = 20;
+    // TODO: Implement SHA-1 digest
+    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA-1 digest calculation not yet implemented");
+    break;
+
+  case CKM_SHA224_RSA_PKCS:
+  case CKM_SHA224_RSA_PKCS_PSS:
+    // SHA-224 (28 bytes)
+    *pulDigestLen = 28;
+    // TODO: Implement SHA-224 digest
+    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA-224 digest calculation not yet implemented");
+    break;
+
+  case CKM_SHA256_RSA_PKCS:
+  case CKM_SHA256_RSA_PKCS_PSS:
+    // SHA-256 (32 bytes)
+    *pulDigestLen = 32;
+    // TODO: Implement SHA-256 digest
+    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA-256 digest calculation not yet implemented");
+    break;
+
+  case CKM_SHA384_RSA_PKCS:
+  case CKM_SHA384_RSA_PKCS_PSS:
+    // SHA-384 (48 bytes)
+    *pulDigestLen = 48;
+    // TODO: Implement SHA-384 digest
+    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA-384 digest calculation not yet implemented");
+    break;
+
+  case CKM_SHA512_RSA_PKCS:
+  case CKM_SHA512_RSA_PKCS_PSS:
+    // SHA-512 (64 bytes)
+    *pulDigestLen = 64;
+    // TODO: Implement SHA-512 digest
+    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA-512 digest calculation not yet implemented");
+    break;
+
+  case CKM_SHA3_256_RSA_PKCS:
+    // SHA3-256 (32 bytes)
+    *pulDigestLen = 32;
+    // TODO: Implement SHA3-256 digest
+    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA3-256 digest calculation not yet implemented");
+    break;
+
+  case CKM_SHA3_384_RSA_PKCS:
+    // SHA3-384 (48 bytes)
+    *pulDigestLen = 48;
+    // TODO: Implement SHA3-384 digest
+    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA3-384 digest calculation not yet implemented");
+    break;
+
+  case CKM_SHA3_512_RSA_PKCS:
+    // SHA3-512 (64 bytes)
+    *pulDigestLen = 64;
+    // TODO: Implement SHA3-512 digest
+    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA3-512 digest calculation not yet implemented");
+    break;
+
+  default:
+    // For mechanisms without digest, just return the original data
+    if (ulDataLen > *pulDigestLen) {
+      *pulDigestLen = ulDataLen;
+      return CKR_BUFFER_TOO_SMALL;
+    }
+    memcpy(pDigest, pData, ulDataLen);
+    *pulDigestLen = ulDataLen;
+    break;
+  }
+
+  return rv;
+}
+
+// Helper function to apply PKCS#1 v1.5 padding
+static CK_RV cnk_apply_pkcs1_padding(CK_BYTE_PTR pDigest, CK_ULONG ulDigestLen, CK_ULONG keySize, CK_BYTE_PTR pPadded,
+                                     CK_ULONG_PTR pulPaddedLen) {
+  // Check if the buffer is big enough
+  if (*pulPaddedLen < keySize) {
+    *pulPaddedLen = keySize;
+    return CKR_BUFFER_TOO_SMALL;
+  }
+
+  // Ensure the digest isn't too long for the key
+  if (ulDigestLen > keySize - 11) {
+    return CKR_DATA_LEN_RANGE;
+  }
+
+  // Apply PKCS#1 v1.5 padding
+  // [0x00][0x01][PS][0x00][T][digest]
+  // where PS is a string of 0xFF bytes and T is the optional DigestInfo
+
+  // Start with 0x00 0x01
+  pPadded[0] = 0x00;
+  pPadded[1] = 0x01;
+
+  // Fill PS with 0xFF
+  CK_ULONG psLen = keySize - ulDigestLen - 3; // -3 for 0x00 0x01 0x00
+  memset(pPadded + 2, 0xFF, psLen);
+
+  // Add 0x00 separator
+  pPadded[2 + psLen] = 0x00;
+
+  // Copy the digest
+  memcpy(pPadded + 3 + psLen, pDigest, ulDigestLen);
+
+  *pulPaddedLen = keySize;
+
+  return CKR_OK;
+}
+
+// Helper function to apply PSS padding
+static CK_RV cnk_apply_pss_padding(CK_BYTE_PTR pDigest, CK_ULONG ulDigestLen, CK_ULONG keySize, CK_BYTE_PTR pPadded,
+                                   CK_ULONG_PTR pulPaddedLen) {
+  // Check if the buffer is big enough
+  if (*pulPaddedLen < keySize) {
+    *pulPaddedLen = keySize;
+    return CKR_BUFFER_TOO_SMALL;
+  }
+
+  // PSS padding is more complex and requires more implementations
+  // For now, return unimplemented
+  // TODO: Implement PSS padding
+  return CKR_MECHANISM_INVALID;
+}
+
+// Helper function to prepare data for RSA signing based on mechanism
+static CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_TYPE mechanism, CK_BYTE_PTR pData, CK_ULONG ulDataLen,
+                                       CK_BYTE algorithm_type, CK_BYTE_PTR pPreparedData,
+                                       CK_ULONG_PTR pulPreparedDataLen) {
+  CK_RV rv;
+  CK_ULONG keySize;
+
+  // Determine key size based on algorithm type
+  switch (algorithm_type) {
+  case PIV_ALG_RSA_2048:
+    keySize = 256; // 2048 bits = 256 bytes
+    break;
+  case PIV_ALG_RSA_3072:
+    keySize = 384; // 3072 bits = 384 bytes
+    break;
+  case PIV_ALG_RSA_4096:
+    keySize = 512; // 4096 bits = 512 bytes
+    break;
+  default:
+    return CKR_KEY_TYPE_INCONSISTENT;
+  }
+
+  // Temporary buffer for digest
+  CK_BYTE digest[64]; // Max digest size (SHA-512)
+  CK_ULONG digestLen = sizeof(digest);
+
+  // Compute digest if needed
+  if (mechanism != CKM_RSA_PKCS && mechanism != CKM_RSA_X_509) {
+    rv = cnk_compute_digest(mechanism, pData, ulDataLen, digest, &digestLen);
+    if (rv != CKR_OK) {
+      return rv;
+    }
+  } else {
+    // For raw mechanisms, use the input data directly
+    if (ulDataLen > sizeof(digest)) {
+      return CKR_DATA_LEN_RANGE;
+    }
+    memcpy(digest, pData, ulDataLen);
+    digestLen = ulDataLen;
+  }
+
+  // Apply appropriate padding
+  if (mechanism == CKM_RSA_PKCS || mechanism == CKM_SHA1_RSA_PKCS || mechanism == CKM_SHA224_RSA_PKCS ||
+      mechanism == CKM_SHA256_RSA_PKCS || mechanism == CKM_SHA384_RSA_PKCS || mechanism == CKM_SHA512_RSA_PKCS ||
+      mechanism == CKM_SHA3_256_RSA_PKCS || mechanism == CKM_SHA3_384_RSA_PKCS || mechanism == CKM_SHA3_512_RSA_PKCS) {
+    // Apply PKCS#1 v1.5 padding
+    rv = cnk_apply_pkcs1_padding(digest, digestLen, keySize, pPreparedData, pulPreparedDataLen);
+  } else if (mechanism == CKM_RSA_PKCS_PSS || mechanism == CKM_SHA1_RSA_PKCS_PSS ||
+             mechanism == CKM_SHA224_RSA_PKCS_PSS || mechanism == CKM_SHA256_RSA_PKCS_PSS ||
+             mechanism == CKM_SHA384_RSA_PKCS_PSS || mechanism == CKM_SHA512_RSA_PKCS_PSS) {
+    // Apply PSS padding
+    rv = cnk_apply_pss_padding(digest, digestLen, keySize, pPreparedData, pulPreparedDataLen);
+  } else if (mechanism == CKM_RSA_X_509) {
+    // X.509 (raw) - ensure data is right-justified in the buffer
+    if (*pulPreparedDataLen < keySize) {
+      *pulPreparedDataLen = keySize;
+      return CKR_BUFFER_TOO_SMALL;
+    }
+
+    // Fill with zeros
+    memset(pPreparedData, 0, keySize);
+
+    // Copy data to the right side of the buffer
+    if (digestLen <= keySize) {
+      memcpy(pPreparedData + (keySize - digestLen), digest, digestLen);
+      *pulPreparedDataLen = keySize;
+      rv = CKR_OK;
+    } else {
+      rv = CKR_DATA_LEN_RANGE;
+    }
+  } else {
+    rv = CKR_MECHANISM_INVALID;
+  }
+
+  return rv;
+}
+
+// Main C_Sign function
 CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
              CK_ULONG_PTR pulSignatureLen) {
-  CNK_LOG_FUNC(C_Sign, ", hSession: %lu, ulDataLen: %lu", hSession, ulDataLen);
+  CNK_LOG_FUNC(C_Sign, ", hSession: %lu, ulDataLen: %lu\n", hSession, ulDataLen);
 
   // Parameter validation
   if (!pData && ulDataLen > 0)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pData is NULL but ulDataLen > 0");
+
   CNK_ENSURE_NONNULL(pulSignatureLen);
 
   // Validate the session
   CNK_PKCS11_SESSION *session;
   CK_RV rv = CNK_ENSURE_OK(validate_session(hSession, &session));
 
-  // Check if C_SignInit was called
-  CNK_DEBUG("Current active_mechanism: %lu, expected CKM_RSA_PKCS: %lu\n", session->active_mechanism, CKM_RSA_PKCS);
-
-  // For now, we'll assume RSA-PKCS is the only supported mechanism and skip this check
-  // This will be fixed properly in a future update with a more robust session state management
-  // if (session->active_mechanism != CKM_RSA_PKCS)
-  //   CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called or with different mechanism");
-
-  // Instead, verify that we have an active key
+  // Verify that we have an active key and mechanism
   if (session->active_key == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called - no active key");
 
-  // Validate the active key object
-  CK_BYTE obj_id;
-  rv = validate_object(session->active_key, session, CKO_PRIVATE_KEY, &obj_id);
-  if (rv != CKR_OK) {
-    if (rv == CKR_KEY_TYPE_INCONSISTENT) {
-      CNK_RETURN(rv, "key is not a private key");
-    } else {
-      CNK_RETURN(CKR_KEY_HANDLE_INVALID, "invalid key handle");
+  if (session->active_mechanism == 0)
+    CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called - no active mechanism");
+
+  // All key validation was already done in C_SignInit, so we use the cached values
+  CK_BYTE piv_tag = session->active_key_piv_tag;
+  CK_BYTE algorithm_type = session->active_key_algorithm_type;
+  CK_MECHANISM_TYPE mechanism = session->active_mechanism;
+
+  CNK_DEBUG("Signing with active key, mechanism %lu, PIV tag %u, algorithm type %u\n", mechanism, piv_tag,
+            algorithm_type);
+
+  // For signature-only call to get the signature length
+  if (pSignature == NULL) {
+    switch (algorithm_type) {
+    case PIV_ALG_RSA_2048:
+      *pulSignatureLen = 256; // 2048 bits = 256 bytes
+      break;
+    case PIV_ALG_RSA_3072:
+      *pulSignatureLen = 384; // 3072 bits = 384 bytes
+      break;
+    case PIV_ALG_RSA_4096:
+      *pulSignatureLen = 512; // 4096 bits = 512 bytes
+      break;
+    default:
+      CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "unsupported key algorithm");
     }
+
+    // We don't need to reset the session state here since we're just querying the length
+    CNK_RET_OK;
   }
 
-  // Get object class for debug log
-  CK_OBJECT_CLASS key_class;
-  extract_object_info(session->active_key, NULL, &key_class, NULL);
-  CNK_DEBUG("Active key handle: slot %lu, class %lu, id %u\n", session->slot_id, key_class, obj_id);
+  // Prepare data for RSA signing (add padding, etc.)
+  CK_BYTE prepared_data[512]; // Max RSA key size (4096 bits = 512 bytes)
+  CK_ULONG prepared_data_len = sizeof(prepared_data);
 
-  // Map the object ID to PIV tag
-  CK_BYTE piv_tag;
-  CNK_ENSURE_OK(obj_id_to_piv_tag(obj_id, &piv_tag));
+  rv = cnk_prepare_rsa_sign_data(mechanism, pData, ulDataLen, algorithm_type, prepared_data, &prepared_data_len);
+  if (rv != CKR_OK) {
+    // Reset the session state
+    session->active_mechanism = 0;
+    session->active_key_piv_tag = 0;
+    session->active_key_algorithm_type = 0;
+    return rv;
+  }
 
-  // Perform the signing operation
-  CNK_ENSURE_OK(cnk_piv_sign(session->slot_id, session, piv_tag, pData, ulDataLen, pSignature, pulSignatureLen));
+  // Now pass the prepared data to the PIV sign function
+  rv = cnk_piv_sign(session->slot_id, session, piv_tag, prepared_data, prepared_data_len, pSignature, pulSignatureLen);
 
-  // Reset the active mechanism to indicate operation is complete
+  // Reset the active mechanism and related fields to indicate operation is complete
   session->active_mechanism = 0;
+  session->active_key_piv_tag = 0;
+  session->active_key_algorithm_type = 0;
 
-  CNK_RET_OK;
+  return rv;
 }
 
 CK_RV C_SignUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart, CK_ULONG ulPartLen) { CNK_RET_UNIMPL; }

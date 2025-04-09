@@ -364,6 +364,200 @@ int main(int argc, char *argv[]) {
           printf("    Error getting mechanism count: 0x%lx\n", rv);
         }
 
+        // Test RSA signing if RSA mechanisms are available
+        int has_rsa_pkcs = 0;
+        int has_sha1_rsa_pkcs = 0;
+        int has_sha256_rsa_pkcs = 0;
+
+        // Check if the token supports RSA mechanisms
+        CK_ULONG mechCount;
+        rv = pFunctionList->C_GetMechanismList(pSlotList[i], NULL, &mechCount);
+        if (rv == CKR_OK && mechCount > 0) {
+          CK_MECHANISM_TYPE_PTR mechList = (CK_MECHANISM_TYPE_PTR)malloc(mechCount * sizeof(CK_MECHANISM_TYPE));
+          if (mechList) {
+            rv = pFunctionList->C_GetMechanismList(pSlotList[i], mechList, &mechCount);
+            if (rv == CKR_OK) {
+              for (CK_ULONG j = 0; j < mechCount; j++) {
+                if (mechList[j] == CKM_RSA_PKCS)
+                  has_rsa_pkcs = 1;
+                if (mechList[j] == CKM_SHA1_RSA_PKCS)
+                  has_sha1_rsa_pkcs = 1;
+                if (mechList[j] == CKM_SHA256_RSA_PKCS)
+                  has_sha256_rsa_pkcs = 1;
+              }
+            }
+            free(mechList);
+          }
+        }
+
+        if (has_rsa_pkcs || has_sha1_rsa_pkcs || has_sha256_rsa_pkcs) {
+          printf("    Running RSA signing tests...\n");
+
+          // Open a new session for signing tests
+          CK_SESSION_HANDLE signSession;
+          rv = pFunctionList->C_OpenSession(pSlotList[i], CKF_SERIAL_SESSION, NULL, NULL, &signSession);
+          if (rv != CKR_OK) {
+            printf("    Error opening session for signing tests: 0x%lx\n", rv);
+          } else {
+            printf("    Session for signing tests opened successfully. Session handle: %lu\n", signSession);
+
+            // Login with PIN 123456
+            CK_UTF8CHAR pin[] = "123456";
+            rv = pFunctionList->C_Login(signSession, CKU_USER, pin, strlen((char *)pin));
+            if (rv != CKR_OK) {
+              printf("    Error logging in: 0x%lx\n", rv);
+            } else {
+              printf("    Login successful\n");
+            }
+
+            // Find RSA private keys for signing
+            CK_OBJECT_CLASS keyClass = CKO_PRIVATE_KEY;
+            CK_KEY_TYPE keyType = CKK_RSA;
+            CK_ATTRIBUTE findTemplate[] = {{CKA_CLASS, &keyClass, sizeof(keyClass)},
+                                           {CKA_KEY_TYPE, &keyType, sizeof(keyType)}};
+
+            rv = pFunctionList->C_FindObjectsInit(signSession, findTemplate, 2);
+            if (rv != CKR_OK) {
+              printf("    Error initializing object search: 0x%lx\n", rv);
+            } else {
+              CK_OBJECT_HANDLE hKey;
+              CK_ULONG ulObjectCount;
+
+              rv = pFunctionList->C_FindObjects(signSession, &hKey, 1, &ulObjectCount);
+              if (rv != CKR_OK || ulObjectCount == 0) {
+                printf("    No RSA private keys found: 0x%lx\n", rv);
+              } else {
+                printf("    Found RSA private key (handle: %lu)\n", hKey);
+
+                // Finalize the search
+                rv = pFunctionList->C_FindObjectsFinal(signSession);
+                if (rv != CKR_OK) {
+                  printf("    Error finalizing object search: 0x%lx\n", rv);
+                }
+
+                // Test data to sign
+                CK_BYTE data[] = "Hello, CanoKey PKCS#11!";
+                CK_ULONG dataLen = strlen((char *)data);
+                CK_BYTE signature[256]; // Buffer for RSA signature (adjust size as needed)
+                CK_ULONG signatureLen;
+
+                // Test raw RSA signing (PKCS#1 v1.5 padding)
+                if (has_rsa_pkcs) {
+                  CK_MECHANISM mechanism = {CKM_RSA_PKCS, NULL, 0};
+
+                  printf("    Testing CKM_RSA_PKCS signing...\n");
+
+                  // Initialize signing operation
+                  rv = pFunctionList->C_SignInit(signSession, &mechanism, hKey);
+                  if (rv != CKR_OK) {
+                    printf("    Error initializing signing operation: 0x%lx\n", rv);
+                  } else {
+                    // First call to get buffer size
+                    signatureLen = sizeof(signature);
+                    rv = pFunctionList->C_Sign(signSession, data, dataLen, NULL, &signatureLen);
+                    if (rv != CKR_OK && rv != CKR_BUFFER_TOO_SMALL) {
+                      printf("    Error determining signature size: 0x%lx\n", rv);
+                    } else {
+                      printf("    Signature length will be %lu bytes\n", signatureLen);
+
+                      // Second call to actually sign
+                      rv = pFunctionList->C_Sign(signSession, data, dataLen, signature, &signatureLen);
+                      if (rv != CKR_OK) {
+                        printf("    Error creating signature: 0x%lx\n", rv);
+                      } else {
+                        printf("    CKM_RSA_PKCS signing successful! Signature length: %lu\n", signatureLen);
+
+                        // Optionally display first few bytes of signature
+                        printf("    Signature (first 16 bytes): ");
+                        for (CK_ULONG j = 0; j < (signatureLen > 16 ? 16 : signatureLen); j++) {
+                          printf("%02X ", signature[j]);
+                        }
+                        printf("\n");
+                      }
+                    }
+                  }
+                }
+
+                // Test SHA1-RSA signing
+                if (has_sha1_rsa_pkcs) {
+                  CK_MECHANISM mechanism = {CKM_SHA1_RSA_PKCS, NULL, 0};
+
+                  printf("    Testing CKM_SHA1_RSA_PKCS signing...\n");
+
+                  // Initialize signing operation
+                  rv = pFunctionList->C_SignInit(signSession, &mechanism, hKey);
+                  if (rv != CKR_OK) {
+                    printf("    Error initializing SHA1-RSA signing operation: 0x%lx\n", rv);
+                  } else {
+                    // Get signature length
+                    signatureLen = sizeof(signature);
+                    rv = pFunctionList->C_Sign(signSession, data, dataLen, signature, &signatureLen);
+                    if (rv != CKR_OK) {
+                      printf("    Error creating SHA1-RSA signature: 0x%lx\n", rv);
+                    } else {
+                      printf("    CKM_SHA1_RSA_PKCS signing successful! Signature length: %lu\n", signatureLen);
+
+                      // Optionally display first few bytes of signature
+                      printf("    Signature (first 16 bytes): ");
+                      for (CK_ULONG j = 0; j < (signatureLen > 16 ? 16 : signatureLen); j++) {
+                        printf("%02X ", signature[j]);
+                      }
+                      printf("\n");
+                    }
+                  }
+                }
+
+                // Test SHA256-RSA signing
+                if (has_sha256_rsa_pkcs) {
+                  CK_MECHANISM mechanism = {CKM_SHA256_RSA_PKCS, NULL, 0};
+
+                  printf("    Testing CKM_SHA256_RSA_PKCS signing...\n");
+
+                  // Initialize signing operation
+                  rv = pFunctionList->C_SignInit(signSession, &mechanism, hKey);
+                  if (rv != CKR_OK) {
+                    printf("    Error initializing SHA256-RSA signing operation: 0x%lx\n", rv);
+                  } else {
+                    // Get signature length
+                    signatureLen = sizeof(signature);
+                    rv = pFunctionList->C_Sign(signSession, data, dataLen, signature, &signatureLen);
+                    if (rv != CKR_OK) {
+                      printf("    Error creating SHA256-RSA signature: 0x%lx\n", rv);
+                    } else {
+                      printf("    CKM_SHA256_RSA_PKCS signing successful! Signature length: %lu\n", signatureLen);
+
+                      // Optionally display first few bytes of signature
+                      printf("    Signature (first 16 bytes): ");
+                      for (CK_ULONG j = 0; j < (signatureLen > 16 ? 16 : signatureLen); j++) {
+                        printf("%02X ", signature[j]);
+                      }
+                      printf("\n");
+                    }
+                  }
+                }
+              }
+            }
+
+            // Logout
+            rv = pFunctionList->C_Logout(signSession);
+            if (rv != CKR_OK) {
+              printf("    Error logging out: 0x%lx\n", rv);
+            } else {
+              printf("    Logout successful\n");
+            }
+
+            // Close the signing session
+            rv = pFunctionList->C_CloseSession(signSession);
+            if (rv != CKR_OK) {
+              printf("    Error closing signing session: 0x%lx\n", rv);
+            } else {
+              printf("    Signing session closed successfully.\n");
+            }
+          }
+        } else {
+          printf("    No RSA signing mechanisms available, skipping signing tests.\n");
+        }
+
         // Close the session
         rv = pFunctionList->C_CloseSession(hSession);
         if (rv != CKR_OK) {

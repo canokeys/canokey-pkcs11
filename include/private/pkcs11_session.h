@@ -43,6 +43,8 @@ typedef struct CNK_PKCS11_SESSION {
   // Cryptographic operation fields
   CK_OBJECT_HANDLE active_key;                     // Active key for crypto operations
   CK_MECHANISM_TYPE active_mechanism;              // Active mechanism for crypto operations
+  CK_BYTE active_key_piv_tag;                     // PIV tag of the active key
+  CK_BYTE active_key_algorithm_type;              // Algorithm type of the active key
 } CNK_PKCS11_SESSION;
 
 // Initialize the session manager
