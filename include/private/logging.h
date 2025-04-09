@@ -54,8 +54,8 @@ extern void cnk_printf(const int level, const char *format, ...);
     CNK_RETURN(CKR_ARGUMENTS_BAD, REASON);                                                                             \
   }
 #define CNK_ENSURE_EQUAL(EXP, EXPECTED) CNK_ENSURE_EQUAL_REASON(EXP, EXPECTED, #EXP " != " #EXPECTED)
-#define CNK_ENSURE_NONNULL(PTR) CNK_ENSURE_EQUAL_REASON(!!(PTR), !!NULL, #PTR " is NULL")
-#define CHK_ENSURE_NULL(PTR) CNK_ENSURE_EQUAL_REASON((PTR), NULL, #PTR " is not NULL")
+#define CNK_ENSURE_NONNULL(PTR) CNK_ENSURE_EQUAL_REASON(!!(PTR), !NULL, #PTR " is NULL")
+#define CHK_ENSURE_NULL(PTR) CNK_ENSURE_EQUAL_REASON(!!(PTR), !!NULL, #PTR " is not NULL")
 #define CNK_ENSURE_OK(EXP)                                                                                             \
   ({                                                                                                                   \
     CNK_ENSURE_EQUAL_REASON((EXP), CKR_OK, #EXP " returned failure");                                                  \
