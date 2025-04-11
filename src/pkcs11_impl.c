@@ -7,6 +7,7 @@
 #include "pkcs11_macros.h"
 #include "pkcs11_mutex.h"
 #include "pkcs11_session.h"
+#include "rsa_utils.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -1346,18 +1347,11 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
 
   // Validate session
   CNK_PKCS11_SESSION *session;
-  CK_RV rv = CNK_ENSURE_OK(validate_session(hSession, &session));
+  CNK_ENSURE_OK(validate_session(hSession, &session));
 
   // Validate the key object
   CK_BYTE obj_id;
-  rv = validate_object(hKey, session, CKO_PRIVATE_KEY, &obj_id);
-  if (rv != CKR_OK) {
-    if (rv == CKR_KEY_TYPE_INCONSISTENT) {
-      CNK_RETURN(rv, "key is not a private key");
-    } else {
-      CNK_RETURN(CKR_KEY_HANDLE_INVALID, "invalid key handle");
-    }
-  }
+  CNK_ENSURE_OK(validate_object(hKey, session, CKO_PRIVATE_KEY, &obj_id));
 
   // Map object ID to PIV tag
   CK_BYTE piv_tag;
@@ -1371,17 +1365,58 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   switch (pMechanism->mechanism) {
   case CKM_RSA_X_509:
   case CKM_RSA_PKCS:
+    if (algorithm_type != PIV_ALG_RSA_2048 && algorithm_type != PIV_ALG_RSA_3072 && algorithm_type != PIV_ALG_RSA_4096)
+      CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not RSA");
+    break;
+
   case CKM_RSA_PKCS_PSS:
-  case CKM_SHA1_RSA_PKCS:
   case CKM_SHA1_RSA_PKCS_PSS:
-  case CKM_SHA256_RSA_PKCS:
-  case CKM_SHA256_RSA_PKCS_PSS:
-  case CKM_SHA384_RSA_PKCS:
-  case CKM_SHA384_RSA_PKCS_PSS:
-  case CKM_SHA512_RSA_PKCS:
-  case CKM_SHA512_RSA_PKCS_PSS:
-  case CKM_SHA224_RSA_PKCS:
   case CKM_SHA224_RSA_PKCS_PSS:
+  case CKM_SHA256_RSA_PKCS_PSS:
+  case CKM_SHA384_RSA_PKCS_PSS:
+  case CKM_SHA512_RSA_PKCS_PSS:
+    // For PSS mechanisms, validate the parameter
+    if (algorithm_type != PIV_ALG_RSA_2048 && algorithm_type != PIV_ALG_RSA_3072 && algorithm_type != PIV_ALG_RSA_4096)
+      CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not RSA");
+
+    // Check if parameters are provided
+    if (pMechanism->pParameter == NULL || pMechanism->ulParameterLen != sizeof(CK_RSA_PKCS_PSS_PARAMS))
+      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "PSS mechanism requires valid parameters");
+
+    // Validate the PSS parameters
+    CK_RSA_PKCS_PSS_PARAMS *pss_params = pMechanism->pParameter;
+
+    // Validate hash algorithm
+    switch (pss_params->hashAlg) {
+    case CKM_SHA_1:
+    case CKM_SHA224:
+    case CKM_SHA256:
+    case CKM_SHA384:
+    case CKM_SHA512:
+      break;
+    default:
+      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unsupported hash algorithm in PSS parameters");
+    }
+
+    // Validate MGF
+    switch (pss_params->mgf) {
+    case CKG_MGF1_SHA1:
+    case CKG_MGF1_SHA224:
+    case CKG_MGF1_SHA256:
+    case CKG_MGF1_SHA384:
+    case CKG_MGF1_SHA512:
+      break;
+    default:
+      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unsupported MGF function in PSS parameters");
+    }
+
+    break;
+
+  case CKM_SHA1_RSA_PKCS:
+  case CKM_SHA256_RSA_PKCS:
+  case CKM_SHA384_RSA_PKCS:
+  case CKM_SHA512_RSA_PKCS:
+  case CKM_SHA224_RSA_PKCS:
   case CKM_SHA3_256_RSA_PKCS:
   case CKM_SHA3_384_RSA_PKCS:
   case CKM_SHA3_512_RSA_PKCS:
@@ -1395,230 +1430,21 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
 
   // Store the key handle, mechanism, and validated info in the session for C_Sign
   session->active_key = hKey;
-  session->active_mechanism = pMechanism->mechanism;
+  session->active_mechanism_ptr = pMechanism;
   session->active_key_piv_tag = piv_tag;
   session->active_key_algorithm_type = algorithm_type;
 
-  CNK_DEBUG("Setting active_mechanism to %lu, PIV tag %u, algorithm type %u\n", session->active_mechanism, piv_tag,
+  CNK_DEBUG("Setting active_mechanism to %lu, PIV tag %u, algorithm type %u\n", pMechanism->mechanism, piv_tag,
             algorithm_type);
 
   CNK_RET_OK;
 }
 
-// Helper function to compute digest based on mechanism
-static CK_RV cnk_compute_digest(CK_MECHANISM_TYPE mechanism, CK_BYTE_PTR pData, CK_ULONG ulDataLen, CK_BYTE_PTR pDigest,
-                                CK_ULONG_PTR pulDigestLen) {
-  CK_RV rv = CKR_OK;
-
-  switch (mechanism) {
-  case CKM_SHA1_RSA_PKCS:
-  case CKM_SHA1_RSA_PKCS_PSS:
-    // SHA-1 (20 bytes)
-    *pulDigestLen = 20;
-    // TODO: Implement SHA-1 digest
-    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA-1 digest calculation not yet implemented");
-    break;
-
-  case CKM_SHA224_RSA_PKCS:
-  case CKM_SHA224_RSA_PKCS_PSS:
-    // SHA-224 (28 bytes)
-    *pulDigestLen = 28;
-    // TODO: Implement SHA-224 digest
-    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA-224 digest calculation not yet implemented");
-    break;
-
-  case CKM_SHA256_RSA_PKCS:
-  case CKM_SHA256_RSA_PKCS_PSS:
-    // SHA-256 (32 bytes)
-    *pulDigestLen = 32;
-    // TODO: Implement SHA-256 digest
-    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA-256 digest calculation not yet implemented");
-    break;
-
-  case CKM_SHA384_RSA_PKCS:
-  case CKM_SHA384_RSA_PKCS_PSS:
-    // SHA-384 (48 bytes)
-    *pulDigestLen = 48;
-    // TODO: Implement SHA-384 digest
-    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA-384 digest calculation not yet implemented");
-    break;
-
-  case CKM_SHA512_RSA_PKCS:
-  case CKM_SHA512_RSA_PKCS_PSS:
-    // SHA-512 (64 bytes)
-    *pulDigestLen = 64;
-    // TODO: Implement SHA-512 digest
-    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA-512 digest calculation not yet implemented");
-    break;
-
-  case CKM_SHA3_256_RSA_PKCS:
-    // SHA3-256 (32 bytes)
-    *pulDigestLen = 32;
-    // TODO: Implement SHA3-256 digest
-    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA3-256 digest calculation not yet implemented");
-    break;
-
-  case CKM_SHA3_384_RSA_PKCS:
-    // SHA3-384 (48 bytes)
-    *pulDigestLen = 48;
-    // TODO: Implement SHA3-384 digest
-    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA3-384 digest calculation not yet implemented");
-    break;
-
-  case CKM_SHA3_512_RSA_PKCS:
-    // SHA3-512 (64 bytes)
-    *pulDigestLen = 64;
-    // TODO: Implement SHA3-512 digest
-    CNK_RETURN(CKR_MECHANISM_INVALID, "SHA3-512 digest calculation not yet implemented");
-    break;
-
-  default:
-    // For mechanisms without digest, just return the original data
-    if (ulDataLen > *pulDigestLen) {
-      *pulDigestLen = ulDataLen;
-      return CKR_BUFFER_TOO_SMALL;
-    }
-    memcpy(pDigest, pData, ulDataLen);
-    *pulDigestLen = ulDataLen;
-    break;
-  }
-
-  return rv;
-}
-
-// Helper function to apply PKCS#1 v1.5 padding
-static CK_RV cnk_apply_pkcs1_padding(CK_BYTE_PTR pDigest, CK_ULONG ulDigestLen, CK_ULONG keySize, CK_BYTE_PTR pPadded,
-                                     CK_ULONG_PTR pulPaddedLen) {
-  // Check if the buffer is big enough
-  if (*pulPaddedLen < keySize) {
-    *pulPaddedLen = keySize;
-    return CKR_BUFFER_TOO_SMALL;
-  }
-
-  // Ensure the digest isn't too long for the key
-  if (ulDigestLen > keySize - 11) {
-    return CKR_DATA_LEN_RANGE;
-  }
-
-  // Apply PKCS#1 v1.5 padding
-  // [0x00][0x01][PS][0x00][T][digest]
-  // where PS is a string of 0xFF bytes and T is the optional DigestInfo
-
-  // Start with 0x00 0x01
-  pPadded[0] = 0x00;
-  pPadded[1] = 0x01;
-
-  // Fill PS with 0xFF
-  CK_ULONG psLen = keySize - ulDigestLen - 3; // -3 for 0x00 0x01 0x00
-  memset(pPadded + 2, 0xFF, psLen);
-
-  // Add 0x00 separator
-  pPadded[2 + psLen] = 0x00;
-
-  // Copy the digest
-  memcpy(pPadded + 3 + psLen, pDigest, ulDigestLen);
-
-  *pulPaddedLen = keySize;
-
-  return CKR_OK;
-}
-
-// Helper function to apply PSS padding
-static CK_RV cnk_apply_pss_padding(CK_BYTE_PTR pDigest, CK_ULONG ulDigestLen, CK_ULONG keySize, CK_BYTE_PTR pPadded,
-                                   CK_ULONG_PTR pulPaddedLen) {
-  // Check if the buffer is big enough
-  if (*pulPaddedLen < keySize) {
-    *pulPaddedLen = keySize;
-    return CKR_BUFFER_TOO_SMALL;
-  }
-
-  // PSS padding is more complex and requires more implementations
-  // For now, return unimplemented
-  // TODO: Implement PSS padding
-  return CKR_MECHANISM_INVALID;
-}
-
-// Helper function to prepare data for RSA signing based on mechanism
-static CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_TYPE mechanism, CK_BYTE_PTR pData, CK_ULONG ulDataLen,
-                                       CK_BYTE algorithm_type, CK_BYTE_PTR pPreparedData,
-                                       CK_ULONG_PTR pulPreparedDataLen) {
-  CK_RV rv;
-  CK_ULONG keySize;
-
-  // Determine key size based on algorithm type
-  switch (algorithm_type) {
-  case PIV_ALG_RSA_2048:
-    keySize = 256; // 2048 bits = 256 bytes
-    break;
-  case PIV_ALG_RSA_3072:
-    keySize = 384; // 3072 bits = 384 bytes
-    break;
-  case PIV_ALG_RSA_4096:
-    keySize = 512; // 4096 bits = 512 bytes
-    break;
-  default:
-    return CKR_KEY_TYPE_INCONSISTENT;
-  }
-
-  // Temporary buffer for digest
-  CK_BYTE digest[64]; // Max digest size (SHA-512)
-  CK_ULONG digestLen = sizeof(digest);
-
-  // Compute digest if needed
-  if (mechanism != CKM_RSA_PKCS && mechanism != CKM_RSA_X_509) {
-    rv = cnk_compute_digest(mechanism, pData, ulDataLen, digest, &digestLen);
-    if (rv != CKR_OK) {
-      return rv;
-    }
-  } else {
-    // For raw mechanisms, use the input data directly
-    if (ulDataLen > sizeof(digest)) {
-      return CKR_DATA_LEN_RANGE;
-    }
-    memcpy(digest, pData, ulDataLen);
-    digestLen = ulDataLen;
-  }
-
-  // Apply appropriate padding
-  if (mechanism == CKM_RSA_PKCS || mechanism == CKM_SHA1_RSA_PKCS || mechanism == CKM_SHA224_RSA_PKCS ||
-      mechanism == CKM_SHA256_RSA_PKCS || mechanism == CKM_SHA384_RSA_PKCS || mechanism == CKM_SHA512_RSA_PKCS ||
-      mechanism == CKM_SHA3_256_RSA_PKCS || mechanism == CKM_SHA3_384_RSA_PKCS || mechanism == CKM_SHA3_512_RSA_PKCS) {
-    // Apply PKCS#1 v1.5 padding
-    rv = cnk_apply_pkcs1_padding(digest, digestLen, keySize, pPreparedData, pulPreparedDataLen);
-  } else if (mechanism == CKM_RSA_PKCS_PSS || mechanism == CKM_SHA1_RSA_PKCS_PSS ||
-             mechanism == CKM_SHA224_RSA_PKCS_PSS || mechanism == CKM_SHA256_RSA_PKCS_PSS ||
-             mechanism == CKM_SHA384_RSA_PKCS_PSS || mechanism == CKM_SHA512_RSA_PKCS_PSS) {
-    // Apply PSS padding
-    rv = cnk_apply_pss_padding(digest, digestLen, keySize, pPreparedData, pulPreparedDataLen);
-  } else if (mechanism == CKM_RSA_X_509) {
-    // X.509 (raw) - ensure data is right-justified in the buffer
-    if (*pulPreparedDataLen < keySize) {
-      *pulPreparedDataLen = keySize;
-      return CKR_BUFFER_TOO_SMALL;
-    }
-
-    // Fill with zeros
-    memset(pPreparedData, 0, keySize);
-
-    // Copy data to the right side of the buffer
-    if (digestLen <= keySize) {
-      memcpy(pPreparedData + (keySize - digestLen), digest, digestLen);
-      *pulPreparedDataLen = keySize;
-      rv = CKR_OK;
-    } else {
-      rv = CKR_DATA_LEN_RANGE;
-    }
-  } else {
-    rv = CKR_MECHANISM_INVALID;
-  }
-
-  return rv;
-}
-
 // Main C_Sign function
 CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
              CK_ULONG_PTR pulSignatureLen) {
-  CNK_LOG_FUNC(C_Sign, ", hSession: %lu, ulDataLen: %lu\n", hSession, ulDataLen);
+  CNK_LOG_FUNC(C_Sign, ", hSession: %lu, ulDataLen: %lu, pSignature: %p, pulSignatureLen: %p\n", hSession, ulDataLen,
+               pSignature, pulSignatureLen);
 
   // Parameter validation
   if (!pData && ulDataLen > 0)
@@ -1634,16 +1460,15 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   if (session->active_key == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called - no active key");
 
-  if (session->active_mechanism == 0)
+  if (session->active_mechanism_ptr == NULL)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called - no active mechanism");
 
   // All key validation was already done in C_SignInit, so we use the cached values
   CK_BYTE piv_tag = session->active_key_piv_tag;
   CK_BYTE algorithm_type = session->active_key_algorithm_type;
-  CK_MECHANISM_TYPE mechanism = session->active_mechanism;
+  CK_MECHANISM_PTR mechanism_ptr = session->active_mechanism_ptr;
 
-  CNK_DEBUG("Signing with active key, mechanism %lu, PIV tag %u, algorithm type %u\n", mechanism, piv_tag,
-            algorithm_type);
+  CNK_DEBUG("Signing with active key, PIV tag %u, algorithm type %u\n", piv_tag, algorithm_type);
 
   // For signature-only call to get the signature length
   if (pSignature == NULL) {
@@ -1669,10 +1494,11 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   CK_BYTE prepared_data[512]; // Max RSA key size (4096 bits = 512 bytes)
   CK_ULONG prepared_data_len = sizeof(prepared_data);
 
-  rv = cnk_prepare_rsa_sign_data(mechanism, pData, ulDataLen, algorithm_type, prepared_data, &prepared_data_len);
+  rv = cnk_prepare_rsa_sign_data(mechanism_ptr, pData, ulDataLen, algorithm_type, prepared_data, &prepared_data_len);
   if (rv != CKR_OK) {
     // Reset the session state
-    session->active_mechanism = 0;
+    session->active_mechanism_ptr = NULL;
+    session->active_key = 0;
     session->active_key_piv_tag = 0;
     session->active_key_algorithm_type = 0;
     return rv;
@@ -1682,7 +1508,8 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   rv = cnk_piv_sign(session->slot_id, session, piv_tag, prepared_data, prepared_data_len, pSignature, pulSignatureLen);
 
   // Reset the active mechanism and related fields to indicate operation is complete
-  session->active_mechanism = 0;
+  session->active_mechanism_ptr = NULL;
+  session->active_key = 0;
   session->active_key_piv_tag = 0;
   session->active_key_algorithm_type = 0;
 
