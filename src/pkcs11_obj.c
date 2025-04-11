@@ -12,8 +12,8 @@
 
 // Helper function to extract object information from a handle
 // Object handle format: slot_id (16 bits) | object_class (8 bits) | object_id (8 bits)
-static void cnk_extract_object_info(CK_OBJECT_HANDLE hObject, CK_SLOT_ID *slot_id, CK_OBJECT_CLASS *obj_class,
-                                    CK_BYTE *obj_id) {
+void cnk_extract_object_info(CK_OBJECT_HANDLE hObject, CK_SLOT_ID *slot_id, CK_OBJECT_CLASS *obj_class,
+                             CK_BYTE *obj_id) {
   if (slot_id) {
     *slot_id = (hObject >> 16) & 0xFFFF;
   }
@@ -26,7 +26,7 @@ static void cnk_extract_object_info(CK_OBJECT_HANDLE hObject, CK_SLOT_ID *slot_i
 }
 
 // Helper function to map object ID to PIV tag
-static CK_RV cnk_obj_id_to_piv_tag(CK_BYTE obj_id, CK_BYTE *piv_tag) {
+CK_RV cnk_obj_id_to_piv_tag(CK_BYTE obj_id, CK_BYTE *piv_tag) {
   switch (obj_id) {
   case PIV_SLOT_9A:
     *piv_tag = 0x9A;
@@ -53,7 +53,7 @@ static CK_RV cnk_obj_id_to_piv_tag(CK_BYTE obj_id, CK_BYTE *piv_tag) {
 }
 
 // Helper function to set attribute values with proper buffer checking
-static CK_RV cnk_set_single_attribute_value(CK_ATTRIBUTE_PTR attribute, const void *value, CK_ULONG value_size) {
+CK_RV cnk_set_single_attribute_value(CK_ATTRIBUTE_PTR attribute, const void *value, CK_ULONG value_size) {
   attribute->ulValueLen = value_size;
 
   if (attribute->pValue) {
@@ -68,8 +68,8 @@ static CK_RV cnk_set_single_attribute_value(CK_ATTRIBUTE_PTR attribute, const vo
 }
 
 // Helper function to validate an object handle against a session and expected class
-static CK_RV cnk_validate_object(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS expected_class,
-                                 CK_BYTE *obj_id) {
+CK_RV cnk_validate_object(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS expected_class,
+                          CK_BYTE *obj_id) {
   // Extract object information from the handle
   CK_SLOT_ID slot_id;
   CK_OBJECT_CLASS obj_class;
@@ -89,7 +89,7 @@ static CK_RV cnk_validate_object(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *s
   CNK_RET_OK;
 }
 
-static CK_KEY_TYPE cnk_algo_type_to_key_type(CK_BYTE algorithm_type) {
+CK_KEY_TYPE cnk_algo_type_to_key_type(CK_BYTE algorithm_type) {
   switch (algorithm_type) {
   case PIV_ALG_RSA_2048:
   case PIV_ALG_RSA_3072:
@@ -112,8 +112,7 @@ static CK_KEY_TYPE cnk_algo_type_to_key_type(CK_BYTE algorithm_type) {
 }
 
 // Handle certificate-specific attributes
-static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE_PTR data,
-                                              CK_ULONG data_len) {
+CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE_PTR data, CK_ULONG data_len) {
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
 
   switch (attribute.type) {
@@ -140,8 +139,8 @@ static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE pi
 }
 
 // Handle public key specific attributes
-static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
-                                             CK_SLOT_ID slot_id) {
+CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
+                                      CK_SLOT_ID slot_id) {
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
   CK_KEY_TYPE key_type = cnk_algo_type_to_key_type(algorithm_type);
 
@@ -193,8 +192,8 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv
 }
 
 // Handle private key specific attributes
-static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
-                                              CK_SLOT_ID slot_id) {
+CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
+                                       CK_SLOT_ID slot_id) {
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
   CK_KEY_TYPE key_type = cnk_algo_type_to_key_type(algorithm_type);
 

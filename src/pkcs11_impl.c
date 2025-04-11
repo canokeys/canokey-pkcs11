@@ -16,63 +16,6 @@
 // Forward declaration of the function list
 static CK_FUNCTION_LIST ck_function_list;
 
-// Helper function to extract object information from a handle
-// Object handle format: slot_id (16 bits) | object_class (8 bits) | object_id (8 bits)
-static void extract_object_info(CK_OBJECT_HANDLE hObject, CK_SLOT_ID *slot_id, CK_OBJECT_CLASS *obj_class,
-                                CK_BYTE *obj_id) {
-  if (slot_id) {
-    *slot_id = (hObject >> 16) & 0xFFFF;
-  }
-  if (obj_class) {
-    *obj_class = (hObject >> 8) & 0xFF;
-  }
-  if (obj_id) {
-    *obj_id = hObject & 0xFF;
-  }
-}
-
-// Helper function to map object ID to PIV tag
-static CK_RV obj_id_to_piv_tag(CK_BYTE obj_id, CK_BYTE *piv_tag) {
-  switch (obj_id) {
-  case PIV_SLOT_9A:
-    *piv_tag = 0x9A;
-    break;
-  case PIV_SLOT_9C:
-    *piv_tag = 0x9C;
-    break;
-  case PIV_SLOT_9D:
-    *piv_tag = 0x9D;
-    break;
-  case PIV_SLOT_9E:
-    *piv_tag = 0x9E;
-    break;
-  case PIV_SLOT_82:
-    *piv_tag = 0x82;
-    break;
-  case PIV_SLOT_83:
-    *piv_tag = 0x83;
-    break;
-  default:
-    return CKR_OBJECT_HANDLE_INVALID;
-  }
-  CNK_RET_OK;
-}
-
-// Helper function to set attribute values with proper buffer checking
-static CK_RV set_attribute_value(CK_ATTRIBUTE_PTR attribute, const void *value, CK_ULONG value_size) {
-  attribute->ulValueLen = value_size;
-
-  if (attribute->pValue) {
-    if (attribute->ulValueLen >= value_size) {
-      memcpy(attribute->pValue, value, value_size);
-    } else {
-      return CKR_BUFFER_TOO_SMALL;
-    }
-  }
-
-  CNK_RET_OK;
-}
-
 // Helper function to check basic library and session state
 static CK_RV validate_session(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session) {
   // Check if the library is initialized
@@ -81,28 +24,6 @@ static CK_RV validate_session(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **s
 
   // Find the session
   return cnk_session_find(hSession, session);
-}
-
-// Helper function to validate an object handle against a session and expected class
-static CK_RV validate_object(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS expected_class,
-                             CK_BYTE *obj_id) {
-  // Extract object information from the handle
-  CK_SLOT_ID slot_id;
-  CK_OBJECT_CLASS obj_class;
-
-  extract_object_info(hObject, &slot_id, &obj_class, obj_id);
-
-  // Verify the slot ID matches the session's slot ID
-  if (slot_id != session->slot_id) {
-    CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "slot ID mismatch");
-  }
-
-  // Verify the object class if expected_class is not 0
-  if (expected_class != 0 && obj_class != expected_class) {
-    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "object class mismatch");
-  }
-
-  CNK_RET_OK;
 }
 
 CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
@@ -824,8 +745,7 @@ CK_RV C_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey) { CNK_RET_U
 CK_RV C_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest, CK_ULONG_PTR pulDigestLen) { CNK_RET_UNIMPL; }
 
 CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {
-  CNK_LOG_FUNC(C_SignInit, ", hSession: %lu, pMechanism: %lu, hKey: %lu\n", hSession,
-               pMechanism ? pMechanism->mechanism : 0, hKey);
+  CNK_LOG_FUNC(C_SignInit, ", hSession: %lu, pMechanism: %p, hKey: %lu\n", hSession, pMechanism, hKey);
 
   // Validate mechanism
   CNK_ENSURE_NONNULL(pMechanism);
@@ -836,11 +756,11 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
 
   // Validate the key object
   CK_BYTE obj_id;
-  CNK_ENSURE_OK(validate_object(hKey, session, CKO_PRIVATE_KEY, &obj_id));
+  CNK_ENSURE_OK(cnk_validate_object(hKey, session, CKO_PRIVATE_KEY, &obj_id));
 
   // Map object ID to PIV tag
   CK_BYTE piv_tag;
-  CNK_ENSURE_OK(obj_id_to_piv_tag(obj_id, &piv_tag));
+  CNK_ENSURE_OK(cnk_obj_id_to_piv_tag(obj_id, &piv_tag));
 
   // Verify that the key matches the mechanism
   CK_BYTE algorithm_type;
