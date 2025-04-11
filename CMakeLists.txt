@@ -120,11 +120,18 @@ install(TARGETS ${CNK_PKCS_TARGET}
     PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${CNK_PKCS_LIB_NAME}
 )
 
-# Add a simple test executable if testing is enabled
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Modules")
+
 option(BUILD_TESTING "Build test programs" OFF)
 if(BUILD_TESTING)
     add_executable(test_real test/test_real.c)
     if(APPLE OR UNIX)
         target_link_libraries(test_real dl)
     endif()
+
+    find_package(CMocka CONFIG REQUIRED)
+    include(AddCMockaTest)
+    include(AddMockedTest)
+    add_subdirectory(test)
+    enable_testing()
 endif()
