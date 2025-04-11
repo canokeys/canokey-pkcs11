@@ -6,6 +6,7 @@
 #include "pkcs11_canokey.h"
 #include "pkcs11_macros.h"
 #include "pkcs11_mutex.h"
+#include "pkcs11_obj.h"
 #include "pkcs11_session.h"
 #include "rsa_utils.h"
 
@@ -14,13 +15,6 @@
 
 // Forward declaration of the function list
 static CK_FUNCTION_LIST ck_function_list;
-
-// Forward declarations for attribute handler functions
-static CK_RV handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE_PTR data, CK_ULONG data_len);
-static CK_RV handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
-                                         CK_SLOT_ID slot_id);
-static CK_RV handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
-                                          CK_SLOT_ID slot_id);
 
 // Helper function to extract object information from a handle
 // Object handle format: slot_id (16 bits) | object_class (8 bits) | object_id (8 bits)
@@ -738,561 +732,52 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
 
 CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                      CK_OBJECT_HANDLE_PTR phObject) {
-  CNK_RET_UNIMPL;
+  CNK_LOG_FUNC(C_CreateObject, ", hSession: %lu, ulCount: %lu\n", hSession, ulCount);
+  return cnk_create_object(hSession, pTemplate, ulCount, phObject);
 }
 
 CK_RV C_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                    CK_OBJECT_HANDLE_PTR phNewObject) {
-  CNK_RET_UNIMPL;
+  CNK_LOG_FUNC(C_CopyObject, ", hSession: %lu, hObject: %lu, ulCount: %lu\n", hSession, hObject, ulCount);
+  return cnk_copy_object(hSession, hObject, pTemplate, ulCount, phNewObject);
 }
 
-CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) { CNK_RET_UNIMPL; }
+CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
+  CNK_LOG_FUNC(C_DestroyObject, ", hSession: %lu, hObject: %lu\n", hSession, hObject);
+  return cnk_destroy_object(hSession, hObject);
+}
 
-CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ULONG_PTR pulSize) { CNK_RET_UNIMPL; }
+CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ULONG_PTR pulSize) {
+  CNK_LOG_FUNC(C_GetObjectSize, ", hSession: %lu, hObject: %lu\n", hSession, hObject);
+  return cnk_get_object_size(hSession, hObject, pulSize);
+}
 
 CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                           CK_ULONG ulCount) {
   CNK_LOG_FUNC(C_GetAttributeValue, ", hSession: %lu, hObject: %lu, ulCount: %lu\n", hSession, hObject, ulCount);
-
-  // Validate parameters
-  if (!pTemplate && ulCount > 0)
-    return CKR_ARGUMENTS_BAD;
-
-  // Validate session
-  CNK_PKCS11_SESSION *session;
-  CNK_ENSURE_OK(validate_session(hSession, &session));
-
-  // Extract and validate object information
-  CK_OBJECT_CLASS obj_class;
-  CK_BYTE obj_id;
-  CNK_ENSURE_OK(validate_object(hObject, session, 0, &obj_id));
-
-  // Get object class from handle
-  extract_object_info(hObject, NULL, &obj_class, NULL);
-  CNK_DEBUG("Object handle: slot %lu, class %lu, id %lu\n", session->slot_id, obj_class, obj_id);
-
-  // Map object ID to PIV tag
-  CK_BYTE piv_tag;
-  CNK_ENSURE_OK(obj_id_to_piv_tag(obj_id, &piv_tag));
-
-  // Fetch the PIV data for this object
-  CK_ULONG data_len = 0;
-  CK_BYTE_PTR data = NULL;
-
-  CNK_ENSURE_OK(cnk_get_piv_data(session->slot_id, piv_tag, &data, &data_len, CK_FALSE));
-
-  // If no data was found, the object doesn't exist
-  if (data_len == 0) {
-    return CKR_OBJECT_HANDLE_INVALID;
-  }
-
-  // Get key metadata if this is a key object
-  CK_BYTE algorithm_type;
-
-  if (obj_class == CKO_PUBLIC_KEY || obj_class == CKO_PRIVATE_KEY) {
-    CK_RV rv = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type);
-    if (rv != CKR_OK) {
-      CNK_DEBUG("Failed to get metadata for PIV tag 0x%02X: %lu\n", piv_tag, rv);
-      // Continue anyway, we'll use default values
-    } else {
-      CNK_DEBUG("Retrieved algorithm type %u for PIV tag 0x%02X\n", algorithm_type, piv_tag);
-    }
-  }
-
-  // Process each attribute in the template
-  CK_RV return_rv = CKR_OK; // Final return value
-
-  for (CK_ULONG i = 0; i < ulCount; i++) {
-    // Set default values for attributes that are not found
-    pTemplate[i].ulValueLen = CK_UNAVAILABLE_INFORMATION;
-    CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID; // Default to attribute not found
-
-    // Common attributes for all object types
-    switch (pTemplate[i].type) {
-    case CKA_CLASS:
-      if (pTemplate[i].pValue) {
-        if (pTemplate[i].ulValueLen >= sizeof(CK_OBJECT_CLASS)) {
-          *((CK_OBJECT_CLASS *)pTemplate[i].pValue) = obj_class;
-        } else {
-          rv = CKR_BUFFER_TOO_SMALL;
-        }
-      }
-      pTemplate[i].ulValueLen = sizeof(CK_OBJECT_CLASS);
-      rv = CKR_OK;
-      break;
-
-    case CKA_TOKEN:
-      if (pTemplate[i].pValue) {
-        if (pTemplate[i].ulValueLen >= sizeof(CK_BBOOL)) {
-          *((CK_BBOOL *)pTemplate[i].pValue) = CK_TRUE;
-        } else {
-          rv = CKR_BUFFER_TOO_SMALL;
-        }
-      }
-      pTemplate[i].ulValueLen = sizeof(CK_BBOOL);
-      rv = CKR_OK;
-      break;
-
-    case CKA_PRIVATE:
-      if (pTemplate[i].pValue) {
-        if (pTemplate[i].ulValueLen >= sizeof(CK_BBOOL)) {
-          // Only private keys are private objects
-          *((CK_BBOOL *)pTemplate[i].pValue) = (obj_class == CKO_PRIVATE_KEY) ? CK_TRUE : CK_FALSE;
-        } else {
-          rv = CKR_BUFFER_TOO_SMALL;
-        }
-      }
-      pTemplate[i].ulValueLen = sizeof(CK_BBOOL);
-      rv = CKR_OK;
-      break;
-
-    case CKA_ID:
-      if (pTemplate[i].pValue) {
-        if (pTemplate[i].ulValueLen >= sizeof(CK_BYTE)) {
-          *((CK_BYTE *)pTemplate[i].pValue) = obj_id;
-        } else {
-          rv = CKR_BUFFER_TOO_SMALL;
-        }
-      }
-      pTemplate[i].ulValueLen = sizeof(CK_BYTE);
-      rv = CKR_OK;
-      break;
-
-    case CKA_LABEL: {
-      // Create a label based on the object type and ID
-      char label[32];
-      const char *type_str = "Unknown";
-
-      switch (obj_class) {
-      case CKO_CERTIFICATE:
-        type_str = "Certificate";
-        break;
-      case CKO_PUBLIC_KEY:
-        type_str = "Public Key";
-        break;
-      case CKO_PRIVATE_KEY:
-        type_str = "Private Key";
-        break;
-      case CKO_DATA:
-        type_str = "Data";
-        break;
-      }
-
-      snprintf(label, sizeof(label), "PIV %s %02X", type_str, piv_tag);
-      CK_ULONG label_len = (CK_ULONG)strlen(label);
-
-      if (pTemplate[i].pValue) {
-        if (pTemplate[i].ulValueLen >= label_len) {
-          memcpy(pTemplate[i].pValue, label, label_len);
-        } else {
-          rv = CKR_BUFFER_TOO_SMALL;
-        }
-      }
-      pTemplate[i].ulValueLen = label_len;
-      rv = CKR_OK;
-      break;
-    }
-
-    default:
-      // Not a common attribute, handle based on object class
-      break;
-    }
-
-    // If we've already handled this attribute, continue to the next one
-    if (rv != CKR_ATTRIBUTE_TYPE_INVALID) {
-      if (rv != CKR_OK && return_rv == CKR_OK) {
-        return_rv = rv; // Update return value if we had an error
-      }
-      continue;
-    }
-
-    // Object class specific attributes
-    switch (obj_class) {
-    case CKO_CERTIFICATE:
-      rv = handle_certificate_attribute(pTemplate[i], piv_tag, data, data_len);
-      break;
-
-    case CKO_PUBLIC_KEY:
-      rv = handle_public_key_attribute(pTemplate[i], piv_tag, algorithm_type, session->slot_id);
-      break;
-
-    case CKO_PRIVATE_KEY:
-      rv = handle_private_key_attribute(pTemplate[i], piv_tag, algorithm_type, session->slot_id);
-      break;
-
-    default:
-      // Unsupported object class
-      rv = CKR_ATTRIBUTE_TYPE_INVALID;
-      break;
-    }
-
-    // Update the return value if needed
-    if (rv != CKR_OK && return_rv == CKR_OK) {
-      return_rv = rv;
-    }
-  }
-
-  // Free the PIV data if it was allocated
-  if (data != NULL) {
-    ck_free(data);
-  }
-
-  return return_rv;
-}
-
-static CK_KEY_TYPE algo_type_to_key_type(CK_BYTE algorithm_type) {
-  switch (algorithm_type) {
-  case PIV_ALG_RSA_2048:
-  case PIV_ALG_RSA_3072:
-  case PIV_ALG_RSA_4096:
-    return CKK_RSA;
-
-  case PIV_ALG_ECC_256:
-  case PIV_ALG_ECC_384:
-  case PIV_ALG_SECP256K1:
-  case PIV_ALG_SM2:
-    return CKK_EC;
-
-  case PIV_ALG_ED25519:
-  case PIV_ALG_X25519:
-    return CKK_EC_EDWARDS;
-
-  default:
-    return CKK_VENDOR_DEFINED;
-  }
-}
-
-// Handle certificate-specific attributes
-static CK_RV handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE_PTR data,
-                                          CK_ULONG data_len) {
-  CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
-
-  switch (attribute.type) {
-  case CKA_CERTIFICATE_TYPE: {
-    CK_CERTIFICATE_TYPE cert_type = CKC_X_509;
-    rv = set_attribute_value(&attribute, &cert_type, sizeof(cert_type));
-    break;
-  }
-
-  case CKA_VALUE:
-    // For certificates, return the raw certificate data
-    rv = set_attribute_value(&attribute, data, data_len);
-    break;
-
-    // Add other certificate attributes as needed
-    // CKA_SUBJECT, CKA_ISSUER, CKA_SERIAL_NUMBER would require parsing the certificate
-
-  default:
-    rv = CKR_ATTRIBUTE_TYPE_INVALID;
-    break;
-  }
-
-  return rv;
-}
-
-// Handle public key specific attributes
-static CK_RV handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
-                                         CK_SLOT_ID slot_id) {
-  CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
-  CK_KEY_TYPE key_type = algo_type_to_key_type(algorithm_type);
-
-  switch (attribute.type) {
-  case CKA_KEY_TYPE:
-    rv = set_attribute_value(&attribute, &key_type, sizeof(key_type));
-    break;
-
-  case CKA_VERIFY: {
-    // Public keys can be used for verification
-    CK_BBOOL value = CK_TRUE;
-    rv = set_attribute_value(&attribute, &value, sizeof(value));
-    break;
-  }
-
-  case CKA_ENCRYPT: {
-    // Only RSA public keys can encrypt
-    CK_BBOOL value = (key_type == CKK_RSA) ? CK_TRUE : CK_FALSE;
-    rv = set_attribute_value(&attribute, &value, sizeof(value));
-    break;
-  }
-
-  case CKA_MODULUS_BITS:
-    if (key_type == CKK_RSA) {
-      // For RSA keys, we can determine the modulus bits
-      CK_ULONG modulus_bits = 2048; // Default for PIV
-      if (algorithm_type == PIV_ALG_RSA_3072) {
-        modulus_bits = 3072;
-      } else if (algorithm_type == PIV_ALG_RSA_4096) {
-        modulus_bits = 4096;
-      }
-      rv = set_attribute_value(&attribute, &modulus_bits, sizeof(modulus_bits));
-    } else {
-      // Not applicable for non-RSA keys
-      rv = CKR_ATTRIBUTE_TYPE_INVALID;
-    }
-    break;
-
-    // Add other public key attributes as needed
-    // For a complete implementation, you would need to handle attributes like
-    // CKA_MODULUS, CKA_PUBLIC_EXPONENT for RSA or CKA_EC_PARAMS, CKA_EC_POINT for EC
-
-  default:
-    rv = CKR_ATTRIBUTE_TYPE_INVALID;
-    break;
-  }
-
-  return rv;
-}
-
-// Handle private key specific attributes
-static CK_RV handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
-                                          CK_SLOT_ID slot_id) {
-  CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
-  CK_KEY_TYPE key_type = algo_type_to_key_type(algorithm_type);
-
-  switch (attribute.type) {
-  case CKA_KEY_TYPE:
-    rv = set_attribute_value(&attribute, &key_type, sizeof(key_type));
-    break;
-
-  case CKA_SIGN: {
-    // Private keys can be used for signing
-    CK_BBOOL value = CK_TRUE;
-    rv = set_attribute_value(&attribute, &value, sizeof(value));
-    break;
-  }
-
-  case CKA_DECRYPT: {
-    // Only RSA private keys can decrypt
-    CK_BBOOL value = (key_type == CKK_RSA) ? CK_TRUE : CK_FALSE;
-    rv = set_attribute_value(&attribute, &value, sizeof(value));
-    break;
-  }
-
-  case CKA_SENSITIVE:
-  case CKA_ALWAYS_SENSITIVE: {
-    // Private keys are always sensitive
-    CK_BBOOL value = CK_TRUE;
-    rv = set_attribute_value(&attribute, &value, sizeof(value));
-    break;
-  }
-
-  case CKA_EXTRACTABLE: {
-    // Private keys on PIV are never extractable
-    CK_BBOOL value = CK_FALSE;
-    rv = set_attribute_value(&attribute, &value, sizeof(value));
-    break;
-  }
-
-    // Add other private key attributes as needed
-
-  default:
-    rv = CKR_ATTRIBUTE_TYPE_INVALID;
-    break;
-  }
-
-  return rv;
+  return cnk_get_attribute_value(hSession, hObject, pTemplate, ulCount);
 }
 
 CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                           CK_ULONG ulCount) {
-  CNK_RET_UNIMPL;
+  CNK_LOG_FUNC(C_SetAttributeValue, ", hSession: %lu, hObject: %lu, ulCount: %lu\n", hSession, hObject, ulCount);
+  return cnk_set_attribute_value(hSession, hObject, pTemplate, ulCount);
 }
 
 CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
   CNK_LOG_FUNC(C_FindObjectsInit, ", hSession: %lu, ulCount: %lu\n", hSession, ulCount);
-
-  // Validate the session
-  CNK_PKCS11_SESSION *session;
-  CK_RV rv = CNK_ENSURE_OK(validate_session(hSession, &session));
-
-  // Lock the session
-  cnk_mutex_lock(&session->lock);
-
-  // Check if a find operation is already active
-  if (session->find_active) {
-    cnk_mutex_unlock(&session->lock);
-    return CKR_OPERATION_ACTIVE;
-  }
-
-  // Reset find operation state
-  session->find_active = CK_TRUE;
-  session->find_objects_count = 0;
-  session->find_objects_position = 0;
-  session->find_id_specified = CK_FALSE;
-  session->find_class_specified = CK_FALSE;
-
-  // Parse the template
-  for (CK_ULONG i = 0; i < ulCount; i++) {
-    if (pTemplate[i].type == CKA_CLASS && pTemplate[i].pValue != NULL &&
-        pTemplate[i].ulValueLen == sizeof(CK_OBJECT_CLASS)) {
-      session->find_object_class = *((CK_OBJECT_CLASS *)pTemplate[i].pValue);
-      session->find_class_specified = CK_TRUE;
-    } else if (pTemplate[i].type == CKA_ID && pTemplate[i].pValue != NULL &&
-               pTemplate[i].ulValueLen == sizeof(CK_BYTE)) {
-      session->find_object_id = *((CK_BYTE *)pTemplate[i].pValue);
-      session->find_id_specified = CK_TRUE;
-    }
-  }
-
-  // If no class is specified, we can't search
-  if (!session->find_class_specified) {
-    session->find_active = CK_FALSE;
-    cnk_mutex_unlock(&session->lock);
-    CNK_RET_OK; // Return OK but with no results
-  }
-
-  // Check if the specified class is supported
-  if (session->find_class_specified && session->find_object_class != CKO_CERTIFICATE &&
-      session->find_object_class != CKO_PUBLIC_KEY && session->find_object_class != CKO_PRIVATE_KEY &&
-      session->find_object_class != CKO_DATA) {
-    session->find_active = CK_FALSE;
-    cnk_mutex_unlock(&session->lock);
-    CNK_RET_OK; // Return OK but with no results
-  }
-
-  // If an ID is specified, we only need to check that specific ID
-  if (session->find_id_specified) {
-    // Check if the ID is valid (1-6)
-    if (session->find_object_id < 1 || session->find_object_id > 6) {
-      session->find_active = CK_FALSE;
-      cnk_mutex_unlock(&session->lock);
-      CNK_RET_OK; // Return OK but with no results
-    }
-
-    // Map CKA_ID to PIV tag
-    CK_BYTE piv_tag;
-    rv = obj_id_to_piv_tag(session->find_object_id, &piv_tag);
-    if (rv != CKR_OK) {
-      session->find_active = CK_FALSE;
-      cnk_mutex_unlock(&session->lock);
-      CNK_RET_OK; // Return OK but with no results
-    }
-
-    // Try to get the data for this tag
-    CK_BYTE_PTR data = NULL;
-    CK_ULONG data_len = 0;
-    rv = cnk_get_piv_data(session->slot_id, piv_tag, &data, &data_len, CK_FALSE); // Just check existence
-
-    if (rv != CKR_OK) {
-      session->find_active = CK_FALSE;
-      cnk_mutex_unlock(&session->lock);
-      return rv;
-    }
-
-    // If data exists, add this object to the results
-    if (data_len > 0) {
-      // Create a handle for this object: slot_id | object_class | object_id
-      // This will allow us to identify the object in future operations
-      CK_OBJECT_HANDLE handle =
-          (session->slot_id << 16) | ((CK_ULONG)session->find_object_class << 8) | session->find_object_id;
-      session->find_objects[session->find_objects_count++] = handle;
-      ck_free(data);
-    }
-  } else {
-    // No ID specified, check all possible IDs (1-6)
-    for (CK_BYTE id = 1; id <= 6; id++) {
-      // Map ID to PIV tag
-      CK_BYTE piv_tag;
-      if (obj_id_to_piv_tag(id, &piv_tag) != CKR_OK) {
-        continue;
-      }
-
-      // Try to get the data for this tag
-      CK_BYTE_PTR data = NULL;
-      CK_ULONG data_len = 0;
-      rv = cnk_get_piv_data(session->slot_id, piv_tag, &data, &data_len, CK_FALSE); // Just check existence
-
-      if (rv != CKR_OK) {
-        session->find_active = CK_FALSE;
-        cnk_mutex_unlock(&session->lock);
-        return rv;
-      }
-
-      // If data exists, add this object to the results
-      if (data_len > 0) {
-        // Create a handle for this object: slot_id | object_class | object_id
-        CK_OBJECT_HANDLE handle = (session->slot_id << 16) | ((CK_ULONG)session->find_object_class << 8) | id;
-        session->find_objects[session->find_objects_count++] = handle;
-        ck_free(data);
-      }
-    }
-  }
-
-  cnk_mutex_unlock(&session->lock);
-  CNK_RET_OK;
+  return cnk_find_objects_init(hSession, pTemplate, ulCount);
 }
 
 CK_RV C_FindObjects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject, CK_ULONG ulMaxObjectCount,
                     CK_ULONG_PTR pulObjectCount) {
   CNK_LOG_FUNC(C_FindObjects, ", hSession: %lu, ulMaxObjectCount: %lu\n", hSession, ulMaxObjectCount);
-
-  // Check if the library is initialized
-  if (!g_cnk_is_initialized)
-    return CKR_CRYPTOKI_NOT_INITIALIZED;
-
-  // Validate parameters
-  if (!phObject || !pulObjectCount)
-    return CKR_ARGUMENTS_BAD;
-
-  // Find the session
-  CNK_PKCS11_SESSION *session;
-  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-
-  // Lock the session
-  cnk_mutex_lock(&session->lock);
-
-  // Check if a find operation is active
-  if (!session->find_active) {
-    cnk_mutex_unlock(&session->lock);
-    return CKR_OPERATION_NOT_INITIALIZED;
-  }
-
-  // Calculate how many objects to return
-  CK_ULONG remaining = session->find_objects_count - session->find_objects_position;
-  CK_ULONG count = (remaining < ulMaxObjectCount) ? remaining : ulMaxObjectCount;
-
-  // Copy the object handles
-  for (CK_ULONG i = 0; i < count; i++) {
-    phObject[i] = session->find_objects[session->find_objects_position + i];
-  }
-
-  // Update the position
-  session->find_objects_position += count;
-
-  // Return the number of objects copied
-  *pulObjectCount = count;
-
-  cnk_mutex_unlock(&session->lock);
-  CNK_RET_OK;
+  return cnk_find_objects(hSession, phObject, ulMaxObjectCount, pulObjectCount);
 }
 
 CK_RV C_FindObjectsFinal(CK_SESSION_HANDLE hSession) {
   CNK_LOG_FUNC(C_FindObjectsFinal, ", hSession: %lu\n", hSession);
-
-  // Check if the library is initialized
-  if (!g_cnk_is_initialized)
-    return CKR_CRYPTOKI_NOT_INITIALIZED;
-
-  // Find the session
-  CNK_PKCS11_SESSION *session;
-  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-
-  // Lock the session
-  cnk_mutex_lock(&session->lock);
-
-  // Check if a find operation is active
-  if (!session->find_active) {
-    cnk_mutex_unlock(&session->lock);
-    return CKR_OPERATION_NOT_INITIALIZED;
-  }
-
-  // End the find operation
-  session->find_active = CK_FALSE;
-  session->find_objects_count = 0;
-  session->find_objects_position = 0;
-
-  cnk_mutex_unlock(&session->lock);
-  CNK_RET_OK;
+  return cnk_find_objects_final(hSession);
 }
 
 CK_RV C_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) { CNK_RET_UNIMPL; }
