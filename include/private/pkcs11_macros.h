@@ -1,29 +1,17 @@
 #ifndef PKCS11_MACROS_H
 #define PKCS11_MACROS_H
 
+#include "logging.h"
 #include "pkcs11.h"
 
 /**
  * Macro to check if the PKCS#11 library is initialized
  * Returns CKR_CRYPTOKI_NOT_INITIALIZED if not initialized
  */
-#define CHECK_INITIALIZED()                                                                                            \
+#define ENSURE_INITIALIZED()                                                                                            \
   do {                                                                                                                 \
     if (!g_cnk_is_initialized) {                                                                                       \
-      return CKR_CRYPTOKI_NOT_INITIALIZED;                                                                             \
-    }                                                                                                                  \
-  } while (0)
-
-/**
- * Macro to check if a required pointer argument is not NULL
- * Returns CKR_ARGUMENTS_BAD if the pointer is NULL
- *
- * @param ptr The pointer to check
- */
-#define CHECK_ARGUMENT_NOT_NULL(ptr)                                                                                   \
-  do {                                                                                                                 \
-    if ((ptr) == NULL) {                                                                                               \
-      return CKR_ARGUMENTS_BAD;                                                                                        \
+      CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki not initialized");                                            \
     }                                                                                                                  \
   } while (0)
 
@@ -36,7 +24,7 @@
 #define CHECK_SLOT_ID_VALID(id)                                                                                        \
   do {                                                                                                                 \
     if ((id) >= g_cnk_num_readers) {                                                                                   \
-      return CKR_SLOT_ID_INVALID;                                                                                      \
+      CNK_RETURN(CKR_SLOT_ID_INVALID, "Invalid slot ID");                                                              \
     }                                                                                                                  \
   } while (0)
 
@@ -51,8 +39,8 @@
  */
 #define PKCS11_VALIDATE(ptr, id)                                                                                       \
   do {                                                                                                                 \
-    CHECK_INITIALIZED();                                                                                               \
-    CHECK_ARGUMENT_NOT_NULL(ptr);                                                                                      \
+    ENSURE_INITIALIZED();                                                                                               \
+    CNK_ENSURE_NONNULL(ptr);                                                                                           \
     CHECK_SLOT_ID_VALID(id);                                                                                           \
   } while (0)
 
@@ -63,8 +51,8 @@
  */
 #define PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(ptr)                                                                  \
   do {                                                                                                                 \
-    CHECK_INITIALIZED();                                                                                               \
-    CHECK_ARGUMENT_NOT_NULL(ptr);                                                                                      \
+    ENSURE_INITIALIZED();                                                                                               \
+    CNK_ENSURE_NONNULL(ptr);                                                                                      \
   } while (0)
 
 #endif /* PKCS11_MACROS_H */

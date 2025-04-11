@@ -1,4 +1,5 @@
 #include "pkcs11_mutex.h"
+#include "pkcs11_macros.h"
 #include "pcsc_backend.h"
 
 #include <nsync_mu.h>
@@ -20,39 +21,30 @@ static CK_UNLOCKMUTEX g_unlock_mutex = NULL;
 static CK_RV os_create_mutex(void **mutex) {
   nsync_mu *mu = (nsync_mu *)ck_malloc(sizeof(nsync_mu));
   if (mu == NULL) {
-    return CKR_HOST_MEMORY;
+    CNK_RETURN(CKR_HOST_MEMORY, "Failed to allocate memory for mutex");
   }
 
   nsync_mu_init(mu); // Initialize the mutex
   *mutex = mu;
-  return CKR_OK;
+  CNK_RET_OK;
 }
 
 static CK_RV os_destroy_mutex(void *mutex) {
-  if (mutex == NULL) {
-    return CKR_ARGUMENTS_BAD;
-  }
-
+  CNK_ENSURE_NONNULL(mutex);
   ck_free(mutex);
-  return CKR_OK;
+  CNK_RET_OK;
 }
 
 static CK_RV os_lock_mutex(void *mutex) {
-  if (mutex == NULL) {
-    return CKR_ARGUMENTS_BAD;
-  }
-
+  CNK_ENSURE_NONNULL(mutex);
   nsync_mu_lock((nsync_mu *)mutex);
-  return CKR_OK;
+  CNK_RET_OK;
 }
 
 static CK_RV os_unlock_mutex(void *mutex) {
-  if (mutex == NULL) {
-    return CKR_ARGUMENTS_BAD;
-  }
-
+  CNK_ENSURE_NONNULL(mutex);
   nsync_mu_unlock((nsync_mu *)mutex);
-  return CKR_OK;
+  CNK_RET_OK;
 }
 
 // Initialize the mutex system
@@ -77,7 +69,7 @@ CK_RV cnk_mutex_system_init(CK_C_INITIALIZE_ARGS_PTR mutex_funcs) {
   }
 
   g_mutex_system_initialized = CK_TRUE;
-  return CKR_OK;
+  CNK_RET_OK;
 }
 
 // Clean up the mutex system
@@ -92,9 +84,7 @@ void cnk_mutex_system_cleanup(void) {
 
 // Create a new mutex
 CK_RV cnk_mutex_create(CNK_PKCS11_MUTEX *mutex) {
-  if (mutex == NULL) {
-    return CKR_ARGUMENTS_BAD;
-  }
+  CNK_ENSURE_NONNULL(mutex);
 
   if (!g_mutex_system_initialized) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -120,27 +110,24 @@ CK_RV cnk_mutex_create(CNK_PKCS11_MUTEX *mutex) {
 
 // Destroy a mutex
 CK_RV cnk_mutex_destroy(CNK_PKCS11_MUTEX *mutex) {
-  if (mutex == NULL || mutex->mutex_handle == NULL || mutex->destroy == NULL) {
-    return CKR_ARGUMENTS_BAD;
-  }
-
+  CNK_ENSURE_NONNULL(mutex);
+  CNK_ENSURE_NONNULL(mutex->mutex_handle);
+  CNK_ENSURE_NONNULL(mutex->lock);
   return mutex->destroy(mutex->mutex_handle);
 }
 
 // Lock a mutex
 CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex) {
-  if (mutex == NULL || mutex->mutex_handle == NULL || mutex->lock == NULL) {
-    return CKR_ARGUMENTS_BAD;
-  }
-
+  CNK_ENSURE_NONNULL(mutex);
+  CNK_ENSURE_NONNULL(mutex->mutex_handle);
+  CNK_ENSURE_NONNULL(mutex->lock);
   return mutex->lock(mutex->mutex_handle);
 }
 
 // Unlock a mutex
 CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex) {
-  if (mutex == NULL || mutex->mutex_handle == NULL || mutex->unlock == NULL) {
-    return CKR_ARGUMENTS_BAD;
-  }
-
+  CNK_ENSURE_NONNULL(mutex);
+  CNK_ENSURE_NONNULL(mutex->mutex_handle);
+  CNK_ENSURE_NONNULL(mutex->lock);
   return mutex->unlock(mutex->mutex_handle);
 }
