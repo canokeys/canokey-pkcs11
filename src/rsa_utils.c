@@ -347,7 +347,7 @@ static CK_RV get_md_type_and_len(CK_MECHANISM_TYPE hash_type, mbedtls_md_type_t 
 // Helper function to prepare data for RSA signing based on mechanism
 CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pData, CK_ULONG ulDataLen,
                                 CK_BYTE algorithm_type, CK_BYTE_PTR pPreparedData, CK_ULONG_PTR pulPreparedDataLen) {
-  CNK_LOG_FUNC(cnk_prepare_rsa_sign_data);
+  CNK_LOG_FUNC(cnk_prepare_rsa_sign_data, " algorithm_type: %d\n", algorithm_type);
 
   CK_RV rv = CKR_OK;
   mbedtls_md_type_t md_type;

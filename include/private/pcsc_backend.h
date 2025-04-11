@@ -75,7 +75,7 @@ CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *ses
 
 // Extended version of verify PIN with option to control card disconnection
 CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
-                                         CK_ULONG ulPinLen, CK_BBOOL disconnect_card, SCARDHANDLE *out_card);
+                                         CK_ULONG ulPinLen, SCARDHANDLE *out_card);
 
 // Function to logout PIV PIN with session
 CK_RV cnk_logout_piv_pin_with_session(CK_SLOT_ID slotID);

@@ -478,6 +478,23 @@ int main(int argc, char *argv[]) {
                   }
                 }
 
+                CK_UTF8CHAR pin[] = "123456";
+
+                rv = pFunctionList->C_Logout(signSession);
+                if (rv != CKR_OK) {
+                  printf("    Error logging out: 0x%lx\n", rv);
+                } else {
+                  printf("    Logout successful\n");
+                }
+
+                // Login with PIN 123456
+                rv = pFunctionList->C_Login(signSession, CKU_USER, pin, strlen((char *)pin));
+                if (rv != CKR_OK) {
+                  printf("    Error logging in: 0x%lx\n", rv);
+                } else {
+                  printf("    Login successful\n");
+                }
+
                 // Test SHA1-RSA signing
                 if (has_sha1_rsa_pkcs) {
                   CK_MECHANISM mechanism = {CKM_SHA1_RSA_PKCS, NULL, 0};
@@ -505,6 +522,21 @@ int main(int argc, char *argv[]) {
                       printf("\n");
                     }
                   }
+                }
+
+                rv = pFunctionList->C_Logout(signSession);
+                if (rv != CKR_OK) {
+                  printf("    Error logging out: 0x%lx\n", rv);
+                } else {
+                  printf("    Logout successful\n");
+                }
+
+                // Login with PIN 123456
+                rv = pFunctionList->C_Login(signSession, CKU_USER, pin, strlen((char *)pin));
+                if (rv != CKR_OK) {
+                  printf("    Error logging in: 0x%lx\n", rv);
+                } else {
+                  printf("    Login successful\n");
                 }
 
                 // Test SHA256-RSA signing
