@@ -1,11 +1,10 @@
-#include "../include/pkcs11.h"
+#include "pkcs11.h"
+
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-// Function pointer type for C_GetFunctionList
-typedef CK_RV (*C_GetFunctionList_t)(CK_FUNCTION_LIST_PTR_PTR);
 
 int main(int argc, char *argv[]) {
   // Path to the PKCS#11 library
@@ -26,7 +25,7 @@ int main(int argc, char *argv[]) {
   }
 
   // Get the C_GetFunctionList function
-  C_GetFunctionList_t getFunc = (C_GetFunctionList_t)dlsym(library, "C_GetFunctionList");
+  CK_C_GetFunctionList getFunc = (CK_C_GetFunctionList)dlsym(library, "C_GetFunctionList");
   if (!getFunc) {
     printf("Error getting C_GetFunctionList function: %s\n", dlerror());
     dlclose(library);

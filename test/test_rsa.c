@@ -26,51 +26,24 @@ const char *PUBLIC_KEY_PEM = "-----BEGIN PUBLIC KEY-----\n"
                              "2wIDAQAB\n"
                              "-----END PUBLIC KEY-----\n";
 
-// Function pointer typedefs for PKCS#11
-typedef CK_RV (*C_Initialize_Func)(CK_VOID_PTR);
-typedef CK_RV (*C_Finalize_Func)(CK_VOID_PTR);
-typedef CK_RV (*C_GetSlotList_Func)(CK_BBOOL, CK_SLOT_ID_PTR, CK_ULONG_PTR);
-typedef CK_RV (*C_OpenSession_Func)(CK_SLOT_ID, CK_FLAGS, CK_VOID_PTR, CK_NOTIFY, CK_SESSION_HANDLE_PTR);
-typedef CK_RV (*C_CloseSession_Func)(CK_SESSION_HANDLE);
-typedef CK_RV (*C_Login_Func)(CK_SESSION_HANDLE, CK_USER_TYPE, CK_UTF8CHAR_PTR, CK_ULONG);
-typedef CK_RV (*C_Logout_Func)(CK_SESSION_HANDLE);
-typedef CK_RV (*C_FindObjectsInit_Func)(CK_SESSION_HANDLE, CK_ATTRIBUTE_PTR, CK_ULONG);
-typedef CK_RV (*C_FindObjects_Func)(CK_SESSION_HANDLE, CK_OBJECT_HANDLE_PTR, CK_ULONG, CK_ULONG_PTR);
-typedef CK_RV (*C_FindObjectsFinal_Func)(CK_SESSION_HANDLE);
-typedef CK_RV (*C_SignInit_Func)(CK_SESSION_HANDLE, CK_MECHANISM_PTR, CK_OBJECT_HANDLE);
-typedef CK_RV (*C_Sign_Func)(CK_SESSION_HANDLE, CK_BYTE_PTR, CK_ULONG, CK_BYTE_PTR, CK_ULONG_PTR);
-
 // Global PKCS#11 function pointers
-C_Initialize_Func pC_Initialize = NULL;
-C_Finalize_Func pC_Finalize = NULL;
-C_GetSlotList_Func pC_GetSlotList = NULL;
-C_OpenSession_Func pC_OpenSession = NULL;
-C_CloseSession_Func pC_CloseSession = NULL;
-C_Login_Func pC_Login = NULL;
-C_Logout_Func pC_Logout = NULL;
-C_FindObjectsInit_Func pC_FindObjectsInit = NULL;
-C_FindObjects_Func pC_FindObjects = NULL;
-C_FindObjectsFinal_Func pC_FindObjectsFinal = NULL;
-C_SignInit_Func pC_SignInit = NULL;
-C_Sign_Func pC_Sign = NULL;
+CK_FUNCTION_LIST_PTR pF = NULL;
 
 // Load function pointers from the PKCS#11 module
 int cnk_load_pkcs11_functions(void *handle) {
-  pC_Initialize = (C_Initialize_Func)dlsym(handle, "C_Initialize");
-  pC_Finalize = (C_Finalize_Func)dlsym(handle, "C_Finalize");
-  pC_GetSlotList = (C_GetSlotList_Func)dlsym(handle, "C_GetSlotList");
-  pC_OpenSession = (C_OpenSession_Func)dlsym(handle, "C_OpenSession");
-  pC_CloseSession = (C_CloseSession_Func)dlsym(handle, "C_CloseSession");
-  pC_Login = (C_Login_Func)dlsym(handle, "C_Login");
-  pC_Logout = (C_Logout_Func)dlsym(handle, "C_Logout");
-  pC_FindObjectsInit = (C_FindObjectsInit_Func)dlsym(handle, "C_FindObjectsInit");
-  pC_FindObjects = (C_FindObjects_Func)dlsym(handle, "C_FindObjects");
-  pC_FindObjectsFinal = (C_FindObjectsFinal_Func)dlsym(handle, "C_FindObjectsFinal");
-  pC_SignInit = (C_SignInit_Func)dlsym(handle, "C_SignInit");
-  pC_Sign = (C_Sign_Func)dlsym(handle, "C_Sign");
+  CK_C_GetFunctionList pC_GetFunctionList = (CK_C_GetFunctionList)dlsym(handle, "C_GetFunctionList");
+  if (!pC_GetFunctionList) {
+    LOG_ERROR("Failed to load C_GetFunctionList.");
+    return -1;
+  }
+  CK_RV rv = pC_GetFunctionList(&pF);
+  if (rv != CKR_OK) {
+    LOG_ERROR("C_GetFunctionList failed. rv = 0x%lx", rv);
+    return -1;
+  }
 
-  if (!pC_Initialize || !pC_Finalize || !pC_GetSlotList || !pC_OpenSession || !pC_CloseSession || !pC_Login ||
-      !pC_Logout || !pC_FindObjectsInit || !pC_FindObjects || !pC_FindObjectsFinal || !pC_SignInit || !pC_Sign) {
+  if (!pF->C_Initialize || !pF->C_Finalize || !pF->C_GetSlotList || !pF->C_OpenSession || !pF->C_CloseSession || !pF->C_Login ||
+    !pF->C_Logout || !pF->C_FindObjectsInit || !pF->C_FindObjects || !pF->C_FindObjectsFinal || !pF->C_SignInit || !pF->C_Sign) {
     LOG_ERROR("Failed to load one or more PKCS#11 functions.");
     return -1;
   }
@@ -84,19 +57,19 @@ CK_OBJECT_HANDLE cnk_find_key(CK_SESSION_HANDLE session) {
   CK_OBJECT_CLASS keyClass = CKO_PRIVATE_KEY;
   CK_ATTRIBUTE template[] = {{CKA_ID, &key_id, sizeof(key_id)}, {CKA_CLASS, &keyClass, sizeof(keyClass)}};
 
-  CK_RV rv = pC_FindObjectsInit(session, template, 2);
+  CK_RV rv = pF->C_FindObjectsInit(session, template, 2);
   if (rv != CKR_OK) {
     LOG_ERROR("C_FindObjectsInit failed.");
     return 0;
   }
   CK_ULONG foundCount = 0;
-  rv = pC_FindObjects(session, &key, 1, &foundCount);
+  rv = pF->C_FindObjects(session, &key, 1, &foundCount);
   if (rv != CKR_OK || foundCount == 0) {
     LOG_ERROR("Key with CKA_ID=%d not found. rv = 0x%lx", KEY_ID, rv);
-    pC_FindObjectsFinal(session);
+    pF->C_FindObjectsFinal(session);
     return 0;
   }
-  pC_FindObjectsFinal(session);
+  pF->C_FindObjectsFinal(session);
   return key;
 }
 
@@ -145,19 +118,19 @@ int cnk_test_signing(CK_MECHANISM_TYPE mechanism_type) {
 
   // Open session on first available slot
   CK_ULONG slotCount = 0;
-  rv = pC_GetSlotList(CK_TRUE, NULL, &slotCount);
+  rv = pF->C_GetSlotList(CK_TRUE, NULL, &slotCount);
   if (rv != CKR_OK || slotCount == 0) {
     LOG_ERROR("No slot available.");
     return -1;
   }
   CK_SLOT_ID *slots = (CK_SLOT_ID *)malloc(sizeof(CK_SLOT_ID) * slotCount);
-  rv = pC_GetSlotList(CK_TRUE, slots, &slotCount);
+  rv = pF->C_GetSlotList(CK_TRUE, slots, &slotCount);
   if (rv != CKR_OK) {
     LOG_ERROR("C_GetSlotList failed.");
     free(slots);
     return -1;
   }
-  rv = pC_OpenSession(slots[0], CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session);
+  rv = pF->C_OpenSession(slots[0], CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session);
   free(slots);
   if (rv != CKR_OK) {
     LOG_ERROR("C_OpenSession failed. rv = 0x%lx", rv);
@@ -165,18 +138,18 @@ int cnk_test_signing(CK_MECHANISM_TYPE mechanism_type) {
   }
 
   // Login with PIN
-  rv = pC_Login(session, CKU_USER, (CK_UTF8CHAR_PTR)PIN, strlen(PIN));
+  rv = pF->C_Login(session, CKU_USER, (CK_UTF8CHAR_PTR)PIN, strlen(PIN));
   if (rv != CKR_OK) {
     LOG_ERROR("C_Login failed.");
-    pC_CloseSession(session);
+    pF->C_CloseSession(session);
     return -1;
   }
 
   // Find the key with CKA_ID = KEY_ID
   CK_OBJECT_HANDLE key = cnk_find_key(session);
   if (key == 0) {
-    pC_Logout(session);
-    pC_CloseSession(session);
+    pF->C_Logout(session);
+    pF->C_CloseSession(session);
     return -1;
   }
 
@@ -190,11 +163,11 @@ int cnk_test_signing(CK_MECHANISM_TYPE mechanism_type) {
   mechanism.pParameter = &pss_params;
   mechanism.ulParameterLen = sizeof(pss_params);
 
-  rv = pC_SignInit(session, &mechanism, key);
+  rv = pF->C_SignInit(session, &mechanism, key);
   if (rv != CKR_OK) {
     LOG_ERROR("C_SignInit failed. rv = 0x%lx", rv);
-    pC_Logout(session);
-    pC_CloseSession(session);
+    pF->C_Logout(session);
+    pF->C_CloseSession(session);
     return -1;
   }
 
@@ -204,20 +177,20 @@ int cnk_test_signing(CK_MECHANISM_TYPE mechanism_type) {
 
   // Get signature size
   CK_ULONG sig_len = 0;
-  rv = pC_Sign(session, data, data_len, NULL, &sig_len);
+  rv = pF->C_Sign(session, data, data_len, NULL, &sig_len);
   if (rv != CKR_OK) {
     LOG_ERROR("C_Sign (get length) failed.");
-    pC_Logout(session);
-    pC_CloseSession(session);
+    pF->C_Logout(session);
+    pF->C_CloseSession(session);
     return -1;
   }
   unsigned char *signature = (unsigned char *)malloc(sig_len);
-  rv = pC_Sign(session, data, data_len, signature, &sig_len);
+  rv = pF->C_Sign(session, data, data_len, signature, &sig_len);
   if (rv != CKR_OK) {
     LOG_ERROR("C_Sign failed.");
     free(signature);
-    pC_Logout(session);
-    pC_CloseSession(session);
+    pF->C_Logout(session);
+    pF->C_CloseSession(session);
     return -1;
   }
 
@@ -227,8 +200,8 @@ int cnk_test_signing(CK_MECHANISM_TYPE mechanism_type) {
   free(signature);
 
   // Logout and close session
-  pC_Logout(session);
-  pC_CloseSession(session);
+  pF->C_Logout(session);
+  pF->C_CloseSession(session);
   return verify_ret;
 }
 
@@ -256,7 +229,7 @@ int main(int argc, char *argv[]) {
   }
 
   // Initialize the library
-  CK_RV ret = pC_Initialize(NULL);
+  CK_RV ret = pF->C_Initialize(NULL);
   if (ret != CKR_OK) {
     LOG_ERROR("Error initializing library: 0x%lx", ret);
     dlclose(library);
@@ -275,7 +248,7 @@ int main(int argc, char *argv[]) {
     LOG_ERROR("Test for CKM_SHA256_RSA_PKCS_PSS failed.");
   }
 
-  pC_Finalize(NULL);
+  pF->C_Finalize(NULL);
   dlclose(library);
   return 0;
 }
