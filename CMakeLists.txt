@@ -53,11 +53,11 @@ if(USE_BUNDLED_MBEDTLS)
   set(ENABLE_TESTING ${OLD_ENABLE_TESTING} CACHE BOOL "" FORCE) # restore original value
 
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/external/mbedtls/include)
-  set(MBEDTLS_LIBRARIES mbedcrypto mbedtls)
-  set_default_visibility(mbedcrypto ${MBEDTLS_LIBRARIES})
+  set(MBEDTLS_LIBRARIES mbedcrypto)
+  set_default_visibility(${MBEDTLS_LIBRARIES})
 else()
   find_package(MbedTLS REQUIRED)
-  set(MBEDTLS_LIBRARIES MBedTLS::mbedcrypto MBedTLS::mbedtls)
+  set(MBEDTLS_LIBRARIES MBedTLS::mbedcrypto)
 endif()
 
 set(CNK_PKCS_LIBS nsync ${MBEDTLS_LIBRARIES})
