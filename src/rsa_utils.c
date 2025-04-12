@@ -470,8 +470,11 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pDat
     mbedtls_md_type_t pss_hash_type;
     // Get the hash algorithm from the parameters
     CNK_ENSURE_OK(get_md_type_and_len(pss_params->hashAlg, &pss_hash_type, &hash_len));
-    if (need_hashing)
+    if (need_hashing) {
       CNK_ENSURE_EQUAL_REASON(md_type, pss_hash_type, "MD type does not match hash type");
+    } else {
+      CNK_ENSURE_EQUAL_REASON(hash_len, ulDataLen, "Hash length does not match data length");
+    }
     // Get MGF hash algorithm
     CNK_ENSURE_OK(get_md_type_from_mgf(pss_params->mgf, &pss_hash_type));
     if (need_hashing)
