@@ -58,9 +58,9 @@ extern void cnk_printf(const int level, const char *format, ...);
 #define CHK_ENSURE_NULL(PTR) CNK_ENSURE_EQUAL_REASON(!!(PTR), !!NULL, #PTR " is not NULL")
 #define CNK_ENSURE_OK(EXP)                                                                                             \
   ({                                                                                                                   \
-    CK_RV rv = (EXP);                                                                                                  \
-    if (rv != CKR_OK)                                                                                                  \
-      CNK_RETURN(rv, #EXP " failed");                                                                                  \
+    CK_RV _rv = (EXP);                                                                                                 \
+    if (_rv != CKR_OK)                                                                                                 \
+      CNK_RETURN(_rv, #EXP " failed");                                                                                 \
     CKR_OK;                                                                                                            \
   })
 

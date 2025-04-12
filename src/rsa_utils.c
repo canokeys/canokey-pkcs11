@@ -1,6 +1,7 @@
 #include "rsa_utils.h"
 #include "logging.h"      // For logging macros
 #include "pcsc_backend.h" // For ck_malloc and ck_free
+#include "pkcs11.h"
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/md.h>
@@ -97,169 +98,140 @@ static CK_RV pkcs1_v1_5_pad(CK_BYTE_PTR input, CK_ULONG input_len, CK_BYTE_PTR o
   return CKR_OK;
 }
 
-// Implements the EMSA-PSS encoding operation as defined in PKCS#1 v2.1
-static CK_RV pss_encode(CK_BYTE_PTR mHash, CK_ULONG mHashLen, CK_ULONG modBits, CK_ULONG sLen,
-                        mbedtls_md_type_t md_type, mbedtls_md_type_t mgf_md_type, mbedtls_ctr_drbg_context *ctr_drbg,
-                        CK_BYTE_PTR output, CK_ULONG_PTR output_len) {
-  CK_ULONG emLen = (modBits + 7) / 8; // Length in bytes of the modulus
-
-  // Check if output buffer is large enough
+/**
+ * pss_encode - Implements EMSA-PSS encoding as defined in PKCS#1 v2.1.
+ *
+ * This function always hashes the input data (it does not support pre‐hashed inputs).
+ * It assumes that the message digest algorithm used for both hashing and the mask generation
+ * function is the same (i.e. md_type == mgf_md_type).
+ *
+ * The encoding is performed as follows:
+ *   1. Compute mHash = Hash(mInput).
+ *   2. Generate a random salt of length sLen.
+ *   3. Construct M' = 0x00 00 00 00 00 00 00 00 || mHash || salt.
+ *   4. Compute H = Hash(M').
+ *   5. Construct DB = PS || 0x01 || salt, where PS is a string of zero bytes
+ *      of length (emLen - expectedHashLen - sLen - 1) and emLen = (modBits+7)/8.
+ *   6. Generate a mask dbMask = MGF1(H, dbLen) using md_type.
+ *   7. Compute maskedDB = DB XOR dbMask and clear leftmost bits to ensure that
+ *      the encoded value is less than the modulus.
+ *   8. Output EM = maskedDB || H || 0xbc.
+ *
+ * @param mInput      Pointer to the raw message to be encoded.
+ * @param mInputLen   Length of the raw message.
+ * @param modBits     RSA modulus size in bits.
+ * @param sLen        Length of the salt in bytes.
+ * @param md_type     Message digest type (for both hashing and MGF1).
+ * @param ctr_drbg    Pointer to an initialized CTR_DRBG context.
+ * @param output      Pointer to the buffer that will receive the encoded message (EM).
+ * @param output_len  On input, the size of the output buffer; on output, the size of EM.
+ *
+ * @return            CKR_OK on success; otherwise an error code.
+ */
+static CK_RV pss_encode(CK_BYTE_PTR mInput, CK_ULONG mInputLen, CK_ULONG modBits, CK_ULONG sLen,
+                        mbedtls_md_type_t md_type, mbedtls_ctr_drbg_context *ctr_drbg, CK_BYTE_PTR output,
+                        CK_ULONG_PTR output_len) {
+  // Compute modulus length in bytes.
+  CK_ULONG emLen = (modBits + 7) / 8;
   if (*output_len < emLen)
     return CKR_BUFFER_TOO_SMALL;
 
-  // Check if the output length is at least emLen bytes
-  if (emLen < mHashLen + sLen + 2)
+  // Get message digest info and expected hash size.
+  const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(md_type);
+  CNK_ENSURE_NONNULL(md_info);
+
+  // Ensure the output buffer is large enough to hold H, salt and delimiters.
+  if (emLen < mInputLen + sLen + 2)
     return CKR_MECHANISM_PARAM_INVALID;
 
-  // Step 1: Generate a random salt of length sLen
+  // Step 1: Generate a random salt of length sLen.
   unsigned char *salt = (unsigned char *)ck_malloc(sLen);
   if (salt == NULL)
     return CKR_HOST_MEMORY;
-
   if (mbedtls_ctr_drbg_random(ctr_drbg, salt, sLen) != 0) {
     ck_free(salt);
     return CKR_FUNCTION_FAILED;
   }
 
-  // Step 2: Construct the message M' = (0x)00 00 00 00 00 00 00 00 || mHash || salt
-  const size_t k = 8; // Length of padding prefix
-  unsigned char *M_prime = (unsigned char *)ck_malloc(k + mHashLen + sLen);
+  // Step 2: Construct M' = (8 zero bytes) || mInput || salt.
+  const size_t k = 8; // 8-byte zero prefix.
+  unsigned char *M_prime = (unsigned char *)ck_malloc(k + mInputLen + sLen);
   if (M_prime == NULL) {
     ck_free(salt);
     return CKR_HOST_MEMORY;
   }
+  memset(M_prime, 0x00, k);
+  memcpy(M_prime + k, mInput, mInputLen);
+  memcpy(M_prime + k + mInputLen, salt, sLen);
 
-  // Pad with zeros
-  memset(M_prime, 0, k);
-
-  // Append the message hash
-  memcpy(M_prime + k, mHash, mHashLen);
-
-  // Append the salt
-  memcpy(M_prime + k + mHashLen, salt, sLen);
-
-  // Step 3: Compute H = Hash(M')
-  unsigned char H[64]; // Large enough for any hash output
-  const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(md_type);
-  if (md_info == NULL) {
-    ck_free(salt);
-    ck_free(M_prime);
-    return CKR_MECHANISM_INVALID;
-  }
-
-  if (mbedtls_md(md_info, M_prime, k + mHashLen + sLen, H) != 0) {
+  // Step 3: Compute H = Hash(M').
+  unsigned char H[64] = {0}; // Buffer for H.
+  if (mbedtls_md(md_info, M_prime, k + mInputLen + sLen, H) != 0) {
     ck_free(salt);
     ck_free(M_prime);
     return CKR_FUNCTION_FAILED;
   }
+  ck_free(M_prime);
 
-  size_t hLen = mbedtls_md_get_size(md_info);
-
-  // Step 4: Generate the padding string PS
-  CK_ULONG dbLen = emLen - hLen - 1; // Length of DB
+  // Step 4: Construct DB = PS || 0x01 || salt.
+  CK_ULONG dbLen = emLen - mInputLen - 1;
   unsigned char *DB = (unsigned char *)ck_malloc(dbLen);
   if (DB == NULL) {
     ck_free(salt);
-    ck_free(M_prime);
     return CKR_HOST_MEMORY;
   }
+  CK_ULONG psLen = dbLen - sLen - 1;
+  memset(DB, 0x00, psLen); // PS: all-zero padding.
+  DB[psLen] = 0x01;        // 0x01 separator.
+  memcpy(DB + psLen + 1, salt, sLen);
+  ck_free(salt);
 
-  // First byte is 0x01, rest is zero-padded, followed by 0x01 again, then the salt
-  memset(DB, 0, dbLen - sLen - 1);
-  DB[dbLen - sLen - 1] = 0x01;
-  memcpy(DB + dbLen - sLen, salt, sLen);
-
-  // Step 5: Apply MGF1 (Mask Generation Function)
+  // Step 5: Generate the mask dbMask using MGF1 on H.
+  // Since md_type == mgf_md_type, we use md_info for MGF1.
   unsigned char *dbMask = (unsigned char *)ck_malloc(dbLen);
   if (dbMask == NULL) {
-    ck_free(salt);
-    ck_free(M_prime);
     ck_free(DB);
     return CKR_HOST_MEMORY;
   }
-
-  // MGF1 calculation (simplified)
-  const mbedtls_md_info_t *mgf_md_info = mbedtls_md_info_from_type(mgf_md_type);
-  if (mgf_md_info == NULL) {
-    ck_free(salt);
-    ck_free(M_prime);
-    ck_free(DB);
-    ck_free(dbMask);
-    return CKR_MECHANISM_INVALID;
-  }
-
-  // Simple MGF1 implementation
-  unsigned char counter[4] = {0, 0, 0, 0};
-  unsigned char mgf_hash[64]; // Large enough for any hash
-  size_t mgf_hash_len = mbedtls_md_get_size(mgf_md_info);
-
-  for (CK_ULONG i = 0; i < dbLen; i += mgf_hash_len) {
-    // Increment counter
-    counter[3]++;
-    if (counter[3] == 0) {
-      counter[2]++;
-      if (counter[2] == 0) {
-        counter[1]++;
-        if (counter[1] == 0) {
-          counter[0]++;
-        }
-      }
-    }
-
-    // Create temporary buffer for MGF input
-    unsigned char *mgf_input = (unsigned char *)ck_malloc(hLen + 4);
-    if (mgf_input == NULL) {
-      ck_free(salt);
-      ck_free(M_prime);
+  size_t mgf_hash_len = mbedtls_md_get_size(md_info);
+  CK_ULONG iterations = (dbLen + mgf_hash_len - 1) / mgf_hash_len;
+  for (CK_ULONG c = 0; c < iterations; c++) {
+    unsigned char counter[4];
+    counter[0] = (unsigned char)((c >> 24) & 0xFF);
+    counter[1] = (unsigned char)((c >> 16) & 0xFF);
+    counter[2] = (unsigned char)((c >> 8) & 0xFF);
+    counter[3] = (unsigned char)(c & 0xFF);
+    unsigned char mgf_input[64 + 4]; // Buffer: H followed by counter.
+    memcpy(mgf_input, H, mgf_hash_len);
+    memcpy(mgf_input + mgf_hash_len, counter, 4);
+    unsigned char mgf_hash[64];
+    if (mbedtls_md(md_info, mgf_input, mgf_hash_len + 4, mgf_hash) != 0) {
       ck_free(DB);
       ck_free(dbMask);
-      return CKR_HOST_MEMORY;
-    }
-
-    // Copy H and counter
-    memcpy(mgf_input, H, hLen);
-    memcpy(mgf_input + hLen, counter, 4);
-
-    // Compute hash
-    if (mbedtls_md(mgf_md_info, mgf_input, hLen + 4, mgf_hash) != 0) {
-      ck_free(salt);
-      ck_free(M_prime);
-      ck_free(DB);
-      ck_free(dbMask);
-      ck_free(mgf_input);
       return CKR_FUNCTION_FAILED;
     }
-
-    // Copy output to dbMask
-    CK_ULONG copy_len = (i + mgf_hash_len <= dbLen) ? mgf_hash_len : dbLen - i;
-    memcpy(dbMask + i, mgf_hash, copy_len);
-
-    ck_free(mgf_input);
+    CK_ULONG offset = c * mgf_hash_len;
+    CK_ULONG copy_len = ((offset + mgf_hash_len) <= dbLen) ? mgf_hash_len : dbLen - offset;
+    memcpy(dbMask + offset, mgf_hash, copy_len);
   }
-
-  // Step 6: XOR DB with dbMask to create maskedDB
+  // Step 6: XOR DB with dbMask to obtain maskedDB.
   for (CK_ULONG i = 0; i < dbLen; i++) {
     DB[i] ^= dbMask[i];
   }
+  ck_free(dbMask);
 
-  // Step 7: Set the leftmost bits in maskedDB to zero
+  // Step 7: Clear the leftmost (8*emLen - modBits) bits in maskedDB if necessary.
   CK_ULONG leftmostBits = 8 * emLen - modBits;
   if (leftmostBits > 0 && leftmostBits <= 8) {
     DB[0] &= 0xFF >> leftmostBits;
   }
 
-  // Step 8: Construct the encoded message EM = maskedDB || H || 0xbc
+  // Step 8: Construct the final encoded message EM = maskedDB || H || 0xbc.
   memcpy(output, DB, dbLen);
-  memcpy(output + dbLen, H, hLen);
+  memcpy(output + dbLen, H, mgf_hash_len);
   output[emLen - 1] = 0xbc;
-
   *output_len = emLen;
-
-  // Free allocated memory
-  ck_free(salt);
-  ck_free(M_prime);
   ck_free(DB);
-  ck_free(dbMask);
 
   return CKR_OK;
 }
@@ -339,7 +311,45 @@ static CK_RV get_md_type_and_len(CK_MECHANISM_TYPE hash_type, mbedtls_md_type_t 
     *hash_len = 28;
     break;
   default:
-    return CKR_MECHANISM_INVALID;
+    CNK_DEBUG("Unsupported hashAlg: %lu\n", hash_type);
+    return CKR_MECHANISM_PARAM_INVALID;
+  }
+  return CKR_OK;
+}
+
+// Helper function to get mbedtls hash type from MGF
+static CK_RV get_md_type_from_mgf(CK_RSA_PKCS_MGF_TYPE mgf_hash, mbedtls_md_type_t *md_type) {
+  switch (mgf_hash) {
+  case CKG_MGF1_SHA1:
+    *md_type = MBEDTLS_MD_SHA1;
+    break;
+  case CKG_MGF1_SHA224:
+    *md_type = MBEDTLS_MD_SHA224;
+    break;
+  case CKG_MGF1_SHA256:
+    *md_type = MBEDTLS_MD_SHA256;
+    break;
+  case CKG_MGF1_SHA384:
+    *md_type = MBEDTLS_MD_SHA384;
+    break;
+  case CKG_MGF1_SHA512:
+    *md_type = MBEDTLS_MD_SHA512;
+    break;
+  case CKG_MGF1_SHA3_224:
+    *md_type = MBEDTLS_MD_SHA3_224;
+    break;
+  case CKG_MGF1_SHA3_256:
+    *md_type = MBEDTLS_MD_SHA3_256;
+    break;
+  case CKG_MGF1_SHA3_384:
+    *md_type = MBEDTLS_MD_SHA3_384;
+    break;
+  case CKG_MGF1_SHA3_512:
+    *md_type = MBEDTLS_MD_SHA3_512;
+    break;
+  default:
+    CNK_DEBUG("Unsupported MGF type: %lu\n", mgf_hash);
+    return CKR_MECHANISM_PARAM_INVALID;
   }
   return CKR_OK;
 }
@@ -357,28 +367,48 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pDat
   CK_MECHANISM_TYPE hash_type = CKM_VENDOR_DEFINED;
   CK_BBOOL need_hashing = CK_FALSE;
 
-  // For CKM_RSA_X_509, just pad with leading zeros
+  // Get modulus size from algorithm_type
+  CK_ULONG modBytes;
+  switch (algorithm_type) {
+  case PIV_ALG_RSA_2048:
+    modBytes = 2048 / 8;
+    break;
+  case PIV_ALG_RSA_3072:
+    modBytes = 3072 / 8;
+    break;
+  case PIV_ALG_RSA_4096:
+    modBytes = 4096 / 8;
+    break;
+  default:
+    CNK_ERROR("Unknown RSA key size\n");
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "Unknown RSA key size");
+  }
+  CNK_DEBUG("Using modulus size: %lu bits\n", modBytes * 8);
+
+  if (!pPreparedData) {
+    *pulPreparedDataLen = modBytes;
+    CNK_RET_OK;
+  }
+
+  if (*pulPreparedDataLen < modBytes)
+    CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Buffer too small");
+
+  *pulPreparedDataLen = modBytes;
+
+  // For CKM_RSA_X_509, compute output length based on key size and pad with leading zeros
   if (mech_type == CKM_RSA_X_509) {
-    if (!pPreparedData) {
-      *pulPreparedDataLen = ulDataLen;
-      return CKR_OK;
-    }
+    // Zero out the buffer first
+    memset(pPreparedData, 0, modBytes);
 
-    if (*pulPreparedDataLen < ulDataLen)
-      return CKR_BUFFER_TOO_SMALL;
-
-    // Zero out the buffer first if needed
-    if (*pulPreparedDataLen > ulDataLen) {
-      // Zero out the buffer first
-      memset(pPreparedData, 0, *pulPreparedDataLen);
-      // Copy data to the right side of the buffer (left-pad with zeros)
-      memcpy(pPreparedData + (*pulPreparedDataLen - ulDataLen), pData, ulDataLen);
+    // Copy data to the right side of the buffer (left-pad with zeros)
+    if (ulDataLen <= modBytes) {
+      memcpy(pPreparedData + (modBytes - ulDataLen), pData, ulDataLen);
     } else {
-      memcpy(pPreparedData, pData, ulDataLen);
+      // Data is larger than modulus - only use rightmost bytes
+      memcpy(pPreparedData, pData + (ulDataLen - modBytes), modBytes);
     }
 
-    *pulPreparedDataLen = ulDataLen;
-    return CKR_OK;
+    CNK_RET_OK;
   }
 
   // Determine if we need to hash the data
@@ -386,77 +416,34 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pDat
     // For mechanisms like CKM_SHA1_RSA_PKCS, we need to hash the data
     hash_type = get_hash_from_mechanism(mech_type);
     if (hash_type == CKM_VENDOR_DEFINED)
-      return CKR_MECHANISM_INVALID;
+      CNK_RETURN(CKR_MECHANISM_INVALID, "Invalid mechanism, cannot determine hash type");
 
     need_hashing = CK_TRUE;
-  } else if (mech_type == CKM_RSA_PKCS) {
-    // For CKM_RSA_PKCS, we just apply padding to the raw data
+  } else if (mech_type == CKM_RSA_PKCS || mech_type == CKM_RSA_PKCS_PSS) {
     need_hashing = CK_FALSE;
-  } else if (mech_type == CKM_RSA_PKCS_PSS) {
-    // For CKM_RSA_PKCS_PSS, we need to hash using algorithm_type
-    hash_type = algorithm_type;
-    need_hashing = CK_TRUE;
   } else {
-    return CKR_MECHANISM_INVALID;
+    CNK_RETURN(CKR_MECHANISM_INVALID, "Invalid mechanism");
   }
 
   // If we need to hash, do it now
   if (need_hashing) {
     rv = get_md_type_and_len(hash_type, &md_type, &hash_len);
     if (rv != CKR_OK)
-      return rv;
+      CNK_RETURN(rv, "Failed to get MD type and length");
 
     const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(md_type);
     if (md_info == NULL)
-      return CKR_MECHANISM_INVALID;
+      CNK_RETURN(CKR_MECHANISM_INVALID, "Invalid hash type");
 
     if (mbedtls_md(md_info, pData, ulDataLen, hash) != 0)
-      return CKR_FUNCTION_FAILED;
+      CNK_RETURN(CKR_FUNCTION_FAILED, "Failed to hash data");
   }
 
   // Handle PKCS#1 v1.5 padding
-  if (mech_type == CKM_RSA_PKCS || (is_sha_rsa_mechanism(mech_type) && mech_type != CKM_SHA1_RSA_PKCS_PSS &&
-                                    mech_type != CKM_SHA256_RSA_PKCS_PSS && mech_type != CKM_SHA384_RSA_PKCS_PSS &&
-                                    mech_type != CKM_SHA512_RSA_PKCS_PSS && mech_type != CKM_SHA224_RSA_PKCS_PSS &&
-                                    mech_type != CKM_SHA3_256_RSA_PKCS_PSS && mech_type != CKM_SHA3_384_RSA_PKCS_PSS &&
-                                    mech_type != CKM_SHA3_512_RSA_PKCS_PSS && mech_type != CKM_SHA3_224_RSA_PKCS_PSS)) {
-
-    // Get modulus size from algorithm_type
-    CK_ULONG modBits;
-    CK_ULONG modBytes;
-    switch (algorithm_type) {
-    case PIV_ALG_RSA_2048:
-      modBits = 2048;
-      break;
-    case PIV_ALG_RSA_3072:
-      modBits = 3072;
-      break;
-    case PIV_ALG_RSA_4096:
-      modBits = 4096;
-      break;
-    default:
-      CNK_DEBUG("Unknown RSA key size, defaulting to 2048 bits\n");
-      modBits = 2048;
-      break;
-    }
-    modBytes = modBits / 8;
-    CNK_DEBUG("Using modulus size: %lu bits (%lu bytes) for PKCS#1 v1.5 padding\n", modBits, modBytes);
-
-    // Apply PKCS#1 v1.5 padding
-    if (!pPreparedData) {
-      // For size estimation
-      *pulPreparedDataLen = modBytes;
-      CNK_DEBUG("Buffer size estimation for PKCS#1 v1.5: %lu bytes\n", *pulPreparedDataLen);
-      return CKR_OK;
-    }
-
-    // Make sure output buffer is modulus size
-    if (*pulPreparedDataLen < modBytes) {
-      CNK_ERROR("Output buffer too small: %lu bytes, need %lu bytes\n", *pulPreparedDataLen, modBytes);
-      return CKR_BUFFER_TOO_SMALL;
-    }
-    *pulPreparedDataLen = modBytes;
-
+  if (mech_type == CKM_RSA_PKCS || mech_type == CKM_SHA1_RSA_PKCS || mech_type == CKM_SHA256_RSA_PKCS ||
+      mech_type == CKM_SHA384_RSA_PKCS || mech_type == CKM_SHA512_RSA_PKCS || mech_type == CKM_SHA224_RSA_PKCS ||
+      mech_type == CKM_SHA3_256_RSA_PKCS || mech_type == CKM_SHA3_384_RSA_PKCS || mech_type == CKM_SHA3_512_RSA_PKCS ||
+      mech_type == CKM_SHA3_224_RSA_PKCS) {
     // Apply padding to hashed data or raw data
     if (need_hashing) {
       CNK_DEBUG("Applying PKCS#1 v1.5 padding to hashed data (%lu bytes)\n", hash_len);
@@ -465,92 +452,41 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pDat
       CNK_DEBUG("Applying PKCS#1 v1.5 padding to raw data (%lu bytes)\n", ulDataLen);
       rv = pkcs1_v1_5_pad(pData, ulDataLen, pPreparedData, *pulPreparedDataLen, mech_type);
     }
-    
-    if (rv != CKR_OK) {
-      CNK_ERROR("PKCS#1 v1.5 padding failed: 0x%08lX\n", rv);
-    } else {
-      CNK_DEBUG("PKCS#1 v1.5 padding succeeded\n");
-    }
-    
-    return rv;
-  } else if (mech_type == CKM_RSA_PKCS_PSS || mech_type == CKM_SHA1_RSA_PKCS_PSS ||
-             mech_type == CKM_SHA256_RSA_PKCS_PSS || mech_type == CKM_SHA384_RSA_PKCS_PSS ||
-             mech_type == CKM_SHA512_RSA_PKCS_PSS || mech_type == CKM_SHA224_RSA_PKCS_PSS ||
-             mech_type == CKM_SHA3_256_RSA_PKCS_PSS || mech_type == CKM_SHA3_384_RSA_PKCS_PSS ||
-             mech_type == CKM_SHA3_512_RSA_PKCS_PSS || mech_type == CKM_SHA3_224_RSA_PKCS_PSS) {
+
+    return CNK_ENSURE_OK(rv);
+  }
+
+  // Handle PSS padding
+  if (mech_type == CKM_RSA_PKCS_PSS || mech_type == CKM_SHA1_RSA_PKCS_PSS || mech_type == CKM_SHA256_RSA_PKCS_PSS ||
+      mech_type == CKM_SHA384_RSA_PKCS_PSS || mech_type == CKM_SHA512_RSA_PKCS_PSS ||
+      mech_type == CKM_SHA224_RSA_PKCS_PSS || mech_type == CKM_SHA3_256_RSA_PKCS_PSS ||
+      mech_type == CKM_SHA3_384_RSA_PKCS_PSS || mech_type == CKM_SHA3_512_RSA_PKCS_PSS ||
+      mech_type == CKM_SHA3_224_RSA_PKCS_PSS) {
 
     // PSS padding requires specific parameters
     CK_RSA_PKCS_PSS_PARAMS *pss_params = mechanism_ptr->pParameter;
-    if (pss_params == NULL) {
-      CNK_DEBUG("PSS parameters are missing\n");
-      return CKR_MECHANISM_PARAM_INVALID;
-    }
+    CNK_ENSURE_NONNULL(pss_params);
 
+    mbedtls_md_type_t pss_hash_type;
+    // Get the hash algorithm from the parameters
+    CNK_ENSURE_OK(get_md_type_and_len(pss_params->hashAlg, &pss_hash_type, &hash_len));
+    if (need_hashing)
+      CNK_ENSURE_EQUAL_REASON(md_type, pss_hash_type, "MD type does not match hash type");
     // Get MGF hash algorithm
-    mbedtls_md_type_t mgf_md_type;
-    CK_MECHANISM_TYPE mgf_hash = CKM_VENDOR_DEFINED;
-
-    // Check MGF type - typically only MGF1 is supported
-    if (pss_params->mgf != 1) { // CKG_MGF1_SHA1, etc.
-      CNK_DEBUG("Unsupported MGF type: %lu\n", pss_params->mgf);
-      return CKR_MECHANISM_PARAM_INVALID;
-    }
-
-    // Get hash algorithm for MGF
-    switch (pss_params->hashAlg) {
-    case CKM_SHA_1:
-      mgf_md_type = MBEDTLS_MD_SHA1;
-      break;
-    case CKM_SHA256:
-      mgf_md_type = MBEDTLS_MD_SHA256;
-      break;
-    case CKM_SHA384:
-      mgf_md_type = MBEDTLS_MD_SHA384;
-      break;
-    case CKM_SHA512:
-      mgf_md_type = MBEDTLS_MD_SHA512;
-      break;
-    case CKM_SHA224:
-      mgf_md_type = MBEDTLS_MD_SHA224;
-      break;
-    case CKM_SHA3_224:
-      mgf_md_type = MBEDTLS_MD_SHA3_224;
-      break;
-    case CKM_SHA3_256:
-      mgf_md_type = MBEDTLS_MD_SHA3_256;
-      break;
-    case CKM_SHA3_384:
-      mgf_md_type = MBEDTLS_MD_SHA3_384;
-      break;
-    case CKM_SHA3_512:
-      mgf_md_type = MBEDTLS_MD_SHA3_512;
-      break;
-    default:
-      CNK_DEBUG("Unsupported hash algorithm for MGF: %lu\n", pss_params->hashAlg);
-      return CKR_MECHANISM_PARAM_INVALID;
-    }
-
-    // For PSS padding, we need to properly encode the data using EMSA-PSS
-    if (!pPreparedData) {
-      // Estimate needed buffer size (modulus size in bytes)
-      // For PSS, we need at least modulus length in bytes
-      size_t data_len = need_hashing ? hash_len : ulDataLen;
-      *pulPreparedDataLen = (*pulPreparedDataLen > data_len + pss_params->sLen + 2) ? *pulPreparedDataLen
-                                                                                    : data_len + pss_params->sLen + 2;
-      CNK_DEBUG("Buffer size estimation for PSS: %lu bytes\n", *pulPreparedDataLen);
-      return CKR_OK;
-    }
+    CNK_ENSURE_OK(get_md_type_from_mgf(pss_params->mgf, &pss_hash_type));
+    if (need_hashing)
+      CNK_ENSURE_EQUAL_REASON(md_type, pss_hash_type, "MD type does not match MGF hash type");
 
     // We need random data for the salt in PSS padding
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context ctr_drbg;
-    const char *pers = "rsa_pss_sign";
-    int ret;
 
     mbedtls_entropy_init(&entropy);
     mbedtls_ctr_drbg_init(&ctr_drbg);
 
-    ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)pers, strlen(pers));
+    const char *pers = "rsa_pss_sign";
+    int ret =
+        mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)pers, strlen(pers));
     if (ret != 0) {
       CNK_ERROR("Failed to seed RNG: -0x%04x\n", -ret);
       mbedtls_entropy_free(&entropy);
@@ -558,76 +494,32 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pDat
       return CKR_FUNCTION_FAILED;
     }
 
-    // Get modulus size from algorithm_type
-    // In a real implementation, this should come from the actual RSA key
-    CK_ULONG modBits;
-    switch (algorithm_type) {
-    case PIV_ALG_RSA_2048:
-      modBits = 2048;
-      break;
-    case PIV_ALG_RSA_3072:
-      modBits = 3072;
-      break;
-    case PIV_ALG_RSA_4096:
-      modBits = 4096;
-      break;
-    default:
-      CNK_DEBUG("Unknown RSA key size, defaulting to 2048 bits\n");
-      modBits = 2048;
-      break;
-    }
-
-    CNK_DEBUG("Using modulus size: %lu bits\n", modBits);
     CNK_DEBUG("Salt length: %lu bytes\n", pss_params->sLen);
 
     // For PSS, apply encoding to hashed data or raw data
     if (need_hashing) {
+      // For SHAxxx_RSA_PKCS_PSS mechanisms, we've already hashed the data
       CNK_DEBUG("Applying PSS encoding to hashed data (%lu bytes)\n", hash_len);
-      rv = pss_encode(hash, hash_len, modBits, pss_params->sLen, md_type, mgf_md_type, &ctr_drbg, pPreparedData,
+      rv = pss_encode(hash, hash_len, modBytes * 8, pss_params->sLen, md_type, &ctr_drbg, pPreparedData,
                       pulPreparedDataLen);
-      if (rv != CKR_OK) {
-        CNK_ERROR("PSS encoding failed: 0x%08lX\n", rv);
-      } else {
-        CNK_DEBUG("PSS encoding succeeded, output length: %lu bytes\n", *pulPreparedDataLen);
-      }
+    } else if (mech_type == CKM_RSA_PKCS_PSS) {
+      // For CKM_RSA_PKCS_PSS, the input data is already a hash value
+      CNK_DEBUG("Applying PSS encoding to input hash value (%lu bytes)\n", ulDataLen);
+
+      rv = pss_encode(pData, ulDataLen, modBytes * 8, pss_params->sLen, pss_hash_type, &ctr_drbg, pPreparedData,
+                      pulPreparedDataLen);
     } else {
-      // For raw data with PSS, hash it first with the same algorithm used for MGF
-      CNK_DEBUG("Hashing raw data (%lu bytes) before PSS encoding\n", ulDataLen);
-      unsigned char temp_hash[64]; // Big enough for any supported hash
-      size_t temp_hash_len;
+      // This case should not be reached with the current logic
+      CNK_ERROR("Unexpected code path in PSS encoding\n");
+      mbedtls_entropy_free(&entropy);
+      mbedtls_ctr_drbg_free(&ctr_drbg);
+      return CKR_FUNCTION_FAILED;
+    }
 
-      const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(mgf_md_type);
-      if (md_info == NULL) {
-        CNK_ERROR("Failed to get MD info for type %d\n", mgf_md_type);
-        mbedtls_entropy_free(&entropy);
-        mbedtls_ctr_drbg_free(&ctr_drbg);
-        return CKR_FUNCTION_FAILED;
-      }
-
-      temp_hash_len = mbedtls_md_get_size(md_info);
-      if (temp_hash_len > sizeof(temp_hash)) {
-        CNK_ERROR("Hash size too large for buffer: %zu\n", temp_hash_len);
-        mbedtls_entropy_free(&entropy);
-        mbedtls_ctr_drbg_free(&ctr_drbg);
-        return CKR_FUNCTION_FAILED;
-      }
-
-      ret = mbedtls_md(md_info, pData, ulDataLen, temp_hash);
-      if (ret != 0) {
-        CNK_ERROR("Hash operation failed: -0x%04x\n", -ret);
-        mbedtls_entropy_free(&entropy);
-        mbedtls_ctr_drbg_free(&ctr_drbg);
-        return CKR_FUNCTION_FAILED;
-      }
-
-      CNK_DEBUG("Data hashed, hash length: %zu bytes\n", temp_hash_len);
-      rv = pss_encode(temp_hash, temp_hash_len, modBits, pss_params->sLen, mgf_md_type, mgf_md_type, &ctr_drbg,
-                      pPreparedData, pulPreparedDataLen);
-      if (rv != CKR_OK) {
-        CNK_ERROR("PSS encoding failed: 0x%08lX\n", rv);
-      } else {
-        CNK_DEBUG("PSS encoding succeeded, output length: %lu bytes\n", *pulPreparedDataLen);
-      }
+    if (rv != CKR_OK) {
+      CNK_ERROR("PSS encoding failed: 0x%08lX\n", rv);
+    } else {
+      CNK_DEBUG("PSS encoding succeeded, output length: %lu bytes\n", *pulPreparedDataLen);
     }
 
     mbedtls_entropy_free(&entropy);
