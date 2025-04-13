@@ -32,7 +32,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   C_CNK_ConfigLogging(CNK_LOG_LEVEL_DEBUG, NULL);
 #endif
 
-  CNK_LOG_FUNC(C_Initialize, ", pInitArgs: %p\n", pInitArgs);
+  CNK_LOG_FUNC(C_Initialize, ", pInitArgs: %p", pInitArgs);
 
   // Check if the library is already initialized
   if (g_cnk_is_initialized)
@@ -119,7 +119,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
 }
 
 CK_RV C_Finalize(CK_VOID_PTR pReserved) {
-  CNK_LOG_FUNC(C_Finalize, ", pReserved: %p\n", pReserved);
+  CNK_LOG_FUNC(C_Finalize, ", pReserved: %p", pReserved);
 
   // According to PKCS#11, pReserved must be NULL_PTR
   CHK_ENSURE_NULL(pReserved);
@@ -146,7 +146,7 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
 }
 
 CK_RV C_GetInfo(CK_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetInfo, ", pInfo: %p\n", pInfo);
+  CNK_LOG_FUNC(C_GetInfo, ", pInfo: %p", pInfo);
 
   // Check if the library is initialized
   if (!g_cnk_is_initialized) {
@@ -190,7 +190,7 @@ CK_RV C_GetInfo(CK_INFO_PTR pInfo) {
 }
 
 CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList) {
-  CNK_LOG_FUNC(C_GetFunctionList, ", ppFunctionList: %p\n", ppFunctionList);
+  CNK_LOG_FUNC(C_GetFunctionList, ", ppFunctionList: %p", ppFunctionList);
 
   CNK_ENSURE_NONNULL(ppFunctionList);
 
@@ -199,7 +199,7 @@ CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList) {
 }
 
 CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PTR pulCount) {
-  CNK_LOG_FUNC(C_GetSlotList, ", tokenPresent: %d, pSlotList: %p, pulCount: %p\n", tokenPresent, pSlotList, pulCount);
+  CNK_LOG_FUNC(C_GetSlotList, ", tokenPresent: %d, pSlotList: %p, pulCount: %p", tokenPresent, pSlotList, pulCount);
 
   // Parameter validation
   CNK_ENSURE_NONNULL(pulCount);
@@ -232,7 +232,7 @@ CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PT
 }
 
 CK_RV C_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetSlotInfo, ", slotID: %lu, pInfo: %p\n", slotID, pInfo);
+  CNK_LOG_FUNC(C_GetSlotInfo, ", slotID: %lu, pInfo: %p", slotID, pInfo);
 
   CNK_ENSURE_NONNULL(pInfo);
 
@@ -269,12 +269,12 @@ CK_RV C_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
   pInfo->firmwareVersion.major = fw_major;
   pInfo->firmwareVersion.minor = fw_minor;
 
-  CNK_DEBUG("C_GetSlotInfo: Hardware name: %s, FW version: %d.%d\n", hw_name, fw_major, fw_minor);
+  CNK_DEBUG("C_GetSlotInfo: Hardware name: %s, FW version: %d.%d", hw_name, fw_major, fw_minor);
   CNK_RET_OK;
 }
 
 CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetTokenInfo, ", slotID: %lu\n", slotID);
+  CNK_LOG_FUNC(C_GetTokenInfo, ", slotID: %lu", slotID);
 
   // Check parameters
   if (!g_cnk_is_initialized) {
@@ -350,7 +350,7 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   CK_RV rv = cnk_get_version(slotID, &fw_major, &fw_minor, (char *)pInfo->model, sizeof(pInfo->model));
   if (rv != CKR_OK) {
     // If we can't get the version, default to 1.0
-    CNK_WARN("Failed to get firmware version, defaulting to 1.0\n");
+    CNK_WARN("Failed to get firmware version, defaulting to 1.0");
     fw_major = 1;
     fw_minor = 0;
   }
@@ -364,12 +364,12 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   // UTC time - not supported
   memset(pInfo->utcTime, 0, sizeof(pInfo->utcTime));
 
-  CNK_DEBUG("Serial number: %lu, Label: %s\n", serial_number, label);
+  CNK_DEBUG("Serial number: %lu, Label: %s", serial_number, label);
   CNK_RET_OK;
 }
 
 CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList, CK_ULONG_PTR pulCount) {
-  CNK_LOG_FUNC(C_GetMechanismList, ", slotID: %lu\n", slotID);
+  CNK_LOG_FUNC(C_GetMechanismList, ", slotID: %lu", slotID);
 
   // Validate common parameters
   PKCS11_VALIDATE(pulCount, slotID);
@@ -417,12 +417,12 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
   memcpy(pMechanismList, supported_mechanisms, sizeof(supported_mechanisms));
   *pulCount = num_mechanisms;
 
-  CNK_DEBUG("Returned %lu mechanisms\n", num_mechanisms);
+  CNK_DEBUG("Returned %lu mechanisms", num_mechanisms);
   CNK_RET_OK;
 }
 
 CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetMechanismInfo, ", slotID: %lu, type: %lu, pInfo: %p\n", slotID, type, pInfo);
+  CNK_LOG_FUNC(C_GetMechanismInfo, ", slotID: %lu, type: %lu, pInfo: %p", slotID, type, pInfo);
 
   // Validate common parameters
   PKCS11_VALIDATE(pInfo, slotID);
@@ -476,18 +476,18 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
     CNK_RETURN(CKR_MECHANISM_INVALID, "invalid mechanism");
   }
 
-  CNK_DEBUG("C_GetMechanismInfo: Mechanism %lu, flags = 0x%lx, min key size = %lu, max key size = %lu\n", type,
+  CNK_DEBUG("C_GetMechanismInfo: Mechanism %lu, flags = 0x%lx, min key size = %lu, max key size = %lu", type,
             pInfo->flags, pInfo->ulMinKeySize, pInfo->ulMaxKeySize);
   CNK_RET_OK;
 }
 
 CK_RV C_InitToken(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_UTF8CHAR_PTR pLabel) {
-  CNK_LOG_FUNC(C_InitToken, ", slotID: %lu\n", slotID);
+  CNK_LOG_FUNC(C_InitToken, ", slotID: %lu", slotID);
   CNK_RET_UNIMPL;
 }
 
 CK_RV C_InitPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
-  CNK_LOG_FUNC(C_InitPIN, ", hSession: %lu\n", hSession);
+  CNK_LOG_FUNC(C_InitPIN, ", hSession: %lu", hSession);
   CNK_RET_UNIMPL;
 }
 
@@ -524,7 +524,7 @@ CK_RV C_CloseAllSessions(CK_SLOT_ID slotID) {
 }
 
 CK_RV C_GetSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetSessionInfo, ", hSession: %lu\n", hSession);
+  CNK_LOG_FUNC(C_GetSessionInfo, ", hSession: %lu", hSession);
 
   // Check if the cryptoki library is initialized
   if (!g_cnk_is_initialized) {
@@ -560,7 +560,7 @@ CK_RV C_GetSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
   // No device errors
   pInfo->ulDeviceError = 0;
 
-  CNK_DEBUG("C_GetSessionInfo: slotID = %lu, state = %lu, flags = 0x%lx\n", pInfo->slotID, pInfo->state, pInfo->flags);
+  CNK_DEBUG("C_GetSessionInfo: slotID = %lu, state = %lu, flags = 0x%lx", pInfo->slotID, pInfo->state, pInfo->flags);
   CNK_RET_OK;
 }
 
@@ -574,7 +574,7 @@ CK_RV C_SetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationStat
 }
 
 CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
-  CNK_LOG_FUNC(C_Login, ", hSession: %lu, userType: %lu, ulPinLen: %lu\n", hSession, userType, ulPinLen);
+  CNK_LOG_FUNC(C_Login, ", hSession: %lu, userType: %lu, ulPinLen: %lu", hSession, userType, ulPinLen);
 
   // Check if the cryptoki library is initialized
   if (!g_cnk_is_initialized) {
@@ -617,7 +617,7 @@ CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR
 }
 
 CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
-  CNK_LOG_FUNC(C_Logout, ", hSession: %lu\n", hSession);
+  CNK_LOG_FUNC(C_Logout, ", hSession: %lu", hSession);
 
   // Check if the cryptoki library is initialized
   if (!g_cnk_is_initialized) {
@@ -653,51 +653,51 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
 
 CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                      CK_OBJECT_HANDLE_PTR phObject) {
-  CNK_LOG_FUNC(C_CreateObject, ", hSession: %lu, ulCount: %lu\n", hSession, ulCount);
+  CNK_LOG_FUNC(C_CreateObject, ", hSession: %lu, ulCount: %lu", hSession, ulCount);
   return cnk_create_object(hSession, pTemplate, ulCount, phObject);
 }
 
 CK_RV C_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                    CK_OBJECT_HANDLE_PTR phNewObject) {
-  CNK_LOG_FUNC(C_CopyObject, ", hSession: %lu, hObject: %lu, ulCount: %lu\n", hSession, hObject, ulCount);
+  CNK_LOG_FUNC(C_CopyObject, ", hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
   return cnk_copy_object(hSession, hObject, pTemplate, ulCount, phNewObject);
 }
 
 CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
-  CNK_LOG_FUNC(C_DestroyObject, ", hSession: %lu, hObject: %lu\n", hSession, hObject);
+  CNK_LOG_FUNC(C_DestroyObject, ", hSession: %lu, hObject: %lu", hSession, hObject);
   return cnk_destroy_object(hSession, hObject);
 }
 
 CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ULONG_PTR pulSize) {
-  CNK_LOG_FUNC(C_GetObjectSize, ", hSession: %lu, hObject: %lu\n", hSession, hObject);
+  CNK_LOG_FUNC(C_GetObjectSize, ", hSession: %lu, hObject: %lu", hSession, hObject);
   return cnk_get_object_size(hSession, hObject, pulSize);
 }
 
 CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                           CK_ULONG ulCount) {
-  CNK_LOG_FUNC(C_GetAttributeValue, ", hSession: %lu, hObject: %lu, ulCount: %lu\n", hSession, hObject, ulCount);
+  CNK_LOG_FUNC(C_GetAttributeValue, ", hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
   return cnk_get_attribute_value(hSession, hObject, pTemplate, ulCount);
 }
 
 CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                           CK_ULONG ulCount) {
-  CNK_LOG_FUNC(C_SetAttributeValue, ", hSession: %lu, hObject: %lu, ulCount: %lu\n", hSession, hObject, ulCount);
+  CNK_LOG_FUNC(C_SetAttributeValue, ", hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
   return cnk_set_attribute_value(hSession, hObject, pTemplate, ulCount);
 }
 
 CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
-  CNK_LOG_FUNC(C_FindObjectsInit, ", hSession: %lu, ulCount: %lu\n", hSession, ulCount);
+  CNK_LOG_FUNC(C_FindObjectsInit, ", hSession: %lu, ulCount: %lu", hSession, ulCount);
   return cnk_find_objects_init(hSession, pTemplate, ulCount);
 }
 
 CK_RV C_FindObjects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject, CK_ULONG ulMaxObjectCount,
                     CK_ULONG_PTR pulObjectCount) {
-  CNK_LOG_FUNC(C_FindObjects, ", hSession: %lu, ulMaxObjectCount: %lu\n", hSession, ulMaxObjectCount);
+  CNK_LOG_FUNC(C_FindObjects, ", hSession: %lu, ulMaxObjectCount: %lu", hSession, ulMaxObjectCount);
   return cnk_find_objects(hSession, phObject, ulMaxObjectCount, pulObjectCount);
 }
 
 CK_RV C_FindObjectsFinal(CK_SESSION_HANDLE hSession) {
-  CNK_LOG_FUNC(C_FindObjectsFinal, ", hSession: %lu\n", hSession);
+  CNK_LOG_FUNC(C_FindObjectsFinal, ", hSession: %lu", hSession);
   return cnk_find_objects_final(hSession);
 }
 
@@ -745,7 +745,7 @@ CK_RV C_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey) { CNK_RET_U
 CK_RV C_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest, CK_ULONG_PTR pulDigestLen) { CNK_RET_UNIMPL; }
 
 CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {
-  CNK_LOG_FUNC(C_SignInit, ", hSession: %lu, pMechanism: %p, hKey: %lu\n", hSession, pMechanism, hKey);
+  CNK_LOG_FUNC(C_SignInit, ", hSession: %lu, pMechanism: %p, hKey: %lu", hSession, pMechanism, hKey);
 
   // Validate mechanism
   CNK_ENSURE_NONNULL(pMechanism);
@@ -839,7 +839,7 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   session->active_key_piv_tag = piv_tag;
   session->active_key_algorithm_type = algorithm_type;
 
-  CNK_DEBUG("Setting active_mechanism to %lu, PIV tag %u, algorithm type %u\n", pMechanism->mechanism, piv_tag,
+  CNK_DEBUG("Setting active_mechanism to %lu, PIV tag %u, algorithm type %u", pMechanism->mechanism, piv_tag,
             algorithm_type);
 
   CNK_RET_OK;
@@ -848,7 +848,7 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
 // Main C_Sign function
 CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
              CK_ULONG_PTR pulSignatureLen) {
-  CNK_LOG_FUNC(C_Sign, ", hSession: %lu, ulDataLen: %lu, pSignature: %p, pulSignatureLen: %p\n", hSession, ulDataLen,
+  CNK_LOG_FUNC(C_Sign, ", hSession: %lu, ulDataLen: %lu, pSignature: %p, pulSignatureLen: %p", hSession, ulDataLen,
                pSignature, pulSignatureLen);
 
   // Parameter validation
@@ -873,7 +873,7 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   CK_BYTE algorithm_type = session->active_key_algorithm_type;
   CK_MECHANISM_PTR mechanism_ptr = session->active_mechanism_ptr;
 
-  CNK_DEBUG("Signing with active key, PIV tag %u, algorithm type %u\n", piv_tag, algorithm_type);
+  CNK_DEBUG("Signing with active key, PIV tag %u, algorithm type %u", piv_tag, algorithm_type);
 
   // For signature-only call to get the signature length
   if (pSignature == NULL) {

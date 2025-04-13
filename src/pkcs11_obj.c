@@ -261,7 +261,7 @@ CK_RV cnk_get_object_size(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
 CK_RV cnk_get_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                               CK_ULONG ulCount) {
-  CNK_LOG_FUNC(cnk_get_attribute_value, ", hSession: %lu, hObject: %lu, ulCount: %lu\n", hSession, hObject, ulCount);
+  CNK_LOG_FUNC(cnk_get_attribute_value, ", hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
 
   // Validate parameters
   if (!pTemplate && ulCount > 0)
@@ -278,7 +278,7 @@ CK_RV cnk_get_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
 
   // Get object class from handle
   cnk_extract_object_info(hObject, NULL, &obj_class, NULL);
-  CNK_DEBUG("Object handle: slot %lu, class %lu, id %lu\n", session->slot_id, obj_class, obj_id);
+  CNK_DEBUG("Object handle: slot %lu, class %lu, id %lu", session->slot_id, obj_class, obj_id);
 
   // Map object ID to PIV tag
   CK_BYTE piv_tag;
@@ -301,10 +301,10 @@ CK_RV cnk_get_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
   if (obj_class == CKO_PUBLIC_KEY || obj_class == CKO_PRIVATE_KEY) {
     CK_RV rv = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type);
     if (rv != CKR_OK) {
-      CNK_DEBUG("Failed to get metadata for PIV tag 0x%02X: %lu\n", piv_tag, rv);
+      CNK_DEBUG("Failed to get metadata for PIV tag 0x%02X: %lu", piv_tag, rv);
       // Continue anyway, we'll use default values
     } else {
-      CNK_DEBUG("Retrieved algorithm type %u for PIV tag 0x%02X\n", algorithm_type, piv_tag);
+      CNK_DEBUG("Retrieved algorithm type %u for PIV tag 0x%02X", algorithm_type, piv_tag);
     }
   }
 
@@ -451,12 +451,12 @@ CK_RV cnk_get_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
 
 CK_RV cnk_set_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                               CK_ULONG ulCount) {
-  CNK_LOG_FUNC(cnk_set_attribute_value, ", hSession: %lu, hObject: %lu, ulCount: %lu\n", hSession, hObject, ulCount);
+  CNK_LOG_FUNC(cnk_set_attribute_value, ", hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
   CNK_RET_UNIMPL;
 }
 
 CK_RV cnk_find_objects_init(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
-  CNK_LOG_FUNC(cnk_find_objects_init, ", hSession: %lu, ulCount: %lu\n", hSession, ulCount);
+  CNK_LOG_FUNC(cnk_find_objects_init, ", hSession: %lu, ulCount: %lu", hSession, ulCount);
 
   // Validate the session
   CNK_PKCS11_SESSION *session;
@@ -581,7 +581,7 @@ CK_RV cnk_find_objects_init(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTempla
 
 CK_RV cnk_find_objects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject, CK_ULONG ulMaxObjectCount,
                        CK_ULONG_PTR pulObjectCount) {
-  CNK_LOG_FUNC(cnk_find_objects, ", hSession: %lu, ulMaxObjectCount: %lu\n", hSession, ulMaxObjectCount);
+  CNK_LOG_FUNC(cnk_find_objects, ", hSession: %lu, ulMaxObjectCount: %lu", hSession, ulMaxObjectCount);
 
   // Validate parameters
   if (!phObject || !pulObjectCount)
@@ -620,7 +620,7 @@ CK_RV cnk_find_objects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject
 }
 
 CK_RV cnk_find_objects_final(CK_SESSION_HANDLE hSession) {
-  CNK_LOG_FUNC(cnk_find_objects_final, ", hSession: %lu\n", hSession);
+  CNK_LOG_FUNC(cnk_find_objects_final, ", hSession: %lu", hSession);
 
   // Find the session
   CNK_PKCS11_SESSION *session;

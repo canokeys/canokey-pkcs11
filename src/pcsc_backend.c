@@ -216,7 +216,7 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
   }
 
   if (g_cnk_readers == NULL) {
-    CNK_ERROR("No readers found after listing\n");
+    CNK_ERROR("No readers found after listing");
     return CKR_SLOT_ID_INVALID;
   }
 
@@ -287,7 +287,7 @@ LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, DWORD comman
   if (rv == SCARD_S_SUCCESS) {
     CNK_LOG_APDU_RESPONSE(response, *response_len);
   } else {
-    CNK_ERROR("SCardTransmit failed with error: 0x%lx\n", rv);
+    CNK_ERROR("SCardTransmit failed with error: 0x%lx", rv);
   }
 
   return rv;
@@ -429,7 +429,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
   CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
   CK_BBOOL need_disconnect = CK_FALSE;
   if (rv != CKR_OK) {
-    CNK_ERROR("Connect to card failed\n");
+    CNK_ERROR("Connect to card failed");
     goto cleanup;
   }
   need_disconnect = CK_TRUE;
@@ -437,7 +437,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
   // Select PIV application
   rv = cnk_select_piv_application(hCard);
   if (rv != CKR_OK) {
-    CNK_ERROR("Select PIV application failed\n");
+    CNK_ERROR("Select PIV application failed");
     goto cleanup;
   }
 
@@ -479,7 +479,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
     response_len = 4096;
     response = (CK_BYTE_PTR)ck_malloc(response_len); // Allocate larger buffer for data
     if (response == NULL) {
-      CNK_ERROR("ck_malloc failed\n");
+      CNK_ERROR("ck_malloc failed");
       rv = CKR_HOST_MEMORY;
       goto cleanup;
     }
@@ -495,7 +495,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
   LONG pcsc_rv = cnk_transceive_apdu(hCard, apdu, sizeof(apdu), response, &response_len);
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
-    CNK_ERROR("transceive failure: %lu\n", pcsc_rv);
+    CNK_ERROR("transceive failure: %lu", pcsc_rv);
     rv = CKR_DEVICE_ERROR;
     goto cleanup;
   }
@@ -522,7 +522,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
       pcsc_rv = cnk_transceive_apdu(hCard, get_response, sizeof(get_response), response + data_offset, &next_chunk_len);
 
       if (pcsc_rv != SCARD_S_SUCCESS) {
-        CNK_ERROR("transceive failure: %lu\n", pcsc_rv);
+        CNK_ERROR("transceive failure: %lu", pcsc_rv);
         rv = CKR_DEVICE_ERROR;
         goto cleanup;
       }
@@ -541,7 +541,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
 
   // Check if the response indicates success
   if (response_len < 2) {
-    CNK_ERROR("transceive response too short: %lu\n", response_len);
+    CNK_ERROR("transceive response too short: %lu", response_len);
     rv = CKR_DEVICE_ERROR;
     goto cleanup;
   }
@@ -553,21 +553,21 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
     // Normal success case - continue processing
   } else if (!fetch_data && response[response_len - 2] == 0x61) {
     // When not fetching data, 61XX means the object exists
-    CNK_DEBUG("Object exists, but not fetching data\n");
+    CNK_DEBUG("Object exists, but not fetching data");
     *data = NULL;
     *data_len = 1; // Indicates that the object exists
     rv = CKR_OK;
     goto cleanup;
   } else if (response[response_len - 2] == 0x6A && response[response_len - 1] == 0x82) {
     // Object doesn't exist
-    CNK_ERROR("Object not found\n");
+    CNK_ERROR("Object not found");
     *data = NULL;
     *data_len = 0;
     rv = CKR_OK;
     goto cleanup;
   } else {
     // Other error
-    CNK_ERROR("transceive failure\n")
+    CNK_ERROR("transceive failure")
     rv = CKR_DEVICE_ERROR;
     goto cleanup;
   }
@@ -577,7 +577,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
     *data_len = response_len - 2;
     *data = (CK_BYTE_PTR)ck_malloc(*data_len);
     if (*data == NULL) {
-      CNK_ERROR("ck_malloc failed\n");
+      CNK_ERROR("ck_malloc failed");
       rv = CKR_HOST_MEMORY;
       goto cleanup;
     }
@@ -788,7 +788,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   // Use the extended version to keep the card connection open
   rv = cnk_verify_piv_pin_with_session_ex(slotID, session, session->piv_pin, session->piv_pin_len, &hCard);
   if (rv != CKR_OK) {
-    CNK_ERROR("Failed to verify PIN\n");
+    CNK_ERROR("Failed to verify PIN");
     cnk_disconnect_card(hCard);
     return rv;
   }
@@ -882,7 +882,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   CK_BYTE response[1024]; // Increased buffer size for larger responses
   DWORD response_len = sizeof(response);
 
-  CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command for signing\n");
+  CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command for signing");
   pcsc_rv = cnk_transceive_apdu(hCard, auth_apdu, apdu_len, response, &response_len);
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
@@ -920,18 +920,18 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
       get_response_apdu[4] = sw2;
 
       // Send GET RESPONSE command
-      CNK_DEBUG("Sending GET RESPONSE command for %d bytes\n", sw2);
+      CNK_DEBUG("Sending GET RESPONSE command for %d bytes", sw2);
       response_len = sizeof(response);
       pcsc_rv = cnk_transceive_apdu(hCard, get_response_apdu, sizeof(get_response_apdu), response, &response_len);
 
       if (pcsc_rv != SCARD_S_SUCCESS) {
-        CNK_ERROR("Failed to send GET RESPONSE command: %ld\n", pcsc_rv);
+        CNK_ERROR("Failed to send GET RESPONSE command: %ld", pcsc_rv);
         cnk_disconnect_card(hCard);
         return CKR_DEVICE_ERROR;
       }
 
       if (response_len < 2) {
-        CNK_ERROR("GET RESPONSE returned too short response\n");
+        CNK_ERROR("GET RESPONSE returned too short response");
         cnk_disconnect_card(hCard);
         return CKR_DEVICE_ERROR;
       }
@@ -942,7 +942,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
 
       // Check if we have enough space in the complete response buffer
       if (complete_response_len + response_len - 2 > sizeof(complete_response)) {
-        CNK_ERROR("Response too large for buffer\n");
+        CNK_ERROR("Response too large for buffer");
         cnk_disconnect_card(hCard);
         return CKR_DEVICE_ERROR;
       }
@@ -956,13 +956,13 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
 
     // Final check - the last response should be 9000
     if (sw1 != 0x90 || sw2 != 0x00) {
-      CNK_ERROR("Final GET RESPONSE returned error status: %02X%02X\n", sw1, sw2);
+      CNK_ERROR("Final GET RESPONSE returned error status: %02X%02X", sw1, sw2);
       cnk_disconnect_card(hCard);
       return CKR_DEVICE_ERROR;
     }
   } else {
     // Error status
-    CNK_ERROR("GENERAL AUTHENTICATE command failed with status: %02X%02X\n", sw1, sw2);
+    CNK_ERROR("GENERAL AUTHENTICATE command failed with status: %02X%02X", sw1, sw2);
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
   }
@@ -1064,17 +1064,17 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
   DWORD response_len = sizeof(response);
 
   // Send the metadata command
-  CNK_DEBUG("Sending metadata command for PIV tag 0x%02X\n", piv_tag);
+  CNK_DEBUG("Sending metadata command for PIV tag 0x%02X", piv_tag);
   LONG pcsc_rv = cnk_transceive_apdu(hCard, metadata_apdu, sizeof(metadata_apdu), response, &response_len);
   if (pcsc_rv != SCARD_S_SUCCESS) {
-    CNK_ERROR("Failed to send metadata command: %ld\n", pcsc_rv);
+    CNK_ERROR("Failed to send metadata command: %ld", pcsc_rv);
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
   }
 
   // Process the initial response
   if (response_len < 2) {
-    CNK_ERROR("Response too short\n");
+    CNK_ERROR("Response too short");
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
   }
@@ -1105,18 +1105,18 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
       get_response_apdu[4] = sw2;
 
       // Send GET RESPONSE command
-      CNK_DEBUG("Sending GET RESPONSE command for %d bytes\n", sw2);
+      CNK_DEBUG("Sending GET RESPONSE command for %d bytes", sw2);
       response_len = sizeof(response);
       pcsc_rv = cnk_transceive_apdu(hCard, get_response_apdu, sizeof(get_response_apdu), response, &response_len);
 
       if (pcsc_rv != SCARD_S_SUCCESS) {
-        CNK_ERROR("Failed to send GET RESPONSE command: %ld\n", pcsc_rv);
+        CNK_ERROR("Failed to send GET RESPONSE command: %ld", pcsc_rv);
         cnk_disconnect_card(hCard);
         return CKR_DEVICE_ERROR;
       }
 
       if (response_len < 2) {
-        CNK_ERROR("GET RESPONSE returned too short response\n");
+        CNK_ERROR("GET RESPONSE returned too short response");
         cnk_disconnect_card(hCard);
         return CKR_DEVICE_ERROR;
       }
@@ -1127,7 +1127,7 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
 
       // Check if we have enough space in the complete response buffer
       if (complete_response_len + response_len - 2 > sizeof(complete_response)) {
-        CNK_ERROR("Response too large for buffer\n");
+        CNK_ERROR("Response too large for buffer");
         cnk_disconnect_card(hCard);
         return CKR_DEVICE_ERROR;
       }
@@ -1141,13 +1141,13 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
 
     // Final check - the last response should be 9000
     if (sw1 != 0x90 || sw2 != 0x00) {
-      CNK_ERROR("Final GET RESPONSE returned error status: %02X%02X\n", sw1, sw2);
+      CNK_ERROR("Final GET RESPONSE returned error status: %02X%02X", sw1, sw2);
       cnk_disconnect_card(hCard);
       return CKR_DEVICE_ERROR;
     }
   } else {
     // Error status
-    CNK_ERROR("Metadata command failed with status: %02X%02X\n", sw1, sw2);
+    CNK_ERROR("Metadata command failed with status: %02X%02X", sw1, sw2);
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
   }
@@ -1157,7 +1157,7 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
   CK_BYTE *data = complete_response;
   CK_ULONG pos = 0;
 
-  CNK_DEBUG("Complete metadata response length: %lu bytes\n", data_len);
+  CNK_DEBUG("Complete metadata response length: %lu bytes", data_len);
 
   // Parse the TLV data
   while (pos < data_len) {
@@ -1182,14 +1182,14 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
       pos += 2;
     } else {
       // Invalid or unsupported length encoding
-      CNK_ERROR("Invalid length encoding in metadata response\n");
+      CNK_ERROR("Invalid length encoding in metadata response");
       cnk_disconnect_card(hCard);
       return CKR_DEVICE_ERROR;
     }
 
     // Make sure we have enough data for the value
     if (pos + length > data_len) {
-      CNK_ERROR("Incomplete TLV data in metadata response\n");
+      CNK_ERROR("Incomplete TLV data in metadata response");
       cnk_disconnect_card(hCard);
       return CKR_DEVICE_ERROR;
     }
@@ -1199,34 +1199,34 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
     case 0x01: // Algorithm type
       if (length == 1 && algorithm_type != NULL) {
         *algorithm_type = data[pos];
-        CNK_DEBUG("Algorithm type: 0x%02X\n", *algorithm_type);
+        CNK_DEBUG("Algorithm type: 0x%02X", *algorithm_type);
       }
       break;
 
     case 0x02: // Pin and touch policies
       if (length >= 2) {
-        CNK_DEBUG("Pin and touch policies: 0x%02X 0x%02X\n", data[pos], data[pos + 1]);
+        CNK_DEBUG("Pin and touch policies: 0x%02X 0x%02X", data[pos], data[pos + 1]);
         // First byte is pin policy, second byte is touch policy
       }
       break;
 
     case 0x03: // Key origin
       if (length >= 1) {
-        CNK_DEBUG("Key origin: 0x%02X\n", data[pos]);
+        CNK_DEBUG("Key origin: 0x%02X", data[pos]);
         // This indicates how the key was generated (e.g., generated, imported)
       }
       break;
 
     case 0x04: // Public key encoding
       if (length > 0) {
-        CNK_DEBUG("Public key data present, length: %lu bytes\n", length);
+        CNK_DEBUG("Public key data present, length: %lu bytes", length);
         // This contains the encoded public key
         // We don't need to process this for CKA_KEY_TYPE determination
       }
       break;
 
     default:
-      CNK_DEBUG("Unhandled metadata tag: 0x%02X, length: %lu\n", tag, length);
+      CNK_DEBUG("Unhandled metadata tag: 0x%02X, length: %lu", tag, length);
       break;
     }
 

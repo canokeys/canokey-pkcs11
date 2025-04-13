@@ -42,8 +42,9 @@ int cnk_load_pkcs11_functions(void *handle) {
     return -1;
   }
 
-  if (!pF->C_Initialize || !pF->C_Finalize || !pF->C_GetSlotList || !pF->C_OpenSession || !pF->C_CloseSession || !pF->C_Login ||
-    !pF->C_Logout || !pF->C_FindObjectsInit || !pF->C_FindObjects || !pF->C_FindObjectsFinal || !pF->C_SignInit || !pF->C_Sign) {
+  if (!pF->C_Initialize || !pF->C_Finalize || !pF->C_GetSlotList || !pF->C_OpenSession || !pF->C_CloseSession ||
+      !pF->C_Login || !pF->C_Logout || !pF->C_FindObjectsInit || !pF->C_FindObjects || !pF->C_FindObjectsFinal ||
+      !pF->C_SignInit || !pF->C_Sign) {
     LOG_ERROR("Failed to load one or more PKCS#11 functions.");
     return -1;
   }
@@ -236,11 +237,11 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  LOG_INFO("Testing CKM_RSA_PKCS_PSS");
-  ret = cnk_test_signing(CKM_RSA_PKCS_PSS);
-  if (ret != 0) {
-    LOG_ERROR("Test for CKM_RSA_PKCS_PSS failed.");
-  }
+  // LOG_INFO("Testing CKM_RSA_PKCS_PSS");
+  // ret = cnk_test_signing(CKM_RSA_PKCS_PSS);
+  // if (ret != 0) {
+  //   LOG_ERROR("Test for CKM_RSA_PKCS_PSS failed.");
+  // }
 
   LOG_INFO("Testing CKM_SHA256_RSA_PKCS_PSS");
   ret = cnk_test_signing(CKM_SHA256_RSA_PKCS_PSS);

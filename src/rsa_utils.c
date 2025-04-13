@@ -144,6 +144,8 @@ static CK_RV pss_encode(CK_BYTE_PTR mInput, CK_ULONG mInputLen, CK_ULONG modBits
   if (emLen < mInputLen + sLen + 2)
     return CKR_MECHANISM_PARAM_INVALID;
 
+  CNK_DEBUG("PSS Encode: emBits=%lu, emLen=%lu, mInputLen=%lu, sLen=%lu", modBits, emLen, mInputLen, sLen);
+
   // Step 1: Generate a random salt of length sLen.
   unsigned char *salt = (unsigned char *)ck_malloc(sLen);
   if (salt == NULL)
@@ -175,12 +177,15 @@ static CK_RV pss_encode(CK_BYTE_PTR mInput, CK_ULONG mInputLen, CK_ULONG modBits
 
   // Step 4: Construct DB = PS || 0x01 || salt.
   CK_ULONG dbLen = emLen - mInputLen - 1;
+  CK_ULONG psLen = dbLen - sLen - 1;
+
+  CNK_DEBUG("PSS Encode: dbLen=%lu, psLen=%lu", dbLen, psLen);
+
   unsigned char *DB = (unsigned char *)ck_malloc(dbLen);
   if (DB == NULL) {
     ck_free(salt);
     return CKR_HOST_MEMORY;
   }
-  CK_ULONG psLen = dbLen - sLen - 1;
   memset(DB, 0x00, psLen); // PS: all-zero padding.
   DB[psLen] = 0x01;        // 0x01 separator.
   memcpy(DB + psLen + 1, salt, sLen);
@@ -232,6 +237,8 @@ static CK_RV pss_encode(CK_BYTE_PTR mInput, CK_ULONG mInputLen, CK_ULONG modBits
   output[emLen - 1] = 0xbc;
   *output_len = emLen;
   ck_free(DB);
+
+  CNK_DEBUG("Encoded EM");
 
   return CKR_OK;
 }
@@ -311,7 +318,7 @@ static CK_RV get_md_type_and_len(CK_MECHANISM_TYPE hash_type, mbedtls_md_type_t 
     *hash_len = 28;
     break;
   default:
-    CNK_DEBUG("Unsupported hashAlg: %lu\n", hash_type);
+    CNK_DEBUG("Unsupported hashAlg: %lu", hash_type);
     return CKR_MECHANISM_PARAM_INVALID;
   }
   return CKR_OK;
@@ -348,7 +355,7 @@ static CK_RV get_md_type_from_mgf(CK_RSA_PKCS_MGF_TYPE mgf_hash, mbedtls_md_type
     *md_type = MBEDTLS_MD_SHA3_512;
     break;
   default:
-    CNK_DEBUG("Unsupported MGF type: %lu\n", mgf_hash);
+    CNK_DEBUG("Unsupported MGF type: %lu", mgf_hash);
     return CKR_MECHANISM_PARAM_INVALID;
   }
   return CKR_OK;
@@ -357,7 +364,7 @@ static CK_RV get_md_type_from_mgf(CK_RSA_PKCS_MGF_TYPE mgf_hash, mbedtls_md_type
 // Helper function to prepare data for RSA signing based on mechanism
 CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pData, CK_ULONG ulDataLen,
                                 CK_BYTE algorithm_type, CK_BYTE_PTR pPreparedData, CK_ULONG_PTR pulPreparedDataLen) {
-  CNK_LOG_FUNC(cnk_prepare_rsa_sign_data, " algorithm_type: %d\n", algorithm_type);
+  CNK_LOG_FUNC(cnk_prepare_rsa_sign_data, " algorithm_type: %d", algorithm_type);
 
   CK_RV rv = CKR_OK;
   mbedtls_md_type_t md_type;
@@ -380,10 +387,10 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pDat
     modBytes = 4096 / 8;
     break;
   default:
-    CNK_ERROR("Unknown RSA key size\n");
+    CNK_ERROR("Unknown RSA key size");
     CNK_RETURN(CKR_ARGUMENTS_BAD, "Unknown RSA key size");
   }
-  CNK_DEBUG("Using modulus size: %lu bits\n", modBytes * 8);
+  CNK_DEBUG("Using modulus size: %lu bits", modBytes * 8);
 
   if (!pPreparedData) {
     *pulPreparedDataLen = modBytes;
@@ -446,10 +453,10 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pDat
       mech_type == CKM_SHA3_224_RSA_PKCS) {
     // Apply padding to hashed data or raw data
     if (need_hashing) {
-      CNK_DEBUG("Applying PKCS#1 v1.5 padding to hashed data (%lu bytes)\n", hash_len);
+      CNK_DEBUG("Applying PKCS#1 v1.5 padding to hashed data (%lu bytes)", hash_len);
       rv = pkcs1_v1_5_pad(hash, hash_len, pPreparedData, *pulPreparedDataLen, hash_type);
     } else {
-      CNK_DEBUG("Applying PKCS#1 v1.5 padding to raw data (%lu bytes)\n", ulDataLen);
+      CNK_DEBUG("Applying PKCS#1 v1.5 padding to raw data (%lu bytes)", ulDataLen);
       rv = pkcs1_v1_5_pad(pData, ulDataLen, pPreparedData, *pulPreparedDataLen, mech_type);
     }
 
@@ -491,38 +498,38 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pDat
     int ret =
         mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)pers, strlen(pers));
     if (ret != 0) {
-      CNK_ERROR("Failed to seed RNG: -0x%04x\n", -ret);
+      CNK_ERROR("Failed to seed RNG: -0x%04x", -ret);
       mbedtls_entropy_free(&entropy);
       mbedtls_ctr_drbg_free(&ctr_drbg);
       return CKR_FUNCTION_FAILED;
     }
 
-    CNK_DEBUG("Salt length: %lu bytes\n", pss_params->sLen);
+    CNK_DEBUG("Salt length: %lu bytes", pss_params->sLen);
 
     // For PSS, apply encoding to hashed data or raw data
     if (need_hashing) {
       // For SHAxxx_RSA_PKCS_PSS mechanisms, we've already hashed the data
-      CNK_DEBUG("Applying PSS encoding to hashed data (%lu bytes)\n", hash_len);
+      CNK_DEBUG("Applying PSS encoding to hashed data (%lu bytes)", hash_len);
       rv = pss_encode(hash, hash_len, modBytes * 8, pss_params->sLen, md_type, &ctr_drbg, pPreparedData,
                       pulPreparedDataLen);
     } else if (mech_type == CKM_RSA_PKCS_PSS) {
       // For CKM_RSA_PKCS_PSS, the input data is already a hash value
-      CNK_DEBUG("Applying PSS encoding to input hash value (%lu bytes)\n", ulDataLen);
+      CNK_DEBUG("Applying PSS encoding to input hash value (%lu bytes)", ulDataLen);
 
       rv = pss_encode(pData, ulDataLen, modBytes * 8, pss_params->sLen, pss_hash_type, &ctr_drbg, pPreparedData,
                       pulPreparedDataLen);
     } else {
       // This case should not be reached with the current logic
-      CNK_ERROR("Unexpected code path in PSS encoding\n");
+      CNK_ERROR("Unexpected code path in PSS encoding");
       mbedtls_entropy_free(&entropy);
       mbedtls_ctr_drbg_free(&ctr_drbg);
       return CKR_FUNCTION_FAILED;
     }
 
     if (rv != CKR_OK) {
-      CNK_ERROR("PSS encoding failed: 0x%08lX\n", rv);
+      CNK_ERROR("PSS encoding failed: 0x%08lX", rv);
     } else {
-      CNK_DEBUG("PSS encoding succeeded, output length: %lu bytes\n", *pulPreparedDataLen);
+      CNK_DEBUG("PSS encoding succeeded, output length: %lu bytes", *pulPreparedDataLen);
     }
 
     mbedtls_entropy_free(&entropy);
@@ -531,6 +538,6 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pDat
     return rv;
   }
 
-  CNK_DEBUG("Unsupported mechanism: 0x%08lX\n", mech_type);
+  CNK_DEBUG("Unsupported mechanism: 0x%08lX", mech_type);
   return CKR_MECHANISM_INVALID;
 }

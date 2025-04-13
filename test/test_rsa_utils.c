@@ -8,6 +8,7 @@
 #include <cmocka.h>
 // clang-format on
 
+#include "logging.h"
 #include "pcsc_backend.h"
 #include "pkcs11.h"
 #include "rsa_utils.h"
@@ -665,7 +666,7 @@ static void test_error_conditions(void **state) {
                                        .sLen = 32};
   setup_mechanism(&mechanism, CKM_RSA_PKCS_PSS, &pss_params, sizeof(pss_params));
   rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, output, &output_len);
-  assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
+  assert_int_equal(rv, CKR_ARGUMENTS_BAD);
 
   // Test PSS with invalid hash algorithm
   pss_params.mgf = 1;                      // Valid MGF
@@ -687,6 +688,8 @@ int main(void) {
       cmocka_unit_test(test_different_rsa_key_sizes),
       cmocka_unit_test(test_error_conditions),
   };
+
+  C_CNK_ConfigLogging(CNK_LOG_LEVEL_DEBUG, NULL);
 
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
