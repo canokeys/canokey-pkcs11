@@ -762,9 +762,17 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   CK_BYTE piv_tag;
   CNK_ENSURE_OK(cnk_obj_id_to_piv_tag(obj_id, &piv_tag));
 
-  // Verify that the key matches the mechanism
+  // Verify that the key matches the mechanism and retrieve modulus if available
   CK_BYTE algorithm_type;
-  CNK_ENSURE_OK(cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type));
+
+  // Reset modulus length to the maximum buffer size
+  session->active_key_modulus_len = sizeof(session->active_key_modulus);
+
+  // Get metadata including the modulus
+  CNK_ENSURE_OK(cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, session->active_key_modulus,
+                                 &session->active_key_modulus_len));
+
+  CNK_DEBUG("Modulus length: %lu", session->active_key_modulus_len);
 
   // Check if the mechanism is supported
   switch (pMechanism->mechanism) {
@@ -899,7 +907,8 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   CK_BYTE prepared_data[512]; // Max RSA key size (4096 bits = 512 bytes)
   CK_ULONG prepared_data_len = sizeof(prepared_data);
 
-  rv = cnk_prepare_rsa_sign_data(mechanism_ptr, pData, ulDataLen, algorithm_type, prepared_data, &prepared_data_len);
+  rv = cnk_prepare_rsa_sign_data(mechanism_ptr, pData, ulDataLen, session->active_key_modulus,
+                                 session->active_key_modulus_len, algorithm_type, prepared_data, &prepared_data_len);
   if (rv != CKR_OK) {
     // Reset the session state
     session->active_mechanism_ptr = NULL;

@@ -237,11 +237,11 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  // LOG_INFO("Testing CKM_RSA_PKCS_PSS");
-  // ret = cnk_test_signing(CKM_RSA_PKCS_PSS);
-  // if (ret != 0) {
-  //   LOG_ERROR("Test for CKM_RSA_PKCS_PSS failed.");
-  // }
+  LOG_INFO("Testing CKM_RSA_PKCS_PSS");
+  ret = cnk_test_signing(CKM_RSA_PKCS_PSS);
+  if (ret != 0) {
+    LOG_ERROR("Test for CKM_RSA_PKCS_PSS failed.");
+  }
 
   LOG_INFO("Testing CKM_SHA256_RSA_PKCS_PSS");
   ret = cnk_test_signing(CKM_SHA256_RSA_PKCS_PSS);

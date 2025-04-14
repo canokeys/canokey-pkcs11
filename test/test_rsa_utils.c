@@ -12,11 +12,28 @@
 #include "pcsc_backend.h"
 #include "pkcs11.h"
 #include "rsa_utils.h"
+
+#include <mbedtls/bignum.h>
 #include <mbedtls/md.h>
 
 // Mock functions and data structures
 static unsigned char test_data[] = "test data for RSA sign operation";
-static size_t test_data_len = 30; // Length of test_data
+static size_t test_data_len = 32; // Length of test_data
+static unsigned char modulus[] = {
+    0xba, 0x80, 0x55, 0x39, 0x42, 0x0b, 0x63, 0x12, 0x77, 0x86, 0xcd, 0x25, 0xbc, 0xbb, 0xd9, 0xcb, 0x10, 0xfe, 0xee,
+    0xa7, 0xc5, 0x6d, 0x61, 0xf4, 0x22, 0x41, 0xe0, 0xeb, 0xf3, 0xa3, 0x38, 0xd3, 0xba, 0x6c, 0x8a, 0x02, 0x6a, 0x27,
+    0xc6, 0x6a, 0x20, 0xa4, 0xe8, 0xf3, 0x45, 0x3e, 0xa2, 0xc6, 0xa3, 0x6b, 0x7d, 0xf4, 0xa1, 0x88, 0x3f, 0xc1, 0x41,
+    0xb8, 0xf8, 0xce, 0xe7, 0x80, 0xd9, 0xb9, 0x3a, 0x5f, 0x91, 0x1a, 0xbb, 0x57, 0xce, 0x59, 0x19, 0xf9, 0x26, 0x20,
+    0xee, 0xba, 0x0c, 0xa4, 0xf3, 0xd2, 0xd3, 0x3f, 0x40, 0xe9, 0x6e, 0x52, 0x22, 0x81, 0xc4, 0x6f, 0x25, 0x6e, 0x16,
+    0x73, 0x3f, 0x29, 0x5e, 0xe8, 0x47, 0x93, 0xa3, 0xe6, 0xcb, 0xe5, 0xb4, 0x61, 0x1e, 0x80, 0xf2, 0x6f, 0xc7, 0x9b,
+    0xd9, 0x85, 0xf6, 0x3d, 0x5d, 0x00, 0x82, 0x16, 0x87, 0x61, 0x2d, 0xb8, 0x4f, 0x08, 0xb2, 0xe4, 0xf5, 0x93, 0x55,
+    0x53, 0xea, 0x7e, 0x01, 0xa6, 0x66, 0xf1, 0xfc, 0xfd, 0x7f, 0xeb, 0xd3, 0x2d, 0x42, 0x42, 0xd9, 0x19, 0x3b, 0x25,
+    0x3c, 0x72, 0x3e, 0xed, 0x26, 0x12, 0x33, 0x00, 0x86, 0x02, 0xad, 0x1e, 0xd2, 0xc5, 0xc8, 0x78, 0xe0, 0xa7, 0xd7,
+    0x8d, 0x47, 0x16, 0xe1, 0xa3, 0xde, 0x80, 0xaf, 0x2b, 0xd6, 0xea, 0xa4, 0xaf, 0xd4, 0x22, 0x1d, 0x47, 0x0c, 0x80,
+    0xbb, 0x64, 0xd6, 0x31, 0x67, 0x86, 0xde, 0x46, 0xb2, 0x75, 0xab, 0x69, 0xcc, 0xd7, 0x54, 0x14, 0xfc, 0xf4, 0x8f,
+    0xdf, 0x24, 0x59, 0x80, 0x91, 0x77, 0x81, 0xa1, 0x25, 0xf2, 0xe5, 0x1d, 0xd2, 0x32, 0x0d, 0x37, 0x87, 0xcb, 0x28,
+    0x53, 0x23, 0xf2, 0xfb, 0x35, 0x68, 0xd3, 0x27, 0xdb, 0x5a, 0xb1, 0x55, 0xfd, 0x7d, 0x3c, 0xfd, 0x58, 0x37, 0x9e,
+    0x07, 0xa7, 0xe7, 0xf5, 0x3e, 0xdf, 0xe6, 0x10, 0xdb};
 
 // Function to set up the test mechanism
 static void setup_mechanism(CK_MECHANISM *mechanism, CK_MECHANISM_TYPE mech_type, void *parameter,
@@ -84,117 +101,124 @@ static CK_RV mgf1(const unsigned char *seed, size_t seed_len, unsigned char *mas
 // reconstructs M' = (8 zero bytes || mHash || salt), computes H', and compares H' with H.
 static CK_RV verify_pss_encoding(CK_BYTE_PTR encoded, CK_ULONG encoded_len, CK_BYTE_PTR message, CK_ULONG message_len,
                                  mbedtls_md_type_t md_type, mbedtls_md_type_t mgf_md_type, CK_ULONG salt_len,
-                                 CK_BBOOL is_message_prehashed) {
-  // Verify trailer byte 0xbc.
-  if (encoded_len < 2)
-    return CKR_FUNCTION_FAILED;
-  if (encoded[encoded_len - 1] != 0xbc)
+                                 CK_BYTE_PTR pModulus, CK_ULONG ulModulusLen, CK_BBOOL is_message_prehashed) {
+  /* ---------- 1. trailer byte ---------- */
+  if (encoded_len < 2 || encoded[encoded_len - 1] != 0xBC)
     return CKR_FUNCTION_FAILED;
 
+  /* ---------- 2. Get digest ---------- */
   const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(md_type);
-  const mbedtls_md_info_t *dummy = mbedtls_md_info_from_type(mgf_md_type);
-  if (md_info == NULL || dummy == NULL)
+  const mbedtls_md_info_t *mgf_info = mbedtls_md_info_from_type(mgf_md_type);
+  if (md_info == NULL || mgf_info == NULL)
     return CKR_FUNCTION_FAILED;
 
-  size_t hash_len = mbedtls_md_get_size(md_info);
+  const size_t hash_len = mbedtls_md_get_size(md_info);
   if (encoded_len < hash_len + 2)
     return CKR_FUNCTION_FAILED;
 
-  // Compute maskedDB length.
+  /* ---------- 3. modBits / emBits ---------- */
+  mbedtls_mpi modulus_mpi;
+  mbedtls_mpi_init(&modulus_mpi);
+  if (mbedtls_mpi_read_binary(&modulus_mpi, pModulus, ulModulusLen) != 0) {
+    mbedtls_mpi_free(&modulus_mpi);
+    return CKR_FUNCTION_FAILED;
+  }
+  const CK_ULONG modBits = mbedtls_mpi_bitlen(&modulus_mpi);
+  mbedtls_mpi_free(&modulus_mpi);
+
+  const CK_ULONG emBits = modBits - 1; /* RFC 8017 §9.1.1 */
+  const CK_ULONG expected_emLen = (emBits + 7) / 8;
+  if (encoded_len != expected_emLen)
+    return CKR_VENDOR_DEFINED; /* EM 长度不符 */
+
+  /* ---------- 4. Split EM ---------- */
   CK_ULONG dbLen = encoded_len - hash_len - 1;
   if (dbLen < salt_len + 1)
     return CKR_FUNCTION_FAILED;
 
-  CK_BYTE *maskedDB = encoded;  // first dbLen bytes
-  CK_BYTE *H = encoded + dbLen; // next hash_len bytes
+  CK_BYTE *maskedDB = encoded;  /* [0 .. dbLen‑1]   */
+  CK_BYTE *H = encoded + dbLen; /* [dbLen .. dbLen+hash_len‑1] */
 
-  // Unmask maskedDB: compute mask = MGF1(H, dbLen) then DB = maskedDB XOR mask.
+  /* ---------- 5. dbMask and decode ---------- */
   unsigned char *mask = ck_malloc(dbLen);
-  if (mask == NULL)
+  if (!mask)
     return CKR_HOST_MEMORY;
+
   CK_RV rv = mgf1(H, hash_len, mask, dbLen, mgf_md_type);
   if (rv != CKR_OK) {
     ck_free(mask);
     return rv;
   }
+
   unsigned char *DB = ck_malloc(dbLen);
-  if (DB == NULL) {
+  if (!DB) {
     ck_free(mask);
     return CKR_HOST_MEMORY;
   }
-  for (CK_ULONG i = 0; i < dbLen; i++) {
+  for (CK_ULONG i = 0; i < dbLen; i++)
     DB[i] = maskedDB[i] ^ mask[i];
-  }
   ck_free(mask);
 
-  // (If modulus bit-length is not a multiple of 8, extra bits of DB[0] should be cleared here.
-  // For simplicity, we assume the modulus length is a multiple of 8.)
+  /* ---------- 6. Clear leftmost bits ---------- */
+  const unsigned leftBits = (unsigned)(8 * encoded_len - emBits); /* 1‑7 或 0 */
+  if (leftBits)
+    DB[0] &= 0xFFu >> leftBits;
 
-  // Verify DB structure: DB = PS || 0x01 || salt, where PS should be all 0.
+  /* ---------- 7. Check DB = PS || 0x01 || salt ---------- */
   CK_ULONG psLen = dbLen - salt_len - 1;
   for (CK_ULONG i = 0; i < psLen; i++) {
     if (DB[i] != 0x00) {
-      printf("verify_pss_encoding: PS not all zero at position %lu (value 0x%02x)\n", (unsigned long)i, DB[i]);
       ck_free(DB);
       return CKR_VENDOR_DEFINED;
     }
   }
   if (DB[psLen] != 0x01) {
-    printf("verify_pss_encoding: separator 0x01 not found at position %lu, found 0x%02x instead\n",
-           (unsigned long)psLen, DB[psLen]);
     ck_free(DB);
     return CKR_VENDOR_DEFINED;
   }
-  unsigned char *extracted_salt = DB + psLen + 1; // salt
+  unsigned char *extracted_salt = DB + psLen + 1;
 
-  // Compute message hash mHash.
+  /* ---------- 8. Compute mHash ---------- */
   unsigned char mHash[64] = {0};
   if (is_message_prehashed) {
     if (message_len != hash_len) {
-      printf("verify_pss_encoding: Prehashed message length %lu != expected hash length %lu\n",
-             (unsigned long)message_len, (unsigned long)hash_len);
       ck_free(DB);
       return CKR_VENDOR_DEFINED;
     }
     memcpy(mHash, message, hash_len);
   } else {
-    int ret = mbedtls_md(md_info, message, message_len, mHash);
-    if (ret != 0) {
-      printf("verify_pss_encoding: mbedtls_md (compute mHash) failed with error 0x%08x\n", (unsigned int)ret);
+    if (mbedtls_md(md_info, message, message_len, mHash) != 0) {
       ck_free(DB);
       return CKR_FUNCTION_FAILED;
     }
   }
 
-  // Construct M' = (8 zero bytes || mHash || extracted salt).
-  const CK_ULONG k = 8;
-  CK_ULONG mprime_len = k + hash_len + salt_len;
+  /* ---------- 9. Compute H' ---------- */
+  const CK_ULONG mprime_len = 8 + hash_len + salt_len;
   unsigned char *M_prime = ck_malloc(mprime_len);
-  if (M_prime == NULL) {
+  if (!M_prime) {
     ck_free(DB);
     return CKR_HOST_MEMORY;
   }
-  memset(M_prime, 0x00, k);
-  memcpy(M_prime + k, mHash, hash_len);
-  memcpy(M_prime + k + hash_len, extracted_salt, salt_len);
 
-  // Compute H' = Hash(M').
-  unsigned char H_prime[64] = {0};
-  int ret = mbedtls_md(md_info, M_prime, mprime_len, H_prime);
-  if (ret != 0) {
-    printf("verify_pss_encoding: mbedtls_md (compute H_prime) failed with error 0x%08x\n", (unsigned int)ret);
+  memset(M_prime, 0, 8); /* 0x00×8            */
+  memcpy(M_prime + 8, mHash, hash_len);
+  memcpy(M_prime + 8 + hash_len, extracted_salt, salt_len);
+
+  unsigned char H_prime[64];
+  if (mbedtls_md(md_info, M_prime, mprime_len, H_prime) != 0) {
     ck_free(M_prime);
     ck_free(DB);
     return CKR_FUNCTION_FAILED;
   }
   ck_free(M_prime);
 
-  // Compare computed H' with the H field from the encoding.
+  /* ---------- 10. Compare H ---------- */
   if (memcmp(H, H_prime, hash_len) != 0) {
-    printf("verify_pss_encoding: H mismatch\n");
     ck_free(DB);
     return CKR_VENDOR_DEFINED;
   }
+
   ck_free(DB);
   return CKR_OK;
 }
@@ -213,7 +237,7 @@ static void test_x509_padding(void **state) {
   setup_mechanism(&mechanism, CKM_RSA_X_509, NULL, 0);
 
   // Test size estimation (pPreparedData = NULL)
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256);
 
@@ -221,7 +245,7 @@ static void test_x509_padding(void **state) {
   output_len = sizeof(output);
 
   // Test actual padding with buffer larger than data
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, output, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256);
 
@@ -244,13 +268,15 @@ static void test_x509_padding(void **state) {
   output_len = sizeof(small_output);
 
   // Test another valid padding operation
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, small_output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, small_output,
+                                 &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256);
 
   // Test with too small buffer
   output_len = 128; // Half the required size for RSA-2048
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, small_output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, small_output,
+                                 &output_len);
   assert_int_equal(rv, CKR_BUFFER_TOO_SMALL);
 }
 
@@ -268,7 +294,7 @@ static void test_pkcs1_v1_5_direct_padding(void **state) {
   setup_mechanism(&mechanism, CKM_RSA_PKCS, NULL, 0);
 
   // Test size estimation (pPreparedData = NULL)
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256); // 2048 bits = 256 bytes
 
@@ -276,7 +302,7 @@ static void test_pkcs1_v1_5_direct_padding(void **state) {
   output_len = sizeof(output);
 
   // Test actual padding
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, output, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256);
 
@@ -300,7 +326,7 @@ static void test_pkcs1_v1_5_direct_padding(void **state) {
 
   // Test with output buffer too small
   output_len = 128; // Too small for 2048-bit key
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, output, &output_len);
   assert_int_equal(rv, CKR_BUFFER_TOO_SMALL);
 }
 
@@ -318,7 +344,7 @@ static void test_pkcs1_v1_5_sha1_padding(void **state) {
   setup_mechanism(&mechanism, CKM_SHA1_RSA_PKCS, NULL, 0);
 
   // Test size estimation (pPreparedData = NULL)
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256); // 2048 bits = 256 bytes
 
@@ -326,7 +352,7 @@ static void test_pkcs1_v1_5_sha1_padding(void **state) {
   output_len = sizeof(output);
 
   // Test actual padding
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, output, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256);
 
@@ -424,7 +450,7 @@ static void test_pkcs1_v1_5_sha256_padding(void **state) {
   setup_mechanism(&mechanism, CKM_SHA256_RSA_PKCS, NULL, 0);
 
   // Test size estimation (pPreparedData = NULL)
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256); // 2048 bits = 256 bytes
 
@@ -432,7 +458,7 @@ static void test_pkcs1_v1_5_sha256_padding(void **state) {
   output_len = sizeof(output);
 
   // Test actual padding
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, output, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256);
 
@@ -541,17 +567,19 @@ static void test_pss_padding(void **state) {
   setup_mechanism(&mechanism, CKM_RSA_PKCS_PSS, &pss_params, sizeof(pss_params));
 
   // Test size estimation when pPreparedData is NULL.
-  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), modulus, sizeof(modulus),
+                                 algorithm_type, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
 
   // Reset output length and perform the actual padding.
   output_len = sizeof(output);
-  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), modulus, sizeof(modulus),
+                                 algorithm_type, output, &output_len);
   assert_int_equal(rv, CKR_OK);
 
   // Verify the PSS encoding structure for the prehashed case.
   rv = verify_pss_encoding(output, output_len, message_hash, sizeof(message_hash), MBEDTLS_MD_SHA256, MBEDTLS_MD_SHA256,
-                           pss_params.sLen, CK_TRUE);
+                           pss_params.sLen, modulus, sizeof(modulus), CK_TRUE);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output[output_len - 1], 0xbc);
   printf("PSS encoding (prehashed) verification passed\n");
@@ -560,11 +588,12 @@ static void test_pss_padding(void **state) {
   CK_BYTE output2[256] = {0};
   CK_ULONG output_len2 = sizeof(output2);
   setup_mechanism(&mechanism, CKM_SHA256_RSA_PKCS_PSS, &pss_params, sizeof(pss_params));
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, output2, &output_len2);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, modulus, sizeof(modulus), algorithm_type,
+                                 output2, &output_len2);
   assert_int_equal(rv, CKR_OK);
 
   rv = verify_pss_encoding(output2, output_len2, test_data, test_data_len, MBEDTLS_MD_SHA256, MBEDTLS_MD_SHA256,
-                           pss_params.sLen, CK_FALSE);
+                           pss_params.sLen, modulus, sizeof(modulus), CK_FALSE);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output2[output_len2 - 1], 0xbc);
   printf("PSS encoding (raw message) verification passed\n");
@@ -596,7 +625,8 @@ static void test_pss_different_salt_lengths(void **state) {
 
   // Test with zero salt length
   setup_mechanism(&mechanism, CKM_RSA_PKCS_PSS, &pss_params, sizeof(pss_params));
-  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), modulus, sizeof(modulus),
+                                 algorithm_type, output, &output_len);
   assert_int_equal(rv, CKR_OK);
 
   // Test with maximum salt length
@@ -604,7 +634,8 @@ static void test_pss_different_salt_lengths(void **state) {
   memset(output, 0, sizeof(output));
   output_len = sizeof(output);
 
-  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), modulus, sizeof(modulus),
+                                 algorithm_type, output, &output_len);
   assert_int_equal(rv, CKR_OK);
 }
 
@@ -621,21 +652,21 @@ static void test_different_rsa_key_sizes(void **state) {
 
   // Test with 2048-bit key
   CK_BYTE algorithm_type = PIV_ALG_RSA_2048;
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256); // 2048 bits = 256 bytes
 
   // Test with 3072-bit key
   algorithm_type = PIV_ALG_RSA_3072;
   output_len = 512;
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 384); // 3072 bits = 384 bytes
 
   // Test with 4096-bit key
   algorithm_type = PIV_ALG_RSA_4096;
   output_len = 512;
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 512); // 4096 bits = 512 bytes
 }
@@ -652,12 +683,12 @@ static void test_error_conditions(void **state) {
 
   // Test invalid mechanism
   setup_mechanism(&mechanism, CKM_VENDOR_DEFINED, NULL, 0);
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
   assert_int_equal(rv, CKR_MECHANISM_INVALID);
 
   // Test PSS with missing parameters
   setup_mechanism(&mechanism, CKM_RSA_PKCS_PSS, NULL, 0);
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
   assert_int_equal(rv, CKR_ARGUMENTS_BAD);
 
   // Test PSS with invalid MGF
@@ -665,14 +696,16 @@ static void test_error_conditions(void **state) {
                                        .mgf = 99, // Invalid MGF
                                        .sLen = 32};
   setup_mechanism(&mechanism, CKM_RSA_PKCS_PSS, &pss_params, sizeof(pss_params));
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, output, &output_len);
-  assert_int_equal(rv, CKR_ARGUMENTS_BAD);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, modulus, sizeof(modulus), algorithm_type, NULL,
+                                 &output_len);
+  assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
 
   // Test PSS with invalid hash algorithm
   pss_params.mgf = 1;                      // Valid MGF
   pss_params.hashAlg = CKM_VENDOR_DEFINED; // Invalid hash
   setup_mechanism(&mechanism, CKM_RSA_PKCS_PSS, &pss_params, sizeof(pss_params));
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, modulus, sizeof(modulus), algorithm_type, NULL,
+                                 &output_len);
   assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
 }
 

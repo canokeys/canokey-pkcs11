@@ -1,5 +1,6 @@
 #include "rsa_utils.h"
-#include "logging.h"      // For logging macros
+#include "logging.h" // For logging macros
+#include "mbedtls/bignum.h"
 #include "pcsc_backend.h" // For ck_malloc and ck_free
 #include "pkcs11.h"
 #include <mbedtls/ctr_drbg.h>
@@ -106,7 +107,7 @@ static CK_RV pkcs1_v1_5_pad(CK_BYTE_PTR input, CK_ULONG input_len, CK_BYTE_PTR o
  * function is the same (i.e. md_type == mgf_md_type).
  *
  * The encoding is performed as follows:
- *   1. Compute mHash = Hash(mInput).
+ *   1. Compute mHash = Hash(mInput). Done outside this function.
  *   2. Generate a random salt of length sLen.
  *   3. Construct M' = 0x00 00 00 00 00 00 00 00 || mHash || salt.
  *   4. Compute H = Hash(M').
@@ -117,129 +118,119 @@ static CK_RV pkcs1_v1_5_pad(CK_BYTE_PTR input, CK_ULONG input_len, CK_BYTE_PTR o
  *      the encoded value is less than the modulus.
  *   8. Output EM = maskedDB || H || 0xbc.
  *
- * @param mInput      Pointer to the raw message to be encoded.
- * @param mInputLen   Length of the raw message.
- * @param modBits     RSA modulus size in bits.
- * @param sLen        Length of the salt in bytes.
- * @param md_type     Message digest type (for both hashing and MGF1).
- * @param ctr_drbg    Pointer to an initialized CTR_DRBG context.
- * @param output      Pointer to the buffer that will receive the encoded message (EM).
- * @param output_len  On input, the size of the output buffer; on output, the size of EM.
+ * @param mHash        Pointer to the digest of the raw message.
+ * @param mHashLen     Length of the message digest.
+ * @param pModulus     RSA modulus.
+ * @param ulModulusLen Length of the modulus.
+ * @param sLen         Length of the salt in bytes.
+ * @param mdType       Message digest type (for both hashing and MGF1).
+ * @param ctrDrbg      Pointer to an initialized CTR_DRBG context.
+ * @param out          Pointer to the buffer that will receive the encoded message (EM).
+ * @param outLen       On input, the size of the output buffer; on output, the size of EM.
  *
  * @return            CKR_OK on success; otherwise an error code.
  */
-static CK_RV pss_encode(CK_BYTE_PTR mInput, CK_ULONG mInputLen, CK_ULONG modBits, CK_ULONG sLen,
-                        mbedtls_md_type_t md_type, mbedtls_ctr_drbg_context *ctr_drbg, CK_BYTE_PTR output,
-                        CK_ULONG_PTR output_len) {
-  // Compute modulus length in bytes.
-  CK_ULONG emLen = (modBits + 7) / 8;
-  if (*output_len < emLen)
-    return CKR_BUFFER_TOO_SMALL;
-
-  // Get message digest info and expected hash size.
-  const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(md_type);
-  CNK_ENSURE_NONNULL(md_info);
-
-  // Ensure the output buffer is large enough to hold H, salt and delimiters.
-  if (emLen < mInputLen + sLen + 2)
+static CK_RV pss_encode(CK_BYTE_PTR mHash, CK_ULONG mHashLen, CK_BYTE_PTR pModulus, CK_ULONG ulModulusLen,
+                        CK_ULONG sLen, mbedtls_md_type_t mdType, mbedtls_ctr_drbg_context *ctrDrbg, CK_BYTE_PTR out,
+                        CK_ULONG *outLen) {
+  const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(mdType);
+  if (md_info == NULL)
     return CKR_MECHANISM_PARAM_INVALID;
 
-  CNK_DEBUG("PSS Encode: emBits=%lu, emLen=%lu, mInputLen=%lu, sLen=%lu", modBits, emLen, mInputLen, sLen);
+  const size_t hLen = mbedtls_md_get_size(md_info);
+  if (mHashLen != hLen)
+    return CKR_DATA_LEN_RANGE;
+  if (sLen > hLen)
+    return CKR_MECHANISM_PARAM_INVALID; /* FIPS 186‑4 */
 
-  // Step 1: Generate a random salt of length sLen.
-  unsigned char *salt = (unsigned char *)ck_malloc(sLen);
-  if (salt == NULL)
+  /* emBits = modBits - 1  ——  RFC 8017 §9.1.1 */
+  mbedtls_mpi modulus_mpi;
+  mbedtls_mpi_init(&modulus_mpi);
+  mbedtls_mpi_read_binary(&modulus_mpi, pModulus, ulModulusLen);
+  const CK_ULONG modBits = mbedtls_mpi_bitlen(&modulus_mpi);
+  const CK_ULONG emBits = modBits - 1;
+  const CK_ULONG emLen = (emBits + 7) / 8;
+
+  if (*outLen < emLen)
+    return CKR_BUFFER_TOO_SMALL;
+  if (emLen < hLen + sLen + 2)
+    return CKR_MECHANISM_PARAM_INVALID;
+
+  /* -------- Generate salt -------- */
+  unsigned char *salt = ck_malloc(sLen);
+  if (!salt)
     return CKR_HOST_MEMORY;
-  if (mbedtls_ctr_drbg_random(ctr_drbg, salt, sLen) != 0) {
+  if (mbedtls_ctr_drbg_random(ctrDrbg, salt, sLen) != 0) {
     ck_free(salt);
     return CKR_FUNCTION_FAILED;
   }
 
-  // Step 2: Construct M' = (8 zero bytes) || mInput || salt.
-  const size_t k = 8; // 8-byte zero prefix.
-  unsigned char *M_prime = (unsigned char *)ck_malloc(k + mInputLen + sLen);
-  if (M_prime == NULL) {
-    ck_free(salt);
-    return CKR_HOST_MEMORY;
-  }
-  memset(M_prime, 0x00, k);
-  memcpy(M_prime + k, mInput, mInputLen);
-  memcpy(M_prime + k + mInputLen, salt, sLen);
+  /* -------- H = Hash( 0x00×8 || mHash || salt ) -------- */
+  unsigned char M_prime[8 + 64 + 64]; /* 最大 8+64+64 = 136B */
+  memset(M_prime, 0, 8);
+  memcpy(M_prime + 8, mHash, hLen);
+  memcpy(M_prime + 8 + hLen, salt, sLen);
 
-  // Step 3: Compute H = Hash(M').
-  unsigned char H[64] = {0}; // Buffer for H.
-  if (mbedtls_md(md_info, M_prime, k + mInputLen + sLen, H) != 0) {
+  unsigned char H[64]; /* hLen ≤ 64 */
+  if (mbedtls_md(md_info, M_prime, 8 + hLen + sLen, H) != 0) {
     ck_free(salt);
-    ck_free(M_prime);
     return CKR_FUNCTION_FAILED;
   }
-  ck_free(M_prime);
 
-  // Step 4: Construct DB = PS || 0x01 || salt.
-  CK_ULONG dbLen = emLen - mInputLen - 1;
-  CK_ULONG psLen = dbLen - sLen - 1;
+  /* -------- DB = PS || 0x01 || salt -------- */
+  const CK_ULONG dbLen = emLen - hLen - 1;
+  const CK_ULONG psLen = dbLen - sLen - 1;
 
-  CNK_DEBUG("PSS Encode: dbLen=%lu, psLen=%lu", dbLen, psLen);
-
-  unsigned char *DB = (unsigned char *)ck_malloc(dbLen);
-  if (DB == NULL) {
+  unsigned char *DB = ck_malloc(dbLen);
+  if (!DB) {
     ck_free(salt);
     return CKR_HOST_MEMORY;
   }
-  memset(DB, 0x00, psLen); // PS: all-zero padding.
-  DB[psLen] = 0x01;        // 0x01 separator.
+  memset(DB, 0, psLen);
+  DB[psLen] = 0x01;
   memcpy(DB + psLen + 1, salt, sLen);
   ck_free(salt);
 
-  // Step 5: Generate the mask dbMask using MGF1 on H.
-  // Since md_type == mgf_md_type, we use md_info for MGF1.
-  unsigned char *dbMask = (unsigned char *)ck_malloc(dbLen);
-  if (dbMask == NULL) {
+  /* -------- dbMask = MGF1(H, dbLen) -------- */
+  unsigned char *dbMask = ck_malloc(dbLen);
+  if (!dbMask) {
     ck_free(DB);
     return CKR_HOST_MEMORY;
   }
-  size_t mgf_hash_len = mbedtls_md_get_size(md_info);
-  CK_ULONG iterations = (dbLen + mgf_hash_len - 1) / mgf_hash_len;
-  for (CK_ULONG c = 0; c < iterations; c++) {
-    unsigned char counter[4];
-    counter[0] = (unsigned char)((c >> 24) & 0xFF);
-    counter[1] = (unsigned char)((c >> 16) & 0xFF);
-    counter[2] = (unsigned char)((c >> 8) & 0xFF);
-    counter[3] = (unsigned char)(c & 0xFF);
-    unsigned char mgf_input[64 + 4]; // Buffer: H followed by counter.
-    memcpy(mgf_input, H, mgf_hash_len);
-    memcpy(mgf_input + mgf_hash_len, counter, 4);
-    unsigned char mgf_hash[64];
-    if (mbedtls_md(md_info, mgf_input, mgf_hash_len + 4, mgf_hash) != 0) {
-      ck_free(DB);
-      ck_free(dbMask);
-      return CKR_FUNCTION_FAILED;
-    }
-    CK_ULONG offset = c * mgf_hash_len;
-    CK_ULONG copy_len = ((offset + mgf_hash_len) <= dbLen) ? mgf_hash_len : dbLen - offset;
-    memcpy(dbMask + offset, mgf_hash, copy_len);
+
+  const CK_ULONG reps = (dbLen + hLen - 1) / hLen;
+  for (CK_ULONG c = 0; c < reps; c++) {
+    unsigned char C[4] = {(unsigned char)(c >> 24), (unsigned char)(c >> 16), (unsigned char)(c >> 8),
+                          (unsigned char)(c)};
+    unsigned char buf[64 + 4]; /* H || C */
+    memcpy(buf, H, hLen);
+    memcpy(buf + hLen, C, 4);
+
+    unsigned char hash[64];
+    mbedtls_md(md_info, buf, hLen + 4, hash);
+
+    const CK_ULONG off = c * hLen;
+    const CK_ULONG clen = (off + hLen <= dbLen) ? hLen : dbLen - off;
+    memcpy(dbMask + off, hash, clen);
   }
-  // Step 6: XOR DB with dbMask to obtain maskedDB.
-  for (CK_ULONG i = 0; i < dbLen; i++) {
+
+  /* maskedDB = DB ⊕ dbMask */
+  for (CK_ULONG i = 0; i < dbLen; i++)
     DB[i] ^= dbMask[i];
-  }
   ck_free(dbMask);
 
-  // Step 7: Clear the leftmost (8*emLen - modBits) bits in maskedDB if necessary.
-  CK_ULONG leftmostBits = 8 * emLen - modBits;
-  if (leftmostBits > 0 && leftmostBits <= 8) {
-    DB[0] &= 0xFF >> leftmostBits;
-  }
+  /* Clear the leftmost (8*emLen - emBits) bits */
+  const unsigned leftBits = 8 * emLen - emBits;
+  DB[0] &= 0xFFu >> leftBits;
 
-  // Step 8: Construct the final encoded message EM = maskedDB || H || 0xbc.
-  memcpy(output, DB, dbLen);
-  memcpy(output + dbLen, H, mgf_hash_len);
-  output[emLen - 1] = 0xbc;
-  *output_len = emLen;
+  /* -------- EM = maskedDB || H || 0xBC -------- */
+  memcpy(out, DB, dbLen);
+  memcpy(out + dbLen, H, hLen);
+  out[emLen - 1] = 0xBC;
+  *outLen = emLen;
+
+  mbedtls_platform_zeroize(DB, dbLen);
   ck_free(DB);
-
-  CNK_DEBUG("Encoded EM");
-
   return CKR_OK;
 }
 
@@ -362,57 +353,60 @@ static CK_RV get_md_type_from_mgf(CK_RSA_PKCS_MGF_TYPE mgf_hash, mbedtls_md_type
 }
 
 // Helper function to prepare data for RSA signing based on mechanism
-CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pData, CK_ULONG ulDataLen,
-                                CK_BYTE algorithm_type, CK_BYTE_PTR pPreparedData, CK_ULONG_PTR pulPreparedDataLen) {
-  CNK_LOG_FUNC(cnk_prepare_rsa_sign_data, " algorithm_type: %d", algorithm_type);
+CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR pMechanism, CK_BYTE_PTR pData, CK_ULONG ulDataLen,
+                                CK_BYTE_PTR pModulus, CK_ULONG ulModulusLen, CK_BYTE bAlgorithmType,
+                                CK_BYTE_PTR pPreparedData, CK_ULONG_PTR pulPreparedDataLen) {
+
+#define HANDLE_FIRST_CALL()                                                                                            \
+  if (!pPreparedData) {                                                                                                \
+    *pulPreparedDataLen = ulModulusBytes;                                                                              \
+    CNK_RET_OK;                                                                                                        \
+  }                                                                                                                    \
+  if (*pulPreparedDataLen < ulModulusBytes)                                                                            \
+    CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Buffer too small");                                                              \
+  *pulPreparedDataLen = ulModulusBytes;
+
+  CNK_LOG_FUNC(cnk_prepare_rsa_sign_data, " algorithm_type: %d", bAlgorithmType);
 
   CK_RV rv = CKR_OK;
   mbedtls_md_type_t md_type;
   size_t hash_len = 0;
-  CK_MECHANISM_TYPE mech_type = mechanism_ptr->mechanism;
+  CK_MECHANISM_TYPE mech_type = pMechanism->mechanism;
   unsigned char hash[64] = {0}; // Large enough for any hash output
   CK_MECHANISM_TYPE hash_type = CKM_VENDOR_DEFINED;
   CK_BBOOL need_hashing = CK_FALSE;
 
   // Get modulus size from algorithm_type
-  CK_ULONG modBytes;
-  switch (algorithm_type) {
+  CK_ULONG ulModulusBytes;
+  switch (bAlgorithmType) {
   case PIV_ALG_RSA_2048:
-    modBytes = 2048 / 8;
+    ulModulusBytes = 2048 / 8;
     break;
   case PIV_ALG_RSA_3072:
-    modBytes = 3072 / 8;
+    ulModulusBytes = 3072 / 8;
     break;
   case PIV_ALG_RSA_4096:
-    modBytes = 4096 / 8;
+    ulModulusBytes = 4096 / 8;
     break;
   default:
     CNK_ERROR("Unknown RSA key size");
     CNK_RETURN(CKR_ARGUMENTS_BAD, "Unknown RSA key size");
   }
-  CNK_DEBUG("Using modulus size: %lu bits", modBytes * 8);
-
-  if (!pPreparedData) {
-    *pulPreparedDataLen = modBytes;
-    CNK_RET_OK;
-  }
-
-  if (*pulPreparedDataLen < modBytes)
-    CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Buffer too small");
-
-  *pulPreparedDataLen = modBytes;
+  CNK_DEBUG("Using modulus size: %lu bits", ulModulusBytes * 8);
 
   // For CKM_RSA_X_509, compute output length based on key size and pad with leading zeros
   if (mech_type == CKM_RSA_X_509) {
+    HANDLE_FIRST_CALL();
+
     // Zero out the buffer first
-    memset(pPreparedData, 0, modBytes);
+    memset(pPreparedData, 0, ulModulusBytes);
 
     // Copy data to the right side of the buffer (left-pad with zeros)
-    if (ulDataLen <= modBytes) {
-      memcpy(pPreparedData + (modBytes - ulDataLen), pData, ulDataLen);
+    if (ulDataLen <= ulModulusBytes) {
+      memcpy(pPreparedData + (ulModulusBytes - ulDataLen), pData, ulDataLen);
     } else {
       // Data is larger than modulus - only use rightmost bytes
-      memcpy(pPreparedData, pData + (ulDataLen - modBytes), modBytes);
+      memcpy(pPreparedData, pData + (ulDataLen - ulModulusBytes), ulModulusBytes);
     }
 
     CNK_RET_OK;
@@ -451,6 +445,9 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pDat
       mech_type == CKM_SHA384_RSA_PKCS || mech_type == CKM_SHA512_RSA_PKCS || mech_type == CKM_SHA224_RSA_PKCS ||
       mech_type == CKM_SHA3_256_RSA_PKCS || mech_type == CKM_SHA3_384_RSA_PKCS || mech_type == CKM_SHA3_512_RSA_PKCS ||
       mech_type == CKM_SHA3_224_RSA_PKCS) {
+
+    HANDLE_FIRST_CALL();
+
     // Apply padding to hashed data or raw data
     if (need_hashing) {
       CNK_DEBUG("Applying PKCS#1 v1.5 padding to hashed data (%lu bytes)", hash_len);
@@ -470,8 +467,10 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pDat
       mech_type == CKM_SHA3_384_RSA_PKCS_PSS || mech_type == CKM_SHA3_512_RSA_PKCS_PSS ||
       mech_type == CKM_SHA3_224_RSA_PKCS_PSS) {
 
+    CNK_ENSURE_NONNULL(pModulus);
+
     // PSS padding requires specific parameters
-    CK_RSA_PKCS_PSS_PARAMS *pss_params = mechanism_ptr->pParameter;
+    CK_RSA_PKCS_PSS_PARAMS *pss_params = pMechanism->pParameter;
     CNK_ENSURE_NONNULL(pss_params);
 
     mbedtls_md_type_t pss_hash_type;
@@ -482,10 +481,13 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pDat
     } else {
       CNK_ENSURE_EQUAL_REASON(hash_len, ulDataLen, "Hash length does not match data length");
     }
+
     // Get MGF hash algorithm
     CNK_ENSURE_OK(get_md_type_from_mgf(pss_params->mgf, &pss_hash_type));
     if (need_hashing)
       CNK_ENSURE_EQUAL_REASON(md_type, pss_hash_type, "MD type does not match MGF hash type");
+
+    HANDLE_FIRST_CALL();
 
     // We need random data for the salt in PSS padding
     mbedtls_entropy_context entropy;
@@ -510,14 +512,14 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR mechanism_ptr, CK_BYTE_PTR pDat
     if (need_hashing) {
       // For SHAxxx_RSA_PKCS_PSS mechanisms, we've already hashed the data
       CNK_DEBUG("Applying PSS encoding to hashed data (%lu bytes)", hash_len);
-      rv = pss_encode(hash, hash_len, modBytes * 8, pss_params->sLen, md_type, &ctr_drbg, pPreparedData,
+      rv = pss_encode(hash, hash_len, pModulus, ulModulusLen, pss_params->sLen, md_type, &ctr_drbg, pPreparedData,
                       pulPreparedDataLen);
     } else if (mech_type == CKM_RSA_PKCS_PSS) {
       // For CKM_RSA_PKCS_PSS, the input data is already a hash value
       CNK_DEBUG("Applying PSS encoding to input hash value (%lu bytes)", ulDataLen);
 
-      rv = pss_encode(pData, ulDataLen, modBytes * 8, pss_params->sLen, pss_hash_type, &ctr_drbg, pPreparedData,
-                      pulPreparedDataLen);
+      rv = pss_encode(pData, ulDataLen, pModulus, ulModulusLen, pss_params->sLen, pss_hash_type, &ctr_drbg,
+                      pPreparedData, pulPreparedDataLen);
     } else {
       // This case should not be reached with the current logic
       CNK_ERROR("Unexpected code path in PSS encoding");

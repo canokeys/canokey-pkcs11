@@ -299,7 +299,7 @@ CK_RV cnk_get_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
   CK_BYTE algorithm_type;
 
   if (obj_class == CKO_PUBLIC_KEY || obj_class == CKO_PRIVATE_KEY) {
-    CK_RV rv = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type);
+    CK_RV rv = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, NULL, NULL);
     if (rv != CKR_OK) {
       CNK_DEBUG("Failed to get metadata for PIV tag 0x%02X: %lu", piv_tag, rv);
       // Continue anyway, we'll use default values

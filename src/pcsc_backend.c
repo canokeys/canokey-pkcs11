@@ -1030,13 +1030,18 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   return CKR_OK;
 }
 
-CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm_type) {
+CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm_type, CK_BYTE_PTR modulus_ptr,
+                       CK_ULONG_PTR modulus_len_ptr) {
   SCARDHANDLE hCard;
   CK_RV rv;
 
   // Initialize output parameters
   if (algorithm_type == NULL)
     CNK_RETURN(CKR_FUNCTION_FAILED, "algorithm_type is NULL");
+
+  // If modulus is requested, ensure the length pointer is provided
+  if (modulus_ptr != NULL && modulus_len_ptr == NULL)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "modulus_len_ptr is NULL when modulus_ptr is provided");
 
   // Connect to the card for this operation
   rv = cnk_connect_and_select_canokey(slotID, &hCard);
@@ -1220,8 +1225,61 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
     case 0x04: // Public key encoding
       if (length > 0) {
         CNK_DEBUG("Public key data present, length: %lu bytes", length);
-        // This contains the encoded public key
-        // We don't need to process this for CKA_KEY_TYPE determination
+
+        /* Walk the TLVs inside the value --------------------------------- */
+        CK_ULONG vpos = 0; /* cursor inside the value buffer   */
+        while (vpos < length) {
+
+          /* ---- read inner tag --------------------------------------- */
+          CK_BYTE itag = data[pos + vpos++];
+          if (vpos >= length)
+            break; /* malformed */
+
+          /* ---- read inner length (DER) ------------------------------ */
+          CK_ULONG ilen = 0;
+          CK_BYTE lbyte = data[pos + vpos++];
+          if (lbyte <= 0x7F) {
+            ilen = lbyte;
+          } else if (lbyte == 0x81 && vpos < length) {
+            ilen = data[pos + vpos++];
+          } else if (lbyte == 0x82 && vpos + 1 < length) {
+            ilen = ((CK_ULONG)data[pos + vpos] << 8) | (CK_ULONG)data[pos + vpos + 1];
+            vpos += 2;
+          } else {
+            CNK_ERROR("Bad length in public‑key TLV");
+            cnk_disconnect_card(hCard);
+            return CKR_DEVICE_ERROR;
+          }
+
+          if (vpos + ilen > length) {
+            CNK_ERROR("Truncated public‑key TLV");
+            cnk_disconnect_card(hCard);
+            return CKR_DEVICE_ERROR;
+          }
+
+          /* ---- RSA modulus lives in tag 0x81 ------------------------ */
+          if (itag == 0x81) {
+            /* Let the caller know how big it is … */
+            if (modulus_len_ptr)
+              *modulus_len_ptr = ilen;
+
+            /* …and copy it if a buffer was supplied. ------------------ */
+            if (modulus_ptr) {
+              if (*modulus_len_ptr < ilen) {
+                /* buffer too small – tell caller the size we need */
+                cnk_disconnect_card(hCard);
+                return CKR_BUFFER_TOO_SMALL;
+              }
+              memcpy(modulus_ptr, data + pos + vpos, ilen);
+              CNK_DEBUG("Copied RSA modulus (%lu bytes)", ilen);
+            }
+            /* We found what we needed; no reason to parse further.     */
+            break;
+          }
+
+          /* ---- ECC public point lives in tag 0x86 – ignore for now -- */
+          vpos += ilen; /* advance to next inner TLV        */
+        }
       }
       break;
 
