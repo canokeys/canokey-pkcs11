@@ -1,4 +1,5 @@
 #include "pkcs11_session.h"
+#include "logging.h"
 #include "pcsc_backend.h"
 
 #include <stdlib.h>
@@ -13,11 +14,10 @@ static CNK_PKCS11_MUTEX session_mutex;
 
 // Initialize the session manager
 CK_RV cnk_session_manager_init(void) {
+  CNK_LOG_FUNC(cnk_session_manager_init);
+
   // Initialize the session mutex
-  CK_RV rv = cnk_mutex_create(&session_mutex);
-  if (rv != CKR_OK) {
-    return rv;
-  }
+  CNK_ENSURE_OK(cnk_mutex_create(&session_mutex));
 
   cnk_mutex_lock(&session_mutex);
 
@@ -27,17 +27,19 @@ CK_RV cnk_session_manager_init(void) {
     session_table = (CNK_PKCS11_SESSION **)ck_malloc(session_table_size * sizeof(CNK_PKCS11_SESSION *));
     if (session_table == NULL) {
       cnk_mutex_unlock(&session_mutex);
-      return CKR_HOST_MEMORY;
+      CNK_RETURN(CKR_HOST_MEMORY, "Failed to allocate memory for session table");
     }
     memset(session_table, 0, session_table_size * sizeof(CNK_PKCS11_SESSION *));
   }
 
   cnk_mutex_unlock(&session_mutex);
-  return CKR_OK;
+  CNK_RET_OK;
 }
 
 // Clean up the session manager
 void cnk_session_manager_cleanup(void) {
+  CNK_LOG_FUNC(cnk_session_manager_cleanup);
+
   cnk_mutex_lock(&session_mutex);
 
   if (session_table != NULL) {
@@ -69,15 +71,14 @@ void cnk_session_manager_cleanup(void) {
 static CK_RV resize_session_table(void) {
   // Check if we need to resize (if table is 80% full)
   if (session_count < (session_table_size * 0.8)) {
-    return CKR_OK;
+    CNK_RET_OK;
   }
 
   // Double the size
   CK_ULONG new_size = session_table_size * 2;
   CNK_PKCS11_SESSION **new_table = (CNK_PKCS11_SESSION **)ck_malloc(new_size * sizeof(CNK_PKCS11_SESSION *));
-  if (new_table == NULL) {
-    return CKR_HOST_MEMORY;
-  }
+  if (new_table == NULL)
+    CNK_RETURN(CKR_HOST_MEMORY, "Failed to allocate memory for session table");
 
   // Initialize new table
   memset(new_table, 0, new_size * sizeof(CNK_PKCS11_SESSION *));
@@ -94,7 +95,7 @@ static CK_RV resize_session_table(void) {
   session_table = new_table;
   session_table_size = new_size;
 
-  return CKR_OK;
+  CNK_RET_OK;
 }
 
 // Find a free slot in the session table
@@ -109,23 +110,25 @@ static CK_LONG find_free_slot(void) {
 
 // Open a new session
 CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication, CK_NOTIFY Notify,
-                   CK_SESSION_HANDLE_PTR phSession) {
-  if (phSession == NULL) {
-    return CKR_ARGUMENTS_BAD;
-  }
+                       CK_SESSION_HANDLE_PTR phSession) {
+  CNK_LOG_FUNC(cnk_session_open);
 
-  // Check if the slot ID is valid
-  CK_ULONG i;
-  CK_BBOOL slot_found = CK_FALSE;
-  for (i = 0; i < g_cnk_num_readers; i++) {
-    if (g_cnk_readers[i].slot_id == slotID) {
-      slot_found = CK_TRUE;
-      break;
+  CNK_ENSURE_NONNULL(phSession);
+
+  if (!g_cnk_is_managed_mode) {
+    // Check if the slot ID is valid
+    CK_ULONG i;
+    CK_BBOOL slot_found = CK_FALSE;
+    for (i = 0; i < g_cnk_num_readers; i++) {
+      if (g_cnk_readers[i].slot_id == slotID) {
+        slot_found = CK_TRUE;
+        break;
+      }
     }
-  }
 
-  if (!slot_found) {
-    return CKR_SLOT_ID_INVALID;
+    if (!slot_found) {
+      return CKR_SLOT_ID_INVALID;
+    }
   }
 
   // Check if the flags are valid
@@ -157,6 +160,8 @@ CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplicati
     cnk_mutex_unlock(&session_mutex);
     return CKR_HOST_MEMORY;
   }
+
+  CNK_DEBUG("found free slot: %ld", slot);
 
   // Allocate a new session
   CNK_PKCS11_SESSION *session = (CNK_PKCS11_SESSION *)ck_malloc(sizeof(CNK_PKCS11_SESSION));
@@ -201,11 +206,14 @@ CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplicati
   *phSession = session->handle;
 
   cnk_mutex_unlock(&session_mutex);
-  return CKR_OK;
+
+  CNK_RET_OK;
 }
 
 // Close a session
 CK_RV cnk_session_close(CK_SESSION_HANDLE hSession) {
+  CNK_LOG_FUNC(cnk_session_close);
+
   cnk_mutex_lock(&session_mutex);
 
   // Find the session
@@ -233,7 +241,8 @@ CK_RV cnk_session_close(CK_SESSION_HANDLE hSession) {
   session_count--;
 
   cnk_mutex_unlock(&session_mutex);
-  return CKR_OK;
+
+  CNK_RET_OK;
 }
 
 // Close all sessions for a slot

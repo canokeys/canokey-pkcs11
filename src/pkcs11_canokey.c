@@ -5,8 +5,8 @@
 #include "pcsc_backend.h"
 #include "pkcs11.h"
 
-#include <stdlib.h>
 #include <mbedtls/platform.h>
+#include <stdlib.h>
 
 // Function pointers for memory allocation (global)
 CNK_MALLOC_FUNC g_cnk_malloc_func = malloc;
@@ -20,9 +20,11 @@ SCARDHANDLE g_cnk_scard = 0L;
 static CK_FUNCTION_LIST ck_function_list;
 
 CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
+  CNK_LOG_FUNC(C_CNK_EnableManagedMode);
+
   // Check if the library is already initialized
   if (g_cnk_is_initialized)
-    return CKR_CRYPTOKI_ALREADY_INITIALIZED;
+    CNK_RETURN(CKR_CRYPTOKI_ALREADY_INITIALIZED, "already initialized");
 
   // Check if initialization arguments are provided
   if (pInitArgs != NULL_PTR) {
