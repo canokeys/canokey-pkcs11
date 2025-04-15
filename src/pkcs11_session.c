@@ -155,13 +155,13 @@ CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplicati
   }
 
   // Find a free slot in the session table
-  CK_LONG slot = find_free_slot();
-  if (slot < 0) {
+  CK_LONG sessionIdx = find_free_slot();
+  if (sessionIdx < 0) {
     cnk_mutex_unlock(&session_mutex);
     return CKR_HOST_MEMORY;
   }
 
-  CNK_DEBUG("found free slot: %ld", slot);
+  CNK_DEBUG("found free session index: %ld", sessionIdx);
 
   // Allocate a new session
   CNK_PKCS11_SESSION *session = (CNK_PKCS11_SESSION *)ck_malloc(sizeof(CNK_PKCS11_SESSION));
@@ -199,7 +199,7 @@ CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplicati
   }
 
   // Add the session to the table
-  session_table[slot] = session;
+  session_table[sessionIdx] = session;
   session_count++;
 
   // Return the session handle
@@ -330,6 +330,7 @@ CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session)
     if (session_table[i] != NULL && session_table[i]->handle == hSession) {
       *session = session_table[i];
       found = CK_TRUE;
+      CNK_DEBUG("Found session with handle %lu at session idx %lu", hSession, i);
       break;
     }
   }

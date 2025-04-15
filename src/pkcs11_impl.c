@@ -13,8 +13,14 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <nsync_mu.h>
+
 // Forward declaration of the function list
 static CK_FUNCTION_LIST ck_function_list;
+
+// Global variables
+static int g_ref_count = 0;
+static nsync_mu g_ref_lock = NSYNC_MU_INIT;
 
 // Helper function to check basic library and session state
 static CK_RV validate_session(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session) {
@@ -35,8 +41,20 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   CNK_LOG_FUNC(C_Initialize, ", pInitArgs: %p", pInitArgs);
 
   // Check if the library is already initialized
-  if (g_cnk_is_initialized)
+  if (g_cnk_is_initialized) {
+    // Managed mode allows multiple initializations, we increment the reference count
+    if (g_cnk_is_managed_mode) {
+      nsync_mu_lock(&g_ref_lock);
+      if (g_ref_count == 0) {
+        nsync_mu_unlock(&g_ref_lock);
+        CNK_RETURN(CKR_MUTEX_BAD, "g_ref_count is 0. Invalid state");
+      }
+      ++g_ref_count;
+      nsync_mu_unlock(&g_ref_lock);
+      CNK_RET_OK;
+    }
     CNK_RETURN(CKR_CRYPTOKI_ALREADY_INITIALIZED, "already initialized");
+  }
 
   // Process the initialization arguments
   CK_RV mutex_rv;
@@ -115,11 +133,28 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
     // Mark the library as initialized
     g_cnk_is_initialized = CK_TRUE;
   }
+
+  nsync_mu_lock(&g_ref_lock);
+  ++g_ref_count;
+  CNK_ENSURE_EQUAL_REASON(g_ref_count, 1, "g_ref_count is not 1. Invalid state");
+  nsync_mu_unlock(&g_ref_lock);
+
   CNK_RETURN(rv, "session manager init");
 }
 
 CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   CNK_LOG_FUNC(C_Finalize, ", pReserved: %p", pReserved);
+
+  nsync_mu_lock(&g_ref_lock);
+  if (!g_cnk_is_managed_mode && g_ref_count > 1) {
+    nsync_mu_unlock(&g_ref_lock);
+    CNK_RETURN(CKR_MUTEX_BAD, "g_ref_count > 1 in standalone mode");
+  }
+  if (--g_ref_count > 0) {
+    nsync_mu_unlock(&g_ref_lock);
+    CNK_RETURN(CKR_OK, "library still in use");
+  }
+  nsync_mu_unlock(&g_ref_lock);
 
   // According to PKCS#11, pReserved must be NULL_PTR
   CHK_ENSURE_NULL(pReserved);

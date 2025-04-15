@@ -118,6 +118,7 @@ CK_RV cnk_mutex_destroy(CNK_PKCS11_MUTEX *mutex) {
 
 // Lock a mutex
 CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex) {
+  CNK_LOG_FUNC(cnk_mutex_lock, " mutex: %p", mutex);
   CNK_ENSURE_NONNULL(mutex);
   CNK_ENSURE_NONNULL(mutex->mutex_handle);
   CNK_ENSURE_NONNULL(mutex->lock);
@@ -126,6 +127,7 @@ CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex) {
 
 // Unlock a mutex
 CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex) {
+  CNK_LOG_FUNC(cnk_mutex_unlock, " mutex: %p", mutex);
   CNK_ENSURE_NONNULL(mutex);
   CNK_ENSURE_NONNULL(mutex->mutex_handle);
   CNK_ENSURE_NONNULL(mutex->lock);
