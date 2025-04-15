@@ -50,7 +50,7 @@ static CK_RV cnk_with_card(CK_SLOT_ID slotID, CardOperationFunc operation, void 
 static CK_BBOOL contains_canokey(const char *str) { return str && ck_strcasestr(str, "canokey") ? CK_TRUE : CK_FALSE; }
 
 // Initialize PC/SC context only
-CK_RV cnk_initialize_pcsc() {
+CK_RV cnk_initialize_pcsc(void) {
   if (g_cnk_is_initialized)
     return CKR_OK;
 
@@ -64,7 +64,7 @@ CK_RV cnk_initialize_pcsc() {
 }
 
 // List readers and populate g_cnk_readers
-CK_RV cnk_list_readers() {
+CK_RV cnk_list_readers(void) {
   if (!g_cnk_is_initialized) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
@@ -84,7 +84,7 @@ CK_RV cnk_list_readers() {
 
   // First call to get the needed buffer size
   LONG rv = SCardListReaders(g_cnk_pcsc_context, NULL, NULL, &readers_len);
-  if (rv != SCARD_S_SUCCESS && rv != SCARD_E_INSUFFICIENT_BUFFER) {
+  if (rv != SCARD_S_SUCCESS && rv != (LONG) SCARD_E_INSUFFICIENT_BUFFER) {
     return CKR_DEVICE_ERROR;
   }
 
@@ -154,7 +154,7 @@ CK_RV cnk_list_readers() {
 }
 
 // Clean up PC/SC resources
-void cnk_cleanup_pcsc() {
+void cnk_cleanup_pcsc(void) {
   if (!g_cnk_is_initialized)
     return;
 
@@ -271,7 +271,7 @@ void cnk_disconnect_card(SCARDHANDLE hCard) {
 }
 
 // Helper function to transmit APDU commands and log both command and response
-LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, DWORD command_len, CK_BYTE *response,
+static LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, DWORD command_len, CK_BYTE *response,
                          DWORD *response_len) {
   if (hCard == 0 || command == NULL || response == NULL || response_len == NULL) {
     return SCARD_E_INVALID_PARAMETER;
@@ -428,6 +428,13 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
   SCARDHANDLE hCard;
   CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
   CK_BBOOL need_disconnect = CK_FALSE;
+  CK_BBOOL response_on_heap = CK_FALSE;
+
+  // If we're just checking for existence, we can use a smaller buffer
+  CK_BYTE response_buf[128];
+  CK_BYTE_PTR response = response_buf;
+  DWORD response_len = sizeof(response_buf);
+  
   if (rv != CKR_OK) {
     CNK_ERROR("Connect to card failed");
     goto cleanup;
@@ -469,12 +476,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
     mapped_tag = tag;
     break; // Keep original tag if not in mapping
   }
-
-  // If we're just checking for existence, we can use a smaller buffer
-  CK_BYTE response_buf[128];
-  CK_BYTE_PTR response = response_buf;
-  DWORD response_len = sizeof(response_buf);
-  CK_BBOOL response_on_heap = CK_FALSE;
+  
   if (fetch_data) {
     response_len = 4096;
     response = (CK_BYTE_PTR)ck_malloc(response_len); // Allocate larger buffer for data
@@ -680,8 +682,8 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, c
   int v_major, v_minor, v_patch;
   if (sscanf(version_str, "%d.%d.%d", &v_major, &v_minor, &v_patch) == 3) {
     // For firmware version: major is the first part, minor is the second part * 10 + the third part
-    *fw_major = v_major;
-    *fw_minor = v_minor * 10 + v_patch;
+    *fw_major = (CK_BYTE) v_major;
+    *fw_minor = (CK_BYTE) (v_minor * 10 + v_patch);
   } else {
     // Fallback if parsing fails
     *fw_major = 0;
@@ -852,7 +854,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   // Build the GENERAL AUTHENTICATE APDU
   // Increased buffer size for Extended APDU (4 header + 3 Lc + ~1024 data + 3 Le)
   CK_BYTE auth_apdu[1100];
-  CK_ULONG apdu_len = 0;
+  DWORD apdu_len = 0;
 
   // APDU header
   auth_apdu[apdu_len++] = 0x00;    // CLA

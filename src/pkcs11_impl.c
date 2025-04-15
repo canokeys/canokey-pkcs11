@@ -32,6 +32,9 @@ static CK_RV validate_session(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **s
   return cnk_session_find(hSession, session);
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-parameter"
+
 CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
 #ifdef CNK_VERBOSE
   // forcibly enable debug logging, can be overridden by C_CNK_ConfigLogging later
@@ -115,6 +118,8 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
         // mutex-handling to ensure safe multi-threaded access
         mutex_rv = cnk_mutex_system_init(args); // only UDF available
       }
+    } else {
+      __builtin_unreachable(); // checked above
     }
 
     if (mutex_rv != CKR_OK) {
@@ -1055,6 +1060,8 @@ CK_RV C_GetFunctionStatus(CK_SESSION_HANDLE hSession) { CNK_RET_UNIMPL; }
 CK_RV C_CancelFunction(CK_SESSION_HANDLE hSession) { CNK_RET_UNIMPL; }
 
 CK_RV C_WaitForSlotEvent(CK_FLAGS flags, CK_SLOT_ID_PTR pSlot, CK_VOID_PTR pReserved) { CNK_RET_UNIMPL; }
+
+#pragma clang diagnostic pop
 
 // Define the function list structure
 static CK_FUNCTION_LIST ck_function_list = {{2, 40}, // PKCS #11 version 2.40

@@ -1,6 +1,10 @@
 #ifndef __LOGGING__H__
 #define __LOGGING__H__
 
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+#pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
+#pragma clang diagnostic ignored "-Wgnu-statement-expression-from-macro-expansion"
+
 #define _CRT_SECURE_NO_WARNINGS // make MSVC happy
 #include <stdio.h>
 
@@ -36,7 +40,7 @@ extern void cnk_printf(const int level, const char *format, ...);
 // #define FUNC_TRACE(CALL) dbg(CALL)
 #define CNK_RETURN(ARG, REASON)                                                                                        \
   do {                                                                                                                 \
-    int ret = (ARG);                                                                                                   \
+    typeof((ARG)) ret = (ARG);                                                                                                   \
     CNK_DEBUG("Returning value %s = %d with reason \"%s\"", #ARG, ret, REASON);                                        \
     return ret;                                                                                                        \
   } while (0)
@@ -63,6 +67,8 @@ extern void cnk_printf(const int level, const char *format, ...);
       CNK_RETURN(_rv, #EXP " failed");                                                                                 \
     CKR_OK;                                                                                                            \
   })
+
+#define CNK_UNUSED(...) do { ((void)(__VA_ARGS__)) } while (0)
 
 // Function to log APDU commands in a formatted way
 void cnk_log_apdu_command(const unsigned char *command, unsigned long command_len);

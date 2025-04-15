@@ -16,9 +16,6 @@ CK_BBOOL g_cnk_is_managed_mode = CK_FALSE; // False for standalone mode, True fo
 SCARDCONTEXT g_cnk_pcsc_context = 0L;
 SCARDHANDLE g_cnk_scard = 0L;
 
-// Forward declaration of the function list
-static CK_FUNCTION_LIST ck_function_list;
-
 CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
   CNK_LOG_FUNC(C_CNK_EnableManagedMode);
 

@@ -112,7 +112,7 @@ CK_KEY_TYPE cnk_algo_type_to_key_type(CK_BYTE algorithm_type) {
 }
 
 // Handle certificate-specific attributes
-CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE_PTR data, CK_ULONG data_len) {
+static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE_PTR data, CK_ULONG data_len) {
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
 
   switch (attribute.type) {
@@ -139,7 +139,7 @@ CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, 
 }
 
 // Handle public key specific attributes
-CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
+static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
                                       CK_SLOT_ID slot_id) {
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
   CK_KEY_TYPE key_type = cnk_algo_type_to_key_type(algorithm_type);
@@ -192,7 +192,7 @@ CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, C
 }
 
 // Handle private key specific attributes
-CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
+static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
                                        CK_SLOT_ID slot_id) {
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
   CK_KEY_TYPE key_type = cnk_algo_type_to_key_type(algorithm_type);
