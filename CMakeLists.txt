@@ -110,19 +110,13 @@ endif()
 if(WIN32)
   # On Windows, use native PC/SC API
   set(CNK_PKCS_LIBS ${CNK_PKCS_LIBS} winscard.lib)
-elseif(APPLE)
-  # On macOS, PC/SC is provided by the PCSC framework
-  find_library(PCSC_FRAMEWORK PCSC REQUIRED)
-  set(CNK_PKCS_LIBS ${CNK_PKCS_LIBS} ${PCSC_FRAMEWORK})
-elseif(UNIX)
+else ()
   # For other UNIX-like platforms, use pkgconf to find libpcsclite
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(PCSC REQUIRED libpcsclite)
   include_directories(${PCSC_INCLUDE_DIRS})
-  set(CNK_PKCS_LIBS ${CNK_PKCS_LIBS} ${PCSC_LIBRARIES})
-else()
-  message(FATAL_ERROR "Unsupported platform")
-endif()
+  set(CNK_PKCS_LIBS ${CNK_PKCS_LIBS} ${PCSC_LINK_LIBRARIES})
+endif ()
 
 target_link_libraries(${CNK_PKCS_TARGET} PRIVATE ${CNK_PKCS_LIBS})
 

@@ -4,11 +4,7 @@
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
 
-#if defined(__APPLE__) || defined(__MACH__)
-#include <PCSC/PCSC.h>
-#else
 #include <winscard.h> // pcsc-lite also provides it
-#endif
 
 // Define a struct to store reader information
 typedef struct {
