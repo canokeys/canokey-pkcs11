@@ -51,4 +51,4 @@ jobs:
           path: |
             build/libcanokey-pkcs11.so*
             build/libcanokey-pkcs11.dylib*
-            build/canokey-pkcs11.dll
+            build/**/canokey-pkcs11.dll
