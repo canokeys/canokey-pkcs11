@@ -1,6 +1,7 @@
 #include "pcsc_backend.h"
 #include "logging.h"
 #include "pkcs11.h"
+#include "pkcs11_mutex.h"
 #include "pkcs11_session.h"
 #include "utils.h"
 
@@ -10,8 +11,11 @@
 
 // Global variables for reader management
 ReaderInfo *g_cnk_readers = NULL; // Array of reader info structs
-CK_ULONG g_cnk_num_readers = 0;
+CK_LONG g_cnk_num_readers = 0;
 CK_BBOOL g_cnk_is_initialized = CK_FALSE;
+
+// Mutex for g_cnk_readers and g_cnk_num_readers
+static CNK_PKCS11_MUTEX g_cnk_readers_mutex;
 
 // Function pointer type for card operations
 typedef CK_RV (*CardOperationFunc)(SCARDHANDLE hCard, void *context);
@@ -49,6 +53,11 @@ static CK_BBOOL contains_canokey(const char *str) { return str && ck_strcasestr(
 
 // Initialize PC/SC context only
 CK_RV cnk_initialize_pcsc(void) {
+  static int mutex_initialized = 0;
+  if (!mutex_initialized) {
+    cnk_mutex_create(&g_cnk_readers_mutex);
+    mutex_initialized = 1;
+  }
   if (g_cnk_is_initialized)
     return CKR_OK;
 
@@ -63,6 +72,7 @@ CK_RV cnk_initialize_pcsc(void) {
 
 // List readers and populate g_cnk_readers
 CK_RV cnk_list_readers(void) {
+  cnk_mutex_lock(&g_cnk_readers_mutex);
   if (!g_cnk_is_initialized) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
@@ -116,6 +126,7 @@ CK_RV cnk_list_readers(void) {
   }
   if (!g_cnk_readers) {
     ck_free(readers_buf);
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
     return CKR_HOST_MEMORY;
   }
 
@@ -138,6 +149,7 @@ CK_RV cnk_list_readers(void) {
         g_cnk_readers = NULL;
         g_cnk_num_readers = 0;
         ck_free(readers_buf);
+        cnk_mutex_unlock(&g_cnk_readers_mutex);
         return CKR_HOST_MEMORY;
       }
       // Assign a unique ID to this reader (using index as the ID)
@@ -148,11 +160,13 @@ CK_RV cnk_list_readers(void) {
   }
 
   ck_free(readers_buf);
+  cnk_mutex_unlock(&g_cnk_readers_mutex);
   return CKR_OK;
 }
 
 // Clean up PC/SC resources
 void cnk_cleanup_pcsc(void) {
+  cnk_mutex_lock(&g_cnk_readers_mutex);
   if (!g_cnk_is_initialized)
     return;
 
@@ -171,17 +185,28 @@ void cnk_cleanup_pcsc(void) {
 
   g_cnk_num_readers = 0;
   g_cnk_is_initialized = CK_FALSE;
+  cnk_mutex_unlock(&g_cnk_readers_mutex);
+  cnk_mutex_destroy(&g_cnk_readers_mutex);
 }
 
 // Get the number of readers
-CK_ULONG cnk_get_num_readers(void) { return g_cnk_num_readers; }
+CK_ULONG cnk_get_num_readers(void) {
+  CK_ULONG num;
+  cnk_mutex_lock(&g_cnk_readers_mutex);
+  num = g_cnk_num_readers;
+  cnk_mutex_unlock(&g_cnk_readers_mutex);
+  return num;
+}
 
 // Get the slot ID for a reader at the given index
 CK_SLOT_ID cnk_get_reader_slot_id(CK_ULONG index) {
-  if (index >= g_cnk_num_readers) {
-    return (CK_SLOT_ID)-1; // Invalid slot ID
+  CK_SLOT_ID slot = (CK_SLOT_ID)-1;
+  cnk_mutex_lock(&g_cnk_readers_mutex);
+  if (index < g_cnk_num_readers) {
+    slot = g_cnk_readers[index].slot_id;
   }
-  return g_cnk_readers[index].slot_id;
+  cnk_mutex_unlock(&g_cnk_readers_mutex);
+  return slot;
 }
 
 // Helper function to connect to a card and select the CanoKey AID
@@ -1292,7 +1317,7 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
 }
 
 // Card operation function for logout
-static CK_RV logout_card_operation(SCARDHANDLE hCard, const void *context) {
+static CK_RV logout_card_operation(SCARDHANDLE hCard, void *context) {
   // Unused parameter
   (void)context;
 

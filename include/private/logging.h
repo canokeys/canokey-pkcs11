@@ -6,8 +6,8 @@
 #pragma clang diagnostic ignored "-Wgnu-statement-expression-from-macro-expansion"
 
 #define _CRT_SECURE_NO_WARNINGS // make MSVC happy
-#include <stdio.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 enum CNK_LOG_LEVEL {
   CNK_LOG_LEVEL_TRACE = 0,
@@ -28,7 +28,8 @@ extern int g_cnk_log_level;
 extern void cnk_printf(const int level, const bool prepend_date, const char *format, ...);
 
 #define CNK_PRINTLOGF(level, format, ...)                                                                              \
-  cnk_printf(level, true, "%-20s(%-20s:L%03d)[%-5s]: ", __FUNCTION__, __FILE__, __LINE__, g_cnk_log_level_name[level]);\
+  cnk_printf(level, true, "%-20s(%-20s:L%03d)[%-5s]: ", __FUNCTION__, __FILE__, __LINE__,                              \
+             g_cnk_log_level_name[level]);                                                                             \
   cnk_printf(level, false, format "\n", ##__VA_ARGS__);
 #define CNK_TRACE(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_TRACE, format, ##__VA_ARGS__)
 #define CNK_DEBUG(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_DEBUG, format, ##__VA_ARGS__)
@@ -53,14 +54,33 @@ extern void cnk_printf(const int level, const bool prepend_date, const char *for
 #endif // CNK_VERBOSE
 
 #define CNK_RET_OK CNK_RETURN(CKR_OK, "Success")
+
 #define CNK_RET_UNIMPL CNK_RETURN(CKR_FUNCTION_NOT_SUPPORTED, "Not implemented")
+
 #define CNK_ENSURE_EQUAL_REASON(EXP, EXPECTED, REASON)                                                                 \
   if ((EXP) != (EXPECTED)) {                                                                                           \
     CNK_RETURN(CKR_ARGUMENTS_BAD, REASON);                                                                             \
   }
+
 #define CNK_ENSURE_EQUAL(EXP, EXPECTED) CNK_ENSURE_EQUAL_REASON(EXP, EXPECTED, #EXP " != " #EXPECTED)
-#define CNK_ENSURE_NONNULL(PTR) CNK_ENSURE_EQUAL_REASON(!!(PTR), !NULL, #PTR " is NULL")
-#define CHK_ENSURE_NULL(PTR) CNK_ENSURE_EQUAL_REASON(!!(PTR), !!NULL, #PTR " is not NULL")
+
+#define CNK_ENSURE_NONNULL(PTR)                                                                                        \
+  do {                                                                                                                 \
+    typeof((PTR)) _ptr = (PTR);                                                                                        \
+    if (_ptr == NULL) {                                                                                                \
+      CNK_RETURN(CKR_ARGUMENTS_BAD, #PTR " is NULL");                                                                  \
+    }                                                                                                                  \
+    __builtin_assume(_ptr != NULL);                                                                                    \
+  } while (0)
+#define CHK_ENSURE_NULL(PTR)                                                                                           \
+  do {                                                                                                                 \
+    typeof((PTR)) _ptr = (PTR);                                                                                        \
+    if (_ptr != NULL) {                                                                                                \
+      CNK_RETURN(CKR_ARGUMENTS_BAD, #PTR " is not NULL");                                                              \
+    }                                                                                                                  \
+    __builtin_assume(_ptr == NULL);                                                                                    \
+  } while (0)
+
 #define CNK_ENSURE_OK(EXP)                                                                                             \
   ({                                                                                                                   \
     CK_RV _rv = (EXP);                                                                                                 \

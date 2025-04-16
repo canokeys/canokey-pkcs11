@@ -3,7 +3,6 @@
 #include "pkcs11_macros.h"
 
 #include <nsync_mu.h>
-#include <stdlib.h>
 
 #undef CreateMutex // avoid conflicts with Windows API
 
@@ -19,7 +18,7 @@ static CK_UNLOCKMUTEX g_unlock_mutex = NULL;
 
 // OS mutex implementation using nsync
 static CK_RV os_create_mutex(void **mutex) {
-  nsync_mu *mu = (nsync_mu *)ck_malloc(sizeof(nsync_mu));
+  nsync_mu *mu = ck_malloc(sizeof(nsync_mu));
   if (mu == NULL) {
     CNK_RETURN(CKR_HOST_MEMORY, "Failed to allocate memory for mutex");
   }
@@ -130,6 +129,6 @@ CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex) {
   CNK_LOG_FUNC(cnk_mutex_unlock, " mutex: %p", mutex);
   CNK_ENSURE_NONNULL(mutex);
   CNK_ENSURE_NONNULL(mutex->mutex_handle);
-  CNK_ENSURE_NONNULL(mutex->lock);
+  CNK_ENSURE_NONNULL(mutex->unlock);
   return mutex->unlock(mutex->mutex_handle);
 }

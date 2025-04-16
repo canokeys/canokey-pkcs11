@@ -6,8 +6,8 @@
 
 // Session table and related variables
 static CNK_PKCS11_SESSION **session_table = NULL;
-static CK_ULONG session_table_size = 0;
-static CK_ULONG session_count = 0;
+static CK_LONG session_table_size = 0;
+static CK_LONG session_count = 0;
 static CK_SESSION_HANDLE next_handle = 1; // Start from 1, 0 is invalid
 static CNK_PKCS11_MUTEX session_mutex;
 
@@ -43,7 +43,7 @@ void cnk_session_manager_cleanup(void) {
 
   if (session_table != NULL) {
     // Free all session structures
-    for (CK_ULONG i = 0; i < session_table_size; i++) {
+    for (CK_LONG i = 0; i < session_table_size; i++) {
       if (session_table[i] != NULL) {
         // Destroy the session mutex
         cnk_mutex_destroy(&session_table[i]->lock);
@@ -83,7 +83,7 @@ static CK_RV resize_session_table(void) {
   memset(new_table, 0, new_size * sizeof(CNK_PKCS11_SESSION *));
 
   // Copy existing sessions
-  for (CK_ULONG i = 0; i < session_table_size; i++) {
+  for (CK_LONG i = 0; i < session_table_size; i++) {
     if (session_table[i] != NULL) {
       new_table[i] = session_table[i];
     }
@@ -218,9 +218,9 @@ CK_RV cnk_session_close(CK_SESSION_HANDLE hSession) {
 
   // Find the session
   CK_BBOOL found = CK_FALSE;
-  CK_ULONG index = 0;
+  CK_LONG index = 0;
 
-  for (CK_ULONG i = 0; i < session_table_size; i++) {
+  for (CK_LONG i = 0; i < session_table_size; i++) {
     if (session_table[i] != NULL && session_table[i]->handle == hSession) {
       found = CK_TRUE;
       index = i;
@@ -250,7 +250,7 @@ CK_RV cnk_session_close_all(CK_SLOT_ID slotID) {
   cnk_mutex_lock(&session_mutex);
 
   // Check if the slot ID is valid
-  CK_ULONG i;
+  CK_LONG i;
   CK_BBOOL slot_found = CK_FALSE;
   for (i = 0; i < g_cnk_num_readers; i++) {
     if (g_cnk_readers[i].slot_id == slotID) {
@@ -292,7 +292,7 @@ CK_RV cnk_session_get_info(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo
   CNK_PKCS11_SESSION *session = NULL;
   CK_BBOOL found = CK_FALSE;
 
-  for (CK_ULONG i = 0; i < session_table_size; i++) {
+  for (CK_LONG i = 0; i < session_table_size; i++) {
     if (session_table[i] != NULL && session_table[i]->handle == hSession) {
       session = session_table[i];
       found = CK_TRUE;
@@ -326,11 +326,11 @@ CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session)
   // Find the session
   CK_BBOOL found = CK_FALSE;
 
-  for (CK_ULONG i = 0; i < session_table_size; i++) {
+  for (CK_LONG i = 0; i < session_table_size; i++) {
     if (session_table[i] != NULL && session_table[i]->handle == hSession) {
       *session = session_table[i];
       found = CK_TRUE;
-      CNK_DEBUG("Found session with handle %lu at session idx %lu", hSession, i);
+      CNK_DEBUG("Found session with handle %lu at session idx %ld", hSession, i);
       break;
     }
   }

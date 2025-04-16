@@ -14,7 +14,7 @@ typedef struct {
 
 // Global variables for reader management (declared as extern)
 extern ReaderInfo *g_cnk_readers;
-extern CK_ULONG g_cnk_num_readers;
+extern CK_LONG g_cnk_num_readers;
 extern CK_BBOOL g_cnk_is_initialized;
 extern CK_BBOOL g_cnk_is_managed_mode; // true for managed mode, false for standalone mode
 extern SCARDCONTEXT g_cnk_pcsc_context;
