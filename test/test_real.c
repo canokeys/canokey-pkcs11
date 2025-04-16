@@ -12,6 +12,9 @@ int main(int argc, char *argv[]) {
   // Check if a library path was provided as a command line argument
   if (argc > 1) {
     libraryPath = argv[1];
+  } else {
+    fprintf(stderr, "Usage: %s <path_to_pkcs11_library>\n", argv[0]);
+    return 1;
   }
 
   printf("Using PKCS#11 library: %s\n", libraryPath);
