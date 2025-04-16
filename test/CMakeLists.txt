@@ -1,5 +1,6 @@
-find_package(CMocka REQUIRED)
-message(STATUS "CMocka found: includedir ${CMOCKA_INCLUDE_DIR}, lib ${CMOCKA_LIBRARY}")
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(CMOCKA REQUIRED cmocka)
+message(STATUS "CMocka found: includedir ${CMOCKA_INCLUDE_DIRS}, lib ${CMOCKA_LIBRARIES}")
 
 include(AddCMockaTest)
 include(AddMockedTest)
