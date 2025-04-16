@@ -1,0 +1,54 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    if: ${{ !contains(github.event.head_commit.message, 'ci skip') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            pre-build-script: |
+              sudo apt-get update -y
+              sudo apt-get install -y libpcsclite-dev libcmocka-dev
+            cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=clang'
+          - os: windows-latest
+            pre-build-script: ''
+            cmake-config-args: '-G "Visual Studio 17 2022" -T ClangCL -A x64'
+          - os: macos-latest
+            pre-build-script: |
+              brew update
+              brew install cmocka
+            cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=clang'
+
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - name: Pre-build script
+        run: ${{ matrix.pre-build-script }}
+        if: matrix.pre-build-script != ''
+      - name: Configure
+        run: cmake -S . -B build ${{ matrix.cmake-config-args }}
+      - name: Build
+        run: cmake --build build -v
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+        if: matrix.os != 'windows-latest' # windows does not have cmocka installed now
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: canokey-pkcs11-${{ matrix.os }}
+          path: |
+            build/libcanokey-pkcs11.so*
+            build/libcanokey-pkcs11.dylib*
+            build/**/canokey-pkcs11.dll

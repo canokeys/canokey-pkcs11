@@ -12,7 +12,15 @@ if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
   message(WARNING "This project should be built with clang, now using ${CMAKE_C_COMPILER_ID}")
 endif()
 
-set(USE_GNU_COMPILERS CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_C_SIMULATE_ID MATCHES "MSVC")
+message(STATUS "C Compiler ID: ${CMAKE_C_COMPILER_ID}, Frontend: ${CMAKE_C_COMPILER_FRONTEND_VARIANT}")
+
+if((CMAKE_C_COMPILER_ID MATCHES "GNU|Clang") AND (NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"))
+  set(USE_GNU_COMPILERS ON)
+  message(STATUS "Using vanilla gcc or clang")
+else()
+  set(USE_GNU_COMPILERS OFF)
+  message(STATUS "Using clang-cl")
+endif()
 
 if(USE_GNU_COMPILERS)
   add_compile_options("-fmacro-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}/=")

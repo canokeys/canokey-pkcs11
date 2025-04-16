@@ -48,10 +48,10 @@ function(add_mocked_test name)
                   SOURCES test_${name}.c ${ADD_MOCKED_TEST_SOURCES}
                   COMPILE_OPTIONS ${DEFAULT_C_COMPILE_FLAGS}
                                   ${ADD_MOCKED_TEST_COMPILE_OPTIONS}
-                  LINK_LIBRARIES ${CMOCKA_LIBRARIES}
+                  LINK_LIBRARIES ${CMOCKA_LINK_LIBRARIES}
                                  ${ADD_MOCKED_TEST_LINK_LIBRARIES}
                   LINK_OPTIONS ${link_flags} ${ADD_MOCKED_TEST_LINK_OPTIONS})
 
   # allow using includes from src/ directory
-  target_include_directories(test_${name} PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMOCKA_INCLUDE_DIR})
+  target_include_directories(test_${name} PRIVATE ${CMOCKA_INCLUDE_DIRS})
 endfunction(add_mocked_test)
