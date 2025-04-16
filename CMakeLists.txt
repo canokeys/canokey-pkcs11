@@ -5,7 +5,12 @@ project(${CNK_PKCS_TARGET} VERSION 0.1.0 LANGUAGES C)
 
 # Set C standard
 set(CMAKE_C_STANDARD 17)
+set(CMAKE_C_EXTENSIONS ON) # some macros need GNU extensions
 set(CMAKE_C_STANDARD_REQUIRED ON)
+
+if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+  message(WARNING "This project should be built with clang, now using ${CMAKE_C_COMPILER_ID}")
+endif()
 
 set(USE_GNU_COMPILERS CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_C_SIMULATE_ID MATCHES "MSVC")
 
@@ -77,10 +82,7 @@ set_default_visibility(${CNK_PKCS_TARGET})
 if(USE_GNU_COMPILERS)
   target_compile_options(${CNK_PKCS_TARGET} PRIVATE "-Wextra" "-Wpedantic" "-Wall")
   if(CMAKE_C_COMPILER_ID MATCHES "Clang")
-    target_compile_options(${CNK_PKCS_TARGET} PRIVATE "-Weverything"
-      "-Wno-declaration-after-statement" "-Wno-padded" "-Wno-undef" "-Wno-poison-system-directories" "-Wno-sign-conversion"
-      "-Wno-unknown-warning-option"
-    )
+    target_compile_options(${CNK_PKCS_TARGET} PRIVATE "-Wmost")
   endif()
 elseif(MSVC)
   target_compile_options(${CNK_PKCS_TARGET} PRIVATE "/W4")

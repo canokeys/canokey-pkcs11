@@ -4,8 +4,6 @@
 #pragma clang diagnostic ignored "-Wlanguage-extension-token"
 #pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
 #pragma clang diagnostic ignored "-Wgnu-statement-expression-from-macro-expansion"
-#pragma clang diagnostic ignored "-Wextra-semi-stmt"
-#pragma clang diagnostic ignored "-Wgnu-statement-expression"
 
 #define _CRT_SECURE_NO_WARNINGS // make MSVC happy
 #include <stdio.h>
