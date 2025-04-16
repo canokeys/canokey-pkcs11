@@ -13,9 +13,7 @@
 ReaderInfo *g_cnk_readers = NULL; // Array of reader info structs
 CK_LONG g_cnk_num_readers = 0;
 CK_BBOOL g_cnk_is_initialized = CK_FALSE;
-
-// Mutex for g_cnk_readers and g_cnk_num_readers
-static CNK_PKCS11_MUTEX g_cnk_readers_mutex;
+CNK_PKCS11_MUTEX g_cnk_readers_mutex;
 
 // Function pointer type for card operations
 typedef CK_RV (*CardOperationFunc)(SCARDHANDLE hCard, void *context);
@@ -51,27 +49,31 @@ static CK_RV cnk_with_card(CK_SLOT_ID slotID, CardOperationFunc operation, void 
 // Helper function to check if a string contains 'canokey' (case-insensitive)
 static CK_BBOOL contains_canokey(const char *str) { return str && ck_strcasestr(str, "canokey") ? CK_TRUE : CK_FALSE; }
 
+CK_RV cnk_initialize_backend(void) {
+  cnk_mutex_create(&g_cnk_readers_mutex);
+  CNK_RET_OK;
+}
+
 // Initialize PC/SC context only
 CK_RV cnk_initialize_pcsc(void) {
-  static int mutex_initialized = 0;
-  if (!mutex_initialized) {
-    cnk_mutex_create(&g_cnk_readers_mutex);
-    mutex_initialized = 1;
-  }
   if (g_cnk_is_initialized)
-    return CKR_OK;
+    CNK_RET_OK;
 
   LONG rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &g_cnk_pcsc_context);
   if (rv != SCARD_S_SUCCESS) {
+    CNK_ERROR("SCardEstablishContext failed with error: 0x%lx", rv);
     return CKR_DEVICE_ERROR;
   }
 
   g_cnk_is_initialized = CK_TRUE;
-  return CKR_OK;
+
+  CNK_RET_OK;
 }
 
 // List readers and populate g_cnk_readers
 CK_RV cnk_list_readers(void) {
+  CNK_LOG_FUNC(cnk_list_readers);
+
   cnk_mutex_lock(&g_cnk_readers_mutex);
   if (!g_cnk_is_initialized) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -92,13 +94,17 @@ CK_RV cnk_list_readers(void) {
 
   // First call to get the needed buffer size
   LONG rv = SCardListReaders(g_cnk_pcsc_context, NULL, NULL, &readers_len);
-  if (rv != SCARD_S_SUCCESS && rv != (LONG)SCARD_E_INSUFFICIENT_BUFFER) {
+  if (rv != SCARD_S_SUCCESS && rv != SCARD_E_INSUFFICIENT_BUFFER) {
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
+    CNK_ERROR("SCardListReaders failed with error: 0x%lx", rv);
     return CKR_DEVICE_ERROR;
   }
 
   // Allocate memory for the readers list
-  char *readers_buf = (char *)ck_malloc(readers_len);
+  char *readers_buf = ck_malloc(readers_len);
   if (!readers_buf) {
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
+    CNK_ERROR("Failed to allocate memory for readers list");
     return CKR_HOST_MEMORY;
   }
 
@@ -106,6 +112,8 @@ CK_RV cnk_list_readers(void) {
   rv = SCardListReaders(g_cnk_pcsc_context, NULL, readers_buf, &readers_len);
   if (rv != SCARD_S_SUCCESS) {
     ck_free(readers_buf);
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
+    CNK_ERROR("SCardListReaders failed with error: 0x%lx", rv);
     return CKR_DEVICE_ERROR;
   }
 

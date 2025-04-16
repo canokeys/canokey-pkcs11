@@ -117,14 +117,16 @@ CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplicati
   cnk_mutex_lock(&session_mutex);
 
   if (!g_cnk_is_managed_mode) {
+    cnk_mutex_lock(&g_cnk_readers_mutex);
     // Check if the slot ID is valid
     CK_BBOOL slot_found = CK_FALSE;
-    for (CK_ULONG i = 0; i < g_cnk_num_readers; i++) {
+    for (CK_LONG i = 0; i < g_cnk_num_readers; i++) {
       if (g_cnk_readers[i].slot_id == slotID) {
         slot_found = CK_TRUE;
         break;
       }
     }
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
 
     if (!slot_found) {
       cnk_mutex_unlock(&session_mutex);
@@ -249,23 +251,8 @@ CK_RV cnk_session_close(CK_SESSION_HANDLE hSession) {
 CK_RV cnk_session_close_all(CK_SLOT_ID slotID) {
   cnk_mutex_lock(&session_mutex);
 
-  // Check if the slot ID is valid
-  CK_LONG i;
-  CK_BBOOL slot_found = CK_FALSE;
-  for (i = 0; i < g_cnk_num_readers; i++) {
-    if (g_cnk_readers[i].slot_id == slotID) {
-      slot_found = CK_TRUE;
-      break;
-    }
-  }
-
-  if (!slot_found) {
-    cnk_mutex_unlock(&session_mutex);
-    return CKR_SLOT_ID_INVALID;
-  }
-
   // Close all sessions for this slot
-  for (i = 0; i < session_table_size; i++) {
+  for (CK_LONG i = 0; i < session_table_size; i++) {
     if (session_table[i] != NULL && session_table[i]->slot_id == slotID) {
       // No need to disconnect card as we don't maintain the handle
 
@@ -277,7 +264,7 @@ CK_RV cnk_session_close_all(CK_SLOT_ID slotID) {
   }
 
   cnk_mutex_unlock(&session_mutex);
-  return CKR_OK;
+  CNK_RET_OK;
 }
 
 // Get session info
@@ -312,7 +299,7 @@ CK_RV cnk_session_get_info(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo
   pInfo->ulDeviceError = 0;
 
   cnk_mutex_unlock(&session_mutex);
-  return CKR_OK;
+  CNK_RET_OK;
 }
 
 // Find a session by handle
@@ -341,5 +328,5 @@ CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session)
     return CKR_SESSION_HANDLE_INVALID;
   }
 
-  return CKR_OK;
+  CNK_RET_OK;
 }

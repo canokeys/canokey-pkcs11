@@ -3,8 +3,13 @@
 
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
+#include "pkcs11_mutex.h"
 
+#if defined(__APPLE__) || defined(__MACH__)
+#include <PCSC/PCSC.h>
+#else
 #include <winscard.h> // pcsc-lite also provides it
+#endif
 
 // Define a struct to store reader information
 typedef struct {
@@ -19,6 +24,7 @@ extern CK_BBOOL g_cnk_is_initialized;
 extern CK_BBOOL g_cnk_is_managed_mode; // true for managed mode, false for standalone mode
 extern SCARDCONTEXT g_cnk_pcsc_context;
 extern SCARDHANDLE g_cnk_scard;
+extern CNK_PKCS11_MUTEX g_cnk_readers_mutex;
 
 // Memory management functions
 extern CNK_MALLOC_FUNC g_cnk_malloc_func;
@@ -44,9 +50,12 @@ extern CNK_FREE_FUNC g_cnk_free_func;
 #define PIV_ALG_SM2 0x54
 
 // Helper functions for memory allocation
-static inline void *ck_malloc(size_t size) { return g_cnk_malloc_func(size); }
-static inline void *ck_calloc(size_t num, size_t size) { return g_cnk_malloc_func(num * size); }
-static inline void ck_free(void *ptr) { g_cnk_free_func(ptr); }
+static void *ck_malloc(size_t size) { return g_cnk_malloc_func(size); }
+static void *ck_calloc(size_t num, size_t size) { return g_cnk_malloc_func(num * size); }
+static void ck_free(void *ptr) { g_cnk_free_func(ptr); }
+
+// Initialize PC/SC backend
+CK_RV cnk_initialize_backend(void);
 
 // Initialize PC/SC context only
 CK_RV cnk_initialize_pcsc(void);

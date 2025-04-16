@@ -126,6 +126,8 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
     CNK_ENSURE_OK(cnk_initialize_pcsc());
   }
 
+  cnk_initialize_backend();
+
   // Initialize the session manager
   CK_RV rv = cnk_session_manager_init();
   if (rv == CKR_OK) {
@@ -238,15 +240,19 @@ CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PT
   // List readers
   CNK_ENSURE_OK(cnk_list_readers());
 
+  cnk_mutex_lock(&g_cnk_readers_mutex);
+
   // If pSlotList is NULL, just return the number of slots
   if (!pSlotList) {
     *pulCount = g_cnk_num_readers;
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
     CNK_RET_OK;
   }
 
   // Check if the provided buffer is large enough
   if (*pulCount < g_cnk_num_readers) {
     *pulCount = g_cnk_num_readers;
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
     CNK_RETURN(CKR_BUFFER_TOO_SMALL, "pulCount too small");
   }
 
@@ -256,6 +262,9 @@ CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PT
   }
 
   *pulCount = g_cnk_num_readers;
+
+  cnk_mutex_unlock(&g_cnk_readers_mutex);
+
   CNK_RET_OK;
 }
 
@@ -311,14 +320,21 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
 
   CNK_ENSURE_NONNULL(pInfo);
 
+  cnk_mutex_lock(&g_cnk_readers_mutex);
+
   // Check if the slot ID is valid
   if (slotID >= g_cnk_num_readers) {
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
     CNK_RETURN(CKR_SLOT_ID_INVALID, "invalid slot");
   }
 
   // Get the serial number
   CK_ULONG serial_number;
-  CNK_ENSURE_OK(cnk_get_serial_number(slotID, &serial_number));
+  CK_RV ret = cnk_get_serial_number(slotID, &serial_number);
+  if (ret != CKR_OK) {
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
+    CNK_RETURN(ret, "failed to get serial number");
+  }
 
   // Clear the structure
   memset(pInfo, 0, sizeof(CK_TOKEN_INFO));
@@ -393,6 +409,9 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   memset(pInfo->utcTime, 0, sizeof(pInfo->utcTime));
 
   CNK_DEBUG("Serial number: %lu, Label: %s", serial_number, label);
+
+  cnk_mutex_unlock(&g_cnk_readers_mutex);
+
   CNK_RET_OK;
 }
 
