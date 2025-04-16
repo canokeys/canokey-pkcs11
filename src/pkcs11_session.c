@@ -2,7 +2,6 @@
 #include "logging.h"
 #include "pcsc_backend.h"
 
-#include <stdlib.h>
 #include <string.h>
 
 // Session table and related variables
@@ -100,7 +99,7 @@ static CK_RV resize_session_table(void) {
 
 // Find a free slot in the session table
 static CK_LONG find_free_slot(void) {
-  for (CK_ULONG i = 0; i < session_table_size; i++) {
+  for (CK_LONG i = 0; i < session_table_size; i++) {
     if (session_table[i] == NULL) {
       return i;
     }
@@ -115,11 +114,12 @@ CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplicati
 
   CNK_ENSURE_NONNULL(phSession);
 
+  cnk_mutex_lock(&session_mutex);
+
   if (!g_cnk_is_managed_mode) {
     // Check if the slot ID is valid
-    CK_ULONG i;
     CK_BBOOL slot_found = CK_FALSE;
-    for (i = 0; i < g_cnk_num_readers; i++) {
+    for (CK_ULONG i = 0; i < g_cnk_num_readers; i++) {
       if (g_cnk_readers[i].slot_id == slotID) {
         slot_found = CK_TRUE;
         break;
@@ -127,16 +127,16 @@ CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplicati
     }
 
     if (!slot_found) {
+      cnk_mutex_unlock(&session_mutex);
       return CKR_SLOT_ID_INVALID;
     }
   }
 
   // Check if the flags are valid
   if (!(flags & CKF_SERIAL_SESSION)) {
+    cnk_mutex_unlock(&session_mutex);
     return CKR_SESSION_PARALLEL_NOT_SUPPORTED;
   }
-
-  cnk_mutex_lock(&session_mutex);
 
   // Initialize session manager if needed
   if (session_table == NULL) {
