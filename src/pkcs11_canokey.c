@@ -1,4 +1,6 @@
+#if defined(_WIN32)
 #define CRYPTOKI_EXPORTS
+#endif
 
 #include "pkcs11_canokey.h"
 #include "logging.h"

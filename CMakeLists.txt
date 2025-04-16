@@ -77,7 +77,10 @@ set_default_visibility(${CNK_PKCS_TARGET})
 if(USE_GNU_COMPILERS)
   target_compile_options(${CNK_PKCS_TARGET} PRIVATE "-Wextra" "-Wpedantic" "-Wall")
   if(CMAKE_C_COMPILER_ID MATCHES "Clang")
-    target_compile_options(${CNK_PKCS_TARGET} PRIVATE "-Weverything" "-Wno-declaration-after-statement" "-Wno-padded" "-Wno-undef" "-Wno-poison-system-directories" "-Wno-sign-conversion")
+    target_compile_options(${CNK_PKCS_TARGET} PRIVATE "-Weverything"
+      "-Wno-declaration-after-statement" "-Wno-padded" "-Wno-undef" "-Wno-poison-system-directories" "-Wno-sign-conversion"
+      "-Wno-unknown-warning-option"
+    )
   endif()
 elseif(MSVC)
   target_compile_options(${CNK_PKCS_TARGET} PRIVATE "/W4")

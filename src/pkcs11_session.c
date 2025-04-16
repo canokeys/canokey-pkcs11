@@ -70,7 +70,7 @@ void cnk_session_manager_cleanup(void) {
 // Helper function to resize the session table if needed
 static CK_RV resize_session_table(void) {
   // Check if we need to resize (if table is 80% full)
-  if (session_count < (session_table_size * 0.8)) {
+  if (session_count < (session_table_size * 10 / 8)) {
     CNK_RET_OK;
   }
 

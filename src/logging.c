@@ -23,6 +23,9 @@ static void print_time(FILE *out) {
   }
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+
 void cnk_printf(const int level, const char *const format, ...) {
   if (level < g_cnk_log_level) {
     return;
@@ -39,6 +42,8 @@ void cnk_printf(const int level, const char *const format, ...) {
   va_end(args);
   fflush(out);
 }
+
+#pragma clang diagnostic pop
 
 /**
  * Log an APDU command in a formatted way.

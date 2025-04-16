@@ -1,6 +1,6 @@
-#ifndef __UTILS__H__
-#define __UTILS__H__
+#ifndef UTILS_H
+#define UTILS_H
 
 char *ck_strcasestr(const char *str, const char *pattern);
 
-#endif // __UTILS__H__
+#endif // UTILS_H

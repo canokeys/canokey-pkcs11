@@ -53,7 +53,7 @@ CK_RV cnk_obj_id_to_piv_tag(CK_BYTE obj_id, CK_BYTE *piv_tag) {
 }
 
 // Helper function to set attribute values with proper buffer checking
-CK_RV cnk_set_single_attribute_value(CK_ATTRIBUTE_PTR attribute, const void *value, CK_ULONG value_size) {
+static CK_RV cnk_set_single_attribute_value(CK_ATTRIBUTE_PTR attribute, const void *value, CK_ULONG value_size) {
   attribute->ulValueLen = value_size;
 
   if (attribute->pValue) {

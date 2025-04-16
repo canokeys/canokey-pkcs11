@@ -53,6 +53,9 @@
 #ifndef PKCS11_H
 #define PKCS11_H 1
 
+#pragma clang diagnostic ignored "-Wreserved-macro-identifier"
+#pragma clang diagnostic ignored "-Wreserved-identifier"
+
 #if defined(__cplusplus)
 extern "C" {
 #endif

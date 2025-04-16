@@ -1,9 +1,11 @@
-#ifndef __LOGGING__H__
-#define __LOGGING__H__
+#ifndef LOGGING_H
+#define LOGGING_H
 
 #pragma clang diagnostic ignored "-Wlanguage-extension-token"
 #pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
 #pragma clang diagnostic ignored "-Wgnu-statement-expression-from-macro-expansion"
+#pragma clang diagnostic ignored "-Wextra-semi-stmt"
+#pragma clang diagnostic ignored "-Wgnu-statement-expression"
 
 #define _CRT_SECURE_NO_WARNINGS // make MSVC happy
 #include <stdio.h>
@@ -87,4 +89,4 @@ void cnk_log_apdu_response(const unsigned char *response, unsigned long response
     cnk_log_apdu_response(response, response_len);                                                                     \
   }
 
-#endif // __LOGGING__H__
+#endif // LOGGING_H
