@@ -23,9 +23,12 @@
  */
 #define CHECK_SLOT_ID_VALID(id)                                                                                        \
   do {                                                                                                                 \
-    if ((id) >= g_cnk_num_readers) {                                                                                   \
+    cnk_mutex_lock(&g_cnk_readers_mutex);                                                                              \
+    if ((id) >= (CK_ULONG)g_cnk_num_readers) {                                                                                   \
+      cnk_mutex_unlock(&g_cnk_readers_mutex);                                                                          \
       CNK_RETURN(CKR_SLOT_ID_INVALID, "Invalid slot ID");                                                              \
     }                                                                                                                  \
+    cnk_mutex_unlock(&g_cnk_readers_mutex);                                                                            \
   } while (0)
 
 /**

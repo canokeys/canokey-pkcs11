@@ -112,8 +112,7 @@ CK_KEY_TYPE cnk_algo_type_to_key_type(CK_BYTE algorithm_type) {
 }
 
 // Handle certificate-specific attributes
-static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE_PTR data,
-                                              CK_ULONG data_len) {
+static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE_PTR data, CK_ULONG data_len) {
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
 
   switch (attribute.type) {
@@ -140,8 +139,7 @@ static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE pi
 }
 
 // Handle public key specific attributes
-static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
-                                             CK_SLOT_ID slot_id) {
+static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE algorithm_type) {
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
   CK_KEY_TYPE key_type = cnk_algo_type_to_key_type(algorithm_type);
 
@@ -193,8 +191,7 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv
 }
 
 // Handle private key specific attributes
-static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE piv_tag, CK_BYTE algorithm_type,
-                                              CK_SLOT_ID slot_id) {
+static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE algorithm_type) {
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
   CK_KEY_TYPE key_type = cnk_algo_type_to_key_type(algorithm_type);
 
@@ -246,17 +243,37 @@ static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE pi
 
 CK_RV cnk_create_object(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                         CK_OBJECT_HANDLE_PTR phObject) {
+  (void)hSession;
+  (void)pTemplate;
+  (void)ulCount;
+  (void)phObject;
+
   CNK_RET_UNIMPL;
 }
 
 CK_RV cnk_copy_object(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                       CK_ULONG ulCount, CK_OBJECT_HANDLE_PTR phNewObject) {
+  (void)hSession;
+  (void)hObject;
+  (void)pTemplate;
+  (void)ulCount;
+  (void)phNewObject;
+
   CNK_RET_UNIMPL;
 }
 
-CK_RV cnk_destroy_object(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) { CNK_RET_UNIMPL; }
+CK_RV cnk_destroy_object(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
+  (void)hSession;
+  (void)hObject;
+
+  CNK_RET_UNIMPL;
+}
 
 CK_RV cnk_get_object_size(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ULONG_PTR pulSize) {
+  (void)hSession;
+  (void)hObject;
+  (void)pulSize;
+
   CNK_RET_UNIMPL;
 }
 
@@ -387,7 +404,8 @@ CK_RV cnk_get_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
         type_str = "Data";
         break;
       default:
-        // Unknown. Do nothing.
+        // do nothing.
+        break;
       }
 
       snprintf(label, sizeof(label), "PIV %s %02X", type_str, piv_tag);
@@ -421,15 +439,15 @@ CK_RV cnk_get_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
     // Object class specific attributes
     switch (obj_class) {
     case CKO_CERTIFICATE:
-      rv = cnk_handle_certificate_attribute(pTemplate[i], piv_tag, data, data_len);
+      rv = cnk_handle_certificate_attribute(pTemplate[i], data, data_len);
       break;
 
     case CKO_PUBLIC_KEY:
-      rv = cnk_handle_public_key_attribute(pTemplate[i], piv_tag, algorithm_type, session->slot_id);
+      rv = cnk_handle_public_key_attribute(pTemplate[i], algorithm_type);
       break;
 
     case CKO_PRIVATE_KEY:
-      rv = cnk_handle_private_key_attribute(pTemplate[i], piv_tag, algorithm_type, session->slot_id);
+      rv = cnk_handle_private_key_attribute(pTemplate[i], algorithm_type);
       break;
 
     default:
@@ -454,7 +472,8 @@ CK_RV cnk_get_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
 
 CK_RV cnk_set_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                               CK_ULONG ulCount) {
-  CNK_LOG_FUNC(cnk_set_attribute_value, ", hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
+  CNK_LOG_FUNC(cnk_set_attribute_value, ", hSession: %lu, hObject: %lu, pTemplate: %p, ulCount: %lu", hSession, hObject,
+               pTemplate, ulCount);
   CNK_RET_UNIMPL;
 }
 

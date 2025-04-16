@@ -42,9 +42,9 @@ extern void cnk_printf(const int level, const bool prepend_date, const char *for
 // #define FUNC_TRACE(CALL) dbg(CALL)
 #define CNK_RETURN(ARG, REASON)                                                                                        \
   do {                                                                                                                 \
-    typeof((ARG)) ret = (ARG);                                                                                         \
-    CNK_DEBUG("Returning %s = %d with reason \"%s\"", #ARG, ret, REASON);                                              \
-    return ret;                                                                                                        \
+    typeof((ARG)) _ret = (ARG);                                                                                         \
+    CNK_DEBUG("Returning %s = %d with reason \"%s\"", #ARG, _ret, REASON);                                              \
+    return _ret;                                                                                                        \
   } while (0)
 #define CNK_LOG_FUNC(name, ...) CNK_DEBUG("Called" __VA_ARGS__)
 #else

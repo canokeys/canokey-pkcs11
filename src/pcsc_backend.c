@@ -81,7 +81,7 @@ CK_RV cnk_list_readers(void) {
 
   // If readers are already listed, clean them up first
   if (g_cnk_readers) {
-    for (CK_ULONG i = 0; i < g_cnk_num_readers; i++) {
+    for (CK_LONG i = 0; i < g_cnk_num_readers; i++) {
       ck_free(g_cnk_readers[i].name);
     }
     ck_free(g_cnk_readers);
@@ -93,7 +93,7 @@ CK_RV cnk_list_readers(void) {
   DWORD readers_len = 0;
 
   // First call to get the needed buffer size
-  LONG rv = SCardListReaders(g_cnk_pcsc_context, NULL, NULL, &readers_len);
+  ULONG rv = SCardListReaders(g_cnk_pcsc_context, NULL, NULL, &readers_len);
   if (rv != SCARD_S_SUCCESS && rv != SCARD_E_INSUFFICIENT_BUFFER) {
     cnk_mutex_unlock(&g_cnk_readers_mutex);
     CNK_ERROR("SCardListReaders failed with error: 0x%lx", rv);
@@ -140,7 +140,7 @@ CK_RV cnk_list_readers(void) {
 
   // Fill the reader list with readers containing 'canokey' and assign unique IDs
   reader = readers_buf;
-  CK_ULONG index = 0;
+  CK_LONG index = 0;
   while (*reader != '\0' && index < g_cnk_num_readers) {
     if (contains_canokey(reader)) {
       size_t name_len = strlen(reader) + 1;
@@ -150,7 +150,7 @@ CK_RV cnk_list_readers(void) {
       }
       if (!g_cnk_readers[index].name) {
         // Clean up on error
-        for (CK_ULONG i = 0; i < index; i++) {
+        for (CK_LONG i = 0; i < index; i++) {
           ck_free(g_cnk_readers[i].name);
         }
         ck_free(g_cnk_readers);
@@ -179,7 +179,7 @@ void cnk_cleanup_pcsc(void) {
     return;
 
   if (g_cnk_readers) {
-    for (CK_ULONG i = 0; i < g_cnk_num_readers; i++) {
+    for (CK_LONG i = 0; i < g_cnk_num_readers; i++) {
       ck_free(g_cnk_readers[i].name);
     }
     ck_free(g_cnk_readers);
@@ -199,9 +199,8 @@ void cnk_cleanup_pcsc(void) {
 
 // Get the number of readers
 CK_ULONG cnk_get_num_readers(void) {
-  CK_ULONG num;
   cnk_mutex_lock(&g_cnk_readers_mutex);
-  num = g_cnk_num_readers;
+  CK_ULONG num = g_cnk_num_readers;
   cnk_mutex_unlock(&g_cnk_readers_mutex);
   return num;
 }
@@ -210,7 +209,7 @@ CK_ULONG cnk_get_num_readers(void) {
 CK_SLOT_ID cnk_get_reader_slot_id(CK_ULONG index) {
   CK_SLOT_ID slot = (CK_SLOT_ID)-1;
   cnk_mutex_lock(&g_cnk_readers_mutex);
-  if (index < g_cnk_num_readers) {
+  if (index < (CK_ULONG)g_cnk_num_readers) {
     slot = g_cnk_readers[index].slot_id;
   }
   cnk_mutex_unlock(&g_cnk_readers_mutex);
@@ -252,7 +251,7 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
   }
 
   // Find the reader corresponding to the slot ID
-  CK_ULONG i;
+  CK_LONG i;
   for (i = 0; i < g_cnk_num_readers; i++) {
     if (g_cnk_readers[i].slot_id == slotID)
       break;

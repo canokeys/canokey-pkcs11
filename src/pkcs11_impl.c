@@ -250,14 +250,14 @@ CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PT
   }
 
   // Check if the provided buffer is large enough
-  if (*pulCount < g_cnk_num_readers) {
+  if (*pulCount < (CK_ULONG)g_cnk_num_readers) {
     *pulCount = g_cnk_num_readers;
     cnk_mutex_unlock(&g_cnk_readers_mutex);
     CNK_RETURN(CKR_BUFFER_TOO_SMALL, "pulCount too small");
   }
 
   // Fill the slot list with the stored slot IDs
-  for (CK_ULONG i = 0; i < g_cnk_num_readers; i++) {
+  for (CK_LONG i = 0; i < g_cnk_num_readers; i++) {
     pSlotList[i] = g_cnk_readers[i].slot_id;
   }
 
@@ -323,7 +323,7 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   cnk_mutex_lock(&g_cnk_readers_mutex);
 
   // Check if the slot ID is valid
-  if (slotID >= g_cnk_num_readers) {
+  if (slotID >= (CK_SLOT_ID)g_cnk_num_readers) {
     cnk_mutex_unlock(&g_cnk_readers_mutex);
     CNK_RETURN(CKR_SLOT_ID_INVALID, "invalid slot");
   }

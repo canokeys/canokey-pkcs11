@@ -50,9 +50,9 @@ extern CNK_FREE_FUNC g_cnk_free_func;
 #define PIV_ALG_SM2 0x54
 
 // Helper functions for memory allocation
-static void *ck_malloc(size_t size) { return g_cnk_malloc_func(size); }
-static void *ck_calloc(size_t num, size_t size) { return g_cnk_malloc_func(num * size); }
-static void ck_free(void *ptr) { g_cnk_free_func(ptr); }
+static __attribute__((unused)) void *ck_malloc(size_t size) { return g_cnk_malloc_func(size); }
+static __attribute__((unused)) void *ck_calloc(size_t num, size_t size) { return g_cnk_malloc_func(num * size); }
+static __attribute__((unused)) void ck_free(void *ptr) { g_cnk_free_func(ptr); }
 
 // Initialize PC/SC backend
 CK_RV cnk_initialize_backend(void);
