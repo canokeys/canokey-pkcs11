@@ -20,7 +20,7 @@ jobs:
             cmake-config-args: '-G Ninja -DBUILD_TESTING=ON'
           - os: windows-latest
             pre-build-script: ''
-            cmake-config-args: '-G "Visual Studio 16 2019" -T ClangCL -A x64'
+            cmake-config-args: '-G "Visual Studio 17 2022" -T ClangCL -A x64'
           - os: macos-latest
             pre-build-script: |
               brew update
@@ -33,7 +33,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          submodules: 'recursive'
       - name: Pre-build script
         run: ${{ matrix.pre-build-script }}
         if: matrix.pre-build-script != ''
