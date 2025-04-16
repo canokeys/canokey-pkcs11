@@ -1,6 +1,6 @@
 #include "pkcs11_mutex.h"
-#include "pkcs11_macros.h"
 #include "pcsc_backend.h"
+#include "pkcs11_macros.h"
 
 #include <nsync_mu.h>
 #include <stdlib.h>
@@ -92,10 +92,10 @@ CK_RV cnk_mutex_create(CNK_PKCS11_MUTEX *mutex) {
 
   if (g_using_app_mutexes) {
     // Use application-supplied mutex functions
-    mutex->create = (CK_RV(*)(void **))g_create_mutex;
-    mutex->destroy = (CK_RV(*)(void *))g_destroy_mutex;
-    mutex->lock = (CK_RV(*)(void *))g_lock_mutex;
-    mutex->unlock = (CK_RV(*)(void *))g_unlock_mutex;
+    mutex->create = (CK_RV (*)(void **))g_create_mutex;
+    mutex->destroy = (CK_RV (*)(void *))g_destroy_mutex;
+    mutex->lock = (CK_RV (*)(void *))g_lock_mutex;
+    mutex->unlock = (CK_RV (*)(void *))g_unlock_mutex;
   } else {
     // Use OS primitives
     mutex->create = os_create_mutex;

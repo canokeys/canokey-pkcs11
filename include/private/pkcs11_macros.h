@@ -8,7 +8,7 @@
  * Macro to check if the PKCS#11 library is initialized
  * Returns CKR_CRYPTOKI_NOT_INITIALIZED if not initialized
  */
-#define ENSURE_INITIALIZED()                                                                                            \
+#define ENSURE_INITIALIZED()                                                                                           \
   do {                                                                                                                 \
     if (!g_cnk_is_initialized) {                                                                                       \
       CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki not initialized");                                            \
@@ -39,7 +39,7 @@
  */
 #define PKCS11_VALIDATE(ptr, id)                                                                                       \
   do {                                                                                                                 \
-    ENSURE_INITIALIZED();                                                                                               \
+    ENSURE_INITIALIZED();                                                                                              \
     CNK_ENSURE_NONNULL(ptr);                                                                                           \
     CHECK_SLOT_ID_VALID(id);                                                                                           \
   } while (0)
@@ -51,8 +51,8 @@
  */
 #define PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(ptr)                                                                  \
   do {                                                                                                                 \
-    ENSURE_INITIALIZED();                                                                                               \
-    CNK_ENSURE_NONNULL(ptr);                                                                                      \
+    ENSURE_INITIALIZED();                                                                                              \
+    CNK_ENSURE_NONNULL(ptr);                                                                                           \
   } while (0)
 
 #endif /* PKCS11_MACROS_H */

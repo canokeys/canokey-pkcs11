@@ -41,12 +41,12 @@ typedef struct CNK_PKCS11_SESSION {
   CK_BBOOL find_class_specified;                   // Whether class was specified in the search template
 
   // Cryptographic operation fields
-  CK_OBJECT_HANDLE active_key;                     // Active key for crypto operations
-  CK_MECHANISM_PTR active_mechanism_ptr;           // Pointer to active mechanism structure
-  CK_BYTE active_key_piv_tag;                     // PIV tag of the active key
-  CK_BYTE active_key_algorithm_type;              // Algorithm type of the active key
-  CK_BYTE active_key_modulus[512];                // Cached modulus for RSA operations (max 4096 bits)
-  CK_ULONG active_key_modulus_len;                // Length of the cached modulus
+  CK_OBJECT_HANDLE active_key;           // Active key for crypto operations
+  CK_MECHANISM_PTR active_mechanism_ptr; // Pointer to active mechanism structure
+  CK_BYTE active_key_piv_tag;            // PIV tag of the active key
+  CK_BYTE active_key_algorithm_type;     // Algorithm type of the active key
+  CK_BYTE active_key_modulus[512];       // Cached modulus for RSA operations (max 4096 bits)
+  CK_ULONG active_key_modulus_len;       // Length of the cached modulus
 } CNK_PKCS11_SESSION;
 
 // Initialize the session manager

@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-
 int main(int argc, char *argv[]) {
   // Path to the PKCS#11 library
   const char *libraryPath = NULL;

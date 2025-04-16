@@ -84,7 +84,7 @@ CK_RV cnk_list_readers(void) {
 
   // First call to get the needed buffer size
   LONG rv = SCardListReaders(g_cnk_pcsc_context, NULL, NULL, &readers_len);
-  if (rv != SCARD_S_SUCCESS && rv != (LONG) SCARD_E_INSUFFICIENT_BUFFER) {
+  if (rv != SCARD_S_SUCCESS && rv != (LONG)SCARD_E_INSUFFICIENT_BUFFER) {
     return CKR_DEVICE_ERROR;
   }
 
@@ -272,7 +272,7 @@ void cnk_disconnect_card(SCARDHANDLE hCard) {
 
 // Helper function to transmit APDU commands and log both command and response
 static LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, DWORD command_len, CK_BYTE *response,
-                         DWORD *response_len) {
+                                DWORD *response_len) {
   if (hCard == 0 || command == NULL || response == NULL || response_len == NULL) {
     return SCARD_E_INVALID_PARAMETER;
   }
@@ -434,7 +434,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
   CK_BYTE response_buf[128];
   CK_BYTE_PTR response = response_buf;
   DWORD response_len = sizeof(response_buf);
-  
+
   if (rv != CKR_OK) {
     CNK_ERROR("Connect to card failed");
     goto cleanup;
@@ -476,7 +476,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
     mapped_tag = tag;
     break; // Keep original tag if not in mapping
   }
-  
+
   if (fetch_data) {
     response_len = 4096;
     response = (CK_BYTE_PTR)ck_malloc(response_len); // Allocate larger buffer for data
@@ -682,8 +682,8 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, c
   int v_major, v_minor, v_patch;
   if (sscanf(version_str, "%d.%d.%d", &v_major, &v_minor, &v_patch) == 3) {
     // For firmware version: major is the first part, minor is the second part * 10 + the third part
-    *fw_major = (CK_BYTE) v_major;
-    *fw_minor = (CK_BYTE) (v_minor * 10 + v_patch);
+    *fw_major = (CK_BYTE)v_major;
+    *fw_minor = (CK_BYTE)(v_minor * 10 + v_patch);
   } else {
     // Fallback if parsing fails
     *fw_major = 0;

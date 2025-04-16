@@ -7,7 +7,7 @@
 
 #include "utils.h"
 
-char* ck_strcasestr(const char* str, const char* pattern) {
+char *ck_strcasestr(const char *str, const char *pattern) {
 #ifdef _MSC_VER
   // taken from https://stackoverflow.com/posts/35674861
   size_t i;

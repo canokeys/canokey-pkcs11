@@ -12,9 +12,9 @@
 #include "pkcs11_session.h"
 #include "rsa_utils.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
-#include <stdatomic.h>
 
 // Forward declaration of the function list
 static CK_FUNCTION_LIST ck_function_list;
