@@ -22,10 +22,9 @@ static CK_RV cnk_with_card(CK_SLOT_ID slotID, CardOperationFunc operation, void 
     CNK_RETURN(CKR_ARGUMENTS_BAD, "operation is NULL");
 
   SCARDHANDLE hCard;
-  CK_RV rv;
 
   // Connect to card
-  rv = cnk_connect_and_select_canokey(slotID, &hCard);
+  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
   if (rv != CKR_OK)
     CNK_RETURN(rv, "Failed to connect to card");
 
@@ -45,7 +44,7 @@ static CK_RV cnk_with_card(CK_SLOT_ID slotID, CardOperationFunc operation, void 
   return rv;
 }
 
-// Helper function to check if a string contains 'canokey' (case insensitive)
+// Helper function to check if a string contains 'canokey' (case-insensitive)
 static CK_BBOOL contains_canokey(const char *str) { return str && ck_strcasestr(str, "canokey") ? CK_TRUE : CK_FALSE; }
 
 // Initialize PC/SC context only
@@ -771,8 +770,6 @@ CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
 CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_tag, CK_BYTE_PTR pData,
                    CK_ULONG ulDataLen, CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen) {
   SCARDHANDLE hCard;
-  LONG pcsc_rv;
-  CK_RV rv;
 
   // Check if we're just getting the signature length
   if (pSignature == NULL_PTR)
@@ -787,7 +784,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
     CNK_RETURN(CKR_PIN_INCORRECT, "PIN verification required before signing");
 
   // Use the extended version to keep the card connection open
-  rv = cnk_verify_piv_pin_with_session_ex(slotID, session, session->piv_pin, session->piv_pin_len, &hCard);
+  CK_RV rv = cnk_verify_piv_pin_with_session_ex(slotID, session, session->piv_pin, session->piv_pin_len, &hCard);
   if (rv != CKR_OK) {
     CNK_ERROR("Failed to verify PIN");
     cnk_disconnect_card(hCard);
@@ -843,7 +840,6 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
     len_pos++;
 
     tlv_data[len_pos] = (CK_BYTE)(content_len & 0xFF); // Length low byte
-    len_pos++;
 
     tlv_len += 2; // Adjust total length for the extra length bytes
   } else {
@@ -884,7 +880,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   DWORD response_len = sizeof(response);
 
   CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command for signing");
-  pcsc_rv = cnk_transceive_apdu(hCard, auth_apdu, apdu_len, response, &response_len);
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, auth_apdu, apdu_len, response, &response_len);
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
     cnk_disconnect_card(hCard);
@@ -1034,18 +1030,15 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
 CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm_type, CK_BYTE_PTR modulus_ptr,
                        CK_ULONG_PTR modulus_len_ptr) {
   SCARDHANDLE hCard;
-  CK_RV rv;
 
-  // Initialize output parameters
-  if (algorithm_type == NULL)
-    CNK_RETURN(CKR_FUNCTION_FAILED, "algorithm_type is NULL");
+  CNK_ENSURE_NONNULL(algorithm_type);
 
   // If modulus is requested, ensure the length pointer is provided
   if (modulus_ptr != NULL && modulus_len_ptr == NULL)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "modulus_len_ptr is NULL when modulus_ptr is provided");
 
   // Connect to the card for this operation
-  rv = cnk_connect_and_select_canokey(slotID, &hCard);
+  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
   if (rv != CKR_OK) {
     return rv;
   }
@@ -1203,7 +1196,7 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
     // Process the tag-value pair
     switch (tag) {
     case 0x01: // Algorithm type
-      if (length == 1 && algorithm_type != NULL) {
+      if (length == 1) {
         *algorithm_type = data[pos];
         CNK_DEBUG("Algorithm type: 0x%02X", *algorithm_type);
       }
@@ -1299,7 +1292,7 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
 }
 
 // Card operation function for logout
-static CK_RV logout_card_operation(SCARDHANDLE hCard, void *context) {
+static CK_RV logout_card_operation(SCARDHANDLE hCard, const void *context) {
   // Unused parameter
   (void)context;
 

@@ -99,7 +99,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
         // threads simultaneously
         mutex_rv = CKR_OK; // no need to do anything
       }
-    } else if (all_supplied) {
+    } else { // all_supplied
       if (can_use_os_locking) {
         // Case 4:
         // the application will be performing multi-threaded Cryptoki access,
@@ -114,8 +114,6 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
         // mutex-handling to ensure safe multi-threaded access
         mutex_rv = cnk_mutex_system_init(args); // only UDF available
       }
-    } else {
-      __builtin_unreachable(); // checked above
     }
 
     if (mutex_rv != CKR_OK) {

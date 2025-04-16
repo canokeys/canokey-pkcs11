@@ -386,6 +386,8 @@ CK_RV cnk_get_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
       case CKO_DATA:
         type_str = "Data";
         break;
+      default:
+        // Unknown. Do nothing.
       }
 
       snprintf(label, sizeof(label), "PIV %s %02X", type_str, piv_tag);
