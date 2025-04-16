@@ -26,7 +26,7 @@ static void print_time(FILE *out) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wformat-nonliteral"
 
-void cnk_printf(const int level, const char *const format, ...) {
+void cnk_printf(const int level, const bool prepend_date, const char *const format, ...) {
   if (level < g_cnk_log_level) {
     return;
   }
@@ -34,7 +34,9 @@ void cnk_printf(const int level, const char *const format, ...) {
   if (out == NULL) {
     out = stderr;
   }
-  print_time(out);
+  if (prepend_date) {
+    print_time(out);
+  }
   // print the log line
   va_list args;
   va_start(args, format);

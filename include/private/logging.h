@@ -7,6 +7,7 @@
 
 #define _CRT_SECURE_NO_WARNINGS // make MSVC happy
 #include <stdio.h>
+#include <stdbool.h>
 
 enum CNK_LOG_LEVEL {
   CNK_LOG_LEVEL_TRACE = 0,
@@ -24,11 +25,11 @@ extern const char *g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE];
 extern FILE *g_cnk_log_file;
 extern int g_cnk_log_level;
 
-extern void cnk_printf(const int level, const char *format, ...);
+extern void cnk_printf(const int level, const bool prepend_date, const char *format, ...);
 
 #define CNK_PRINTLOGF(level, format, ...)                                                                              \
-  cnk_printf(level, "%-20s(%-20s:%03d)[%-5s]: ", __FUNCTION__, __FILE__, __LINE__, g_cnk_log_level_name[level]);       \
-  cnk_printf(level, format "\n", ##__VA_ARGS__);
+  cnk_printf(level, true, "%-20s(%-20s:L%03d)[%-5s]: ", __FUNCTION__, __FILE__, __LINE__, g_cnk_log_level_name[level]);\
+  cnk_printf(level, false, format "\n", ##__VA_ARGS__);
 #define CNK_TRACE(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_TRACE, format, ##__VA_ARGS__)
 #define CNK_DEBUG(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_DEBUG, format, ##__VA_ARGS__)
 #define CNK_INFO(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_INFO, format, ##__VA_ARGS__)
@@ -41,10 +42,10 @@ extern void cnk_printf(const int level, const char *format, ...);
 #define CNK_RETURN(ARG, REASON)                                                                                        \
   do {                                                                                                                 \
     typeof((ARG)) ret = (ARG);                                                                                         \
-    CNK_DEBUG("Returning value %s = %d with reason \"%s\"", #ARG, ret, REASON);                                        \
+    CNK_DEBUG("Returning %s = %d with reason \"%s\"", #ARG, ret, REASON);                                              \
     return ret;                                                                                                        \
   } while (0)
-#define CNK_LOG_FUNC(name, ...) CNK_DEBUG(#name " called" __VA_ARGS__)
+#define CNK_LOG_FUNC(name, ...) CNK_DEBUG("Called" __VA_ARGS__)
 #else
 // #define FUNC_TRACE(CALL) CALL
 #define CNK_RETURN(ARG, ...) return (ARG);
