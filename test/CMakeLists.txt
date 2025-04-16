@@ -14,4 +14,3 @@ if (APPLE OR UNIX)
 endif ()
 
 add_mocked_test(rsa_utils LINK_LIBRARIES ${CNK_PKCS_TARGET}-test ${MBEDTLS_LIBRARIES})
-target_link_libraries(test_rsa_utils PRIVATE cmocka::cmocka)
