@@ -1,6 +1,8 @@
+find_package(CMocka REQUIRED)
+message(STATUS "CMocka found: includedir ${CMOCKA_INCLUDE_DIR}, lib ${CMOCKA_LIBRARY}")
+
 include(AddCMockaTest)
 include(AddMockedTest)
-find_package(CMocka CONFIG REQUIRED)
 
 add_executable(test_real test_real.c)
 if (APPLE OR UNIX)
