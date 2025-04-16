@@ -8,12 +8,29 @@ It uses PCSCLite on Linux, PCSC Framework on macOS, and native PC/SC APIs (`wins
 
 ## Building
 
-It could be built with CMake on Linux / Windows / macOS.
+It could be built with CMake on Linux / Windows / macOS using `clang` (Linux / macOS) or `clang-cl` (Windows).
+GCC should be supported, but is not tested.
+
+1. Install Dependencies:
 
 ```bash
-apt-get install libpcsclite-dev # linux only
-cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -G Ninja .
-cmake --build build
+apt-get install -y clang cmake libpcsclite-dev libcmocka-dev ninja-build # Linux only
+brew install cmake cmocka ninja-build # macOS only
+```
+
+2. Configure and build:
+
+```bash
+CC=clang cmake -B build -DCMAKE_BUILD_TYPE=Debug -G Ninja -DENABLE_TESTING=ON . # Linux / macOS
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -G "Visual Studio 17 2022" -T ClangCL -A x64 # Windows
+cmake --build build -v
+```
+
+3. Run tests (Linux / macOS only):
+
+```bash
+ctest --test-dir build --output-on-failure # for unit tests
+./build/test/real/test_foo ./build/libcanokey-pkcs11.so # test with real PC/SC hardware (for macOS using .dylib)
 ```
 
 ## Running Modes
