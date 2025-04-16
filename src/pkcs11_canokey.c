@@ -8,6 +8,7 @@
 #include "pkcs11.h"
 
 #include <mbedtls/platform.h>
+#include <nsync_malloc.h>
 #include <stdlib.h>
 
 // Function pointers for memory allocation (global)
@@ -37,6 +38,9 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
     g_cnk_free_func = pInitArgs->free_func;
     // call mbedtls hook to use the same malloc/free functions
     mbedtls_platform_set_calloc_free(ck_calloc, ck_free);
+    // tell nsync to use the same malloc/free functions
+    nsync_malloc_ptr_ = g_cnk_malloc_func;
+    nsync_free_ptr_ = g_cnk_free_func;
     g_cnk_pcsc_context = pInitArgs->hSCardCtx;
     g_cnk_scard = pInitArgs->hScard;
     return CKR_OK;
