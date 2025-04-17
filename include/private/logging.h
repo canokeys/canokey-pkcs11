@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <stdatomic.h>
 
+#include "utils.h"
+
 enum CNK_LOG_LEVEL {
   CNK_LOG_LEVEL_TRACE = 0,
   CNK_LOG_LEVEL_DEBUG,
@@ -34,7 +36,7 @@ extern void cnk_printf(const int level, const bool prepend_date, const char *for
 #define CNK_PRINTLOGF(level, format, ...)                                                                              \
   do {                                                                                                                 \
     int _level = atomic_load(&g_cnk_log_level);                                                                        \
-    if (__builtin_expect(_level < g_cnk_log_level, true)) {                                                            \
+    if (CNK_LIKELY(_level < g_cnk_log_level)) {                                                            \
       break;                                                                                                           \
     }                                                                                                                  \
     CNK_PRINTLOGF_IMPL(_level, format, ##__VA_ARGS__);                                                                 \
@@ -50,7 +52,7 @@ extern void cnk_printf(const int level, const bool prepend_date, const char *for
 // #define FUNC_TRACE(CALL) dbg(CALL)
 #define CNK_RETURN(ARG, REASON)                                                                                        \
   do {                                                                                                                 \
-    __typeof__((ARG)) _ret = (ARG);                                                                                        \
+    CNK_TYPEOF((ARG)) _ret = (ARG);                                                                                        \
     CNK_DEBUG("Returning %s = %d: \"%s\"", #ARG, _ret, REASON);                                             \
     return _ret;                                                                                                       \
   } while (0)
@@ -60,6 +62,12 @@ extern void cnk_printf(const int level, const bool prepend_date, const char *for
 #define CNK_RETURN(ARG, ...) return (ARG);
 #define CNK_LOG_FUNC(...)
 #endif // CNK_VERBOSE
+
+#define CNK_RET_OK CNK_RETURN(CKR_OK, "Success")
+
+#define CNK_RET_UNIMPL CNK_RETURN(CKR_FUNCTION_NOT_SUPPORTED, "Not implemented")
+
+#define CNK_RET_FWD(EXP) CNK_RETURN(EXP, "Directly forwarded")
 
 // Function to log APDU commands in a formatted way
 void cnk_log_apdu_command(const unsigned char *command, unsigned long command_len);

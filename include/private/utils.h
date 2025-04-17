@@ -1,8 +1,6 @@
 #ifndef UTILS_H
 #define UTILS_H
 
-#include "logging.h"
-
 #define N_VA_ARGS_(_8,_7,_6,_5,_4,_3,_2,_1, N, ...) N
 #define N_VA_ARGS(...) N_VA_ARGS_(__VA_ARGS__ __VA_OPT__(,) 8,7,6,5,4,3,2,1,0)
 #define FOREACH_0(FN, ...) 
@@ -18,11 +16,35 @@
 #define FOREACH_(FN, NARGS, ...) FOREACH__(FN, NARGS, __VA_ARGS__)
 #define FOREACH(FN, ...) FOREACH_(FN, N_VA_ARGS(__VA_ARGS__), __VA_ARGS__)
 
-#define CNK_RET_OK CNK_RETURN(CKR_OK, "Success")
+#if defined(__has_builtin)
+#define CNK_HAS_BUILTIN(x) __has_builtin(x)
+#else
+#define CNK_HAS_BUILTIN(x) 0
+#endif
 
-#define CNK_RET_UNIMPL CNK_RETURN(CKR_FUNCTION_NOT_SUPPORTED, "Not implemented")
+#if CNK_HAS_BUILTIN(__builtin_expect)
+#define CNK_LIKELY(x)       __builtin_expect(!!(x), 1)
+#define CNK_UNLIKELY(x)     __builtin_expect(!!(x), 0)
+#else
+#define CNK_LIKELY(x)       x
+#define CNK_UNLIKELY(x)     x
+#endif
 
-#define CNK_RET_FWD(EXP) CNK_RETURN(EXP, "Directly forwarded")
+#if CNK_HAS_BUILTIN(__builtin_assume)
+#define CNK_ASSUME(x)       __builtin_assume(x)
+#elif CNK_HAS_BUILTIN(__builtin_unreachable)
+#define CNK_ASSUME(x)       do { if (!(x)) __builtin_unreachable(); } while (0)
+#elif defined(_MSC_VER)
+#define CNK_ASSUME(x)       __assume(x)
+#else
+#define CNK_ASSUME(x)       do { } while (0)
+#endif
+
+#if CNK_HAS_BUILTIN(typeof) || __STDC_VERSION__ >= 202311L
+#define CNK_TYPEOF(x) typeof(x)
+#else
+#define CNK_TYPEOF(x) __typeof__(x)
+#endif
 
 #define CNK_ENSURE_EQUAL_REASON(EXP, EXPECTED, REASON)                                                                 \
   if ((EXP) != (EXPECTED)) {                                                                                           \
@@ -33,22 +55,22 @@
 
 #define CNK_ENSURE_NONNULL_(PTR)                                                                                       \
   do {                                                                                                                 \
-    __typeof__((PTR)) _ptr = (PTR);                                                                                        \
+    CNK_TYPEOF((PTR)) _ptr = (PTR);                                                                                        \
     if (_ptr == NULL) {                                                                                                \
       CNK_RETURN(CKR_ARGUMENTS_BAD, #PTR " is NULL");                                                                  \
     }                                                                                                                  \
-    __builtin_assume(_ptr != NULL);                                                                                    \
+    CNK_ASSUME(_ptr != NULL);                                                                                    \
   } while (0);
 
 #define CNK_ENSURE_NONNULL(...) FOREACH(CNK_ENSURE_NONNULL_, __VA_ARGS__)
 
 #define CNK_ENSURE_NULL_(PTR)                                                                                          \
   do {                                                                                                                 \
-    __typeof__((PTR)) _ptr = (PTR);                                                                                        \
+    CNK_TYPEOF((PTR)) _ptr = (PTR);                                                                                        \
     if (_ptr != NULL) {                                                                                                \
       CNK_RETURN(CKR_ARGUMENTS_BAD, #PTR " is not NULL");                                                              \
     }                                                                                                                  \
-    __builtin_assume(_ptr == NULL);                                                                                    \
+    CNK_ASSUME(_ptr == NULL);                                                                                    \
   } while (0);
 
 #define CNK_ENSURE_NULL(...) FOREACH(CNK_ENSURE_NULL_, __VA_ARGS__)

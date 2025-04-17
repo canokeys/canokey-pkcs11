@@ -1,6 +1,7 @@
 #ifndef PKCS11_MACROS_H
 #define PKCS11_MACROS_H
 
+#include "utils.h"
 #include "logging.h"
 #include "pkcs11.h"
 
@@ -10,7 +11,7 @@
  */
 #define CNK_ENSURE_INITIALIZED()                                                                                       \
   do {                                                                                                                 \
-    if (__builtin_expect(!g_cnk_is_initialized, false)) {                                                              \
+    if (CNK_UNLIKELY(!g_cnk_is_initialized)) {                                                              \
       CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki not initialized");                                            \
     }                                                                                                                  \
   } while (0)
