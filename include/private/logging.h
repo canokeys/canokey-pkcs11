@@ -5,7 +5,6 @@
 #pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
 #pragma clang diagnostic ignored "-Wgnu-statement-expression-from-macro-expansion"
 
-#define _CRT_SECURE_NO_WARNINGS // make MSVC happy
 #include <stdbool.h>
 #include <stdio.h>
 
@@ -28,9 +27,8 @@ extern int g_cnk_log_level;
 extern void cnk_printf(const int level, const bool prepend_date, const char *format, ...);
 
 #define CNK_PRINTLOGF(level, format, ...)                                                                              \
-  cnk_printf(level, true, "%-20s(%-20s:L%03d)[%-5s]: ", __FUNCTION__, __FILE__, __LINE__,                              \
-             g_cnk_log_level_name[level]);                                                                             \
-  cnk_printf(level, false, format "\n", ##__VA_ARGS__);
+  cnk_printf(level, true, "%-20s(%-20s:L%03d)[%-5s]: " format "\n", __FUNCTION__, __FILE__, __LINE__,                  \
+             g_cnk_log_level_name[level], ##__VA_ARGS__)
 #define CNK_TRACE(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_TRACE, format, ##__VA_ARGS__)
 #define CNK_DEBUG(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_DEBUG, format, ##__VA_ARGS__)
 #define CNK_INFO(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_INFO, format, ##__VA_ARGS__)
@@ -42,10 +40,11 @@ extern void cnk_printf(const int level, const bool prepend_date, const char *for
 // #define FUNC_TRACE(CALL) dbg(CALL)
 #define CNK_RETURN(ARG, REASON)                                                                                        \
   do {                                                                                                                 \
-    typeof((ARG)) _ret = (ARG);                                                                                         \
-    CNK_DEBUG("Returning %s = %d with reason \"%s\"", #ARG, _ret, REASON);                                              \
-    return _ret;                                                                                                        \
+    __typeof__((ARG)) _ret = (ARG);                                                                                    \
+    CNK_DEBUG("Returning %s = %d with reason \"%s\"", #ARG, _ret, REASON);                                             \
+    return _ret;                                                                                                       \
   } while (0)
+
 #define CNK_LOG_FUNC(name, ...) CNK_DEBUG("Called" __VA_ARGS__)
 #else
 // #define FUNC_TRACE(CALL) CALL
@@ -66,15 +65,16 @@ extern void cnk_printf(const int level, const bool prepend_date, const char *for
 
 #define CNK_ENSURE_NONNULL(PTR)                                                                                        \
   do {                                                                                                                 \
-    typeof((PTR)) _ptr = (PTR);                                                                                        \
+    __typeof__((PTR)) _ptr = (PTR);                                                                                    \
     if (_ptr == NULL) {                                                                                                \
       CNK_RETURN(CKR_ARGUMENTS_BAD, #PTR " is NULL");                                                                  \
     }                                                                                                                  \
     __builtin_assume(_ptr != NULL);                                                                                    \
   } while (0)
+
 #define CHK_ENSURE_NULL(PTR)                                                                                           \
   do {                                                                                                                 \
-    typeof((PTR)) _ptr = (PTR);                                                                                        \
+    __typeof__((PTR)) _ptr = (PTR);                                                                                    \
     if (_ptr != NULL) {                                                                                                \
       CNK_RETURN(CKR_ARGUMENTS_BAD, #PTR " is not NULL");                                                              \
     }                                                                                                                  \

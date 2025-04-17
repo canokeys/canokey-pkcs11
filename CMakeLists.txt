@@ -94,6 +94,7 @@ if(USE_GNU_COMPILERS)
   endif()
 elseif(MSVC)
   target_compile_options(${CNK_PKCS_TARGET} PRIVATE "/W4")
+  add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif()
 
 if(BUILD_SHARED_LIBS)

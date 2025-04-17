@@ -94,14 +94,14 @@ CK_RV cnk_list_readers(void) {
 
   // First call to get the needed buffer size
   ULONG rv = SCardListReaders(g_cnk_pcsc_context, NULL, NULL, &readers_len);
-  if (rv != SCARD_S_SUCCESS && rv != SCARD_E_INSUFFICIENT_BUFFER) {
+  if (rv != (ULONG)SCARD_S_SUCCESS && rv != (ULONG)SCARD_E_INSUFFICIENT_BUFFER) {
     cnk_mutex_unlock(&g_cnk_readers_mutex);
     CNK_ERROR("SCardListReaders failed with error: 0x%lx", rv);
     return CKR_DEVICE_ERROR;
   }
 
   // Allocate memory for the readers list
-  char *readers_buf = ck_malloc(readers_len);
+  char *readers_buf = (char *)ck_malloc(readers_len);
   if (!readers_buf) {
     cnk_mutex_unlock(&g_cnk_readers_mutex);
     CNK_ERROR("Failed to allocate memory for readers list");
@@ -128,7 +128,7 @@ CK_RV cnk_list_readers(void) {
   }
 
   // Allocate memory for the reader info array
-  g_cnk_readers = ck_malloc(g_cnk_num_readers * sizeof(ReaderInfo));
+  g_cnk_readers = (ReaderInfo *)ck_malloc(g_cnk_num_readers * sizeof(ReaderInfo));
   if (g_cnk_readers) {
     memset(g_cnk_readers, 0, g_cnk_num_readers * sizeof(ReaderInfo));
   }
@@ -144,7 +144,7 @@ CK_RV cnk_list_readers(void) {
   while (*reader != '\0' && index < g_cnk_num_readers) {
     if (contains_canokey(reader)) {
       size_t name_len = strlen(reader) + 1;
-      g_cnk_readers[index].name = ck_malloc(name_len);
+      g_cnk_readers[index].name = (char *)ck_malloc(name_len);
       if (g_cnk_readers[index].name) {
         memcpy(g_cnk_readers[index].name, reader, name_len);
       }
@@ -521,7 +521,8 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
 
   // For existence check, we can modify the APDU to only request the header
   // This is more efficient than fetching the entire content
-  CK_BYTE apdu[11] = {0x00, 0xCB, 0x3F, 0xFF, 0x05, 0x5C, 0x03, 0x5F, 0xC1, mapped_tag, fetch_data ? 0x00 : 0x01};
+  CK_BYTE apdu[11] = {
+      0x00, 0xCB, 0x3F, 0xFF, 0x05, 0x5C, 0x03, 0x5F, 0xC1, mapped_tag, fetch_data ? (CK_BYTE)0x00 : (CK_BYTE)0x01};
 
   // Send the get PIV data command using the transceive function
   LONG pcsc_rv = cnk_transceive_apdu(hCard, apdu, sizeof(apdu), response, &response_len);
@@ -599,7 +600,7 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
     goto cleanup;
   } else {
     // Other error
-    CNK_ERROR("transceive failure")
+    CNK_ERROR("transceive failure");
     rv = CKR_DEVICE_ERROR;
     goto cleanup;
   }
