@@ -1,8 +1,8 @@
 #include "pkcs11_session.h"
 
 #include "logging.h"
-#include "utils.h"
 #include "pcsc_backend.h"
+#include "utils.h"
 
 #include <string.h>
 

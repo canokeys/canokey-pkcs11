@@ -1,13 +1,13 @@
 #include "pkcs11_obj.h"
 
 #include "logging.h"
-#include "utils.h"
 #include "pcsc_backend.h"
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
 #include "pkcs11_macros.h"
 #include "pkcs11_mutex.h"
 #include "rsa_utils.h"
+#include "utils.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -460,8 +460,7 @@ CK_RV cnk_get_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
 
 CK_RV cnk_set_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                               CK_ULONG ulCount) {
-  CNK_LOG_FUNC(": hSession: %lu, hObject: %lu, pTemplate: %p, ulCount: %lu", hSession, hObject,
-               pTemplate, ulCount);
+  CNK_LOG_FUNC(": hSession: %lu, hObject: %lu, pTemplate: %p, ulCount: %lu", hSession, hObject, pTemplate, ulCount);
   CNK_RET_UNIMPL;
 }
 

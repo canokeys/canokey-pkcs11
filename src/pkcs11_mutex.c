@@ -1,7 +1,7 @@
-#include "utils.h"
 #include "pkcs11_mutex.h"
 #include "pcsc_backend.h"
 #include "pkcs11_macros.h"
+#include "utils.h"
 
 #include <nsync_mu.h>
 

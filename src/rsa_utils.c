@@ -1,13 +1,13 @@
 #include "rsa_utils.h"
-#include "logging.h" // For logging macros
-#include "utils.h"
+#include "logging.h"      // For logging macros
 #include "pcsc_backend.h" // For ck_malloc and ck_free
 #include "pkcs11.h"
+#include "utils.h"
 
+#include <mbedtls/bignum.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/md.h>
-#include <mbedtls/bignum.h>
 #include <string.h>
 
 // PKCS#1 v1.5 padding for signature

@@ -10,8 +10,8 @@
 
 #include <mbedtls/platform.h>
 #include <nsync_malloc.h>
-#include <stdlib.h>
 #include <stdatomic.h>
+#include <stdlib.h>
 
 // Function pointers for memory allocation (global)
 CNK_MALLOC_FUNC g_cnk_malloc_func = malloc;

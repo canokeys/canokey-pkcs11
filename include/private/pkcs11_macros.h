@@ -1,9 +1,9 @@
 #ifndef PKCS11_MACROS_H
 #define PKCS11_MACROS_H
 
-#include "utils.h"
 #include "logging.h"
 #include "pkcs11.h"
+#include "utils.h"
 
 /**
  * Macro to check if the PKCS#11 library is initialized
@@ -11,7 +11,7 @@
  */
 #define CNK_ENSURE_INITIALIZED()                                                                                       \
   do {                                                                                                                 \
-    if (CNK_UNLIKELY(!g_cnk_is_initialized)) {                                                              \
+    if (CNK_UNLIKELY(!g_cnk_is_initialized)) {                                                                         \
       CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki not initialized");                                            \
     }                                                                                                                  \
   } while (0)

@@ -5,9 +5,9 @@
 #pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
 #pragma clang diagnostic ignored "-Wgnu-statement-expression-from-macro-expansion"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <stdatomic.h>
 
 #include "utils.h"
 
@@ -36,7 +36,7 @@ extern void cnk_printf(const int level, const bool prepend_date, const char *for
 #define CNK_PRINTLOGF(level, format, ...)                                                                              \
   do {                                                                                                                 \
     int _level = atomic_load(&g_cnk_log_level);                                                                        \
-    if (CNK_LIKELY(_level < g_cnk_log_level)) {                                                            \
+    if (CNK_LIKELY(_level < g_cnk_log_level)) {                                                                        \
       break;                                                                                                           \
     }                                                                                                                  \
     CNK_PRINTLOGF_IMPL(_level, format, ##__VA_ARGS__);                                                                 \
@@ -52,8 +52,8 @@ extern void cnk_printf(const int level, const bool prepend_date, const char *for
 // #define FUNC_TRACE(CALL) dbg(CALL)
 #define CNK_RETURN(ARG, REASON)                                                                                        \
   do {                                                                                                                 \
-    CNK_TYPEOF((ARG)) _ret = (ARG);                                                                                        \
-    CNK_DEBUG("Returning %s = %d: \"%s\"", #ARG, _ret, REASON);                                             \
+    CNK_TYPEOF((ARG)) _ret = (ARG);                                                                                    \
+    CNK_DEBUG("Returning %s = %d: \"%s\"", #ARG, _ret, REASON);                                                        \
     return _ret;                                                                                                       \
   } while (0)
 #define CNK_LOG_FUNC(...) CNK_DEBUG("Called" __VA_ARGS__)

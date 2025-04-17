@@ -3,7 +3,6 @@
 #endif
 
 #include "logging.h"
-#include "utils.h"
 #include "pcsc_backend.h"
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
@@ -12,6 +11,7 @@
 #include "pkcs11_obj.h"
 #include "pkcs11_session.h"
 #include "rsa_utils.h"
+#include "utils.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -600,7 +600,7 @@ CK_RV C_GetSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
 
 CK_RV C_GetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationState, CK_ULONG_PTR pulOperationStateLen) {
   CNK_LOG_FUNC(": hSession: %lu, pOperationState: %p, pulOperationStateLen: %p", hSession, pOperationState,
-                pulOperationStateLen);
+               pulOperationStateLen);
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pOperationState);
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pulOperationStateLen);
   CNK_RET_UNIMPL;
@@ -900,8 +900,8 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
 // Main C_Sign function
 CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
              CK_ULONG_PTR pulSignatureLen) {
-  CNK_LOG_FUNC(": hSession: %lu, ulDataLen: %lu, pSignature: %p, pulSignatureLen: %p", hSession, ulDataLen,
-               pSignature, pulSignatureLen);
+  CNK_LOG_FUNC(": hSession: %lu, ulDataLen: %lu, pSignature: %p, pulSignatureLen: %p", hSession, ulDataLen, pSignature,
+               pulSignatureLen);
 
   CNK_ENSURE_INITIALIZED();
 
