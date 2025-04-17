@@ -32,7 +32,7 @@ extern void cnk_printf(const int level, const bool prepend_date, const char *for
 #define CNK_PRINTLOGF_IMPL(level, format, ...)                                                                         \
   cnk_printf(level, true, "%-20s(%-20s:L%03d)[%-5s]: ", __FUNCTION__, __FILE__, __LINE__,                              \
              g_cnk_log_level_name[level]);                                                                             \
-  cnk_printf(level, false, format "\n", ##__VA_ARGS__);
+  cnk_printf(level, false, format "\n", ##__VA_ARGS__)
 #define CNK_PRINTLOGF(level, format, ...)                                                                              \
   do {                                                                                                                 \
     int _level = atomic_load(&g_cnk_log_level);                                                                        \

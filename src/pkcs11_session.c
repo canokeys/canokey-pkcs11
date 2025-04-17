@@ -76,7 +76,7 @@ static CK_RV resize_session_table(void) {
   }
 
   // Double the size
-  CK_ULONG new_size = session_table_size * 2;
+  CK_LONG new_size = session_table_size * 2;
   CNK_PKCS11_SESSION **new_table = (CNK_PKCS11_SESSION **)ck_malloc(new_size * sizeof(CNK_PKCS11_SESSION *));
   if (new_table == NULL)
     CNK_RETURN(CKR_HOST_MEMORY, "Failed to allocate memory for session table");

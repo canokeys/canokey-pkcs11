@@ -1,7 +1,6 @@
 #include "pcsc_backend.h"
 #include "logging.h"
 #include "pkcs11.h"
-#include "pkcs11_macros.h"
 #include "pkcs11_mutex.h"
 #include "pkcs11_session.h"
 #include "utils.h"
