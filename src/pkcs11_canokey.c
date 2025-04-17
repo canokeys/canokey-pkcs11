@@ -6,10 +6,12 @@
 #include "logging.h"
 #include "pcsc_backend.h"
 #include "pkcs11.h"
+#include "utils.h"
 
 #include <mbedtls/platform.h>
 #include <nsync_malloc.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 
 // Function pointers for memory allocation (global)
 CNK_MALLOC_FUNC g_cnk_malloc_func = malloc;
@@ -20,7 +22,7 @@ SCARDCONTEXT g_cnk_pcsc_context = 0L;
 SCARDHANDLE g_cnk_scard = 0L;
 
 CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
-  CNK_LOG_FUNC(C_CNK_EnableManagedMode);
+  CNK_LOG_FUNC();
 
   // Check if the library is already initialized
   if (g_cnk_is_initialized)
@@ -51,7 +53,7 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
 
 CK_RV C_CNK_ConfigLogging(int level, FILE *file) {
   if (level >= 0 && level < CNK_LOG_LEVEL_SIZE) {
-    g_cnk_log_level = level;
+    atomic_store(&g_cnk_log_level, level);
   } else if (level != -1) {
     return CKR_ARGUMENTS_BAD;
   }

@@ -8,9 +8,9 @@
  * Macro to check if the PKCS#11 library is initialized
  * Returns CKR_CRYPTOKI_NOT_INITIALIZED if not initialized
  */
-#define ENSURE_INITIALIZED()                                                                                           \
+#define CNK_ENSURE_INITIALIZED()                                                                                       \
   do {                                                                                                                 \
-    if (!g_cnk_is_initialized) {                                                                                       \
+    if (__builtin_expect(!g_cnk_is_initialized, false)) {                                                              \
       CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki not initialized");                                            \
     }                                                                                                                  \
   } while (0)
@@ -21,10 +21,10 @@
  *
  * @param id The slot ID to check
  */
-#define CHECK_SLOT_ID_VALID(id)                                                                                        \
+#define PKCS11_CHECK_SLOT_ID_VALID(id)                                                                                 \
   do {                                                                                                                 \
     cnk_mutex_lock(&g_cnk_readers_mutex);                                                                              \
-    if ((id) >= (CK_ULONG)g_cnk_num_readers) {                                                                                   \
+    if ((id) >= (CK_ULONG)g_cnk_num_readers) {                                                                         \
       cnk_mutex_unlock(&g_cnk_readers_mutex);                                                                          \
       CNK_RETURN(CKR_SLOT_ID_INVALID, "Invalid slot ID");                                                              \
     }                                                                                                                  \
@@ -42,9 +42,9 @@
  */
 #define PKCS11_VALIDATE(ptr, id)                                                                                       \
   do {                                                                                                                 \
-    ENSURE_INITIALIZED();                                                                                              \
+    CNK_ENSURE_INITIALIZED();                                                                                          \
     CNK_ENSURE_NONNULL(ptr);                                                                                           \
-    CHECK_SLOT_ID_VALID(id);                                                                                           \
+    PKCS11_CHECK_SLOT_ID_VALID(id);                                                                                    \
   } while (0)
 
 /**
@@ -54,7 +54,7 @@
  */
 #define PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(ptr)                                                                  \
   do {                                                                                                                 \
-    ENSURE_INITIALIZED();                                                                                              \
+    CNK_ENSURE_INITIALIZED();                                                                                          \
     CNK_ENSURE_NONNULL(ptr);                                                                                           \
   } while (0)
 

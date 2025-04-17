@@ -3,6 +3,7 @@
 #endif
 
 #include "logging.h"
+#include "utils.h"
 #include "pcsc_backend.h"
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
@@ -41,7 +42,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   C_CNK_ConfigLogging(CNK_LOG_LEVEL_DEBUG, NULL);
 #endif
 
-  CNK_LOG_FUNC(C_Initialize, ", pInitArgs: %p", pInitArgs);
+  CNK_LOG_FUNC(": pInitArgs: %p", pInitArgs);
 
   // Check if the library is already initialized
   if (g_cnk_is_initialized) {
@@ -66,7 +67,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
     CK_C_INITIALIZE_ARGS_PTR args = (CK_C_INITIALIZE_ARGS_PTR)pInitArgs;
 
     // Check for reserved field - must be NULL according to PKCS#11
-    CHK_ENSURE_NULL(args->pReserved);
+    CNK_ENSURE_NULL(args->pReserved);
 
     // Check for invalid combinations of flags and function pointers
     CK_BBOOL can_use_os_locking = (args->flags & CKF_OS_LOCKING_OK);
@@ -142,7 +143,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
 }
 
 CK_RV C_Finalize(CK_VOID_PTR pReserved) {
-  CNK_LOG_FUNC(C_Finalize, ", pReserved: %p", pReserved);
+  CNK_LOG_FUNC(": pReserved: %p", pReserved);
 
   if (!g_cnk_is_managed_mode && atomic_load(&g_ref_count) > 1) {
     CNK_RETURN(CKR_MUTEX_BAD, "g_ref_count > 1 in standalone mode");
@@ -152,7 +153,7 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   }
 
   // According to PKCS#11, pReserved must be NULL_PTR
-  CHK_ENSURE_NULL(pReserved);
+  CNK_ENSURE_NULL(pReserved);
 
   // Clean up session manager
   cnk_session_manager_cleanup();
@@ -176,7 +177,7 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
 }
 
 CK_RV C_GetInfo(CK_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetInfo, ", pInfo: %p", pInfo);
+  CNK_LOG_FUNC(": pInfo: %p", pInfo);
 
   // Check if the library is initialized
   if (!g_cnk_is_initialized) {
@@ -220,7 +221,7 @@ CK_RV C_GetInfo(CK_INFO_PTR pInfo) {
 }
 
 CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList) {
-  CNK_LOG_FUNC(C_GetFunctionList, ", ppFunctionList: %p", ppFunctionList);
+  CNK_LOG_FUNC(": ppFunctionList: %p", ppFunctionList);
 
   CNK_ENSURE_NONNULL(ppFunctionList);
 
@@ -229,7 +230,7 @@ CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList) {
 }
 
 CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PTR pulCount) {
-  CNK_LOG_FUNC(C_GetSlotList, ", tokenPresent: %d, pSlotList: %p, pulCount: %p", tokenPresent, pSlotList, pulCount);
+  CNK_LOG_FUNC(": tokenPresent: %d, pSlotList: %p, pulCount: %p", tokenPresent, pSlotList, pulCount);
 
   // Parameter validation
   CNK_ENSURE_NONNULL(pulCount);
@@ -269,7 +270,7 @@ CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PT
 }
 
 CK_RV C_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetSlotInfo, ", slotID: %lu, pInfo: %p", slotID, pInfo);
+  CNK_LOG_FUNC(": slotID: %lu, pInfo: %p", slotID, pInfo);
 
   CNK_ENSURE_NONNULL(pInfo);
 
@@ -311,12 +312,10 @@ CK_RV C_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
 }
 
 CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetTokenInfo, ", slotID: %lu", slotID);
+  CNK_LOG_FUNC(": slotID: %lu", slotID);
 
   // Check parameters
-  if (!g_cnk_is_initialized) {
-    CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "not initialized");
-  }
+  CNK_ENSURE_INITIALIZED();
 
   CNK_ENSURE_NONNULL(pInfo);
 
@@ -416,7 +415,7 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
 }
 
 CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList, CK_ULONG_PTR pulCount) {
-  CNK_LOG_FUNC(C_GetMechanismList, ", slotID: %lu", slotID);
+  CNK_LOG_FUNC(": slotID: %lu", slotID);
 
   // Validate common parameters
   PKCS11_VALIDATE(pulCount, slotID);
@@ -469,7 +468,7 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
 }
 
 CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetMechanismInfo, ", slotID: %lu, type: %lu, pInfo: %p", slotID, type, pInfo);
+  CNK_LOG_FUNC(": slotID: %lu, type: %lu, pInfo: %p", slotID, type, pInfo);
 
   // Validate common parameters
   PKCS11_VALIDATE(pInfo, slotID);
@@ -529,57 +528,45 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
 }
 
 CK_RV C_InitToken(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_UTF8CHAR_PTR pLabel) {
-  CNK_LOG_FUNC(C_InitToken, ", slotID: %lu", slotID);
+  CNK_LOG_FUNC(": slotID: %lu", slotID);
   CNK_RET_UNIMPL;
 }
 
 CK_RV C_InitPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
-  CNK_LOG_FUNC(C_InitPIN, ", hSession: %lu", hSession);
+  CNK_LOG_FUNC(": hSession: %lu", hSession);
   CNK_RET_UNIMPL;
 }
 
 CK_RV C_SetPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pOldPin, CK_ULONG ulOldLen, CK_UTF8CHAR_PTR pNewPin,
                CK_ULONG ulNewLen) {
+  CNK_LOG_FUNC();
   CNK_RET_UNIMPL;
 }
 
 CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication, CK_NOTIFY Notify,
                     CK_SESSION_HANDLE_PTR phSession) {
-  if (!g_cnk_is_initialized) {
-    return CKR_CRYPTOKI_NOT_INITIALIZED;
-  }
-
-  CNK_ENSURE_NONNULL(phSession);
-
+  CNK_LOG_FUNC();
+  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(phSession);
   return cnk_session_open(slotID, flags, pApplication, Notify, phSession);
 }
 
 CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
-  if (!g_cnk_is_initialized) {
-    return CKR_CRYPTOKI_NOT_INITIALIZED;
-  }
-
+  CNK_LOG_FUNC();
+  CNK_ENSURE_INITIALIZED();
   return cnk_session_close(hSession);
 }
 
 CK_RV C_CloseAllSessions(CK_SLOT_ID slotID) {
-  if (!g_cnk_is_initialized) {
-    return CKR_CRYPTOKI_NOT_INITIALIZED;
-  }
-
+  CNK_LOG_FUNC(": slotID: %lu", slotID);
+  CNK_ENSURE_INITIALIZED();
   return cnk_session_close_all(slotID);
 }
 
 CK_RV C_GetSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(C_GetSessionInfo, ", hSession: %lu", hSession);
-
-  // Check if the cryptoki library is initialized
-  if (!g_cnk_is_initialized) {
-    return CKR_CRYPTOKI_NOT_INITIALIZED;
-  }
+  CNK_LOG_FUNC(": hSession: %lu", hSession);
 
   // Validate arguments
-  CNK_ENSURE_NONNULL(pInfo);
+  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pInfo);
 
   // Find the session
   CNK_PKCS11_SESSION *session;
@@ -612,6 +599,10 @@ CK_RV C_GetSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
 }
 
 CK_RV C_GetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationState, CK_ULONG_PTR pulOperationStateLen) {
+  CNK_LOG_FUNC(": hSession: %lu, pOperationState: %p, pulOperationStateLen: %p", hSession, pOperationState,
+                pulOperationStateLen);
+  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pOperationState);
+  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pulOperationStateLen);
   CNK_RET_UNIMPL;
 }
 
@@ -621,12 +612,10 @@ CK_RV C_SetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationStat
 }
 
 CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
-  CNK_LOG_FUNC(C_Login, ", hSession: %lu, userType: %lu, ulPinLen: %lu", hSession, userType, ulPinLen);
+  CNK_LOG_FUNC(", hSession: %lu, userType: %lu, ulPinLen: %lu", hSession, userType, ulPinLen);
 
   // Check if the cryptoki library is initialized
-  if (!g_cnk_is_initialized) {
-    return CKR_CRYPTOKI_NOT_INITIALIZED;
-  }
+  CNK_ENSURE_INITIALIZED();
 
   // Validate arguments
   if (pPin == NULL && ulPinLen > 0) {
@@ -660,21 +649,18 @@ CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR
     }
   }
 
-  return rv;
+  CNK_RETURN(rv, "verify_piv_pin_with_session");
 }
 
 CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
-  CNK_LOG_FUNC(C_Logout, ", hSession: %lu", hSession);
+  CNK_LOG_FUNC(": hSession: %lu", hSession);
 
   // Check if the cryptoki library is initialized
-  if (!g_cnk_is_initialized) {
-    return CKR_CRYPTOKI_NOT_INITIALIZED;
-  }
+  CNK_ENSURE_INITIALIZED();
 
   // Find the session
   CNK_PKCS11_SESSION *session;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  ;
 
   // Check if logged in (PIN is cached)
   if (session->piv_pin_len == 0) {
@@ -700,52 +686,61 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
 
 CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                      CK_OBJECT_HANDLE_PTR phObject) {
-  CNK_LOG_FUNC(C_CreateObject, ", hSession: %lu, ulCount: %lu", hSession, ulCount);
-  return cnk_create_object(hSession, pTemplate, ulCount, phObject);
+  CNK_LOG_FUNC(": hSession: %lu, ulCount: %lu", hSession, ulCount);
+  CNK_ENSURE_INITIALIZED();
+  CNK_RET_FWD(cnk_create_object(hSession, pTemplate, ulCount, phObject));
 }
 
 CK_RV C_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                    CK_OBJECT_HANDLE_PTR phNewObject) {
-  CNK_LOG_FUNC(C_CopyObject, ", hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
-  return cnk_copy_object(hSession, hObject, pTemplate, ulCount, phNewObject);
+  CNK_LOG_FUNC(": hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
+  CNK_ENSURE_INITIALIZED();
+  CNK_RET_FWD(cnk_copy_object(hSession, hObject, pTemplate, ulCount, phNewObject));
 }
 
 CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
-  CNK_LOG_FUNC(C_DestroyObject, ", hSession: %lu, hObject: %lu", hSession, hObject);
-  return cnk_destroy_object(hSession, hObject);
+  CNK_LOG_FUNC(": hSession: %lu, hObject: %lu", hSession, hObject);
+  CNK_ENSURE_INITIALIZED();
+  CNK_RET_FWD(cnk_destroy_object(hSession, hObject));
 }
 
 CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ULONG_PTR pulSize) {
-  CNK_LOG_FUNC(C_GetObjectSize, ", hSession: %lu, hObject: %lu", hSession, hObject);
-  return cnk_get_object_size(hSession, hObject, pulSize);
+  CNK_ENSURE_INITIALIZED();
+  CNK_LOG_FUNC(": hSession: %lu, hObject: %lu", hSession, hObject);
+  CNK_RET_FWD(cnk_get_object_size(hSession, hObject, pulSize));
 }
 
 CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                           CK_ULONG ulCount) {
-  CNK_LOG_FUNC(C_GetAttributeValue, ", hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
-  return cnk_get_attribute_value(hSession, hObject, pTemplate, ulCount);
+  CNK_ENSURE_INITIALIZED();
+  CNK_LOG_FUNC(": hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
+  CNK_RET_FWD(cnk_get_attribute_value(hSession, hObject, pTemplate, ulCount));
 }
 
 CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                           CK_ULONG ulCount) {
-  CNK_LOG_FUNC(C_SetAttributeValue, ", hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
-  return cnk_set_attribute_value(hSession, hObject, pTemplate, ulCount);
+  CNK_ENSURE_INITIALIZED();
+  CNK_LOG_FUNC(": hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
+  CNK_RET_FWD(cnk_set_attribute_value(hSession, hObject, pTemplate, ulCount));
 }
 
 CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
-  CNK_LOG_FUNC(C_FindObjectsInit, ", hSession: %lu, ulCount: %lu", hSession, ulCount);
-  return cnk_find_objects_init(hSession, pTemplate, ulCount);
+  CNK_ENSURE_INITIALIZED();
+  CNK_LOG_FUNC(": hSession: %lu, ulCount: %lu", hSession, ulCount);
+  CNK_RET_FWD(cnk_find_objects_init(hSession, pTemplate, ulCount));
 }
 
 CK_RV C_FindObjects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject, CK_ULONG ulMaxObjectCount,
                     CK_ULONG_PTR pulObjectCount) {
-  CNK_LOG_FUNC(C_FindObjects, ", hSession: %lu, ulMaxObjectCount: %lu", hSession, ulMaxObjectCount);
-  return cnk_find_objects(hSession, phObject, ulMaxObjectCount, pulObjectCount);
+  CNK_ENSURE_INITIALIZED();
+  CNK_LOG_FUNC(": hSession: %lu, ulMaxObjectCount: %lu", hSession, ulMaxObjectCount);
+  CNK_RET_FWD(cnk_find_objects(hSession, phObject, ulMaxObjectCount, pulObjectCount));
 }
 
 CK_RV C_FindObjectsFinal(CK_SESSION_HANDLE hSession) {
-  CNK_LOG_FUNC(C_FindObjectsFinal, ", hSession: %lu", hSession);
-  return cnk_find_objects_final(hSession);
+  CNK_ENSURE_INITIALIZED();
+  CNK_LOG_FUNC(": hSession: %lu", hSession);
+  CNK_RET_FWD(cnk_find_objects_final(hSession));
 }
 
 CK_RV C_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) { CNK_RET_UNIMPL; }
@@ -792,7 +787,9 @@ CK_RV C_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey) { CNK_RET_U
 CK_RV C_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest, CK_ULONG_PTR pulDigestLen) { CNK_RET_UNIMPL; }
 
 CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {
-  CNK_LOG_FUNC(C_SignInit, ", hSession: %lu, pMechanism: %p, hKey: %lu", hSession, pMechanism, hKey);
+  CNK_LOG_FUNC(": hSession: %lu, pMechanism: %p, hKey: %lu", hSession, pMechanism, hKey);
+
+  CNK_ENSURE_INITIALIZED();
 
   // Validate mechanism
   CNK_ENSURE_NONNULL(pMechanism);
@@ -903,8 +900,10 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
 // Main C_Sign function
 CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
              CK_ULONG_PTR pulSignatureLen) {
-  CNK_LOG_FUNC(C_Sign, ", hSession: %lu, ulDataLen: %lu, pSignature: %p, pulSignatureLen: %p", hSession, ulDataLen,
+  CNK_LOG_FUNC(": hSession: %lu, ulDataLen: %lu, pSignature: %p, pulSignatureLen: %p", hSession, ulDataLen,
                pSignature, pulSignatureLen);
+
+  CNK_ENSURE_INITIALIZED();
 
   // Parameter validation
   if (!pData && ulDataLen > 0)

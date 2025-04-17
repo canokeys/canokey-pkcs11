@@ -1,5 +1,7 @@
 #include "pkcs11_session.h"
+
 #include "logging.h"
+#include "utils.h"
 #include "pcsc_backend.h"
 
 #include <string.h>
@@ -13,7 +15,7 @@ static CNK_PKCS11_MUTEX session_mutex;
 
 // Initialize the session manager
 CK_RV cnk_session_manager_init(void) {
-  CNK_LOG_FUNC(cnk_session_manager_init);
+  CNK_LOG_FUNC();
 
   // Initialize the session mutex
   CNK_ENSURE_OK(cnk_mutex_create(&session_mutex));
@@ -37,7 +39,7 @@ CK_RV cnk_session_manager_init(void) {
 
 // Clean up the session manager
 void cnk_session_manager_cleanup(void) {
-  CNK_LOG_FUNC(cnk_session_manager_cleanup);
+  CNK_LOG_FUNC();
 
   cnk_mutex_lock(&session_mutex);
 
@@ -110,7 +112,7 @@ static CK_LONG find_free_slot(void) {
 // Open a new session
 CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication, CK_NOTIFY Notify,
                        CK_SESSION_HANDLE_PTR phSession) {
-  CNK_LOG_FUNC(cnk_session_open);
+  CNK_LOG_FUNC();
 
   CNK_ENSURE_NONNULL(phSession);
 
@@ -130,14 +132,14 @@ CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplicati
 
     if (!slot_found) {
       cnk_mutex_unlock(&session_mutex);
-      return CKR_SLOT_ID_INVALID;
+      CNK_RETURN(CKR_SLOT_ID_INVALID, "Invalid slot ID");
     }
   }
 
   // Check if the flags are valid
   if (!(flags & CKF_SERIAL_SESSION)) {
     cnk_mutex_unlock(&session_mutex);
-    return CKR_SESSION_PARALLEL_NOT_SUPPORTED;
+    CNK_RETURN(CKR_SESSION_PARALLEL_NOT_SUPPORTED, "Invalid session flags");
   }
 
   // Initialize session manager if needed
@@ -145,7 +147,7 @@ CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplicati
     CK_RV rv = cnk_session_manager_init();
     if (rv != CKR_OK) {
       cnk_mutex_unlock(&session_mutex);
-      return rv;
+      CNK_RETURN(CKR_HOST_MEMORY, "Failed to initialize session manager");
     }
   }
 
@@ -153,14 +155,14 @@ CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplicati
   CK_RV rv = resize_session_table();
   if (rv != CKR_OK) {
     cnk_mutex_unlock(&session_mutex);
-    return rv;
+    CNK_RETURN(CKR_HOST_MEMORY, "Failed to resize session table");
   }
 
   // Find a free slot in the session table
   CK_LONG sessionIdx = find_free_slot();
   if (sessionIdx < 0) {
     cnk_mutex_unlock(&session_mutex);
-    return CKR_HOST_MEMORY;
+    CNK_RETURN(CKR_HOST_MEMORY, "No free session slots available");
   }
 
   CNK_DEBUG("found free session index: %ld", sessionIdx);
@@ -169,7 +171,7 @@ CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplicati
   CNK_PKCS11_SESSION *session = (CNK_PKCS11_SESSION *)ck_malloc(sizeof(CNK_PKCS11_SESSION));
   if (session == NULL) {
     cnk_mutex_unlock(&session_mutex);
-    return CKR_HOST_MEMORY;
+    CNK_RETURN(CKR_HOST_MEMORY, "Failed to allocate memory for session");
   }
 
   // Initialize the session
@@ -190,7 +192,7 @@ CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplicati
   if (rv != CKR_OK) {
     ck_free(session);
     cnk_mutex_unlock(&session_mutex);
-    return rv;
+    CNK_RETURN(rv, "Failed to create session mutex");
   }
 
   // Set the session state based on flags
@@ -214,7 +216,7 @@ CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplicati
 
 // Close a session
 CK_RV cnk_session_close(CK_SESSION_HANDLE hSession) {
-  CNK_LOG_FUNC(cnk_session_close);
+  CNK_LOG_FUNC();
 
   cnk_mutex_lock(&session_mutex);
 
@@ -232,7 +234,7 @@ CK_RV cnk_session_close(CK_SESSION_HANDLE hSession) {
 
   if (!found) {
     cnk_mutex_unlock(&session_mutex);
-    return CKR_SESSION_HANDLE_INVALID;
+    CNK_RETURN(CKR_SESSION_HANDLE_INVALID, "Session not found");
   }
 
   // No need to disconnect card as we don't maintain the handle
@@ -289,7 +291,7 @@ CK_RV cnk_session_get_info(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo
 
   if (!found) {
     cnk_mutex_unlock(&session_mutex);
-    return CKR_SESSION_HANDLE_INVALID;
+    CNK_RETURN(CKR_SESSION_HANDLE_INVALID, "Session not found");
   }
 
   // Fill in the session info
@@ -304,9 +306,8 @@ CK_RV cnk_session_get_info(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo
 
 // Find a session by handle
 CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session) {
-  if (session == NULL) {
-    return CKR_ARGUMENTS_BAD;
-  }
+
+  CNK_ENSURE_NONNULL(session);
 
   cnk_mutex_lock(&session_mutex);
 
@@ -325,7 +326,7 @@ CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session)
   cnk_mutex_unlock(&session_mutex);
 
   if (!found) {
-    return CKR_SESSION_HANDLE_INVALID;
+    CNK_RETURN(CKR_SESSION_HANDLE_INVALID, "Session not found");
   }
 
   CNK_RET_OK;

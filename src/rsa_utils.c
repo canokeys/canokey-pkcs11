@@ -1,11 +1,13 @@
 #include "rsa_utils.h"
 #include "logging.h" // For logging macros
-#include "mbedtls/bignum.h"
+#include "utils.h"
 #include "pcsc_backend.h" // For ck_malloc and ck_free
 #include "pkcs11.h"
+
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/md.h>
+#include <mbedtls/bignum.h>
 #include <string.h>
 
 // PKCS#1 v1.5 padding for signature
@@ -366,7 +368,7 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR pMechanism, CK_BYTE_PTR pData, 
     CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Buffer too small");                                                              \
   *pulPreparedDataLen = ulModulusBytes;
 
-  CNK_LOG_FUNC(cnk_prepare_rsa_sign_data, " algorithm_type: %d", bAlgorithmType);
+  CNK_LOG_FUNC(": algorithm_type: %d", bAlgorithmType);
 
   CK_RV rv = CKR_OK;
   mbedtls_md_type_t md_type;

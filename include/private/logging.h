@@ -7,6 +7,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdatomic.h>
 
 enum CNK_LOG_LEVEL {
   CNK_LOG_LEVEL_TRACE = 0,
@@ -21,14 +22,23 @@ enum CNK_LOG_LEVEL {
 
 extern const char *g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE];
 
-extern FILE *g_cnk_log_file;
-extern int g_cnk_log_level;
+extern FILE *g_cnk_log_file; // not using atomic variable deliberately
+extern atomic_int g_cnk_log_level;
 
 extern void cnk_printf(const int level, const bool prepend_date, const char *format, ...);
 
+#define CNK_PRINTLOGF_IMPL(level, format, ...)                                                                         \
+  cnk_printf(level, true, "%-20s(%-20s:L%03d)[%-5s]: ", __FUNCTION__, __FILE__, __LINE__,                              \
+             g_cnk_log_level_name[level]);                                                                             \
+  cnk_printf(level, false, format "\n", ##__VA_ARGS__);
 #define CNK_PRINTLOGF(level, format, ...)                                                                              \
-  cnk_printf(level, true, "%-20s(%-20s:L%03d)[%-5s]: " format "\n", __FUNCTION__, __FILE__, __LINE__,                  \
-             g_cnk_log_level_name[level], ##__VA_ARGS__)
+  do {                                                                                                                 \
+    int _level = atomic_load(&g_cnk_log_level);                                                                        \
+    if (__builtin_expect(_level < g_cnk_log_level, true)) {                                                            \
+      break;                                                                                                           \
+    }                                                                                                                  \
+    CNK_PRINTLOGF_IMPL(_level, format, ##__VA_ARGS__);                                                                 \
+  } while (0)
 #define CNK_TRACE(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_TRACE, format, ##__VA_ARGS__)
 #define CNK_DEBUG(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_DEBUG, format, ##__VA_ARGS__)
 #define CNK_INFO(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_INFO, format, ##__VA_ARGS__)
@@ -40,59 +50,16 @@ extern void cnk_printf(const int level, const bool prepend_date, const char *for
 // #define FUNC_TRACE(CALL) dbg(CALL)
 #define CNK_RETURN(ARG, REASON)                                                                                        \
   do {                                                                                                                 \
-    __typeof__((ARG)) _ret = (ARG);                                                                                    \
-    CNK_DEBUG("Returning %s = %d with reason \"%s\"", #ARG, _ret, REASON);                                             \
+    __typeof__((ARG)) _ret = (ARG);                                                                                        \
+    CNK_DEBUG("Returning %s = %d: \"%s\"", #ARG, _ret, REASON);                                             \
     return _ret;                                                                                                       \
   } while (0)
-
-#define CNK_LOG_FUNC(name, ...) CNK_DEBUG("Called" __VA_ARGS__)
+#define CNK_LOG_FUNC(...) CNK_DEBUG("Called" __VA_ARGS__)
 #else
 // #define FUNC_TRACE(CALL) CALL
 #define CNK_RETURN(ARG, ...) return (ARG);
-#define CNK_LOG_FUNC(name, ...)
+#define CNK_LOG_FUNC(...)
 #endif // CNK_VERBOSE
-
-#define CNK_RET_OK CNK_RETURN(CKR_OK, "Success")
-
-#define CNK_RET_UNIMPL CNK_RETURN(CKR_FUNCTION_NOT_SUPPORTED, "Not implemented")
-
-#define CNK_ENSURE_EQUAL_REASON(EXP, EXPECTED, REASON)                                                                 \
-  if ((EXP) != (EXPECTED)) {                                                                                           \
-    CNK_RETURN(CKR_ARGUMENTS_BAD, REASON);                                                                             \
-  }
-
-#define CNK_ENSURE_EQUAL(EXP, EXPECTED) CNK_ENSURE_EQUAL_REASON(EXP, EXPECTED, #EXP " != " #EXPECTED)
-
-#define CNK_ENSURE_NONNULL(PTR)                                                                                        \
-  do {                                                                                                                 \
-    __typeof__((PTR)) _ptr = (PTR);                                                                                    \
-    if (_ptr == NULL) {                                                                                                \
-      CNK_RETURN(CKR_ARGUMENTS_BAD, #PTR " is NULL");                                                                  \
-    }                                                                                                                  \
-    __builtin_assume(_ptr != NULL);                                                                                    \
-  } while (0)
-
-#define CHK_ENSURE_NULL(PTR)                                                                                           \
-  do {                                                                                                                 \
-    __typeof__((PTR)) _ptr = (PTR);                                                                                    \
-    if (_ptr != NULL) {                                                                                                \
-      CNK_RETURN(CKR_ARGUMENTS_BAD, #PTR " is not NULL");                                                              \
-    }                                                                                                                  \
-    __builtin_assume(_ptr == NULL);                                                                                    \
-  } while (0)
-
-#define CNK_ENSURE_OK(EXP)                                                                                             \
-  ({                                                                                                                   \
-    CK_RV _rv = (EXP);                                                                                                 \
-    if (_rv != CKR_OK)                                                                                                 \
-      CNK_RETURN(_rv, #EXP " failed");                                                                                 \
-    CKR_OK;                                                                                                            \
-  })
-
-#define CNK_UNUSED(...)                                                                                                \
-  do {                                                                                                                 \
-    ((void)(__VA_ARGS__))                                                                                              \
-  } while (0)
 
 // Function to log APDU commands in a formatted way
 void cnk_log_apdu_command(const unsigned char *command, unsigned long command_len);

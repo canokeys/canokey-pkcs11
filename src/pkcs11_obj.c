@@ -1,5 +1,7 @@
 #include "pkcs11_obj.h"
+
 #include "logging.h"
+#include "utils.h"
 #include "pcsc_backend.h"
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
@@ -243,43 +245,29 @@ static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE al
 
 CK_RV cnk_create_object(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                         CK_OBJECT_HANDLE_PTR phObject) {
-  (void)hSession;
-  (void)pTemplate;
-  (void)ulCount;
-  (void)phObject;
-
+  CNK_UNUSED(hSession, pTemplate, ulCount, phObject);
   CNK_RET_UNIMPL;
 }
 
 CK_RV cnk_copy_object(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                       CK_ULONG ulCount, CK_OBJECT_HANDLE_PTR phNewObject) {
-  (void)hSession;
-  (void)hObject;
-  (void)pTemplate;
-  (void)ulCount;
-  (void)phNewObject;
-
+  CNK_UNUSED(hSession, hObject, pTemplate, ulCount, phNewObject);
   CNK_RET_UNIMPL;
 }
 
 CK_RV cnk_destroy_object(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
-  (void)hSession;
-  (void)hObject;
-
+  CNK_UNUSED(hSession, hObject);
   CNK_RET_UNIMPL;
 }
 
 CK_RV cnk_get_object_size(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ULONG_PTR pulSize) {
-  (void)hSession;
-  (void)hObject;
-  (void)pulSize;
-
+  CNK_UNUSED(hSession, hObject, pulSize);
   CNK_RET_UNIMPL;
 }
 
 CK_RV cnk_get_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                               CK_ULONG ulCount) {
-  CNK_LOG_FUNC(cnk_get_attribute_value, ", hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
+  CNK_LOG_FUNC(": hSession: %lu, hObject: %lu, ulCount: %lu", hSession, hObject, ulCount);
 
   // Validate parameters
   if (!pTemplate && ulCount > 0)
@@ -472,13 +460,13 @@ CK_RV cnk_get_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
 
 CK_RV cnk_set_attribute_value(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                               CK_ULONG ulCount) {
-  CNK_LOG_FUNC(cnk_set_attribute_value, ", hSession: %lu, hObject: %lu, pTemplate: %p, ulCount: %lu", hSession, hObject,
+  CNK_LOG_FUNC(": hSession: %lu, hObject: %lu, pTemplate: %p, ulCount: %lu", hSession, hObject,
                pTemplate, ulCount);
   CNK_RET_UNIMPL;
 }
 
 CK_RV cnk_find_objects_init(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
-  CNK_LOG_FUNC(cnk_find_objects_init, ", hSession: %lu, ulCount: %lu", hSession, ulCount);
+  CNK_LOG_FUNC(": hSession: %lu, ulCount: %lu", hSession, ulCount);
 
   // Validate the session
   CNK_PKCS11_SESSION *session;
@@ -603,7 +591,7 @@ CK_RV cnk_find_objects_init(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTempla
 
 CK_RV cnk_find_objects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject, CK_ULONG ulMaxObjectCount,
                        CK_ULONG_PTR pulObjectCount) {
-  CNK_LOG_FUNC(cnk_find_objects, ", hSession: %lu, ulMaxObjectCount: %lu", hSession, ulMaxObjectCount);
+  CNK_LOG_FUNC(": hSession: %lu, ulMaxObjectCount: %lu", hSession, ulMaxObjectCount);
 
   // Validate parameters
   if (!phObject || !pulObjectCount)
@@ -642,7 +630,7 @@ CK_RV cnk_find_objects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject
 }
 
 CK_RV cnk_find_objects_final(CK_SESSION_HANDLE hSession) {
-  CNK_LOG_FUNC(cnk_find_objects_final, ", hSession: %lu", hSession);
+  CNK_LOG_FUNC(": hSession: %lu", hSession);
 
   // Find the session
   CNK_PKCS11_SESSION *session;

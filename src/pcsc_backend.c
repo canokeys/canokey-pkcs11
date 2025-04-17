@@ -3,6 +3,7 @@
 #include "pkcs11.h"
 #include "pkcs11_mutex.h"
 #include "pkcs11_session.h"
+#include "pkcs11_macros.h"
 #include "utils.h"
 
 #include <ctype.h>
@@ -72,7 +73,7 @@ CK_RV cnk_initialize_pcsc(void) {
 
 // List readers and populate g_cnk_readers
 CK_RV cnk_list_readers(void) {
-  CNK_LOG_FUNC(cnk_list_readers);
+  CNK_LOG_FUNC();
 
   cnk_mutex_lock(&g_cnk_readers_mutex);
   if (!g_cnk_is_initialized) {

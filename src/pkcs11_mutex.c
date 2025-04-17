@@ -1,3 +1,4 @@
+#include "utils.h"
 #include "pkcs11_mutex.h"
 #include "pcsc_backend.h"
 #include "pkcs11_macros.h"
@@ -109,26 +110,20 @@ CK_RV cnk_mutex_create(CNK_PKCS11_MUTEX *mutex) {
 
 // Destroy a mutex
 CK_RV cnk_mutex_destroy(CNK_PKCS11_MUTEX *mutex) {
-  CNK_ENSURE_NONNULL(mutex);
-  CNK_ENSURE_NONNULL(mutex->mutex_handle);
-  CNK_ENSURE_NONNULL(mutex->lock);
+  CNK_ENSURE_NONNULL(mutex, mutex->mutex_handle, mutex->lock);
   return mutex->destroy(mutex->mutex_handle);
 }
 
 // Lock a mutex
 CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex) {
-  CNK_LOG_FUNC(cnk_mutex_lock, " mutex: %p", mutex);
-  CNK_ENSURE_NONNULL(mutex);
-  CNK_ENSURE_NONNULL(mutex->mutex_handle);
-  CNK_ENSURE_NONNULL(mutex->lock);
+  CNK_LOG_FUNC(": mutex: %p", mutex);
+  CNK_ENSURE_NONNULL(mutex, mutex->mutex_handle, mutex->lock);
   return mutex->lock(mutex->mutex_handle);
 }
 
 // Unlock a mutex
 CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex) {
-  CNK_LOG_FUNC(cnk_mutex_unlock, " mutex: %p", mutex);
-  CNK_ENSURE_NONNULL(mutex);
-  CNK_ENSURE_NONNULL(mutex->mutex_handle);
-  CNK_ENSURE_NONNULL(mutex->unlock);
+  CNK_LOG_FUNC(": mutex: %p", mutex);
+  CNK_ENSURE_NONNULL(mutex, mutex->mutex_handle, mutex->unlock);
   return mutex->unlock(mutex->mutex_handle);
 }

@@ -8,7 +8,7 @@ const char *g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE] = {
 };
 
 // default values
-int g_cnk_log_level = CNK_LOG_LEVEL_WARNING;
+atomic_int g_cnk_log_level = CNK_LOG_LEVEL_WARNING;
 FILE *g_cnk_log_file = NULL;
 
 static void print_time(FILE *out) {
@@ -27,7 +27,7 @@ static void print_time(FILE *out) {
 #pragma clang diagnostic ignored "-Wformat-nonliteral"
 
 void cnk_printf(const int level, const bool prepend_date, const char *const format, ...) {
-  if (level < g_cnk_log_level) {
+  if (level < atomic_load(&g_cnk_log_level)) {
     return;
   }
   FILE *out = g_cnk_log_file;
