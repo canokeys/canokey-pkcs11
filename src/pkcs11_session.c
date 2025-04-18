@@ -2,6 +2,7 @@
 
 #include "logging.h"
 #include "pcsc_backend.h"
+#include "pkcs11_macros.h"
 #include "utils.h"
 
 #include <string.h>
@@ -110,11 +111,11 @@ static CK_LONG find_free_slot(void) {
 }
 
 // Open a new session
-CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication, CK_NOTIFY Notify,
-                       CK_SESSION_HANDLE_PTR phSession) {
-  CNK_LOG_FUNC();
-
-  CNK_ENSURE_NONNULL(phSession);
+CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication, CK_NOTIFY Notify,
+                    CK_SESSION_HANDLE_PTR phSession) {
+  CNK_LOG_FUNC(": slotID: %lu, flags: %lu, pApplication: %p, Notify: %p, phSession: %p", slotID, flags, pApplication,
+               Notify, phSession);
+  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(phSession);
 
   cnk_mutex_lock(&session_mutex);
 
@@ -215,8 +216,9 @@ CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplicati
 }
 
 // Close a session
-CK_RV cnk_session_close(CK_SESSION_HANDLE hSession) {
-  CNK_LOG_FUNC();
+CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
+  CNK_LOG_FUNC(": hSession: %lu", hSession);
+  CNK_ENSURE_INITIALIZED();
 
   cnk_mutex_lock(&session_mutex);
 
@@ -250,7 +252,10 @@ CK_RV cnk_session_close(CK_SESSION_HANDLE hSession) {
 }
 
 // Close all sessions for a slot
-CK_RV cnk_session_close_all(CK_SLOT_ID slotID) {
+CK_RV C_CloseAllSessions(CK_SLOT_ID slotID) {
+  CNK_LOG_FUNC(": slotID: %lu", slotID);
+  CNK_ENSURE_INITIALIZED();
+
   cnk_mutex_lock(&session_mutex);
 
   // Close all sessions for this slot
@@ -266,14 +271,16 @@ CK_RV cnk_session_close_all(CK_SLOT_ID slotID) {
   }
 
   cnk_mutex_unlock(&session_mutex);
+
   CNK_RET_OK;
 }
 
 // Get session info
-CK_RV cnk_session_get_info(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
-  if (pInfo == NULL) {
-    return CKR_ARGUMENTS_BAD;
-  }
+CK_RV C_GetSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
+  CNK_LOG_FUNC(": hSession: %lu, pInfo: %p", hSession, pInfo);
+
+  // Validate arguments
+  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pInfo);
 
   cnk_mutex_lock(&session_mutex);
 
@@ -301,6 +308,9 @@ CK_RV cnk_session_get_info(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo
   pInfo->ulDeviceError = 0;
 
   cnk_mutex_unlock(&session_mutex);
+
+  CNK_DEBUG("C_GetSessionInfo: slotID = %lu, state = %lu, flags = 0x%lx", pInfo->slotID, pInfo->state, pInfo->flags);
+
   CNK_RET_OK;
 }
 
@@ -327,6 +337,97 @@ CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session)
 
   if (!found) {
     CNK_RETURN(CKR_SESSION_HANDLE_INVALID, "Session not found");
+  }
+
+  CNK_RET_OK;
+}
+
+CK_RV C_GetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationState, CK_ULONG_PTR pulOperationStateLen) {
+  CNK_LOG_FUNC(": hSession: %lu, pOperationState: %p, pulOperationStateLen: %p", hSession, pOperationState,
+               pulOperationStateLen);
+  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pOperationState);
+  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pulOperationStateLen);
+
+  CNK_RET_UNIMPL;
+}
+
+CK_RV C_SetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationState, CK_ULONG ulOperationStateLen,
+                          CK_OBJECT_HANDLE hEncryptionKey, CK_OBJECT_HANDLE hAuthenticationKey) {
+  CNK_LOG_FUNC(
+      ": hSession: %lu, pOperationState: %p, ulOperationStateLen: %lu, hEncryptionKey: %lu, hAuthenticationKey: %lu",
+      hSession, pOperationState, ulOperationStateLen, hEncryptionKey, hAuthenticationKey);
+
+  CNK_RET_UNIMPL;
+}
+
+CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+  CNK_LOG_FUNC(", hSession: %lu, userType: %lu, ulPinLen: %lu", hSession, userType, ulPinLen);
+
+  // Check if the cryptoki library is initialized
+  CNK_ENSURE_INITIALIZED();
+
+  // Validate arguments
+  if (pPin == NULL && ulPinLen > 0) {
+    return CKR_ARGUMENTS_BAD;
+  }
+
+  // Only CKU_USER is supported for PIV
+  if (userType != CKU_USER) {
+    return CKR_USER_TYPE_INVALID;
+  }
+
+  // Find the session
+  CNK_PKCS11_SESSION *session;
+  CK_RV rv = CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+
+  // Check if already logged in (PIN is already cached)
+  if (session->piv_pin_len > 0) {
+    return CKR_USER_ALREADY_LOGGED_IN;
+  }
+
+  // Verify the PIN and cache it in the session
+  rv = cnk_verify_piv_pin_with_session(session->slot_id, session, pPin, ulPinLen);
+
+  // If PIN verification was successful, update the session state
+  if (rv == CKR_OK) {
+    // Update session state based on session type
+    if (session->flags & CKF_RW_SESSION) {
+      session->state = SESSION_STATE_RW_USER;
+    } else {
+      session->state = SESSION_STATE_RO_USER;
+    }
+  }
+
+  CNK_RETURN(rv, "verify_piv_pin_with_session");
+}
+
+CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
+  CNK_LOG_FUNC(": hSession: %lu", hSession);
+
+  // Check if the cryptoki library is initialized
+  CNK_ENSURE_INITIALIZED();
+
+  // Find the session
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+
+  // Check if logged in (PIN is cached)
+  if (session->piv_pin_len == 0) {
+    return CKR_USER_NOT_LOGGED_IN;
+  }
+
+  // Send the logout APDU to the card
+  CNK_ENSURE_OK(cnk_logout_piv_pin_with_session(session->slot_id));
+
+  // Clear the cached PIN
+  memset(session->piv_pin, 0xFF, sizeof(session->piv_pin));
+  session->piv_pin_len = 0;
+
+  // Reset session state based on session type
+  if (session->flags & CKF_RW_SESSION) {
+    session->state = SESSION_STATE_RW_PUBLIC;
+  } else {
+    session->state = SESSION_STATE_RO_PUBLIC;
   }
 
   CNK_RET_OK;
