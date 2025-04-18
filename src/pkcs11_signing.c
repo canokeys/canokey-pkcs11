@@ -3,6 +3,7 @@
 #include "pkcs11.h"
 #include "pkcs11_macros.h"
 #include "pkcs11_object.h"
+#include "pkcs11_session.h"
 #include "rsa_utils.h"
 #include "utils.h"
 

@@ -55,19 +55,6 @@ CK_RV cnk_session_manager_init(void);
 // Clean up the session manager
 void cnk_session_manager_cleanup(void);
 
-// Open a new session
-CK_RV cnk_session_open(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication, CK_NOTIFY Notify,
-                       CK_SESSION_HANDLE_PTR phSession);
-
-// Close a session
-CK_RV cnk_session_close(CK_SESSION_HANDLE hSession);
-
-// Close all sessions for a slot
-CK_RV cnk_session_close_all(CK_SLOT_ID slotID);
-
-// Get session info
-CK_RV cnk_session_get_info(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo);
-
 // Find a session by handle
 CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session);
 

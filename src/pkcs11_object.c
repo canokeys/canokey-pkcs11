@@ -1,12 +1,9 @@
-#include "pkcs11_object.h"
-
 #include "logging.h"
 #include "pcsc_backend.h"
 #include "pkcs11.h"
-#include "pkcs11_canokey.h"
 #include "pkcs11_macros.h"
 #include "pkcs11_mutex.h"
-#include "rsa_utils.h"
+#include "pkcs11_session.h"
 #include "utils.h"
 
 #include <stdio.h>
