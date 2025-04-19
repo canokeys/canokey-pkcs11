@@ -24,6 +24,8 @@ endif()
 
 if(USE_GNU_COMPILERS)
   add_compile_options("-fmacro-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}/=")
+  add_compile_options("-ffunction-sections" "-fdata-sections")
+  add_link_options("-Wl,--gc-sections")
 endif()
 
 # Include project directory

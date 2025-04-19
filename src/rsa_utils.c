@@ -209,7 +209,7 @@ static CK_RV pss_encode(CK_BYTE_PTR mHash, CK_ULONG mHashLen, CK_BYTE_PTR pModul
     memcpy(buf + hLen, C, 4);
 
     unsigned char hash[64];
-    mbedtls_md(md_info, buf, hLen + 4, hash);
+    CNK_ENSURE_OK(mbedtls_md(md_info, buf, hLen + 4, hash));
 
     const CK_ULONG off = c * hLen;
     const CK_ULONG clen = (off + hLen <= dbLen) ? hLen : dbLen - off;
