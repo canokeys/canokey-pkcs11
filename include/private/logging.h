@@ -36,10 +36,10 @@ extern void cnk_printf(const int level, const bool prepend_date, const char *for
 #define CNK_PRINTLOGF(level, format, ...)                                                                              \
   do {                                                                                                                 \
     int _level = atomic_load(&g_cnk_log_level);                                                                        \
-    if (CNK_LIKELY(_level < g_cnk_log_level)) {                                                                        \
+    if (CNK_LIKELY(level < _level)) {                                                                                  \
       break;                                                                                                           \
     }                                                                                                                  \
-    CNK_PRINTLOGF_IMPL(_level, format, ##__VA_ARGS__);                                                                 \
+    CNK_PRINTLOGF_IMPL(level, format, ##__VA_ARGS__);                                                                  \
   } while (0)
 #define CNK_TRACE(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_TRACE, format, ##__VA_ARGS__)
 #define CNK_DEBUG(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_DEBUG, format, ##__VA_ARGS__)
