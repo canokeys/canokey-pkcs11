@@ -9,27 +9,14 @@
 
 #include <string.h>
 
-// Helper function to check basic library and session state
-static CK_RV validate_session(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session) {
-  // Check if the library is initialized
-  if (!g_cnk_is_initialized)
-    return CKR_CRYPTOKI_NOT_INITIALIZED;
-
-  // Find the session
-  return cnk_session_find(hSession, session);
-}
-
 CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {
   CNK_LOG_FUNC(": hSession: %lu, pMechanism: %p, hKey: %lu", hSession, pMechanism, hKey);
 
-  CNK_ENSURE_INITIALIZED();
+  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pMechanism);
 
-  // Validate mechanism
-  CNK_ENSURE_NONNULL(pMechanism);
-
-  // Validate session
+  // Find the session
   CNK_PKCS11_SESSION *session;
-  CNK_ENSURE_OK(validate_session(hSession, &session));
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   // Validate the key object
   CK_BYTE obj_id;
@@ -136,17 +123,15 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   CNK_LOG_FUNC(": hSession: %lu, ulDataLen: %lu, pSignature: %p, pulSignatureLen: %p", hSession, ulDataLen, pSignature,
                pulSignatureLen);
 
-  CNK_ENSURE_INITIALIZED();
+  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pulSignatureLen);
 
   // Parameter validation
   if (!pData && ulDataLen > 0)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pData is NULL but ulDataLen > 0");
 
-  CNK_ENSURE_NONNULL(pulSignatureLen);
-
   // Validate the session
   CNK_PKCS11_SESSION *session;
-  CK_RV rv = CNK_ENSURE_OK(validate_session(hSession, &session));
+  CK_RV rv = CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   // Verify that we have an active key and mechanism
   if (session->active_key == 0)

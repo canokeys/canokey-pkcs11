@@ -14,6 +14,47 @@ static CK_LONG session_count = 0;
 static CK_SESSION_HANDLE next_handle = 1; // Start from 1, 0 is invalid
 static CNK_PKCS11_MUTEX session_mutex;
 
+// Helper function to resize the session table if needed
+static CK_RV resize_session_table(void) {
+  // Check if we need to resize (if table is 80% full)
+  if (session_count < (session_table_size * 10 / 8)) {
+    CNK_RET_OK;
+  }
+
+  // Double the size
+  CK_LONG new_size = session_table_size * 2;
+  CNK_PKCS11_SESSION **new_table = (CNK_PKCS11_SESSION **)ck_malloc(new_size * sizeof(CNK_PKCS11_SESSION *));
+  if (new_table == NULL)
+    CNK_RETURN(CKR_HOST_MEMORY, "Failed to allocate memory for session table");
+
+  // Initialize new table
+  memset(new_table, 0, new_size * sizeof(CNK_PKCS11_SESSION *));
+
+  // Copy existing sessions
+  for (CK_LONG i = 0; i < session_table_size; i++) {
+    if (session_table[i] != NULL) {
+      new_table[i] = session_table[i];
+    }
+  }
+
+  // Free old table and update pointers
+  ck_free(session_table);
+  session_table = new_table;
+  session_table_size = new_size;
+
+  CNK_RET_OK;
+}
+
+// Find a free slot in the session table
+static CK_LONG find_free_slot(void) {
+  for (CK_LONG i = 0; i < session_table_size; i++) {
+    if (session_table[i] == NULL) {
+      return i;
+    }
+  }
+  return -1; // No free slot found
+}
+
 // Initialize the session manager
 CK_RV cnk_session_manager_init(void) {
   CNK_LOG_FUNC();
@@ -69,45 +110,32 @@ void cnk_session_manager_cleanup(void) {
   cnk_mutex_destroy(&session_mutex);
 }
 
-// Helper function to resize the session table if needed
-static CK_RV resize_session_table(void) {
-  // Check if we need to resize (if table is 80% full)
-  if (session_count < (session_table_size * 10 / 8)) {
-    CNK_RET_OK;
-  }
+// Find a session by handle
+CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session) {
 
-  // Double the size
-  CK_LONG new_size = session_table_size * 2;
-  CNK_PKCS11_SESSION **new_table = (CNK_PKCS11_SESSION **)ck_malloc(new_size * sizeof(CNK_PKCS11_SESSION *));
-  if (new_table == NULL)
-    CNK_RETURN(CKR_HOST_MEMORY, "Failed to allocate memory for session table");
+  CNK_ENSURE_NONNULL(session);
 
-  // Initialize new table
-  memset(new_table, 0, new_size * sizeof(CNK_PKCS11_SESSION *));
+  cnk_mutex_lock(&session_mutex);
 
-  // Copy existing sessions
+  // Find the session
+  CK_BBOOL found = CK_FALSE;
+
   for (CK_LONG i = 0; i < session_table_size; i++) {
-    if (session_table[i] != NULL) {
-      new_table[i] = session_table[i];
+    if (session_table[i] != NULL && session_table[i]->handle == hSession) {
+      *session = session_table[i];
+      found = CK_TRUE;
+      CNK_DEBUG("Found session with handle %lu at session idx %ld", hSession, i);
+      break;
     }
   }
 
-  // Free old table and update pointers
-  ck_free(session_table);
-  session_table = new_table;
-  session_table_size = new_size;
+  cnk_mutex_unlock(&session_mutex);
+
+  if (!found) {
+    CNK_RETURN(CKR_SESSION_HANDLE_INVALID, "Session not found");
+  }
 
   CNK_RET_OK;
-}
-
-// Find a free slot in the session table
-static CK_LONG find_free_slot(void) {
-  for (CK_LONG i = 0; i < session_table_size; i++) {
-    if (session_table[i] == NULL) {
-      return i;
-    }
-  }
-  return -1; // No free slot found
 }
 
 // Open a new session
@@ -310,34 +338,6 @@ CK_RV C_GetSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
   cnk_mutex_unlock(&session_mutex);
 
   CNK_DEBUG("C_GetSessionInfo: slotID = %lu, state = %lu, flags = 0x%lx", pInfo->slotID, pInfo->state, pInfo->flags);
-
-  CNK_RET_OK;
-}
-
-// Find a session by handle
-CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session) {
-
-  CNK_ENSURE_NONNULL(session);
-
-  cnk_mutex_lock(&session_mutex);
-
-  // Find the session
-  CK_BBOOL found = CK_FALSE;
-
-  for (CK_LONG i = 0; i < session_table_size; i++) {
-    if (session_table[i] != NULL && session_table[i]->handle == hSession) {
-      *session = session_table[i];
-      found = CK_TRUE;
-      CNK_DEBUG("Found session with handle %lu at session idx %ld", hSession, i);
-      break;
-    }
-  }
-
-  cnk_mutex_unlock(&session_mutex);
-
-  if (!found) {
-    CNK_RETURN(CKR_SESSION_HANDLE_INVALID, "Session not found");
-  }
 
   CNK_RET_OK;
 }

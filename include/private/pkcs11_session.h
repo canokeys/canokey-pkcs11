@@ -4,6 +4,7 @@
 #include "pkcs11.h"
 
 #include "pkcs11_mutex.h"
+#include <mbedtls/md.h>
 
 // Session states as defined in PKCS#11 standard
 typedef enum {
@@ -47,6 +48,9 @@ typedef struct CNK_PKCS11_SESSION {
   CK_BYTE active_key_algorithm_type;     // Algorithm type of the active key
   CK_BYTE active_key_modulus[512];       // Cached modulus for RSA operations (max 4096 bits)
   CK_ULONG active_key_modulus_len;       // Length of the cached modulus
+  mbedtls_md_context_t digest_ctx;      // context for digest operations
+  CK_MECHANISM_TYPE digest_mech;        // active digest mechanism
+  CK_BBOOL digest_active;               // whether a digest operation is active
 } CNK_PKCS11_SESSION;
 
 // Initialize the session manager
