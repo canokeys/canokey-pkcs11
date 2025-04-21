@@ -111,19 +111,21 @@ CK_KEY_TYPE cnk_algo_type_to_key_type(CK_BYTE algorithm_type) {
 }
 
 // Handle certificate-specific attributes
-static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE_PTR data, CK_ULONG data_len) {
+static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE_PTR data, CK_ULONG data_len) {
+  CNK_LOG_FUNC(" attribute = %d", attribute->type);
+
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
 
-  switch (attribute.type) {
+  switch (attribute->type) {
   case CKA_CERTIFICATE_TYPE: {
     CK_CERTIFICATE_TYPE cert_type = CKC_X_509;
-    rv = cnk_set_single_attribute_value(&attribute, &cert_type, sizeof(cert_type));
+    rv = cnk_set_single_attribute_value(attribute, &cert_type, sizeof(cert_type));
     break;
   }
 
   case CKA_VALUE:
     // For certificates, return the raw certificate data
-    rv = cnk_set_single_attribute_value(&attribute, data, data_len);
+    rv = cnk_set_single_attribute_value(attribute, data, data_len);
     break;
 
     // Add other certificate attributes as needed
@@ -138,48 +140,52 @@ static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE attribute, CK_BYTE_PT
 }
 
 // Handle public key specific attributes
-static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE algorithm_type) {
+static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithm_type, CK_BYTE_PTR modulus,
+                                             CK_ULONG modulus_len) {
+  CNK_LOG_FUNC(" attribute = 0x%x, algorithm_type = 0x%x", attribute->type, algorithm_type);
+
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
   CK_KEY_TYPE key_type = cnk_algo_type_to_key_type(algorithm_type);
 
-  switch (attribute.type) {
+  switch (attribute->type) {
   case CKA_KEY_TYPE:
-    rv = cnk_set_single_attribute_value(&attribute, &key_type, sizeof(key_type));
+    rv = cnk_set_single_attribute_value(attribute, &key_type, sizeof(key_type));
     break;
 
   case CKA_VERIFY: {
     // Public keys can be used for verification
     CK_BBOOL value = CK_TRUE;
-    rv = cnk_set_single_attribute_value(&attribute, &value, sizeof(value));
+    rv = cnk_set_single_attribute_value(attribute, &value, sizeof(value));
     break;
   }
 
   case CKA_ENCRYPT: {
     // Only RSA public keys can encrypt
     CK_BBOOL value = (key_type == CKK_RSA) ? CK_TRUE : CK_FALSE;
-    rv = cnk_set_single_attribute_value(&attribute, &value, sizeof(value));
+    rv = cnk_set_single_attribute_value(attribute, &value, sizeof(value));
     break;
   }
 
   case CKA_MODULUS_BITS:
     if (key_type == CKK_RSA) {
-      // For RSA keys, we can determine the modulus bits
-      CK_ULONG modulus_bits = 2048; // Default for PIV
-      if (algorithm_type == PIV_ALG_RSA_3072) {
-        modulus_bits = 3072;
-      } else if (algorithm_type == PIV_ALG_RSA_4096) {
-        modulus_bits = 4096;
-      }
-      rv = cnk_set_single_attribute_value(&attribute, &modulus_bits, sizeof(modulus_bits));
+      CK_ULONG modulus_bits = modulus_len * 8;
+      rv = cnk_set_single_attribute_value(attribute, &modulus_bits, sizeof(modulus_bits));
     } else {
       // Not applicable for non-RSA keys
       rv = CKR_ATTRIBUTE_TYPE_INVALID;
     }
     break;
 
-    // Add other public key attributes as needed
-    // For a complete implementation, you would need to handle attributes like
-    // CKA_MODULUS, CKA_PUBLIC_EXPONENT for RSA or CKA_EC_PARAMS, CKA_EC_POINT for EC
+  case CKA_MODULUS:
+    if (key_type == CKK_RSA) {
+      rv = cnk_set_single_attribute_value(attribute, modulus, modulus_len);
+    } else {
+      // Not applicable for non-RSA keys
+      rv = CKR_ATTRIBUTE_TYPE_INVALID;
+    }
+    break;
+
+    // TODO: Add other public key attributes
 
   default:
     rv = CKR_ATTRIBUTE_TYPE_INVALID;
@@ -190,26 +196,26 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE alg
 }
 
 // Handle private key specific attributes
-static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE algorithm_type) {
+static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithm_type) {
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
   CK_KEY_TYPE key_type = cnk_algo_type_to_key_type(algorithm_type);
 
-  switch (attribute.type) {
+  switch (attribute->type) {
   case CKA_KEY_TYPE:
-    rv = cnk_set_single_attribute_value(&attribute, &key_type, sizeof(key_type));
+    rv = cnk_set_single_attribute_value(attribute, &key_type, sizeof(key_type));
     break;
 
   case CKA_SIGN: {
     // Private keys can be used for signing
     CK_BBOOL value = CK_TRUE;
-    rv = cnk_set_single_attribute_value(&attribute, &value, sizeof(value));
+    rv = cnk_set_single_attribute_value(attribute, &value, sizeof(value));
     break;
   }
 
   case CKA_DECRYPT: {
     // Only RSA private keys can decrypt
     CK_BBOOL value = (key_type == CKK_RSA) ? CK_TRUE : CK_FALSE;
-    rv = cnk_set_single_attribute_value(&attribute, &value, sizeof(value));
+    rv = cnk_set_single_attribute_value(attribute, &value, sizeof(value));
     break;
   }
 
@@ -217,14 +223,14 @@ static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE attribute, CK_BYTE al
   case CKA_ALWAYS_SENSITIVE: {
     // Private keys are always sensitive
     CK_BBOOL value = CK_TRUE;
-    rv = cnk_set_single_attribute_value(&attribute, &value, sizeof(value));
+    rv = cnk_set_single_attribute_value(attribute, &value, sizeof(value));
     break;
   }
 
   case CKA_EXTRACTABLE: {
     // Private keys on PIV are never extractable
     CK_BBOOL value = CK_FALSE;
-    rv = cnk_set_single_attribute_value(&attribute, &value, sizeof(value));
+    rv = cnk_set_single_attribute_value(attribute, &value, sizeof(value));
     break;
   }
 
@@ -275,8 +281,9 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CNK_ENSURE_INITIALIZED();
 
   // Validate parameters
-  if (!pTemplate && ulCount > 0)
-    return CKR_ARGUMENTS_BAD;
+  if (!pTemplate && ulCount > 0) {
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "pTemplate is null or ulCount is 0");
+  }
 
   // Validate session
   CNK_PKCS11_SESSION *session;
@@ -303,14 +310,16 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
   // If no data was found, the object doesn't exist
   if (data_len == 0) {
-    return CKR_OBJECT_HANDLE_INVALID;
+    CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "No data found for PIV tag");
   }
 
   // Get key metadata if this is a key object
   CK_BYTE algorithm_type;
+  CK_BYTE modulus[512];
+  CK_ULONG modulus_len = sizeof(modulus);
 
   if (obj_class == CKO_PUBLIC_KEY || obj_class == CKO_PRIVATE_KEY) {
-    CK_RV rv = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, NULL, NULL);
+    CK_RV rv = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, modulus, &modulus_len);
     if (rv != CKR_OK) {
       CNK_DEBUG("Failed to get metadata for PIV tag 0x%02X: %lu", piv_tag, rv);
       // Continue anyway, we'll use default values
@@ -323,59 +332,27 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CK_RV return_rv = CKR_OK; // Final return value
 
   for (CK_ULONG i = 0; i < ulCount; i++) {
-    // Set default values for attributes that are not found
-    pTemplate[i].ulValueLen = CK_UNAVAILABLE_INFORMATION;
     CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID; // Default to attribute not found
+    CK_BBOOL bbool;
 
     // Common attributes for all object types
     switch (pTemplate[i].type) {
     case CKA_CLASS:
-      if (pTemplate[i].pValue) {
-        if (pTemplate[i].ulValueLen >= sizeof(CK_OBJECT_CLASS)) {
-          *((CK_OBJECT_CLASS *)pTemplate[i].pValue) = obj_class;
-        } else {
-          rv = CKR_BUFFER_TOO_SMALL;
-        }
-      }
-      pTemplate[i].ulValueLen = sizeof(CK_OBJECT_CLASS);
-      rv = CKR_OK;
+      rv = cnk_set_single_attribute_value(&pTemplate[i], &obj_class, sizeof(obj_class));
       break;
 
     case CKA_TOKEN:
-      if (pTemplate[i].pValue) {
-        if (pTemplate[i].ulValueLen >= sizeof(CK_BBOOL)) {
-          *((CK_BBOOL *)pTemplate[i].pValue) = CK_TRUE;
-        } else {
-          rv = CKR_BUFFER_TOO_SMALL;
-        }
-      }
-      pTemplate[i].ulValueLen = sizeof(CK_BBOOL);
-      rv = CKR_OK;
+      bbool = CK_TRUE;
+      rv = cnk_set_single_attribute_value(&pTemplate[i], &bbool, sizeof(bbool));
       break;
 
     case CKA_PRIVATE:
-      if (pTemplate[i].pValue) {
-        if (pTemplate[i].ulValueLen >= sizeof(CK_BBOOL)) {
-          // Only private keys are private objects
-          *((CK_BBOOL *)pTemplate[i].pValue) = (obj_class == CKO_PRIVATE_KEY) ? CK_TRUE : CK_FALSE;
-        } else {
-          rv = CKR_BUFFER_TOO_SMALL;
-        }
-      }
-      pTemplate[i].ulValueLen = sizeof(CK_BBOOL);
-      rv = CKR_OK;
+      bbool = (obj_class == CKO_PRIVATE_KEY) ? CK_TRUE : CK_FALSE;
+      rv = cnk_set_single_attribute_value(&pTemplate[i], &bbool, sizeof(bbool));
       break;
 
     case CKA_ID:
-      if (pTemplate[i].pValue) {
-        if (pTemplate[i].ulValueLen >= sizeof(CK_BYTE)) {
-          *((CK_BYTE *)pTemplate[i].pValue) = obj_id;
-        } else {
-          rv = CKR_BUFFER_TOO_SMALL;
-        }
-      }
-      pTemplate[i].ulValueLen = sizeof(CK_BYTE);
-      rv = CKR_OK;
+      rv = cnk_set_single_attribute_value(&pTemplate[i], &obj_id, sizeof(obj_id));
       break;
 
     case CKA_LABEL: {
@@ -403,16 +380,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
       snprintf(label, sizeof(label), "PIV %s %02X", type_str, piv_tag);
       CK_ULONG label_len = (CK_ULONG)strlen(label);
-
-      if (pTemplate[i].pValue) {
-        if (pTemplate[i].ulValueLen >= label_len) {
-          memcpy(pTemplate[i].pValue, label, label_len);
-        } else {
-          rv = CKR_BUFFER_TOO_SMALL;
-        }
-      }
-      pTemplate[i].ulValueLen = label_len;
-      rv = CKR_OK;
+      rv = cnk_set_single_attribute_value(&pTemplate[i], label, label_len);
       break;
     }
 
@@ -423,24 +391,22 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
     // If we've already handled this attribute, continue to the next one
     if (rv != CKR_ATTRIBUTE_TYPE_INVALID) {
-      if (rv != CKR_OK && return_rv == CKR_OK) {
-        return_rv = rv; // Update return value if we had an error
-      }
+      CNK_DEBUG("Handled attribute %lu, continue.", pTemplate[i].type);
       continue;
     }
 
     // Object class specific attributes
     switch (obj_class) {
     case CKO_CERTIFICATE:
-      rv = cnk_handle_certificate_attribute(pTemplate[i], data, data_len);
+      rv = cnk_handle_certificate_attribute(&pTemplate[i], data, data_len);
       break;
 
     case CKO_PUBLIC_KEY:
-      rv = cnk_handle_public_key_attribute(pTemplate[i], algorithm_type);
+      rv = cnk_handle_public_key_attribute(&pTemplate[i], algorithm_type, modulus, modulus_len);
       break;
 
     case CKO_PRIVATE_KEY:
-      rv = cnk_handle_private_key_attribute(pTemplate[i], algorithm_type);
+      rv = cnk_handle_private_key_attribute(&pTemplate[i], algorithm_type);
       break;
 
     default:
@@ -449,9 +415,11 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       break;
     }
 
-    // Update the return value if needed
-    if (rv != CKR_OK && return_rv == CKR_OK) {
-      return_rv = rv;
+    if (rv != CKR_OK) {
+      pTemplate[i].ulValueLen = CK_UNAVAILABLE_INFORMATION;
+      if (return_rv == CKR_OK) {
+        return_rv = rv;
+      }
     }
   }
 
@@ -460,7 +428,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
     ck_free(data);
   }
 
-  return return_rv;
+  CNK_RETURN(return_rv, "Finished");
 }
 
 CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
