@@ -112,7 +112,7 @@ CK_KEY_TYPE cnk_algo_type_to_key_type(CK_BYTE algorithm_type) {
 
 // Handle certificate-specific attributes
 static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE_PTR data, CK_ULONG data_len) {
-  CNK_LOG_FUNC(" attribute = %d", attribute->type);
+  CNK_LOG_FUNC(" attribute = %d, data_len = %lu", attribute->type, data_len);
 
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
 
@@ -197,6 +197,8 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
 
 // Handle private key specific attributes
 static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithm_type) {
+  CNK_LOG_FUNC(" attribute = %d, algorithm_type = %d", attribute->type, algorithm_type);
+
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
   CK_KEY_TYPE key_type = cnk_algo_type_to_key_type(algorithm_type);
 
@@ -322,7 +324,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
     CK_RV rv = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, modulus, &modulus_len);
     if (rv != CKR_OK) {
       CNK_DEBUG("Failed to get metadata for PIV tag 0x%02X: %lu", piv_tag, rv);
-      // Continue anyway, we'll use default values
+      // TODO: shall we stop here?
     } else {
       CNK_DEBUG("Retrieved algorithm type %u for PIV tag 0x%02X", algorithm_type, piv_tag);
     }

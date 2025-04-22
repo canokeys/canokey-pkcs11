@@ -105,11 +105,8 @@ CK_RV C_Digest(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen
     CNK_RET_OK;
   }
 
-  CK_RV rv = C_DigestInit(hSession, (CK_MECHANISM_PTR) & (CK_MECHANISM){.mechanism = session->digest_mech});
-  if (rv != CKR_OK)
-    return rv;
   if (ulDataLen > 0) {
-    rv = C_DigestUpdate(hSession, pData, ulDataLen);
+    CK_RV rv = C_DigestUpdate(hSession, pData, ulDataLen);
     if (rv != CKR_OK)
       return rv;
   }
