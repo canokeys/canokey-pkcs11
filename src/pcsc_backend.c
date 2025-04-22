@@ -225,29 +225,34 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
     // Begin transaction with default timeout of 2 seconds
     LONG rv = SCardBeginTransaction(*phCard);
     if (rv != SCARD_S_SUCCESS) {
-      return CKR_DEVICE_ERROR;
+      CNK_ERROR("SCardBeginTransaction failed with error: 0x%lx", rv);
+      CNK_RETURN(CKR_DEVICE_ERROR, "SCardBeginTransaction failed");
     }
 
-    return CKR_OK;
+    CNK_RET_OK;
   }
 
   // Standalone mode - initialize PCSC if needed
   if (!g_cnk_is_initialized) {
     CK_RV rv = cnk_initialize_pcsc();
-    if (rv != CKR_OK)
-      return rv;
+    if (rv != CKR_OK) {
+      CNK_ERROR("Failed to initialize PCSC: 0x%lx", rv);
+      CNK_RETURN(rv, "cnk_initialize_pcsc failed");
+    }
   }
 
   // If readers haven't been listed yet, list them now
   if (g_cnk_num_readers == 0 || g_cnk_readers == NULL) {
     CK_RV rv = cnk_list_readers();
-    if (rv != CKR_OK)
-      return rv;
+    if (rv != CKR_OK) {
+      CNK_ERROR("Failed to list readers: 0x%lx", rv);
+      CNK_RETURN(rv, "cnk_list_readers failed");
+    }
   }
 
   if (g_cnk_readers == NULL) {
     CNK_ERROR("No readers found after listing");
-    return CKR_SLOT_ID_INVALID;
+    CNK_RETURN(CKR_SLOT_ID_INVALID, "No readers found");
   }
 
   // Find the reader corresponding to the slot ID
@@ -258,7 +263,7 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
   }
 
   if (i >= g_cnk_num_readers) {
-    return CKR_SLOT_ID_INVALID;
+    CNK_RETURN(CKR_SLOT_ID_INVALID, "Invalid slot ID");
   }
 
   // Connect to the card
@@ -266,20 +271,22 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
   LONG rv = SCardConnect(g_cnk_pcsc_context, g_cnk_readers[i].name, SCARD_SHARE_SHARED,
                          SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1, phCard, &active_protocol);
   if (rv != SCARD_S_SUCCESS) {
-    return CKR_DEVICE_ERROR;
+    CNK_ERROR("SCardConnect failed with error: 0x%lx", rv);
+    CNK_RETURN(CKR_DEVICE_ERROR, "SCardConnect failed");
   }
 
   // Begin transaction with default timeout of 2 seconds
   rv = SCardBeginTransaction(*phCard);
   if (rv != SCARD_S_SUCCESS) {
     SCardDisconnect(*phCard, SCARD_LEAVE_CARD);
-    return CKR_DEVICE_ERROR;
+    CNK_ERROR("SCardBeginTransaction failed with error: 0x%lx", rv);
+    CNK_RETURN(CKR_DEVICE_ERROR, "SCardBeginTransaction failed");
   }
 
   // Note: We don't end the transaction here to allow for subsequent operations
   // The caller is responsible for calling cnk_disconnect_card when done
 
-  return CKR_OK;
+  CNK_RET_OK;
 }
 
 // Disconnect from a card and end any active transaction
