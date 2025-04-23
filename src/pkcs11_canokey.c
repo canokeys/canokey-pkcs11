@@ -24,10 +24,6 @@ SCARDHANDLE g_cnk_scard = 0L;
 CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
   CNK_LOG_FUNC();
 
-  // Check if the library is already initialized
-  if (g_cnk_is_initialized)
-    CNK_RETURN(CKR_CRYPTOKI_ALREADY_INITIALIZED, "already initialized");
-
   // Check if initialization arguments are provided
   if (pInitArgs != NULL_PTR) {
     if (pInitArgs->malloc_func == NULL || pInitArgs->free_func == NULL || pInitArgs->hSCardCtx == 0 ||
