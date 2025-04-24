@@ -981,13 +981,10 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
     CNK_RETURN(CKR_ARGUMENTS_BAD, "modulus_len_ptr is NULL when modulus_ptr is provided");
 
   // Connect to the card for this operation
-  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
-  if (rv != CKR_OK) {
-    return rv;
-  }
+  CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotID, &hCard));
 
   // Select the PIV application
-  rv = cnk_select_piv_application(hCard);
+  CK_RV rv = cnk_select_piv_application(hCard);
   if (rv != CKR_OK) {
     cnk_disconnect_card(hCard);
     return rv;
@@ -998,16 +995,12 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
   CK_BYTE metadata_apdu[] = {0x00, 0xF7, 0x00, piv_tag, 0x00};
 
   // Buffer to hold the complete response (up to 1024 bytes)
-  CK_BYTE complete_response[1024];
-  CK_ULONG complete_response_len = 0;
-
-  // Temporary buffer for receiving responses
-  CK_BYTE response[258]; // Maximum single response size
+  CK_BYTE response[1024];
   DWORD response_len = sizeof(response);
 
   // Send the metadata command
   CNK_DEBUG("Sending metadata command for PIV tag 0x%02X", piv_tag);
-  LONG pcsc_rv = cnk_transceive_apdu(hCard, metadata_apdu, sizeof(metadata_apdu), response, &response_len, CK_FALSE);
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, metadata_apdu, sizeof(metadata_apdu), response, &response_len, CK_TRUE);
   if (pcsc_rv != SCARD_S_SUCCESS) {
     CNK_ERROR("Failed to send metadata command: %ld", pcsc_rv);
     cnk_disconnect_card(hCard);
@@ -1024,80 +1017,15 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
   // Check for success (9000) or more data available (61XX)
   CK_BYTE sw1 = response[response_len - 2];
   CK_BYTE sw2 = response[response_len - 1];
-
-  if (sw1 == 0x90 && sw2 == 0x00) {
-    // Success - copy the data (excluding status bytes) to the complete response buffer
-    if (response_len > 2) {
-      memcpy(complete_response, response, response_len - 2);
-      complete_response_len = response_len - 2;
-    }
-  } else if (sw1 == 0x61) {
-    // More data available - copy the initial data (excluding status bytes)
-    if (response_len > 2) {
-      memcpy(complete_response, response, response_len - 2);
-      complete_response_len = response_len - 2;
-    }
-
-    // Use GET RESPONSE to fetch remaining data
-    CK_BYTE get_response_apdu[] = {0x00, 0xC0, 0x00, 0x00, 0x00}; // GET RESPONSE command
-
-    // Continue fetching data while the card returns 61XX
-    while (sw1 == 0x61) {
-      // Set the expected length in the GET RESPONSE command
-      get_response_apdu[4] = sw2;
-
-      // Send GET RESPONSE command
-      CNK_DEBUG("Sending GET RESPONSE command for %d bytes", sw2);
-      response_len = sizeof(response);
-      pcsc_rv =
-          cnk_transceive_apdu(hCard, get_response_apdu, sizeof(get_response_apdu), response, &response_len, CK_FALSE);
-
-      if (pcsc_rv != SCARD_S_SUCCESS) {
-        CNK_ERROR("Failed to send GET RESPONSE command: %ld", pcsc_rv);
-        cnk_disconnect_card(hCard);
-        return CKR_DEVICE_ERROR;
-      }
-
-      if (response_len < 2) {
-        CNK_ERROR("GET RESPONSE returned too short response");
-        cnk_disconnect_card(hCard);
-        return CKR_DEVICE_ERROR;
-      }
-
-      // Update status bytes
-      sw1 = response[response_len - 2];
-      sw2 = response[response_len - 1];
-
-      // Check if we have enough space in the complete response buffer
-      if (complete_response_len + response_len - 2 > sizeof(complete_response)) {
-        CNK_ERROR("Response too large for buffer");
-        cnk_disconnect_card(hCard);
-        return CKR_DEVICE_ERROR;
-      }
-
-      // Append the data (excluding status bytes) to the complete response
-      if (response_len > 2) {
-        memcpy(complete_response + complete_response_len, response, response_len - 2);
-        complete_response_len += response_len - 2;
-      }
-    }
-
-    // Final check - the last response should be 9000
-    if (sw1 != 0x90 || sw2 != 0x00) {
-      CNK_ERROR("Final GET RESPONSE returned error status: %02X%02X", sw1, sw2);
-      cnk_disconnect_card(hCard);
-      return CKR_DEVICE_ERROR;
-    }
-  } else {
-    // Error status
-    CNK_ERROR("Metadata command failed with status: %02X%02X", sw1, sw2);
+  if (sw1 != 0x90 || sw2 != 0x00) {
+    CNK_ERROR("GENERAL AUTHENTICATE returned error status: %02X%02X", sw1, sw2);
     cnk_disconnect_card(hCard);
-    return CKR_DEVICE_ERROR;
+    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to sign");
   }
 
   // Process the complete response data
-  CK_ULONG data_len = complete_response_len;
-  CK_BYTE *data = complete_response;
+  CK_ULONG data_len = response_len - 2;
+  CK_BYTE *data = response;
   CK_ULONG pos = 0;
 
   CNK_DEBUG("Complete metadata response length: %lu bytes", data_len);
