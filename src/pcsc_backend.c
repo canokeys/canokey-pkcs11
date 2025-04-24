@@ -216,7 +216,7 @@ CK_SLOT_ID cnk_get_reader_slot_id(CK_ULONG index) {
   return slot;
 }
 
-// Helper function to connect to a card and select the CanoKey AID
+// Helper function to connect to a card
 CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
   // In managed mode, use the provided card handle
   if (g_cnk_is_managed_mode) {
@@ -309,25 +309,88 @@ void cnk_disconnect_card(SCARDHANDLE hCard) {
 
 // Helper function to transmit APDU commands and log both command and response
 static LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, DWORD command_len, CK_BYTE *response,
-                                DWORD *response_len) {
-  if (hCard == 0 || command == NULL || response == NULL || response_len == NULL) {
-    return SCARD_E_INVALID_PARAMETER;
-  }
+                                DWORD *response_len, CK_BBOOL auto_get_response) {
+  DWORD available = *response_len;
+  CNK_LOG_FUNC("hCard = %p, command = %p, command_len = %lu, response = %p, available = %lu, auto_get_response = %d",
+               hCard, command, command_len, response, available, auto_get_response);
+
+  if (hCard == 0 || command == NULL || response == NULL || response_len == NULL)
+    CNK_RETURN(SCARD_E_INVALID_PARAMETER, "Invalid arguments");
 
   // Log the APDU command
   CNK_LOG_APDU_COMMAND(command, command_len);
 
   // Transmit the command
   LONG rv = SCardTransmit(hCard, SCARD_PCI_T1, command, command_len, NULL, response, response_len);
+  if (rv != SCARD_S_SUCCESS) {
+    CNK_ERROR("SCardTransmit failed: 0x%lX", rv);
+    return rv;
+  }
+  CNK_LOG_APDU_RESPONSE(response, *response_len);
 
-  // Log the APDU response
-  if (rv == SCARD_S_SUCCESS) {
-    CNK_LOG_APDU_RESPONSE(response, *response_len);
-  } else {
-    CNK_ERROR("SCardTransmit failed with error: 0x%lx", rv);
+  // If auto_get_response is false, return here
+  if (!auto_get_response)
+    CNK_RET_OK;
+
+  // At least two status bytes are expected
+  if (*response_len < 2)
+    CNK_RETURN(SCARD_E_UNEXPECTED, "Response too short for status bytes");
+
+  // Get the data length and status bytes
+  DWORD data_len = (*response_len > 2) ? (*response_len - 2) : 0;
+  DWORD total_len = data_len;
+  CK_BYTE sw1 = response[*response_len - 2];
+  CK_BYTE sw2 = response[*response_len - 1];
+
+  // If SW1=0x61, loop to send GET RESPONSE
+  while (sw1 == 0x61) {
+    // Prepare GET RESPONSE APDU: 00 C0 00 00 Le
+    CK_BYTE get_resp_apdu[5] = {0x00, 0xC0, 0x00, 0x00, sw2};
+    CNK_DEBUG("Auto GET RESPONSE for %u bytes", sw2);
+    CNK_LOG_APDU_COMMAND(get_resp_apdu, sizeof(get_resp_apdu));
+
+    // Temporary buffer to receive this GET RESPONSE response
+    CK_BYTE temp[258];
+    DWORD temp_len = sizeof(temp);
+    rv = SCardTransmit(hCard, SCARD_PCI_T1, get_resp_apdu, sizeof(get_resp_apdu), NULL, temp, &temp_len);
+    if (rv != SCARD_S_SUCCESS) {
+      CNK_ERROR("GET RESPONSE failed: 0x%lX", rv);
+      return rv;
+    }
+    CNK_LOG_APDU_RESPONSE(temp, temp_len);
+
+    // Check length
+    if (temp_len < 2) {
+      CNK_ERROR("GET RESPONSE returned too short data");
+      return SCARD_E_UNEXPECTED;
+    }
+
+    // Update status bytes
+    sw1 = temp[temp_len - 2];
+    sw2 = temp[temp_len - 1];
+
+    // Calculate this chunk's data length (without status bytes)
+    DWORD chunk_len = temp_len - 2;
+    if (total_len + chunk_len > available) {
+      CNK_ERROR("Response buffer overflow: need %lu, have %lu", total_len + chunk_len, available);
+      return SCARD_E_INSUFFICIENT_BUFFER;
+    }
+
+    // Append this chunk's data to the main response buffer
+    memcpy(response + total_len, temp, chunk_len);
+    total_len += chunk_len;
   }
 
-  return rv;
+  // Append status bytes
+  response[total_len++] = sw1;
+  response[total_len++] = sw2;
+
+  // Update output length, only return data part (no status bytes)
+  *response_len = total_len;
+  CNK_DEBUG("Total response length (data only): %lu bytes", total_len);
+  CNK_LOG_APDU_RESPONSE(response, total_len);
+
+  CNK_RET_OK;
 }
 
 // PIV application functions
@@ -338,21 +401,14 @@ CK_RV cnk_select_piv_application(SCARDHANDLE hCard) {
     CNK_RETURN(CKR_DEVICE_ERROR, "Card handle is invalid");
 
   // PIV AID: A0 00 00 03 08
-  CK_BYTE piv_aid[] = {0xA0, 0x00, 0x00, 0x03, 0x08};
-  CK_BYTE select_apdu[11] = {0x00, 0xA4, 0x04, 0x00};
-
-  // Set the length of the AID
-  select_apdu[4] = sizeof(piv_aid);
-
-  // Copy the AID into the APDU
-  memcpy(select_apdu + 5, piv_aid, sizeof(piv_aid));
+  CK_BYTE select_apdu[10] = {0x00, 0xA4, 0x04, 0x00, 0x05, 0xA0, 0x00, 0x00, 0x03, 0x08};
 
   // Prepare response buffer
   CK_BYTE response[258];
   DWORD response_len = sizeof(response);
 
   // Send the SELECT command using the transceive function
-  LONG rv = cnk_transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len);
+  LONG rv = cnk_transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len, CK_FALSE);
 
   if (rv != SCARD_S_SUCCESS) {
     CNK_RETURN(CKR_DEVICE_ERROR, "Failed to select PIV application");
@@ -363,7 +419,7 @@ CK_RV cnk_select_piv_application(SCARDHANDLE hCard) {
     CNK_RETURN(CKR_DEVICE_ERROR, "Select PIV application failed");
   }
 
-  return CKR_OK;
+  CNK_RET_OK;
 }
 
 // Verify the PIV PIN
@@ -395,7 +451,7 @@ CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPin
   DWORD response_len = sizeof(response);
 
   // Send the VERIFY command using the transceive function
-  LONG pcsc_rv = cnk_transceive_apdu(hCard, verify_apdu, sizeof(verify_apdu), response, &response_len);
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, verify_apdu, sizeof(verify_apdu), response, &response_len, CK_FALSE);
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
     CNK_RETURN(CKR_DEVICE_ERROR, "Failed to verify PIV PIN");
@@ -409,15 +465,19 @@ CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPin
   // Check status words
   if (response[response_len - 2] == 0x90 && response[response_len - 1] == 0x00) {
     CNK_RETURN(CKR_OK, "PIV PIN verified");
-  } else if (response[response_len - 2] == 0x63) {
+  }
+
+  if (response[response_len - 2] == 0x63) {
     // PIN verification failed, remaining attempts in low nibble of SW2
     CNK_RETURN(CKR_PIN_INCORRECT, "PIV PIN verification failed");
-  } else if (response[response_len - 2] == 0x69 && response[response_len - 1] == 0x83) {
+  }
+
+  if (response[response_len - 2] == 0x69 && response[response_len - 1] == 0x83) {
     // PIN blocked
     CNK_RETURN(CKR_PIN_LOCKED, "PIV PIN blocked");
-  } else {
-    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to verify PIV PIN");
   }
+
+  CNK_RETURN(CKR_DEVICE_ERROR, "Failed to verify PIV PIN");
 }
 
 // Logout PIV PIN using APDU 00 20 FF 80
@@ -440,7 +500,7 @@ CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard) {
   DWORD response_len = sizeof(response);
 
   // Send the LOGOUT command using the transceive function
-  LONG pcsc_rv = cnk_transceive_apdu(hCard, logout_apdu, sizeof(logout_apdu), response, &response_len);
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, logout_apdu, sizeof(logout_apdu), response, &response_len, CK_FALSE);
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
     CNK_RETURN(CKR_DEVICE_ERROR, "Failed to logout PIV PIN");
@@ -454,35 +514,27 @@ CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard) {
   // Check status words
   if (response[response_len - 2] == 0x90 && response[response_len - 1] == 0x00) {
     CNK_RETURN(CKR_OK, "PIV PIN logged out");
-  } else {
-    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to logout PIV PIN");
   }
+
+  CNK_RETURN(CKR_DEVICE_ERROR, "Failed to logout PIV PIN");
 }
 
 // Get PIV data from the CanoKey device
-// If fetch_data is CK_FALSE, only checks for existence and sets data_len to 1 if found, 0 if not
 CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data) {
+  CNK_LOG_FUNC(" slotID: %ld, tag: 0x%02X, data: %p, data_len: %p, fetch_data: %d", slotID, tag, data, data_len,
+               fetch_data);
+
   SCARDHANDLE hCard;
-  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
-  CK_BBOOL need_disconnect = CK_FALSE;
-  CK_BBOOL response_on_heap = CK_FALSE;
 
-  // If we're just checking for existence, we can use a smaller buffer
-  CK_BYTE response_buf[128];
-  CK_BYTE_PTR response = response_buf;
-  DWORD response_len = sizeof(response_buf);
+  CNK_ENSURE_NONNULL(data, data_len);
 
+  CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotID, &hCard));
+
+  // Select the PIV application
+  CK_RV rv = cnk_select_piv_application(hCard);
   if (rv != CKR_OK) {
-    CNK_ERROR("Connect to card failed");
-    goto cleanup;
-  }
-  need_disconnect = CK_TRUE;
-
-  // Select PIV application
-  rv = cnk_select_piv_application(hCard);
-  if (rv != CKR_OK) {
-    CNK_ERROR("Select PIV application failed");
-    goto cleanup;
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(rv, "Failed to select PIV application");
   }
 
   // Prepare GET DATA APDU
@@ -514,131 +566,45 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
     break; // Keep original tag if not in mapping
   }
 
-  if (fetch_data) {
-    response_len = 4096;
-    response = (CK_BYTE_PTR)ck_malloc(response_len); // Allocate larger buffer for data
-    if (response == NULL) {
-      CNK_ERROR("ck_malloc failed");
-      rv = CKR_HOST_MEMORY;
-      goto cleanup;
-    }
-    memset(response, 0, response_len);
-    response_on_heap = CK_TRUE;
-  }
+  CK_BYTE apdu[11] = {0x00, 0xCB, 0x3F, 0xFF, 0x05, 0x5C, 0x03, 0x5F, 0xC1, mapped_tag, 0x00};
 
-  // For existence check, we can modify the APDU to only request the header
-  // This is more efficient than fetching the entire content
-  CK_BYTE apdu[11] = {
-      0x00, 0xCB, 0x3F, 0xFF, 0x05, 0x5C, 0x03, 0x5F, 0xC1, mapped_tag, fetch_data ? (CK_BYTE)0x00 : (CK_BYTE)0x01};
+  // Buffer to hold the response
+  CK_BYTE response[4096];
+  DWORD response_len = sizeof(response);
 
-  // Send the get PIV data command using the transceive function
-  LONG pcsc_rv = cnk_transceive_apdu(hCard, apdu, sizeof(apdu), response, &response_len);
-
+  // Send the GET DATA APDU
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, apdu, sizeof(apdu), response, &response_len, fetch_data);
   if (pcsc_rv != SCARD_S_SUCCESS) {
-    CNK_ERROR("transceive failure: %lu", pcsc_rv);
-    rv = CKR_DEVICE_ERROR;
-    goto cleanup;
+    CNK_ERROR("Failed to send GET DATA command: %ld", pcsc_rv);
+    cnk_disconnect_card(hCard);
+    return CKR_DEVICE_ERROR;
   }
 
-  // Only fetch complete data if fetch_data is true
-  if (fetch_data && response_len >= 2 && response[response_len - 2] == 0x61) {
-    // For large responses, the card will return 61xx, indicating xx more bytes are available
-    // We need to use GET RESPONSE (C0) to fetch the remaining data until we get 9000
-    DWORD data_offset = response_len - 2; // Save the current data length (excluding SW1SW2)
+  // Check if the command was successful
+  if (response_len == 2 && response[0] == 0x6A && response[1] == 0x82) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DATA_INVALID, "PIV tag not found");
+  }
+  if (response_len < 2 || (fetch_data && (response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00)) ||
+      (!fetch_data && response[response_len - 2] != 0x61)) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to execute GET DATA command");
+  }
 
-    // Process initial response
-    // Check if we have a 61xx status word (more data available)
-    while (response_len >= 2 && response[response_len - 2] == 0x61) {
-      // Save the current data (excluding SW1SW2)
-      CK_BYTE sw2 = response[response_len - 1];
-
-      // Prepare GET RESPONSE command
-      CK_BYTE get_response[5] = {0x00, 0xC0, 0x00, 0x00, sw2};
-
-      // Get next chunk directly into the response buffer after the current data
-      DWORD next_chunk_len = sizeof(response) - data_offset;
-
-      // Send GET RESPONSE command
-      pcsc_rv = cnk_transceive_apdu(hCard, get_response, sizeof(get_response), response + data_offset, &next_chunk_len);
-
-      if (pcsc_rv != SCARD_S_SUCCESS) {
-        CNK_ERROR("transceive failure: %lu", pcsc_rv);
-        rv = CKR_DEVICE_ERROR;
-        goto cleanup;
-      }
-
-      // Update data_offset and response_len
-      if (next_chunk_len >= 2) {
-        data_offset += next_chunk_len - 2; // Exclude SW1SW2 from data length
-        response_len = data_offset + 2;    // Total response length includes SW1SW2
-      }
+  // Copy the response data (excluding status bytes) to the output buffer
+  if (data != NULL) {
+    *data = (CK_BYTE_PTR)ck_malloc(response_len - 2);
+    if (*data == NULL) {
+      CNK_ERROR("Failed to allocate memory for response data");
+      cnk_disconnect_card(hCard);
+      return CKR_HOST_MEMORY;
     }
+    memcpy(*data, response, response_len - 2);
+    *data_len = response_len - 2;
   }
-  // When fetch_data is false, we don't need to call GET RESPONSE - just use the initial response
 
   cnk_disconnect_card(hCard);
-  need_disconnect = CK_FALSE;
-
-  // Check if the response indicates success
-  if (response_len < 2) {
-    CNK_ERROR("transceive response too short: %lu", response_len);
-    rv = CKR_DEVICE_ERROR;
-    goto cleanup;
-  }
-
-  // Success cases:
-  // 1. SW1SW2 = 9000 (normal success)
-  // 2. SW1 = 61 (more data available) when fetch_data is false (we only care about existence)
-  if (response[response_len - 2] == 0x90 && response[response_len - 1] == 0x00) {
-    // Normal success case - continue processing
-  } else if (!fetch_data && response[response_len - 2] == 0x61) {
-    // When not fetching data, 61XX means the object exists
-    CNK_DEBUG("Object exists, but not fetching data");
-    *data = NULL;
-    *data_len = 1; // Indicates that the object exists
-    rv = CKR_OK;
-    goto cleanup;
-  } else if (response[response_len - 2] == 0x6A && response[response_len - 1] == 0x82) {
-    // Object doesn't exist
-    CNK_ERROR("Object not found");
-    *data = NULL;
-    *data_len = 0;
-    rv = CKR_OK;
-    goto cleanup;
-  } else {
-    // Other error
-    CNK_ERROR("transceive failure");
-    rv = CKR_DEVICE_ERROR;
-    goto cleanup;
-  }
-
-  if (fetch_data) {
-    // Allocate memory for the data (excluding SW1SW2)
-    *data_len = response_len - 2;
-    *data = (CK_BYTE_PTR)ck_malloc(*data_len);
-    if (*data == NULL) {
-      CNK_ERROR("ck_malloc failed");
-      rv = CKR_HOST_MEMORY;
-      goto cleanup;
-    }
-
-    // Copy the data (excluding SW1SW2)
-    memcpy(*data, response, *data_len);
-  } else {
-    // For existence check, just set data_len to 1 to indicate existence
-    // If a cert exists, then the corresponding public key and private key also exist
-    *data = NULL;
-    *data_len = 1; // Indicates that the object exists
-  }
-
-cleanup:
-  if (need_disconnect) {
-    cnk_disconnect_card(hCard);
-  }
-  if (response_on_heap) {
-    ck_free(response);
-  }
-  return rv;
+  return CKR_OK;
 }
 
 // Helper function to get firmware version and hardware name
@@ -658,7 +624,7 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, c
   DWORD response_len = sizeof(response);
 
   // Use the transceive function to send the command and log both command and response
-  rv = cnk_transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len);
+  rv = cnk_transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len, CK_FALSE);
   if (rv != SCARD_S_SUCCESS) {
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
@@ -675,7 +641,8 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, c
   response_len = sizeof(response);
 
   // Send the hardware version command
-  LONG pcsc_rv = cnk_transceive_apdu(hCard, hw_version_apdu, sizeof(hw_version_apdu), response, &response_len);
+  LONG pcsc_rv =
+      cnk_transceive_apdu(hCard, hw_version_apdu, sizeof(hw_version_apdu), response, &response_len, CK_FALSE);
   if (pcsc_rv == SCARD_S_SUCCESS && response_len >= 2 && response[response_len - 2] == 0x90 &&
       response[response_len - 1] == 0x00) {
 
@@ -696,7 +663,7 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, c
   response_len = sizeof(response);
 
   // Send the firmware version command
-  pcsc_rv = cnk_transceive_apdu(hCard, fw_version_apdu, sizeof(fw_version_apdu), response, &response_len);
+  pcsc_rv = cnk_transceive_apdu(hCard, fw_version_apdu, sizeof(fw_version_apdu), response, &response_len, CK_FALSE);
   if (pcsc_rv != SCARD_S_SUCCESS) {
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
@@ -761,7 +728,7 @@ CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
   DWORD response_len = sizeof(response);
 
   // Use the transceive function to send the command and log both command and response
-  rv = cnk_transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len);
+  rv = cnk_transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len, CK_FALSE);
   if (rv != SCARD_S_SUCCESS) {
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
@@ -778,7 +745,7 @@ CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
   response_len = sizeof(response);
 
   // Send the command
-  LONG pcsc_rv = cnk_transceive_apdu(hCard, sn_apdu, sizeof(sn_apdu), response, &response_len);
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, sn_apdu, sizeof(sn_apdu), response, &response_len, CK_FALSE);
   if (pcsc_rv != SCARD_S_SUCCESS) {
     cnk_disconnect_card(hCard);
     return CKR_DEVICE_ERROR;
@@ -920,101 +887,36 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   DWORD response_len = sizeof(response);
 
   CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command for signing");
-  LONG pcsc_rv = cnk_transceive_apdu(hCard, auth_apdu, apdu_len, response, &response_len);
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, auth_apdu, apdu_len, response, &response_len, CK_TRUE);
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
     cnk_disconnect_card(hCard);
     CNK_RETURN(CKR_DEVICE_ERROR, "Failed to send GENERAL AUTHENTICATE command");
   }
 
-  // Buffer to hold the complete response
-  CK_BYTE complete_response[1024];
-  CK_ULONG complete_response_len = 0;
-
   // Check for success (9000) or more data available (61XX)
   CK_BYTE sw1 = response[response_len - 2];
   CK_BYTE sw2 = response[response_len - 1];
-
-  if (sw1 == 0x90 && sw2 == 0x00) {
-    // Success - copy the data (excluding status bytes) to the complete response buffer
-    if (response_len > 2) {
-      memcpy(complete_response, response, response_len - 2);
-      complete_response_len = response_len - 2;
-    }
-  } else if (sw1 == 0x61) {
-    // More data available - copy the initial data (excluding status bytes)
-    if (response_len > 2) {
-      memcpy(complete_response, response, response_len - 2);
-      complete_response_len = response_len - 2;
-    }
-
-    // Use GET RESPONSE to fetch remaining data
-    CK_BYTE get_response_apdu[] = {0x00, 0xC0, 0x00, 0x00, 0x00}; // GET RESPONSE command
-
-    // Continue fetching data while the card returns 61XX
-    while (sw1 == 0x61) {
-      // Set the expected length in the GET RESPONSE command
-      get_response_apdu[4] = sw2;
-
-      // Send GET RESPONSE command
-      CNK_DEBUG("Sending GET RESPONSE command for %d bytes", sw2);
-      response_len = sizeof(response);
-      pcsc_rv = cnk_transceive_apdu(hCard, get_response_apdu, sizeof(get_response_apdu), response, &response_len);
-
-      if (pcsc_rv != SCARD_S_SUCCESS) {
-        CNK_ERROR("Failed to send GET RESPONSE command: %ld", pcsc_rv);
-        cnk_disconnect_card(hCard);
-        return CKR_DEVICE_ERROR;
-      }
-
-      if (response_len < 2) {
-        CNK_ERROR("GET RESPONSE returned too short response");
-        cnk_disconnect_card(hCard);
-        return CKR_DEVICE_ERROR;
-      }
-
-      // Update status bytes
-      sw1 = response[response_len - 2];
-      sw2 = response[response_len - 1];
-
-      // Check if we have enough space in the complete response buffer
-      if (complete_response_len + response_len - 2 > sizeof(complete_response)) {
-        CNK_ERROR("Response too large for buffer");
-        cnk_disconnect_card(hCard);
-        return CKR_DEVICE_ERROR;
-      }
-
-      // Append the data (excluding status bytes) to the complete response
-      if (response_len > 2) {
-        memcpy(complete_response + complete_response_len, response, response_len - 2);
-        complete_response_len += response_len - 2;
-      }
-    }
-
-    // Final check - the last response should be 9000
-    if (sw1 != 0x90 || sw2 != 0x00) {
-      CNK_ERROR("Final GET RESPONSE returned error status: %02X%02X", sw1, sw2);
-      cnk_disconnect_card(hCard);
-      return CKR_DEVICE_ERROR;
-    }
-  } else {
-    // Error status
-    CNK_ERROR("GENERAL AUTHENTICATE command failed with status: %02X%02X", sw1, sw2);
+  if (sw1 != 0x90 || sw2 != 0x00) {
+    CNK_ERROR("GENERAL AUTHENTICATE returned error status: %02X%02X", sw1, sw2);
     cnk_disconnect_card(hCard);
-    return CKR_DEVICE_ERROR;
+    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to sign");
   }
+
+  // Remove the SW from the response
+  response_len -= 2;
 
   // Parse the response
   // The signature is returned in the format: 7C len1 82 len2 <signature>
 
   // Check if we have enough data
-  if (complete_response_len < 4) { // At least 7C len 82 len
+  if (response_len < 4) { // At least 7C len 82 len
     cnk_disconnect_card(hCard);
     CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: too short");
   }
 
   // Verify the response format
-  if (complete_response[0] != 0x7C) {
+  if (response[0] != 0x7C) {
     cnk_disconnect_card(hCard);
     CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: missing 7C tag");
   }
@@ -1023,14 +925,14 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   size_t offset = 0;
 
   // Skip the outer TLV header
-  if (complete_response[1] == 0x82) { // Extended length (2 bytes)
-    offset = 4;                       // Skip 7C 82 xx xx
+  if (response[1] == 0x82) { // Extended length (2 bytes)
+    offset = 4;              // Skip 7C 82 xx xx
   } else {
     offset = 2; // Skip 7C xx
   }
 
   // Check for the inner 82 tag (signature response)
-  if (offset < complete_response_len && complete_response[offset] != 0x82) {
+  if (offset < response_len && response[offset] != 0x82) {
     cnk_disconnect_card(hCard);
     CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: missing 82 tag");
   }
@@ -1039,11 +941,11 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   offset++; // Skip the 82 tag
 
   // Handle the length field
-  if (offset < complete_response_len) {
-    if (complete_response[offset] == 0x82 && offset + 2 < complete_response_len) {
+  if (offset < response_len) {
+    if (response[offset] == 0x82 && offset + 2 < response_len) {
       // Two-byte length
       offset += 3; // Skip 82 and two length bytes
-    } else if (complete_response[offset] == 0x81 && offset + 1 < complete_response_len) {
+    } else if (response[offset] == 0x81 && offset + 1 < response_len) {
       // One-byte length with 81 prefix
       offset += 2; // Skip 81 and one length byte
     } else {
@@ -1053,14 +955,15 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   }
 
   // Copy the signature
-  size_t sig_len = complete_response_len - offset;
+  size_t sig_len = response_len - offset;
+  CNK_DEBUG("Signature length: %zu, buffer size: %zu", sig_len, *pulSignatureLen);
   if (sig_len > *pulSignatureLen) {
     cnk_disconnect_card(hCard);
     *pulSignatureLen = sig_len;
     CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Signature buffer too small for actual signature");
   }
 
-  memcpy(pSignature, complete_response + offset, sig_len);
+  memcpy(pSignature, response + offset, sig_len);
   *pulSignatureLen = (CK_ULONG)sig_len;
 
   cnk_disconnect_card(hCard);
@@ -1104,7 +1007,7 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
 
   // Send the metadata command
   CNK_DEBUG("Sending metadata command for PIV tag 0x%02X", piv_tag);
-  LONG pcsc_rv = cnk_transceive_apdu(hCard, metadata_apdu, sizeof(metadata_apdu), response, &response_len);
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, metadata_apdu, sizeof(metadata_apdu), response, &response_len, CK_FALSE);
   if (pcsc_rv != SCARD_S_SUCCESS) {
     CNK_ERROR("Failed to send metadata command: %ld", pcsc_rv);
     cnk_disconnect_card(hCard);
@@ -1146,7 +1049,8 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
       // Send GET RESPONSE command
       CNK_DEBUG("Sending GET RESPONSE command for %d bytes", sw2);
       response_len = sizeof(response);
-      pcsc_rv = cnk_transceive_apdu(hCard, get_response_apdu, sizeof(get_response_apdu), response, &response_len);
+      pcsc_rv =
+          cnk_transceive_apdu(hCard, get_response_apdu, sizeof(get_response_apdu), response, &response_len, CK_FALSE);
 
       if (pcsc_rv != SCARD_S_SUCCESS) {
         CNK_ERROR("Failed to send GET RESPONSE command: %ld", pcsc_rv);

@@ -365,6 +365,51 @@ int main(int argc, char *argv[]) {
           printf("    Error getting mechanism count: 0x%lx\n", rv);
         }
 
+        CK_SESSION_HANDLE certSession;
+        rv = pFunctionList->C_OpenSession(pSlotList[i], CKF_SERIAL_SESSION, NULL, NULL, &certSession);
+        if (rv != CKR_OK) {
+          printf("    Error opening session for cert tests: 0x%lx\n", rv);
+        } else {
+          CK_OBJECT_CLASS keyClass = CKO_CERTIFICATE;
+          CK_BYTE keyId = 2;
+          CK_ATTRIBUTE findTemplate[] = {{CKA_CLASS, &keyClass, sizeof(keyClass)}, {CKA_ID, &keyId, sizeof(keyId)}};
+          rv = pFunctionList->C_FindObjectsInit(certSession, findTemplate, 2);
+          if (rv != CKR_OK) {
+            printf("    Error initializing object search: 0x%lx\n", rv);
+          } else {
+            CK_OBJECT_HANDLE hCert;
+            CK_ULONG ulObjectCount;
+
+            rv = pFunctionList->C_FindObjects(certSession, &hCert, 1, &ulObjectCount);
+            if (rv != CKR_OK || ulObjectCount == 0) {
+              printf("    No cert found: 0x%lx\n", rv);
+            } else {
+              printf("    Found cert (handle: %lu)\n", hCert);
+
+              // Finalize the search
+              rv = pFunctionList->C_FindObjectsFinal(certSession);
+              if (rv != CKR_OK) {
+                printf("    Error finalizing object search: 0x%lx\n", rv);
+              }
+
+              CK_BYTE data[4096];
+              CK_ATTRIBUTE temp = {CKA_VALUE, data, sizeof(data)};
+              rv = pFunctionList->C_GetAttributeValue(certSession, hCert, &temp, 1);
+              if (rv != CKR_OK) {
+                printf("      Error getting cert value: 0x%lx\n", rv);
+              } else {
+                printf("      Cert value:\n");
+                for (int j = 0; j < temp.ulValueLen; j++) {
+                  printf("%02x", data[j]);
+                  if (j % 32 == 31)
+                    printf("\n");
+                }
+                printf("\n");
+              }
+            }
+          }
+        }
+
         // Test RSA signing if RSA mechanisms are available
         int has_rsa_pkcs = 0;
         int has_sha1_rsa_pkcs = 0;

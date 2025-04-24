@@ -128,9 +128,6 @@ static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYT
     rv = cnk_set_single_attribute_value(attribute, data, data_len);
     break;
 
-    // Add other certificate attributes as needed
-    // CKA_SUBJECT, CKA_ISSUER, CKA_SERIAL_NUMBER would require parsing the certificate
-
   default:
     rv = CKR_ATTRIBUTE_TYPE_INVALID;
     break;
@@ -307,27 +304,29 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   // Fetch the PIV data for this object
   CK_ULONG data_len = 0;
   CK_BYTE_PTR data = NULL;
-
-  CNK_ENSURE_OK(cnk_get_piv_data(session->slot_id, piv_tag, &data, &data_len, CK_FALSE));
-
-  // If no data was found, the object doesn't exist
-  if (data_len == 0) {
-    CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "No data found for PIV tag");
-  }
-
-  // Get key metadata if this is a key object
-  CK_BYTE algorithm_type;
+  CK_BYTE algorithm_type = 0;
   CK_BYTE modulus[512];
   CK_ULONG modulus_len = sizeof(modulus);
 
-  if (obj_class == CKO_PUBLIC_KEY || obj_class == CKO_PRIVATE_KEY) {
-    CK_RV rv = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, modulus, &modulus_len);
-    if (rv != CKR_OK) {
-      CNK_DEBUG("Failed to get metadata for PIV tag 0x%02X: %lu", piv_tag, rv);
-      // TODO: shall we stop here?
+  switch (obj_class) {
+  case CKO_PUBLIC_KEY:
+  case CKO_PRIVATE_KEY: {
+    CK_RV rv_meta = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, modulus, &modulus_len);
+    if (rv_meta != CKR_OK) {
+      CNK_DEBUG("Failed to get metadata for PIV tag 0x%02X: %lu", piv_tag, rv_meta);
     } else {
       CNK_DEBUG("Retrieved algorithm type %u for PIV tag 0x%02X", algorithm_type, piv_tag);
     }
+    break;
+  }
+  case CKO_CERTIFICATE:
+  default: {
+    CNK_ENSURE_OK(cnk_get_piv_data(session->slot_id, piv_tag, &data, &data_len, CK_TRUE));
+    if (data_len == 0) {
+      CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "No data found for PIV tag");
+    }
+    break;
+  }
   }
 
   // Process each attribute in the template
@@ -496,6 +495,8 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
 
   // If an ID is specified, we only need to check that specific ID
   if (session->find_id_specified) {
+    CNK_DEBUG("ID specified: %d", session->find_object_id);
+
     // Check if the ID is valid (1-6)
     if (session->find_object_id < 1 || session->find_object_id > 6) {
       session->find_active = CK_FALSE;
@@ -533,6 +534,8 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
       ck_free(data);
     }
   } else {
+    CNK_DEBUG("ID not specified");
+
     // No ID specified, check all possible IDs (1-6)
     for (CK_BYTE id = 1; id <= 6; id++) {
       // Map ID to PIV tag
@@ -546,14 +549,14 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
       CK_ULONG data_len = 0;
       rv = cnk_get_piv_data(session->slot_id, piv_tag, &data, &data_len, CK_FALSE); // Just check existence
 
-      if (rv != CKR_OK) {
+      if (rv != CKR_OK && rv != CKR_DATA_INVALID) {
         session->find_active = CK_FALSE;
         cnk_mutex_unlock(&session->lock);
         return rv;
       }
 
       // If data exists, add this object to the results
-      if (data_len > 0) {
+      if (rv == CKR_OK) {
         // Create a handle for this object: slot_id | object_class | object_id
         CK_OBJECT_HANDLE handle = (session->slot_id << 16) | ((CK_ULONG)session->find_object_class << 8) | id;
         session->find_objects[session->find_objects_count++] = handle;
