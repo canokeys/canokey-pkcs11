@@ -302,8 +302,8 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CNK_ENSURE_OK(cnk_obj_id_to_piv_tag(obj_id, &piv_tag));
 
   // Fetch the PIV data for this object
-  CK_ULONG data_len = 0;
-  CK_BYTE_PTR data = NULL;
+  CK_BYTE data[4096];
+  CK_ULONG data_len = sizeof(data);
   CK_BYTE algorithm_type = 0;
   CK_BYTE modulus[512];
   CK_ULONG modulus_len = sizeof(modulus);
@@ -319,14 +319,16 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
     }
     break;
   }
+
   case CKO_CERTIFICATE:
-  default: {
-    CNK_ENSURE_OK(cnk_get_piv_data(session->slot_id, piv_tag, &data, &data_len, CK_TRUE));
+    CNK_ENSURE_OK(cnk_get_piv_data(session->slot_id, piv_tag, data, &data_len, CK_TRUE));
     if (data_len == 0) {
       CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "No data found for PIV tag");
     }
     break;
-  }
+
+  default:
+    CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid object class");
   }
 
   // Process each attribute in the template
@@ -424,11 +426,6 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
     }
   }
 
-  // Free the PIV data if it was allocated
-  if (data != NULL) {
-    ck_free(data);
-  }
-
   CNK_RETURN(return_rv, "Finished");
 }
 
@@ -514,24 +511,19 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
     }
 
     // Try to get the data for this tag
-    CK_BYTE_PTR data = NULL;
-    CK_ULONG data_len = 0;
-    rv = cnk_get_piv_data(session->slot_id, piv_tag, &data, &data_len, CK_FALSE); // Just check existence
-
-    if (rv != CKR_OK) {
+    rv = cnk_get_piv_data(session->slot_id, piv_tag, NULL, NULL, CK_FALSE); // Just check existence
+    if (rv != CKR_OK && rv != CKR_DATA_INVALID) {
       session->find_active = CK_FALSE;
       cnk_mutex_unlock(&session->lock);
       return rv;
     }
 
     // If data exists, add this object to the results
-    if (data_len > 0) {
+    if (rv == CKR_OK) {
       // Create a handle for this object: slot_id | object_class | object_id
       // This will allow us to identify the object in future operations
-      CK_OBJECT_HANDLE handle =
-          (session->slot_id << 16) | ((CK_ULONG)session->find_object_class << 8) | session->find_object_id;
+      CK_OBJECT_HANDLE handle = (session->slot_id << 16) | (session->find_object_class << 8) | session->find_object_id;
       session->find_objects[session->find_objects_count++] = handle;
-      ck_free(data);
     }
   } else {
     CNK_DEBUG("ID not specified");
@@ -545,9 +537,7 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
       }
 
       // Try to get the data for this tag
-      CK_BYTE_PTR data = NULL;
-      CK_ULONG data_len = 0;
-      rv = cnk_get_piv_data(session->slot_id, piv_tag, &data, &data_len, CK_FALSE); // Just check existence
+      rv = cnk_get_piv_data(session->slot_id, piv_tag, NULL, NULL, CK_FALSE); // Just check existence
 
       if (rv != CKR_OK && rv != CKR_DATA_INVALID) {
         session->find_active = CK_FALSE;
@@ -558,9 +548,8 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
       // If data exists, add this object to the results
       if (rv == CKR_OK) {
         // Create a handle for this object: slot_id | object_class | object_id
-        CK_OBJECT_HANDLE handle = (session->slot_id << 16) | ((CK_ULONG)session->find_object_class << 8) | id;
+        CK_OBJECT_HANDLE handle = (session->slot_id << 16) | (session->find_object_class << 8) | id;
         session->find_objects[session->find_objects_count++] = handle;
-        ck_free(data);
       }
     }
   }

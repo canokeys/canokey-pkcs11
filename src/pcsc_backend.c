@@ -520,13 +520,19 @@ CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard) {
 }
 
 // Get PIV data from the CanoKey device
-CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data) {
+// If data is NULL, no data will be copied
+// This function may return:
+// - CKR_DATA_INVALID if the data object does not exist.
+// - CKR_OK if the data object is successfully read.
+// - CKR_DEVICE_ERROR if the data object could not be read.
+CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data) {
   CNK_LOG_FUNC(" slotID: %ld, tag: 0x%02X, data: %p, data_len: %p, fetch_data: %d", slotID, tag, data, data_len,
                fetch_data);
 
   SCARDHANDLE hCard;
 
-  CNK_ENSURE_NONNULL(data, data_len);
+  if (data != NULL && data_len == NULL)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "data_len is NULL");
 
   CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotID, &hCard));
 
@@ -593,18 +599,16 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULO
 
   // Copy the response data (excluding status bytes) to the output buffer
   if (data != NULL) {
-    *data = (CK_BYTE_PTR)ck_malloc(response_len - 2);
-    if (*data == NULL) {
-      CNK_ERROR("Failed to allocate memory for response data");
+    if (*data_len < response_len - 2) {
       cnk_disconnect_card(hCard);
-      return CKR_HOST_MEMORY;
+      CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Output buffer too small");
     }
-    memcpy(*data, response, response_len - 2);
+    memcpy(data, response, response_len - 2);
     *data_len = response_len - 2;
   }
 
   cnk_disconnect_card(hCard);
-  return CKR_OK;
+  CNK_RET_OK;
 }
 
 // Helper function to get firmware version and hardware name

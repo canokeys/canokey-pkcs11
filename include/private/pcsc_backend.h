@@ -111,7 +111,7 @@ CK_ULONG cnk_get_slot_count(void);
 
 // Get PIV data from the CanoKey device
 // If fetch_data is CK_FALSE, only checks for existence and sets data_len to 1 if found, 0 if not
-CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR *data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data);
+CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data);
 
 // Get metadata for a PIV key or object
 // This function retrieves metadata from a PIV key or object using the PIV metadata APDU command
