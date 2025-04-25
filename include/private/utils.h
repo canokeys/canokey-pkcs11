@@ -1,6 +1,9 @@
 #ifndef UTILS_H
 #define UTILS_H
 
+#include <stddef.h>
+#include <stdint.h>
+
 #define N_VA_ARGS_(_8, _7, _6, _5, _4, _3, _2, _1, N, ...) N
 #define N_VA_ARGS(...) N_VA_ARGS_(__VA_ARGS__ __VA_OPT__(, ) 8, 7, 6, 5, 4, 3, 2, 1, 0)
 #define FOREACH_0(FN, ...)
@@ -97,5 +100,17 @@
   } while (0);
 
 char *ck_strcasestr(const char *str, const char *pattern);
+
+/**
+ * Parse the length field in TLV (Tag-Length-Value) format according to ASN.1 DER rules.
+ *
+ * @param data Pointer to the start of the length field
+ * @param len Total available length of the data buffer
+ * @param fail Pointer to an int that will be set to 1 if parsing fails, 0 otherwise
+ * @param length_size Pointer to a size_t that will be set to the number of bytes used for length encoding
+ *
+ * @return The parsed length value as a uint16_t
+ */
+uint16_t tlv_get_length_safe(const uint8_t *data, const size_t len, int *fail, size_t *length_size);
 
 #endif // UTILS_H
