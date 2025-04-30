@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "pkcs11.h"
+
 #define N_VA_ARGS_(_8, _7, _6, _5, _4, _3, _2, _1, N, ...) N
 #define N_VA_ARGS(...) N_VA_ARGS_(__VA_ARGS__ __VA_OPT__(, ) 8, 7, 6, 5, 4, 3, 2, 1, 0)
 #define FOREACH_0(FN, ...)
@@ -111,6 +113,6 @@ char *ck_strcasestr(const char *str, const char *pattern);
  *
  * @return The parsed length value as a uint16_t
  */
-uint16_t tlv_get_length_safe(const uint8_t *data, const size_t len, int *fail, size_t *length_size);
+CK_ULONG tlv_get_length_safe(const CK_BYTE *data, const CK_ULONG len, CK_LONG *fail, CK_ULONG_PTR length_size);
 
 #endif // UTILS_H

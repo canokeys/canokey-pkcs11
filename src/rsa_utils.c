@@ -120,49 +120,49 @@ static CK_RV pkcs1_v1_5_pad(CK_BYTE_PTR input, CK_ULONG input_len, CK_BYTE_PTR o
  *      the encoded value is less than the modulus.
  *   8. Output EM = maskedDB || H || 0xbc.
  *
- * @param mHash        Pointer to the digest of the raw message.
- * @param mHashLen     Length of the message digest.
- * @param pModulus     RSA modulus.
- * @param ulModulusLen Length of the modulus.
- * @param sLen         Length of the salt in bytes.
- * @param mdType       Message digest type (for both hashing and MGF1).
- * @param ctrDrbg      Pointer to an initialized CTR_DRBG context.
- * @param out          Pointer to the buffer that will receive the encoded message (EM).
- * @param outLen       On input, the size of the output buffer; on output, the size of EM.
+ * @param pbHash     Pointer to the digest of the raw message.
+ * @param cbHash     Length of the message digest.
+ * @param pbModulus  RSA modulus.
+ * @param cbModulus  Length of the modulus.
+ * @param cbSalt     Length of the salt in bytes.
+ * @param mdType     Message digest type (for both hashing and MGF1).
+ * @param pCtrDrbg   Pointer to an initialized CTR_DRBG context.
+ * @param pbOut      Pointer to the buffer that will receive the encoded message (EM).
+ * @param pcbOut     On input, the size of the output buffer; on output, the size of EM.
  *
- * @return            CKR_OK on success; otherwise an error code.
+ * @return           CKR_OK on success; otherwise an error code.
  */
-static CK_RV pss_encode(CK_BYTE_PTR mHash, CK_ULONG mHashLen, CK_BYTE_PTR pModulus, CK_ULONG ulModulusLen,
-                        CK_ULONG sLen, mbedtls_md_type_t mdType, mbedtls_ctr_drbg_context *ctrDrbg, CK_BYTE_PTR out,
-                        CK_ULONG *outLen) {
+static CK_RV pss_encode(CK_BYTE_PTR pbHash, CK_ULONG cbHash, CK_BYTE_PTR pbModulus, CK_ULONG cbModulus, CK_ULONG cbSalt,
+                        mbedtls_md_type_t mdType, mbedtls_ctr_drbg_context *pCtrDrbg, CK_BYTE_PTR pbOut,
+                        CK_ULONG *pcbOut) {
   const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(mdType);
   if (md_info == NULL)
     return CKR_MECHANISM_PARAM_INVALID;
 
   const size_t hLen = mbedtls_md_get_size(md_info);
-  if (mHashLen != hLen)
+  if (cbHash != hLen)
     return CKR_DATA_LEN_RANGE;
-  if (sLen > hLen)
+  if (cbSalt > hLen)
     return CKR_MECHANISM_PARAM_INVALID; /* FIPS 186‑4 */
 
   /* emBits = modBits - 1  ——  RFC 8017 §9.1.1 */
   mbedtls_mpi modulus_mpi;
   mbedtls_mpi_init(&modulus_mpi);
-  mbedtls_mpi_read_binary(&modulus_mpi, pModulus, ulModulusLen);
+  mbedtls_mpi_read_binary(&modulus_mpi, pbModulus, cbModulus);
   const CK_ULONG modBits = mbedtls_mpi_bitlen(&modulus_mpi);
   const CK_ULONG emBits = modBits - 1;
   const CK_ULONG emLen = (emBits + 7) / 8;
 
-  if (*outLen < emLen)
+  if (*pcbOut < emLen)
     return CKR_BUFFER_TOO_SMALL;
-  if (emLen < hLen + sLen + 2)
+  if (emLen < hLen + cbSalt + 2)
     return CKR_MECHANISM_PARAM_INVALID;
 
   /* -------- Generate salt -------- */
-  unsigned char *salt = ck_malloc(sLen);
+  unsigned char *salt = ck_malloc(cbSalt);
   if (!salt)
     return CKR_HOST_MEMORY;
-  if (mbedtls_ctr_drbg_random(ctrDrbg, salt, sLen) != 0) {
+  if (mbedtls_ctr_drbg_random(pCtrDrbg, salt, cbSalt) != 0) {
     ck_free(salt);
     return CKR_FUNCTION_FAILED;
   }
@@ -170,18 +170,18 @@ static CK_RV pss_encode(CK_BYTE_PTR mHash, CK_ULONG mHashLen, CK_BYTE_PTR pModul
   /* -------- H = Hash( 0x00×8 || mHash || salt ) -------- */
   unsigned char M_prime[8 + 64 + 64]; /* 最大 8+64+64 = 136B */
   memset(M_prime, 0, 8);
-  memcpy(M_prime + 8, mHash, hLen);
-  memcpy(M_prime + 8 + hLen, salt, sLen);
+  memcpy(M_prime + 8, pbHash, hLen);
+  memcpy(M_prime + 8 + hLen, salt, cbSalt);
 
   unsigned char H[64]; /* hLen ≤ 64 */
-  if (mbedtls_md(md_info, M_prime, 8 + hLen + sLen, H) != 0) {
+  if (mbedtls_md(md_info, M_prime, 8 + hLen + cbSalt, H) != 0) {
     ck_free(salt);
     return CKR_FUNCTION_FAILED;
   }
 
   /* -------- DB = PS || 0x01 || salt -------- */
   const CK_ULONG dbLen = emLen - hLen - 1;
-  const CK_ULONG psLen = dbLen - sLen - 1;
+  const CK_ULONG psLen = dbLen - cbSalt - 1;
 
   unsigned char *DB = ck_malloc(dbLen);
   if (!DB) {
@@ -190,7 +190,7 @@ static CK_RV pss_encode(CK_BYTE_PTR mHash, CK_ULONG mHashLen, CK_BYTE_PTR pModul
   }
   memset(DB, 0, psLen);
   DB[psLen] = 0x01;
-  memcpy(DB + psLen + 1, salt, sLen);
+  memcpy(DB + psLen + 1, salt, cbSalt);
   ck_free(salt);
 
   /* -------- dbMask = MGF1(H, dbLen) -------- */
@@ -226,10 +226,10 @@ static CK_RV pss_encode(CK_BYTE_PTR mHash, CK_ULONG mHashLen, CK_BYTE_PTR pModul
   DB[0] &= 0xFFu >> leftBits;
 
   /* -------- EM = maskedDB || H || 0xBC -------- */
-  memcpy(out, DB, dbLen);
-  memcpy(out + dbLen, H, hLen);
-  out[emLen - 1] = 0xBC;
-  *outLen = emLen;
+  memcpy(pbOut, DB, dbLen);
+  memcpy(pbOut + dbLen, H, hLen);
+  pbOut[emLen - 1] = 0xBC;
+  *pcbOut = emLen;
 
   mbedtls_platform_zeroize(DB, dbLen);
   ck_free(DB);

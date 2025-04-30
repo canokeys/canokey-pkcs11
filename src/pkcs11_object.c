@@ -6,7 +6,6 @@
 #include "pkcs11_session.h"
 #include "utils.h"
 
-#include <stdio.h>
 #include <string.h>
 
 // Helper function to extract object information from a handle
@@ -128,8 +127,8 @@ static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYT
     // Format: 53 L1 70 L2 [cert] 71 01 00 FE 00
     if (data_len > 0 && data[0] == 0x53) {
       CK_ULONG offset = 1; // Start at the length byte after tag 0x53
-      int fail = 0;
-      size_t length_size = 0;
+      CK_LONG fail = 0;
+      CK_ULONG length_size = 0;
 
       // Parse L1 (length of the entire structure)
       // We don't actually use l1_len for validation since tlv_get_length_safe already checks buffer bounds
@@ -187,16 +186,48 @@ static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYT
 }
 
 // Handle public key specific attributes
-static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithm_type, CK_BYTE_PTR modulus,
-                                             CK_ULONG modulus_len) {
+static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithm_type,
+                                             CK_BYTE_PTR pbPublicKey, CK_ULONG cbPublicKey) {
   CNK_LOG_FUNC(" attribute = 0x%x, algorithm_type = 0x%x", attribute->type, algorithm_type);
 
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
-  CK_KEY_TYPE key_type = cnk_algo_type_to_key_type(algorithm_type);
+  CK_KEY_TYPE keyType = cnk_algo_type_to_key_type(algorithm_type);
+
+  CK_BYTE_PTR pbModulus = NULL;
+  CK_ULONG cbModulus = 0;
+  CK_BYTE_PTR pbPublicExponent = NULL;
+  CK_ULONG cbPublicExponent = 0;
+
+  // Parse the public key data. The public key data is encoded in TLV.
+  CK_ULONG vpos = 0; /* cursor inside the value buffer   */
+  while (vpos < cbPublicKey) {
+    /* ---- read inner tag --------------------------------------- */
+    CK_BYTE itag = pbPublicKey[vpos++];
+    if (vpos >= cbPublicKey)
+      break; /* malformed */
+    /* ---- read inner length (DER) ------------------------------ */
+    CK_LONG fail;
+    CK_ULONG lengthSize;
+    CK_ULONG ilen = tlv_get_length_safe(&pbPublicKey[vpos], cbPublicKey - vpos, &fail, &lengthSize);
+    if (fail)
+      CNK_RETURN(CKR_DEVICE_ERROR, "Bad length in public-key TLV");
+    vpos += lengthSize;
+    /* ---- RSA modulus lives in tag 0x81 ------------------------ */
+    if (itag == 0x81) {
+      pbModulus = pbPublicKey + vpos;
+      cbModulus = ilen;
+    }
+    /* ---- RSA public exponent lives in tag 0x82 ---------------- */
+    if (itag == 0x82) {
+      pbPublicExponent = pbPublicKey + vpos;
+      cbPublicExponent = ilen;
+    }
+    vpos += ilen; /* advance to next inner TLV        */
+  }
 
   switch (attribute->type) {
   case CKA_KEY_TYPE:
-    rv = cnk_set_single_attribute_value(attribute, &key_type, sizeof(key_type));
+    rv = cnk_set_single_attribute_value(attribute, &keyType, sizeof(keyType));
     break;
 
   case CKA_VERIFY: {
@@ -208,14 +239,14 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
 
   case CKA_ENCRYPT: {
     // Only RSA public keys can encrypt
-    CK_BBOOL value = (key_type == CKK_RSA) ? CK_TRUE : CK_FALSE;
+    CK_BBOOL value = (keyType == CKK_RSA) ? CK_TRUE : CK_FALSE;
     rv = cnk_set_single_attribute_value(attribute, &value, sizeof(value));
     break;
   }
 
   case CKA_MODULUS_BITS:
-    if (key_type == CKK_RSA) {
-      CK_ULONG modulus_bits = modulus_len * 8;
+    if (keyType == CKK_RSA) {
+      CK_ULONG modulus_bits = cbPublicKey * 8;
       rv = cnk_set_single_attribute_value(attribute, &modulus_bits, sizeof(modulus_bits));
     } else {
       // Not applicable for non-RSA keys
@@ -224,8 +255,17 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
     break;
 
   case CKA_MODULUS:
-    if (key_type == CKK_RSA) {
-      rv = cnk_set_single_attribute_value(attribute, modulus, modulus_len);
+    if (keyType == CKK_RSA) {
+      rv = cnk_set_single_attribute_value(attribute, pbModulus, cbModulus);
+    } else {
+      // Not applicable for non-RSA keys
+      rv = CKR_ATTRIBUTE_TYPE_INVALID;
+    }
+    break;
+
+  case CKA_PUBLIC_EXPONENT:
+    if (keyType == CKK_RSA) {
+      rv = cnk_set_single_attribute_value(attribute, pbPublicExponent, cbPublicExponent);
     } else {
       // Not applicable for non-RSA keys
       rv = CKR_ATTRIBUTE_TYPE_INVALID;
@@ -355,13 +395,13 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CK_BYTE data[4096];
   CK_ULONG data_len = sizeof(data);
   CK_BYTE algorithm_type = 0;
-  CK_BYTE modulus[512];
-  CK_ULONG modulus_len = sizeof(modulus);
+  CK_BYTE abPublicKey[512];
+  CK_ULONG cbPublicKey = sizeof(abPublicKey);
 
   switch (obj_class) {
   case CKO_PUBLIC_KEY:
   case CKO_PRIVATE_KEY: {
-    CK_RV rv_meta = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, modulus, &modulus_len);
+    CK_RV rv_meta = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, abPublicKey, &cbPublicKey);
     if (rv_meta != CKR_OK) {
       CNK_DEBUG("Failed to get metadata for PIV tag 0x%02X: %lu", piv_tag, rv_meta);
     } else {
@@ -455,7 +495,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       break;
 
     case CKO_PUBLIC_KEY:
-      rv = cnk_handle_public_key_attribute(&pTemplate[i], algorithm_type, modulus, modulus_len);
+      rv = cnk_handle_public_key_attribute(&pTemplate[i], algorithm_type, abPublicKey, cbPublicKey);
       break;
 
     case CKO_PRIVATE_KEY:

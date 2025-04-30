@@ -2,10 +2,7 @@
 #define _GNU_SOURCE
 #include <string.h>
 #endif
-#include <ctype.h>
-#include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 
 #include "utils.h"
 
@@ -46,7 +43,7 @@ char *ck_strcasestr(const char *str, const char *pattern) {
  *
  * @return The parsed length value as a uint16_t
  */
-uint16_t tlv_get_length_safe(const uint8_t *data, const size_t len, int *fail, size_t *length_size) {
+CK_ULONG tlv_get_length_safe(const CK_BYTE *data, const CK_ULONG len, CK_LONG *fail, CK_ULONG_PTR length_size) {
   uint16_t ret = 0;
   if (len < 1) {
     *fail = 1;

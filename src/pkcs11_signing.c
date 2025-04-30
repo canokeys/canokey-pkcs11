@@ -24,7 +24,7 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
 
   // Map object ID to PIV tag
   CK_BYTE piv_tag;
-  CNK_ENSURE_OK(cnk_obj_id_to_piv_tag(obj_id, &piv_tag));
+  CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(obj_id, &piv_tag));
 
   // Verify that the key matches the mechanism and retrieve modulus if available
   CK_BYTE algorithm_type;
@@ -32,10 +32,31 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   // Reset modulus length to the maximum buffer size
   session->active_key_modulus_len = sizeof(session->active_key_modulus);
 
-  // Get metadata including the modulus
-  CNK_ENSURE_OK(cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, session->active_key_modulus,
-                                 &session->active_key_modulus_len));
-
+  // Get metadata including the public key
+  CK_BYTE abPublicKey[512];
+  CK_ULONG cbPublicKey = sizeof(abPublicKey);
+  CNK_ENSURE_OK(cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, abPublicKey, &cbPublicKey));
+  CK_ULONG vpos = 0; /* cursor inside the value buffer   */
+  while (vpos < cbPublicKey) {
+    /* ---- read inner tag --------------------------------------- */
+    CK_BYTE itag = abPublicKey[vpos++];
+    if (vpos >= cbPublicKey)
+      break; /* malformed */
+    /* ---- read inner length (DER) ------------------------------ */
+    CK_LONG fail;
+    CK_ULONG lengthSize;
+    CK_ULONG ilen = tlv_get_length_safe(&abPublicKey[vpos], cbPublicKey - vpos, &fail, &lengthSize);
+    if (fail)
+      CNK_RETURN(CKR_DEVICE_ERROR, "Bad length in public-key TLV");
+    vpos += lengthSize;
+    /* ---- RSA modulus lives in tag 0x81 ------------------------ */
+    if (itag == 0x81) {
+      memcpy(session->active_key_modulus, abPublicKey + vpos, ilen);
+      session->active_key_modulus_len = ilen;
+      break;
+    }
+    vpos += ilen; /* advance to next inner TLV        */
+  }
   CNK_DEBUG("Modulus length: %lu", session->active_key_modulus_len);
 
   // Check if the mechanism is supported
@@ -52,6 +73,10 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   case CKM_SHA256_RSA_PKCS_PSS:
   case CKM_SHA384_RSA_PKCS_PSS:
   case CKM_SHA512_RSA_PKCS_PSS:
+  case CKM_SHA3_224_RSA_PKCS_PSS:
+  case CKM_SHA3_256_RSA_PKCS_PSS:
+  case CKM_SHA3_384_RSA_PKCS_PSS:
+  case CKM_SHA3_512_RSA_PKCS_PSS:
     // For PSS mechanisms, validate the parameter
     if (algorithm_type != PIV_ALG_RSA_2048 && algorithm_type != PIV_ALG_RSA_3072 && algorithm_type != PIV_ALG_RSA_4096)
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not RSA");
@@ -70,6 +95,10 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
     case CKM_SHA256:
     case CKM_SHA384:
     case CKM_SHA512:
+    case CKM_SHA3_224:
+    case CKM_SHA3_256:
+    case CKM_SHA3_384:
+    case CKM_SHA3_512:
       break;
     default:
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unsupported hash algorithm in PSS parameters");
@@ -82,6 +111,10 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
     case CKG_MGF1_SHA256:
     case CKG_MGF1_SHA384:
     case CKG_MGF1_SHA512:
+    case CKG_MGF1_SHA3_224:
+    case CKG_MGF1_SHA3_256:
+    case CKG_MGF1_SHA3_384:
+    case CKG_MGF1_SHA3_512:
       break;
     default:
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unsupported MGF function in PSS parameters");
@@ -90,10 +123,11 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
     break;
 
   case CKM_SHA1_RSA_PKCS:
+  case CKM_SHA224_RSA_PKCS:
   case CKM_SHA256_RSA_PKCS:
   case CKM_SHA384_RSA_PKCS:
   case CKM_SHA512_RSA_PKCS:
-  case CKM_SHA224_RSA_PKCS:
+  case CKM_SHA3_224_RSA_PKCS:
   case CKM_SHA3_256_RSA_PKCS:
   case CKM_SHA3_384_RSA_PKCS:
   case CKM_SHA3_512_RSA_PKCS:

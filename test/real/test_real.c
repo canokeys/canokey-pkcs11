@@ -317,23 +317,74 @@ int main(int argc, char *argv[]) {
 
                   // Print known mechanism names
                   switch (pMechanismList[j]) {
+                  case CKM_RSA_PKCS_KEY_PAIR_GEN:
+                    printf(" (CKM_RSA_PKCS_KEY_PAIR_GEN)\n");
+                    break;
                   case CKM_RSA_PKCS:
                     printf(" (CKM_RSA_PKCS)\n");
                     break;
-                  case CKM_RSA_PKCS_KEY_PAIR_GEN:
-                    printf(" (CKM_RSA_PKCS_KEY_PAIR_GEN)\n");
+                  case CKM_RSA_X_509:
+                    printf(" (CKM_RSA_X_509)\n");
+                    break;
+                  case CKM_RSA_PKCS_OAEP:
+                    printf(" (CKM_RSA_PKCS_OAEP)\n");
+                    break;
+                  case CKM_RSA_PKCS_PSS:
+                    printf(" (CKM_RSA_PKCS_PSS)\n");
                     break;
                   case CKM_SHA1_RSA_PKCS:
                     printf(" (CKM_SHA1_RSA_PKCS)\n");
                     break;
+                  case CKM_SHA1_RSA_PKCS_PSS:
+                    printf(" (CKM_SHA1_RSA_PKCS_PSS)\n");
+                    break;
                   case CKM_SHA256_RSA_PKCS:
                     printf(" (CKM_SHA256_RSA_PKCS)\n");
+                    break;
+                  case CKM_SHA256_RSA_PKCS_PSS:
+                    printf(" (CKM_SHA256_RSA_PKCS_PSS)\n");
                     break;
                   case CKM_SHA384_RSA_PKCS:
                     printf(" (CKM_SHA384_RSA_PKCS)\n");
                     break;
                   case CKM_SHA512_RSA_PKCS:
                     printf(" (CKM_SHA512_RSA_PKCS)\n");
+                    break;
+                  case CKM_SHA224_RSA_PKCS:
+                    printf(" (CKM_SHA224_RSA_PKCS)\n");
+                    break;
+                  case CKM_SHA224_RSA_PKCS_PSS:
+                    printf(" (CKM_SHA224_RSA_PKCS_PSS)\n");
+                    break;
+                  case CKM_SHA384_RSA_PKCS_PSS:
+                    printf(" (CKM_SHA384_RSA_PKCS_PSS)\n");
+                    break;
+                  case CKM_SHA512_RSA_PKCS_PSS:
+                    printf(" (CKM_SHA512_RSA_PKCS_PSS)\n");
+                    break;
+                  case CKM_SHA3_224_RSA_PKCS:
+                    printf(" (CKM_SHA3_224_RSA_PKCS)\n");
+                    break;
+                  case CKM_SHA3_256_RSA_PKCS:
+                    printf(" (CKM_SHA3_256_RSA_PKCS)\n");
+                    break;
+                  case CKM_SHA3_384_RSA_PKCS:
+                    printf(" (CKM_SHA3_384_RSA_PKCS)\n");
+                    break;
+                  case CKM_SHA3_512_RSA_PKCS:
+                    printf(" (CKM_SHA3_512_RSA_PKCS)\n");
+                    break;
+                  case CKM_SHA3_224_RSA_PKCS_PSS:
+                    printf(" (CKM_SHA3_224_RSA_PKCS_PSS)\n");
+                    break;
+                  case CKM_SHA3_256_RSA_PKCS_PSS:
+                    printf(" (CKM_SHA3_256_RSA_PKCS_PSS)\n");
+                    break;
+                  case CKM_SHA3_384_RSA_PKCS_PSS:
+                    printf(" (CKM_SHA3_384_RSA_PKCS_PSS)\n");
+                    break;
+                  case CKM_SHA3_512_RSA_PKCS_PSS:
+                    printf(" (CKM_SHA3_512_RSA_PKCS_PSS)\n");
                     break;
                   case CKM_ECDSA:
                     printf(" (CKM_ECDSA)\n");
@@ -401,6 +452,50 @@ int main(int argc, char *argv[]) {
                 printf("      Cert value:\n");
                 for (int j = 0; j < temp.ulValueLen; j++) {
                   printf("%02x", data[j]);
+                  if (j % 32 == 31)
+                    printf("\n");
+                }
+                printf("\n");
+              }
+            }
+          }
+
+          keyClass = CKO_PUBLIC_KEY;
+          rv = pFunctionList->C_FindObjectsInit(certSession, findTemplate, 2);
+          if (rv != CKR_OK) {
+            printf("    Error initializing object search: 0x%lx\n", rv);
+          } else {
+            CK_OBJECT_HANDLE hKey;
+            CK_ULONG ulObjectCount;
+
+            rv = pFunctionList->C_FindObjects(certSession, &hKey, 1, &ulObjectCount);
+            if (rv != CKR_OK || ulObjectCount == 0) {
+              printf("    No key found: 0x%lx\n", rv);
+            } else {
+              printf("    Found key (handle: %lu)\n", hKey);
+
+              // Finalize the search
+              rv = pFunctionList->C_FindObjectsFinal(certSession);
+              if (rv != CKR_OK) {
+                printf("    Error finalizing object search: 0x%lx\n", rv);
+              }
+
+              CK_BYTE modulus[4096], publicExponent[8];
+              CK_ATTRIBUTE templates[] = {{CKA_MODULUS, modulus, sizeof(modulus)}, {CKA_PUBLIC_EXPONENT, publicExponent, sizeof(publicExponent)}};
+              rv = pFunctionList->C_GetAttributeValue(certSession, hKey, templates, 2);
+              if (rv != CKR_OK) {
+                printf("      Error getting modulus value: 0x%lx\n", rv);
+              } else {
+                printf("      modulus value:\n");
+                for (int j = 0; j < templates[0].ulValueLen; j++) {
+                  printf("%02x", modulus[j]);
+                  if (j % 32 == 31)
+                    printf("\n");
+                }
+                printf("\n");
+                printf("      public exponent value:\n");
+                for (int j = 0; j < templates[1].ulValueLen; j++) {
+                  printf("%02x", publicExponent[j]);
                   if (j % 32 == 31)
                     printf("\n");
                 }
