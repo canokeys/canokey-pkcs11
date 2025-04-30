@@ -25,7 +25,7 @@ void cnk_extract_object_info(CK_OBJECT_HANDLE hObject, CK_SLOT_ID *slot_id, CK_O
 }
 
 // Helper function to map object ID to PIV tag
-CK_RV cnk_obj_id_to_piv_tag(CK_BYTE obj_id, CK_BYTE *piv_tag) {
+CK_RV C_CNK_ObjIdToPivTag(CK_BYTE obj_id, CK_BYTE *piv_tag) {
   switch (obj_id) {
   case PIV_SLOT_9A:
     *piv_tag = 0x9A;
@@ -349,7 +349,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
   // Map object ID to PIV tag
   CK_BYTE piv_tag;
-  CNK_ENSURE_OK(cnk_obj_id_to_piv_tag(obj_id, &piv_tag));
+  CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(obj_id, &piv_tag));
 
   // Fetch the PIV data for this object
   CK_BYTE data[4096];
@@ -553,7 +553,7 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
 
     // Map CKA_ID to PIV tag
     CK_BYTE piv_tag;
-    rv = cnk_obj_id_to_piv_tag(session->find_object_id, &piv_tag);
+    rv = C_CNK_ObjIdToPivTag(session->find_object_id, &piv_tag);
     if (rv != CKR_OK) {
       session->find_active = CK_FALSE;
       cnk_mutex_unlock(&session->lock);
@@ -582,7 +582,7 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
     for (CK_BYTE id = 1; id <= 6; id++) {
       // Map ID to PIV tag
       CK_BYTE piv_tag;
-      if (cnk_obj_id_to_piv_tag(id, &piv_tag) != CKR_OK) {
+      if (C_CNK_ObjIdToPivTag(id, &piv_tag) != CKR_OK) {
         continue;
       }
 

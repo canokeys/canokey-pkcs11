@@ -39,4 +39,9 @@ CK_DEFINE_FUNCTION(CK_RV, C_CNK_ConfigLogging)(int level, FILE *file);
 // See C_Login for other arguments
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_Login)(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
 
+// Extension API to convert object ID to PIV tag
+// obj_id: must be a valid object ID
+// piv_tag: non-NULL pointer to the PIV tag
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_ObjIdToPivTag)(CK_BYTE obj_id, CK_BYTE *piv_tag);
+
 #endif /* PKCS11_CANOKEY_H */

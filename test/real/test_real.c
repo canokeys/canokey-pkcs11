@@ -481,6 +481,18 @@ int main(int argc, char *argv[]) {
                   printf("    Error finalizing object search: 0x%lx\n", rv);
                 }
 
+                CK_BBOOL sign, decrypt, encrypt;
+                CK_ATTRIBUTE tmpl[] = {{CKA_SIGN, &sign, sizeof(sign)}, {CKA_DECRYPT, &decrypt, sizeof(decrypt)}, {CKA_ENCRYPT, &encrypt, sizeof(encrypt)}};
+
+                rv = pFunctionList->C_GetAttributeValue(signSession, hKey, tmpl, 3);
+                if (rv != CKR_OK) {
+                  printf("    Error getting key attributes: 0x%lx\n", rv);
+                }
+                printf("    Key attributes:\n");
+                printf("      CKA_SIGN: %s\n", sign ? "true" : "false");
+                printf("      CKA_DECRYPT: %s\n", decrypt ? "true" : "false");
+                printf("      CKA_ENCRYPT: %s\n", encrypt ? "true" : "false");
+
                 // Test data to sign
                 CK_BYTE data[] = "Hello, CanoKey PKCS#11!";
                 CK_ULONG dataLen = strlen((char *)data);
