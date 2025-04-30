@@ -22,7 +22,7 @@ SCARDCONTEXT g_cnk_pcsc_context = 0L;
 SCARDHANDLE g_cnk_scard = 0L;
 
 CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
-  CNK_LOG_FUNC();
+  CNK_LOG_FUNC(": pInitArgs: %p", pInitArgs);
 
   // Check if initialization arguments are provided
   if (pInitArgs != NULL_PTR) {

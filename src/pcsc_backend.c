@@ -311,7 +311,7 @@ void cnk_disconnect_card(SCARDHANDLE hCard) {
 static LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, DWORD command_len, CK_BYTE *response,
                                 DWORD *response_len, CK_BBOOL auto_get_response) {
   DWORD available = *response_len;
-  CNK_LOG_FUNC("hCard = %p, command = %p, command_len = %lu, response = %p, available = %lu, auto_get_response = %d",
+  CNK_LOG_FUNC(": hCard = %p, command = %p, command_len = %lu, response = %p, available = %lu, auto_get_response = %d",
                hCard, command, command_len, response, available, auto_get_response);
 
   if (hCard == 0 || command == NULL || response == NULL || response_len == NULL)
@@ -423,7 +423,7 @@ CK_RV cnk_select_piv_application(SCARDHANDLE hCard) {
 }
 
 // Verify the PIV PIN
-CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries) {
   if (hCard == 0 || pPin == NULL) {
     CNK_RETURN(CKR_ARGUMENTS_BAD, "Invalid arguments");
   }
@@ -462,17 +462,24 @@ CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPin
     CNK_RETURN(CKR_DEVICE_ERROR, "Failed to verify PIV PIN");
   }
 
+  const CK_BYTE sw1 = response[response_len - 2];
+  const CK_BYTE sw2 = response[response_len - 1];
+
   // Check status words
-  if (response[response_len - 2] == 0x90 && response[response_len - 1] == 0x00) {
+  if (sw1 == 0x90 && sw2 == 0x00) {
     CNK_RETURN(CKR_OK, "PIV PIN verified");
   }
 
-  if (response[response_len - 2] == 0x63) {
+  if (sw1 == 0x63) {
     // PIN verification failed, remaining attempts in low nibble of SW2
+    CK_BYTE attempts = sw2 & 0x0F;
+    if (pPinTries != NULL) {
+      *pPinTries = attempts;
+    }
     CNK_RETURN(CKR_PIN_INCORRECT, "PIV PIN verification failed");
   }
 
-  if (response[response_len - 2] == 0x69 && response[response_len - 1] == 0x83) {
+  if (sw1 == 0x69 && sw2 == 0x83) {
     // PIN blocked
     CNK_RETURN(CKR_PIN_LOCKED, "PIV PIN blocked");
   }
@@ -526,14 +533,13 @@ CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard) {
 // - CKR_OK if the data object is successfully read.
 // - CKR_DEVICE_ERROR if the data object could not be read.
 CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data) {
-  CNK_LOG_FUNC(" slotID: %ld, tag: 0x%02X, data: %p, data_len: %p, fetch_data: %d", slotID, tag, data, data_len,
+  CNK_LOG_FUNC(": slotID: %ld, tag: 0x%02X, data: %p, data_len: %p, fetch_data: %d", slotID, tag, data, data_len,
                fetch_data);
 
   SCARDHANDLE hCard;
 
   if (data != NULL && data_len == NULL)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "data_len is NULL");
-
   CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotID, &hCard));
 
   // Select the PIV application
@@ -795,7 +801,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
     CNK_RETURN(CKR_PIN_INCORRECT, "PIN verification required before signing");
 
   // Use the extended version to keep the card connection open
-  CK_RV rv = cnk_verify_piv_pin_with_session_ex(slotID, session, session->piv_pin, session->piv_pin_len, &hCard);
+  CK_RV rv = cnk_verify_piv_pin_with_session_ex(slotID, session, session->piv_pin, session->piv_pin_len, NULL, &hCard);
   if (rv != CKR_OK) {
     CNK_ERROR("Failed to verify PIN");
     cnk_disconnect_card(hCard);
@@ -1187,6 +1193,7 @@ typedef struct {
   CNK_PKCS11_SESSION *session;
   CK_UTF8CHAR_PTR pin;
   CK_ULONG pin_len;
+  CK_BYTE_PTR pin_tries;
 } VerifyPinContext;
 
 // Card operation function for PIN verification
@@ -1197,7 +1204,7 @@ static CK_RV verify_pin_card_operation(SCARDHANDLE hCard, void *context) {
   CNK_ENSURE_NONNULL(ctx->session);
 
   // Verify the PIN
-  CNK_ENSURE_OK(cnk_verify_piv_pin(hCard, ctx->pin, ctx->pin_len));
+  CNK_ENSURE_OK(cnk_verify_piv_pin(hCard, ctx->pin, ctx->pin_len, ctx->pin_tries));
 
   // If PIN verification was successful, cache the PIN in the session
   if (ctx->session->piv_pin != ctx->pin) {
@@ -1212,7 +1219,7 @@ static CK_RV verify_pin_card_operation(SCARDHANDLE hCard, void *context) {
 
 // Extended version of verify PIN with option to control card disconnection
 CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
-                                         CK_ULONG ulPinLen, SCARDHANDLE *out_card) {
+                                         CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries, SCARDHANDLE *out_card) {
   if (session == NULL || (pPin == NULL && ulPinLen > 0)) {
     CNK_RETURN(CKR_ARGUMENTS_BAD, "Invalid arguments");
   }
@@ -1223,7 +1230,7 @@ CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
   }
 
   // Set up the context for the operation
-  VerifyPinContext ctx = {.session = session, .pin = pPin, .pin_len = ulPinLen};
+  VerifyPinContext ctx = {.session = session, .pin = pPin, .pin_len = ulPinLen, .pin_tries = pPinTries};
 
   // Use the card operation utility function
   return cnk_with_card(slotID, verify_pin_card_operation, &ctx, out_card);
@@ -1231,6 +1238,6 @@ CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
 
 // Verify the PIV PIN with session - handles card connection and caches PIN
 CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
-                                      CK_ULONG ulPinLen) {
-  return cnk_verify_piv_pin_with_session_ex(slotID, session, pPin, ulPinLen, NULL);
+                                      CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries) {
+  return cnk_verify_piv_pin_with_session_ex(slotID, session, pPin, ulPinLen, pPinTries, NULL);
 }

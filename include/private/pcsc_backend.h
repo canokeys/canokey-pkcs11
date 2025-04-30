@@ -68,7 +68,7 @@ void cnk_cleanup_pcsc(void);
 
 // PIV application functions
 CK_RV cnk_select_piv_application(SCARDHANDLE hCard);
-CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen);
+CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
 CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard);
 
 // Forward declaration for session struct
@@ -76,11 +76,11 @@ typedef struct CNK_PKCS11_SESSION CNK_PKCS11_SESSION;
 
 // Function to verify PIN with session
 CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
-                                      CK_ULONG ulPinLen);
+                                      CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
 
 // Extended version of verify PIN with option to control card disconnection
 CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
-                                         CK_ULONG ulPinLen, SCARDHANDLE *out_card);
+                                         CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries, SCARDHANDLE *out_card);
 
 // Function to logout PIV PIN with session
 CK_RV cnk_logout_piv_pin_with_session(CK_SLOT_ID slotID);

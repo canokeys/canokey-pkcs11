@@ -7,7 +7,10 @@
 
 #undef CreateMutex // avoid conflicts with Windows API
 
-#define CNK_PRINTLOGF // avoid too many log messages
+#if defined(CNK_PRINTLOGF)
+#undef CNK_PRINTLOGF
+#define CNK_PRINTLOGF(...) // avoid too many log messages in this file
+#endif
 
 // Global variables for mutex system
 static CK_BBOOL g_mutex_system_initialized = CK_FALSE;

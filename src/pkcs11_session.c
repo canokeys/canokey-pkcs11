@@ -360,8 +360,8 @@ CK_RV C_SetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationStat
   CNK_RET_UNIMPL;
 }
 
-CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
-  CNK_LOG_FUNC(", hSession: %lu, userType: %lu, ulPinLen: %lu", hSession, userType, ulPinLen);
+CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries) {
+  CNK_LOG_FUNC(": hSession: %lu, userType: %d, pPin: %p, ulPinLen: %lu, pPinTries: %p", hSession, userType, pPin, ulPinLen, pPinTries);
 
   // Check if the cryptoki library is initialized
   CNK_ENSURE_INITIALIZED();
@@ -386,7 +386,7 @@ CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR
   }
 
   // Verify the PIN and cache it in the session
-  rv = cnk_verify_piv_pin_with_session(session->slot_id, session, pPin, ulPinLen);
+  rv = cnk_verify_piv_pin_with_session(session->slot_id, session, pPin, ulPinLen, pPinTries);
 
   // If PIN verification was successful, update the session state
   if (rv == CKR_OK) {
@@ -399,6 +399,11 @@ CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR
   }
 
   CNK_RETURN(rv, "verify_piv_pin_with_session");
+}
+
+CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+  // just forward to our custom C_CNK_Login function without pPinTries
+  return C_CNK_Login(hSession, userType, pPin, ulPinLen, NULL);
 }
 
 CK_RV C_Logout(CK_SESSION_HANDLE hSession) {

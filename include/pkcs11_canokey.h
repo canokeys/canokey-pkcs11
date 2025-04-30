@@ -28,9 +28,15 @@ typedef CNK_MANAGED_MODE_INIT_ARGS *CNK_MANAGED_MODE_INIT_ARGS_PTR;
 // Extension API to enable managed mode (must be called before `C_Initialize`)
 // pInitArgs: non-NULL pointer to CNK_MANAGED_MODE_INIT_ARGS
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_EnableManagedMode)(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs);
+
 // Extension API to configure logging
 // level: must be CNK_LOG_LEVEL_*, -1 for unchanged (default: CNK_LOG_LEVEL_WARNING)
 // file: a valid FILE pointer, NULL for unchaged (default: stderr)
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_ConfigLogging)(int level, FILE *file);
+
+// Extension API to login and get remaining PIN tries
+// pPinTries: pointer to an integer to receive the number of remaining PIN tries (NULL for not needed)
+// See C_Login for other arguments
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_Login)(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
 
 #endif /* PKCS11_CANOKEY_H */
