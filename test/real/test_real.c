@@ -388,6 +388,103 @@ CK_RV perform_logout(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSess
   return rv;
 }
 
+void test_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
+  CK_SESSION_HANDLE pubSession;
+  CK_RV rv = pFunctionList->C_OpenSession(slotID, CKF_SERIAL_SESSION, NULL, NULL, &pubSession);
+  if (rv != CKR_OK) {
+    printf("    Error opening session for pub tests: 0x%lx\n", rv);
+    return;
+  }
+
+  CK_OBJECT_CLASS keyClass = CKO_PUBLIC_KEY;
+  CK_BYTE keyId = 2;
+  CK_ATTRIBUTE findTemplate[] = {{CKA_CLASS, &keyClass, sizeof(keyClass)}, {CKA_ID, &keyId, sizeof(keyId)}};
+
+  rv = pFunctionList->C_FindObjectsInit(pubSession, findTemplate, 2);
+  if (rv != CKR_OK) {
+    printf("    Error initializing object search: 0x%lx\n", rv);
+  } else {
+    CK_OBJECT_HANDLE hKey;
+    CK_ULONG ulObjectCount;
+
+    rv = pFunctionList->C_FindObjects(pubSession, &hKey, 1, &ulObjectCount);
+    if (rv != CKR_OK || ulObjectCount == 0) {
+      printf("    No key found: 0x%lx\n", rv);
+    } else {
+      printf("    Found key (handle: %lu)\n", hKey);
+
+      // Finalize the search
+      rv = pFunctionList->C_FindObjectsFinal(pubSession);
+      if (rv != CKR_OK) {
+        printf("    Error finalizing object search: 0x%lx\n", rv);
+      }
+
+      CK_BYTE modulus[4096], publicExponent[8];
+      CK_ATTRIBUTE templates[] = {{CKA_MODULUS, modulus, sizeof(modulus)},
+                                  {CKA_PUBLIC_EXPONENT, publicExponent, sizeof(publicExponent)}};
+
+      rv = pFunctionList->C_GetAttributeValue(pubSession, hKey, templates, 2);
+      if (rv != CKR_OK) {
+        printf("      Error getting key attributes: 0x%lx\n", rv);
+      } else {
+        print_hex_data("modulus value", modulus, templates[0].ulValueLen, 32);
+        print_hex_data("public exponent value", publicExponent, templates[1].ulValueLen, 32);
+      }
+    }
+  }
+
+  // Close the session
+  pFunctionList->C_CloseSession(pubSession);
+}
+
+void test_ecdsa_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
+  CK_SESSION_HANDLE pubSession;
+  CK_RV rv = pFunctionList->C_OpenSession(slotID, CKF_SERIAL_SESSION, NULL, NULL, &pubSession);
+  if (rv != CKR_OK) {
+    printf("    Error opening session for pub tests: 0x%lx\n", rv);
+    return;
+  }
+
+  CK_OBJECT_CLASS keyClass = CKO_PUBLIC_KEY;
+  CK_BYTE keyId = 1;
+  CK_ATTRIBUTE findTemplate[] = {{CKA_CLASS, &keyClass, sizeof(keyClass)}, {CKA_ID, &keyId, sizeof(keyId)}};
+
+  rv = pFunctionList->C_FindObjectsInit(pubSession, findTemplate, 2);
+  if (rv != CKR_OK) {
+    printf("    Error initializing object search: 0x%lx\n", rv);
+  } else {
+    CK_OBJECT_HANDLE hKey;
+    CK_ULONG ulObjectCount;
+
+    rv = pFunctionList->C_FindObjects(pubSession, &hKey, 1, &ulObjectCount);
+    if (rv != CKR_OK || ulObjectCount == 0) {
+      printf("    No key found: 0x%lx\n", rv);
+    } else {
+      printf("    Found key (handle: %lu)\n", hKey);
+
+      // Finalize the search
+      rv = pFunctionList->C_FindObjectsFinal(pubSession);
+      if (rv != CKR_OK) {
+        printf("    Error finalizing object search: 0x%lx\n", rv);
+      }
+
+      CK_BYTE pubKey[4096], oid[8];
+      CK_ATTRIBUTE templates[] = {{CKA_EC_POINT, pubKey, sizeof(pubKey)}, {CKA_EC_PARAMS, oid, sizeof(oid)}};
+
+      rv = pFunctionList->C_GetAttributeValue(pubSession, hKey, templates, 2);
+      if (rv != CKR_OK) {
+        printf("      Error getting key attributes: 0x%lx\n", rv);
+      } else {
+        print_hex_data("public key value", pubKey, templates[0].ulValueLen, 32);
+        print_hex_data("oid value", oid, templates[1].ulValueLen, 32);
+      }
+    }
+  }
+
+  // Close the session
+  pFunctionList->C_CloseSession(pubSession);
+}
+
 // Test certificate operations
 void test_certificate_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
   CK_SESSION_HANDLE certSession;
@@ -433,42 +530,6 @@ void test_certificate_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID 
       print_hex_data("Cert value", data, temp.ulValueLen, 32);
     }
   }
-
-  // // Test public key operations
-  // keyClass = CKO_PUBLIC_KEY;
-  // rv = pFunctionList->C_FindObjectsInit(certSession, findTemplate, 2);
-  // if (rv != CKR_OK) {
-  //   printf("    Error initializing object search: 0x%lx\n", rv);
-  // } else {
-  //   CK_OBJECT_HANDLE hKey;
-  //   CK_ULONG ulObjectCount;
-  //
-  //   rv = pFunctionList->C_FindObjects(certSession, &hKey, 1, &ulObjectCount);
-  //   if (rv != CKR_OK || ulObjectCount == 0) {
-  //     printf("    No key found: 0x%lx\n", rv);
-  //   } else {
-  //     printf("    Found key (handle: %lu)\n", hKey);
-  //
-  //     // Finalize the search
-  //     rv = pFunctionList->C_FindObjectsFinal(certSession);
-  //     if (rv != CKR_OK) {
-  //       printf("    Error finalizing object search: 0x%lx\n", rv);
-  //     }
-  //
-  //     CK_BYTE modulus[4096], publicExponent[8];
-  //     CK_ATTRIBUTE templates[] = {
-  //         {CKA_MODULUS, modulus, sizeof(modulus)},
-  //         {CKA_PUBLIC_EXPONENT, publicExponent, sizeof(publicExponent)}};
-  //
-  //     rv = pFunctionList->C_GetAttributeValue(certSession, hKey, templates, 2);
-  //     if (rv != CKR_OK) {
-  //       printf("      Error getting key attributes: 0x%lx\n", rv);
-  //     } else {
-  //       print_hex_data("modulus value", modulus, templates[0].ulValueLen, 32);
-  //       print_hex_data("public exponent value", publicExponent, templates[1].ulValueLen, 32);
-  //     }
-  //   }
-  // }
 
   // Close the session
   pFunctionList->C_CloseSession(certSession);
@@ -794,6 +855,12 @@ int main(int argc, char *argv[]) {
 
       // Get the mechanism list
       display_mechanism_list(pFunctionList, pSlotList[i]);
+
+      // Test public key operations
+      test_public_key_operations(pFunctionList, pSlotList[i]);
+
+      // Test ECDSA public key operations
+      test_ecdsa_public_key_operations(pFunctionList, pSlotList[i]);
 
       // Test certificate operations
       test_certificate_operations(pFunctionList, pSlotList[i]);
