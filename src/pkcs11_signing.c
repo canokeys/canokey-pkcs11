@@ -9,6 +9,31 @@
 
 #include <string.h>
 
+CK_BBOOL isMechanismTypeRSA(CK_MECHANISM_TYPE ulMechanismType) {
+  switch (ulMechanismType) {
+  case CKM_RSA_PKCS:
+  case CKM_RSA_X_509:
+  case CKM_RSA_PKCS_OAEP:
+  case CKM_RSA_PKCS_PSS:
+  case CKM_SHA1_RSA_PKCS:
+  case CKM_SHA1_RSA_PKCS_PSS:
+  case CKM_SHA256_RSA_PKCS:
+  case CKM_SHA256_RSA_PKCS_PSS:
+  case CKM_SHA384_RSA_PKCS:
+  case CKM_SHA384_RSA_PKCS_PSS:
+  case CKM_SHA512_RSA_PKCS:
+  case CKM_SHA512_RSA_PKCS_PSS:
+  case CKM_SHA224_RSA_PKCS:
+  case CKM_SHA224_RSA_PKCS_PSS:
+  case CKM_SHA3_256_RSA_PKCS:
+  case CKM_SHA3_384_RSA_PKCS:
+  case CKM_SHA3_512_RSA_PKCS:
+    return CK_TRUE;
+  default:
+    return CK_FALSE;
+  }
+}
+
 CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {
   CNK_LOG_FUNC(": hSession: %lu, pMechanism: %p, hKey: %lu", hSession, pMechanism, hKey);
 
@@ -143,7 +168,6 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   session->active_key = hKey;
   session->active_mechanism_ptr = pMechanism;
   session->active_key_piv_tag = piv_tag;
-  session->active_key_algorithm_type = algorithm_type;
 
   CNK_DEBUG("Setting active_mechanism to %lu, PIV tag %u, algorithm type %u", pMechanism->mechanism, piv_tag,
             algorithm_type);
@@ -176,26 +200,16 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
 
   // All key validation was already done in C_SignInit, so we use the cached values
   CK_BYTE piv_tag = session->active_key_piv_tag;
-  CK_BYTE algorithm_type = session->active_key_algorithm_type;
   CK_MECHANISM_PTR mechanism_ptr = session->active_mechanism_ptr;
 
-  CNK_DEBUG("Signing with active key, PIV tag %u, algorithm type %u", piv_tag, algorithm_type);
+  CNK_DEBUG("Signing with active key, PIV tag 0x%x", piv_tag);
 
   // For signature-only call to get the signature length
   if (pSignature == NULL) {
-    switch (algorithm_type) {
-    case PIV_ALG_RSA_2048:
-      *pulSignatureLen = 256; // 2048 bits = 256 bytes
-      break;
-    case PIV_ALG_RSA_3072:
-      *pulSignatureLen = 384; // 3072 bits = 384 bytes
-      break;
-    case PIV_ALG_RSA_4096:
-      *pulSignatureLen = 512; // 4096 bits = 512 bytes
-      break;
-    default:
+    if (isMechanismTypeRSA(session->active_mechanism_ptr->mechanism)) {
+      *pulSignatureLen = session->active_key_modulus_len;
+    } else
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "unsupported key algorithm");
-    }
 
     // We don't need to reset the session state here since we're just querying the length
     CNK_RET_OK;
@@ -206,13 +220,12 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   CK_ULONG prepared_data_len = sizeof(prepared_data);
 
   rv = cnk_prepare_rsa_sign_data(mechanism_ptr, pData, ulDataLen, session->active_key_modulus,
-                                 session->active_key_modulus_len, algorithm_type, prepared_data, &prepared_data_len);
+                                 session->active_key_modulus_len, prepared_data, &prepared_data_len);
   if (rv != CKR_OK) {
     // Reset the session state
     session->active_mechanism_ptr = NULL;
     session->active_key = 0;
     session->active_key_piv_tag = 0;
-    session->active_key_algorithm_type = 0;
     return rv;
   }
 
@@ -223,7 +236,6 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   session->active_mechanism_ptr = NULL;
   session->active_key = 0;
   session->active_key_piv_tag = 0;
-  session->active_key_algorithm_type = 0;
 
   return rv;
 }

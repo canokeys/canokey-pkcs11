@@ -356,19 +356,19 @@ static CK_RV get_md_type_from_mgf(CK_RSA_PKCS_MGF_TYPE mgf_hash, mbedtls_md_type
 
 // Helper function to prepare data for RSA signing based on mechanism
 CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR pMechanism, CK_BYTE_PTR pData, CK_ULONG ulDataLen,
-                                CK_BYTE_PTR pModulus, CK_ULONG ulModulusLen, CK_BYTE bAlgorithmType,
-                                CK_BYTE_PTR pPreparedData, CK_ULONG_PTR pulPreparedDataLen) {
+                                CK_BYTE_PTR pModulus, CK_ULONG ulModulusLen, CK_BYTE_PTR pPreparedData,
+                                CK_ULONG_PTR pulPreparedDataLen) {
 
 #define HANDLE_FIRST_CALL()                                                                                            \
   if (!pPreparedData) {                                                                                                \
-    *pulPreparedDataLen = ulModulusBytes;                                                                              \
+    *pulPreparedDataLen = ulModulusLen;                                                                                \
     CNK_RET_OK;                                                                                                        \
   }                                                                                                                    \
-  if (*pulPreparedDataLen < ulModulusBytes)                                                                            \
+  if (*pulPreparedDataLen < ulModulusLen)                                                                              \
     CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Buffer too small");                                                              \
-  *pulPreparedDataLen = ulModulusBytes;
+  *pulPreparedDataLen = ulModulusLen;
 
-  CNK_LOG_FUNC(": algorithm_type: %d", bAlgorithmType);
+  CNK_LOG_FUNC(": mechanism: 0x%x, modulus_bytes: %lu", pMechanism->mechanism, ulModulusLen);
 
   CK_RV rv = CKR_OK;
   mbedtls_md_type_t md_type;
@@ -378,37 +378,19 @@ CK_RV cnk_prepare_rsa_sign_data(CK_MECHANISM_PTR pMechanism, CK_BYTE_PTR pData, 
   CK_MECHANISM_TYPE hash_type = CKM_VENDOR_DEFINED;
   CK_BBOOL need_hashing = CK_FALSE;
 
-  // Get modulus size from algorithm_type
-  CK_ULONG ulModulusBytes;
-  switch (bAlgorithmType) {
-  case PIV_ALG_RSA_2048:
-    ulModulusBytes = 2048 / 8;
-    break;
-  case PIV_ALG_RSA_3072:
-    ulModulusBytes = 3072 / 8;
-    break;
-  case PIV_ALG_RSA_4096:
-    ulModulusBytes = 4096 / 8;
-    break;
-  default:
-    CNK_ERROR("Unknown RSA key size");
-    CNK_RETURN(CKR_ARGUMENTS_BAD, "Unknown RSA key size");
-  }
-  CNK_DEBUG("Using modulus size: %lu bits", ulModulusBytes * 8);
-
   // For CKM_RSA_X_509, compute output length based on key size and pad with leading zeros
   if (mech_type == CKM_RSA_X_509) {
     HANDLE_FIRST_CALL();
 
     // Zero out the buffer first
-    memset(pPreparedData, 0, ulModulusBytes);
+    memset(pPreparedData, 0, ulModulusLen);
 
     // Copy data to the right side of the buffer (left-pad with zeros)
-    if (ulDataLen <= ulModulusBytes) {
-      memcpy(pPreparedData + (ulModulusBytes - ulDataLen), pData, ulDataLen);
+    if (ulDataLen <= ulModulusLen) {
+      memcpy(pPreparedData + (ulModulusLen - ulDataLen), pData, ulDataLen);
     } else {
       // Data is larger than modulus - only use rightmost bytes
-      memcpy(pPreparedData, pData + (ulDataLen - ulModulusBytes), ulModulusBytes);
+      memcpy(pPreparedData, pData + (ulDataLen - ulModulusLen), ulModulusLen);
     }
 
     CNK_RET_OK;

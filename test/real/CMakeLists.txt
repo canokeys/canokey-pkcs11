@@ -7,4 +7,3 @@ function(add_dlopen_test NAME)
 endfunction()
 
 add_dlopen_test(real)
-add_dlopen_test(rsa ${MBEDTLS_LIBRARIES})

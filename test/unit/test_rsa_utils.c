@@ -228,7 +228,6 @@ static void test_x509_padding(void **state) {
   (void)state; // Unused
 
   CK_MECHANISM mechanism;
-  CK_BYTE algorithm_type = PIV_ALG_RSA_2048;
   CK_BYTE output[256] = {0}; // 2048 bits = 256 bytes
   CK_ULONG output_len = sizeof(output);
   CK_RV rv;
@@ -237,7 +236,7 @@ static void test_x509_padding(void **state) {
   setup_mechanism(&mechanism, CKM_RSA_X_509, NULL, 0);
 
   // Test size estimation (pPreparedData = NULL)
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 256, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256);
 
@@ -245,7 +244,7 @@ static void test_x509_padding(void **state) {
   output_len = sizeof(output);
 
   // Test actual padding with buffer larger than data
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 256, output, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256);
 
@@ -268,15 +267,13 @@ static void test_x509_padding(void **state) {
   output_len = sizeof(small_output);
 
   // Test another valid padding operation
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, small_output,
-                                 &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 256, small_output, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256);
 
   // Test with too small buffer
   output_len = 128; // Half the required size for RSA-2048
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, small_output,
-                                 &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 256, small_output, &output_len);
   assert_int_equal(rv, CKR_BUFFER_TOO_SMALL);
 }
 
@@ -285,7 +282,6 @@ static void test_pkcs1_v1_5_direct_padding(void **state) {
   (void)state; // Unused
 
   CK_MECHANISM mechanism;
-  CK_BYTE algorithm_type = PIV_ALG_RSA_2048;
   CK_BYTE output[256] = {0}; // 2048 bits = 256 bytes
   CK_ULONG output_len = sizeof(output);
   CK_RV rv;
@@ -294,7 +290,7 @@ static void test_pkcs1_v1_5_direct_padding(void **state) {
   setup_mechanism(&mechanism, CKM_RSA_PKCS, NULL, 0);
 
   // Test size estimation (pPreparedData = NULL)
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 256, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256); // 2048 bits = 256 bytes
 
@@ -302,7 +298,7 @@ static void test_pkcs1_v1_5_direct_padding(void **state) {
   output_len = sizeof(output);
 
   // Test actual padding
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 256, output, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256);
 
@@ -326,7 +322,7 @@ static void test_pkcs1_v1_5_direct_padding(void **state) {
 
   // Test with output buffer too small
   output_len = 128; // Too small for 2048-bit key
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 256, output, &output_len);
   assert_int_equal(rv, CKR_BUFFER_TOO_SMALL);
 }
 
@@ -335,7 +331,6 @@ static void test_pkcs1_v1_5_sha1_padding(void **state) {
   (void)state; // Unused
 
   CK_MECHANISM mechanism;
-  CK_BYTE algorithm_type = PIV_ALG_RSA_2048;
   CK_BYTE output[256] = {0}; // 2048 bits = 256 bytes
   CK_ULONG output_len = sizeof(output);
   CK_RV rv;
@@ -344,7 +339,7 @@ static void test_pkcs1_v1_5_sha1_padding(void **state) {
   setup_mechanism(&mechanism, CKM_SHA1_RSA_PKCS, NULL, 0);
 
   // Test size estimation (pPreparedData = NULL)
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 256, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256); // 2048 bits = 256 bytes
 
@@ -352,7 +347,7 @@ static void test_pkcs1_v1_5_sha1_padding(void **state) {
   output_len = sizeof(output);
 
   // Test actual padding
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 256, output, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256);
 
@@ -441,7 +436,6 @@ static void test_pkcs1_v1_5_sha256_padding(void **state) {
   (void)state; // Unused
 
   CK_MECHANISM mechanism;
-  CK_BYTE algorithm_type = PIV_ALG_RSA_2048;
   CK_BYTE output[256] = {0}; // 2048 bits = 256 bytes
   CK_ULONG output_len = sizeof(output);
   CK_RV rv;
@@ -450,7 +444,7 @@ static void test_pkcs1_v1_5_sha256_padding(void **state) {
   setup_mechanism(&mechanism, CKM_SHA256_RSA_PKCS, NULL, 0);
 
   // Test size estimation (pPreparedData = NULL)
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 256, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256); // 2048 bits = 256 bytes
 
@@ -458,7 +452,7 @@ static void test_pkcs1_v1_5_sha256_padding(void **state) {
   output_len = sizeof(output);
 
   // Test actual padding
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 256, output, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256);
 
@@ -550,7 +544,6 @@ static void test_pss_padding(void **state) {
       .mgf = CKG_MGF1_SHA256, // use MGF1 with SHA-256
       .sLen = 32              // salt length of 32 bytes
   };
-  CK_BYTE algorithm_type = PIV_ALG_RSA_2048;
   CK_BYTE output[256] = {0}; // 2048 bits = 256 bytes
   CK_ULONG output_len = sizeof(output);
   CK_RV rv;
@@ -567,14 +560,14 @@ static void test_pss_padding(void **state) {
   setup_mechanism(&mechanism, CKM_RSA_PKCS_PSS, &pss_params, sizeof(pss_params));
 
   // Test size estimation when pPreparedData is NULL.
-  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), modulus, sizeof(modulus),
-                                 algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), modulus, sizeof(modulus), NULL,
+                                 &output_len);
   assert_int_equal(rv, CKR_OK);
 
   // Reset output length and perform the actual padding.
   output_len = sizeof(output);
-  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), modulus, sizeof(modulus),
-                                 algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), modulus, sizeof(modulus), output,
+                                 &output_len);
   assert_int_equal(rv, CKR_OK);
 
   // Verify the PSS encoding structure for the prehashed case.
@@ -588,8 +581,7 @@ static void test_pss_padding(void **state) {
   CK_BYTE output2[256] = {0};
   CK_ULONG output_len2 = sizeof(output2);
   setup_mechanism(&mechanism, CKM_SHA256_RSA_PKCS_PSS, &pss_params, sizeof(pss_params));
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, modulus, sizeof(modulus), algorithm_type,
-                                 output2, &output_len2);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, modulus, sizeof(modulus), output2, &output_len2);
   assert_int_equal(rv, CKR_OK);
 
   rv = verify_pss_encoding(output2, output_len2, test_data, test_data_len, MBEDTLS_MD_SHA256, MBEDTLS_MD_SHA256,
@@ -609,7 +601,6 @@ static void test_pss_different_salt_lengths(void **state) {
       .mgf = CKG_MGF1_SHA256, // MGF1 with SHA-256
       .sLen = 0               // Zero salt length
   };
-  CK_BYTE algorithm_type = PIV_ALG_RSA_2048;
   CK_BYTE output[256] = {0}; // 2048 bits = 256 bytes
   CK_ULONG output_len = sizeof(output);
   CK_RV rv;
@@ -625,8 +616,8 @@ static void test_pss_different_salt_lengths(void **state) {
 
   // Test with zero salt length
   setup_mechanism(&mechanism, CKM_RSA_PKCS_PSS, &pss_params, sizeof(pss_params));
-  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), modulus, sizeof(modulus),
-                                 algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), modulus, sizeof(modulus), output,
+                                 &output_len);
   assert_int_equal(rv, CKR_OK);
 
   // Test with maximum salt length
@@ -634,8 +625,8 @@ static void test_pss_different_salt_lengths(void **state) {
   memset(output, 0, sizeof(output));
   output_len = sizeof(output);
 
-  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), modulus, sizeof(modulus),
-                                 algorithm_type, output, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, message_hash, sizeof(message_hash), modulus, sizeof(modulus), output,
+                                 &output_len);
   assert_int_equal(rv, CKR_OK);
 }
 
@@ -651,22 +642,19 @@ static void test_different_rsa_key_sizes(void **state) {
   setup_mechanism(&mechanism, CKM_RSA_PKCS, NULL, 0);
 
   // Test with 2048-bit key
-  CK_BYTE algorithm_type = PIV_ALG_RSA_2048;
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 256, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 256); // 2048 bits = 256 bytes
 
   // Test with 3072-bit key
-  algorithm_type = PIV_ALG_RSA_3072;
   output_len = 512;
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 384, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 384); // 3072 bits = 384 bytes
 
   // Test with 4096-bit key
-  algorithm_type = PIV_ALG_RSA_4096;
   output_len = 512;
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 512, NULL, &output_len);
   assert_int_equal(rv, CKR_OK);
   assert_int_equal(output_len, 512); // 4096 bits = 512 bytes
 }
@@ -676,19 +664,18 @@ static void test_error_conditions(void **state) {
   (void)state; // Unused
 
   CK_MECHANISM mechanism;
-  CK_BYTE algorithm_type = PIV_ALG_RSA_2048;
   CK_BYTE output[256] = {0};
   CK_ULONG output_len = sizeof(output);
   CK_RV rv;
 
   // Test invalid mechanism
   setup_mechanism(&mechanism, CKM_VENDOR_DEFINED, NULL, 0);
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 256, NULL, &output_len);
   assert_int_equal(rv, CKR_MECHANISM_INVALID);
 
   // Test PSS with missing parameters
   setup_mechanism(&mechanism, CKM_RSA_PKCS_PSS, NULL, 0);
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 0, algorithm_type, NULL, &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, NULL, 256, NULL, &output_len);
   assert_int_equal(rv, CKR_ARGUMENTS_BAD);
 
   // Test PSS with invalid MGF
@@ -696,16 +683,14 @@ static void test_error_conditions(void **state) {
                                        .mgf = 99, // Invalid MGF
                                        .sLen = 32};
   setup_mechanism(&mechanism, CKM_RSA_PKCS_PSS, &pss_params, sizeof(pss_params));
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, modulus, sizeof(modulus), algorithm_type, NULL,
-                                 &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, modulus, sizeof(modulus), NULL, &output_len);
   assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
 
   // Test PSS with invalid hash algorithm
   pss_params.mgf = 1;                      // Valid MGF
   pss_params.hashAlg = CKM_VENDOR_DEFINED; // Invalid hash
   setup_mechanism(&mechanism, CKM_RSA_PKCS_PSS, &pss_params, sizeof(pss_params));
-  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, modulus, sizeof(modulus), algorithm_type, NULL,
-                                 &output_len);
+  rv = cnk_prepare_rsa_sign_data(&mechanism, test_data, test_data_len, modulus, sizeof(modulus), NULL, &output_len);
   assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
 }
 
