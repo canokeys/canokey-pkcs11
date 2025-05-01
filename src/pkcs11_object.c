@@ -6,6 +6,8 @@
 #include "pkcs11_session.h"
 #include "utils.h"
 
+#include <mbedtls/asn1write.h>
+#include <mbedtls/oid.h>
 #include <string.h>
 
 // Helper function to extract object information from a handle
@@ -197,6 +199,10 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
   CK_ULONG cbModulus = 0;
   CK_BYTE_PTR pbPublicExponent = NULL;
   CK_ULONG cbPublicExponent = 0;
+  CK_BYTE_PTR pbPublicPoint = NULL;
+  CK_ULONG cbPublicPoint = 0;
+  CK_BYTE abEcParams[16];
+  CK_ULONG cbEcParams = 0;
 
   // Parse the public key data. The public key data is encoded in TLV.
   CK_ULONG vpos = 0; /* cursor inside the value buffer   */
@@ -222,6 +228,11 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
       pbPublicExponent = pbPublicKey + vpos;
       cbPublicExponent = ilen;
     }
+    /* ---- ECC public point lives in tag 0x86 ---------------- */
+    if (itag == 0x86) {
+      pbPublicPoint = pbPublicKey + vpos;
+      cbPublicPoint = ilen;
+    }
     vpos += ilen; /* advance to next inner TLV        */
   }
 
@@ -240,6 +251,13 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
   case CKA_ENCRYPT: {
     // Only RSA public keys can encrypt
     CK_BBOOL value = (keyType == CKK_RSA) ? CK_TRUE : CK_FALSE;
+    rv = cnk_set_single_attribute_value(attribute, &value, sizeof(value));
+    break;
+  }
+
+  case CKA_DECRYPT: {
+    // Public keys cannot decrypt
+    CK_BBOOL value = CK_FALSE;
     rv = cnk_set_single_attribute_value(attribute, &value, sizeof(value));
     break;
   }
@@ -272,7 +290,40 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
     }
     break;
 
-    // TODO: Add other public key attributes
+  case CKA_EC_POINT:
+    if (keyType == CKK_EC) {
+      rv = cnk_set_single_attribute_value(attribute, pbPublicPoint, cbPublicPoint);
+    } else {
+      // Not applicable for non-ECC keys
+      rv = CKR_ATTRIBUTE_TYPE_INVALID;
+    }
+    break;
+
+  case CKA_EC_PARAMS:
+    if (keyType == CKK_EC || keyType == CKK_EC_EDWARDS) {
+      char *oid = NULL;
+      switch (algorithm_type) {
+      case PIV_ALG_ECC_256:
+        oid = MBEDTLS_OID_EC_GRP_SECP256R1;
+        break;
+      case PIV_ALG_ECC_384:
+        oid = MBEDTLS_OID_EC_GRP_SECP384R1;
+        break;
+      case PIV_ALG_SECP256K1:
+        oid = MBEDTLS_OID_EC_GRP_SECP256K1;
+        break;
+      default:
+        CNK_ERROR("Should not be reached");
+        break;
+      }
+      CK_BYTE_PTR pbEcParams = abEcParams + sizeof(abEcParams);
+      cbEcParams = mbedtls_asn1_write_oid(&pbEcParams, abEcParams, oid, MBEDTLS_OID_SIZE(oid));
+      rv = cnk_set_single_attribute_value(attribute, pbEcParams, cbEcParams);
+    } else {
+      // Not applicable for non-ECC keys
+      rv = CKR_ATTRIBUTE_TYPE_INVALID;
+    }
+    break;
 
   default:
     rv = CKR_ATTRIBUTE_TYPE_INVALID;
@@ -308,6 +359,13 @@ static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYT
     break;
   }
 
+  case CKA_ENCRYPT: {
+    // Private keys cannot encrypt
+    CK_BBOOL value = CK_FALSE;
+    rv = cnk_set_single_attribute_value(attribute, &value, sizeof(value));
+    break;
+  }
+
   case CKA_SENSITIVE:
   case CKA_ALWAYS_SENSITIVE: {
     // Private keys are always sensitive
@@ -332,6 +390,9 @@ static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYT
 
   return rv;
 }
+
+static CK_BBOOL matchTemplate(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
+                              CK_ULONG ulCount);
 
 // Object operation implementations
 CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
@@ -620,26 +681,9 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
 
     // No ID specified, check all possible IDs (1-6)
     for (CK_BYTE id = 1; id <= 6; id++) {
-      // Map ID to PIV tag
-      CK_BYTE piv_tag;
-      if (C_CNK_ObjIdToPivTag(id, &piv_tag) != CKR_OK) {
-        continue;
-      }
-
-      // Try to get the data for this tag
-      rv = cnk_get_piv_data(session->slot_id, piv_tag, NULL, NULL, CK_FALSE); // Just check existence
-
-      if (rv != CKR_OK && rv != CKR_DATA_INVALID) {
-        session->find_active = CK_FALSE;
-        cnk_mutex_unlock(&session->lock);
-        return rv;
-      }
-
-      // If data exists, add this object to the results
-      if (rv == CKR_OK) {
-        // Create a handle for this object: slot_id | object_class | object_id
-        CK_OBJECT_HANDLE handle = (session->slot_id << 16) | (session->find_object_class << 8) | id;
-        session->find_objects[session->find_objects_count++] = handle;
+      CK_OBJECT_HANDLE hObject = (session->slot_id << 16) | (session->find_object_class << 8) | id;
+      if (matchTemplate(hSession, hObject, pTemplate, ulCount)) {
+        session->find_objects[session->find_objects_count++] = hObject;
       }
     }
   }
@@ -713,4 +757,58 @@ CK_RV C_FindObjectsFinal(CK_SESSION_HANDLE hSession) {
 
   cnk_mutex_unlock(&session->lock);
   CNK_RET_OK;
+}
+
+static CK_BBOOL matchTemplate(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
+                              CK_ULONG ulCount) {
+  // Copy the template
+  CK_ATTRIBUTE_PTR attrs = (CK_ATTRIBUTE_PTR)ck_malloc(sizeof(CK_ATTRIBUTE) * ulCount);
+  if (attrs == NULL)
+    CNK_RETURN(CK_FALSE, "Failed to allocate memory for attributes");
+
+  for (CK_ULONG i = 0; i < ulCount; i++) {
+    attrs[i].type = pTemplate[i].type;
+    attrs[i].ulValueLen = pTemplate[i].ulValueLen;
+    attrs[i].pValue = ck_malloc(pTemplate[i].ulValueLen);
+    if (attrs[i].pValue == NULL) {
+      for (CK_ULONG j = 0; j < i; j++) {
+        ck_free(attrs[j].pValue);
+      }
+      ck_free(attrs);
+      CNK_RETURN(CK_FALSE, "Failed to allocate memory for attribute values");
+    }
+  }
+
+  // Get attribute values and compare
+  CK_BBOOL matched = CK_FALSE;
+
+  CK_RV rv = C_GetAttributeValue(hSession, hObject, attrs, ulCount);
+  if (rv != CKR_OK) {
+    for (CK_ULONG i = 0; i < ulCount; i++) {
+      ck_free(attrs[i].pValue);
+    }
+    ck_free(attrs);
+    CNK_RETURN(CK_FALSE, "Failed to get attribute values");
+  }
+
+  // Compare attribute values
+  for (CK_ULONG i = 0; i < ulCount; i++) {
+    if (attrs[i].ulValueLen != pTemplate[i].ulValueLen) {
+      matched = CK_FALSE;
+      break;
+    }
+    if (memcmp(attrs[i].pValue, pTemplate[i].pValue, attrs[i].ulValueLen) != 0) {
+      matched = CK_FALSE;
+      break;
+    }
+    matched = CK_TRUE;
+  }
+
+  // free memory
+  for (CK_ULONG i = 0; i < ulCount; i++) {
+    ck_free(attrs[i].pValue);
+  }
+  ck_free(attrs);
+
+  CNK_RETURN(matched, "Template matching finished");
 }
