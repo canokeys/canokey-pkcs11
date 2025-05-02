@@ -1028,9 +1028,9 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorith
   CK_BYTE sw1 = response[response_len - 2];
   CK_BYTE sw2 = response[response_len - 1];
   if (sw1 != 0x90 || sw2 != 0x00) {
-    CNK_ERROR("GENERAL AUTHENTICATE returned error status: %02X%02X", sw1, sw2);
+    CNK_ERROR("GET METADATA returned error status: %02X%02X", sw1, sw2);
     cnk_disconnect_card(hCard);
-    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to sign");
+    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to get metadata");
   }
 
   // Process the complete response data

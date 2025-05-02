@@ -109,7 +109,7 @@ static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m,
     CNK_ENSURE_OK(validateRsaPssParams(m));
 
   // Get modulus
-  session->active_key_modulus_len = 0;
+  session->cbActiveKeyModulus = 0;
 
   CK_ULONG vpos = 0;
   while (vpos < cbPublicKey) {
@@ -125,17 +125,17 @@ static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m,
 
     // RSA modulus lives in tag 0x81
     if (itag == 0x81) {
-      memcpy(session->active_key_modulus, abPublicKey + vpos, ilen);
-      session->active_key_modulus_len = ilen;
+      memcpy(session->abActiveKeyModulus, abPublicKey + vpos, ilen);
+      session->cbActiveKeyModulus = ilen;
       break;
     }
 
     vpos += ilen;
   }
 
-  CNK_DEBUG("Modulus length: %lu", session->active_key_modulus_len);
+  CNK_DEBUG("Modulus length: %lu", session->cbActiveKeyModulus);
 
-  if (session->active_key_modulus_len == 0)
+  if (session->cbActiveKeyModulus == 0)
     CNK_RETURN(CKR_DEVICE_ERROR, "Modulus not found in public key");
 
   return CKR_OK;
@@ -148,29 +148,32 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
 
   // Find the session, validate the key object, and map object ID to PIV tag
   CNK_PKCS11_SESSION *session;
-  CK_BYTE obj_id;
-  CK_BYTE piv_tag;
+  CK_BYTE objId;
+  CK_BYTE pivTag;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_ENSURE_OK(cnk_validate_object(hKey, session, CKO_PRIVATE_KEY, &obj_id));
-  CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(obj_id, &piv_tag));
+  CNK_ENSURE_OK(cnk_validate_object(hKey, session, CKO_PRIVATE_KEY, &objId));
+  CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &pivTag));
 
   // Get metadata
   CK_BYTE algorithmType;
   CK_BYTE abPublicKey[512];
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
-  CNK_ENSURE_OK(cnk_get_metadata(session->slot_id, piv_tag, &algorithmType, abPublicKey, &cbPublicKey));
+  CNK_ENSURE_OK(cnk_get_metadata(session->slot_id, pivTag, &algorithmType, abPublicKey, &cbPublicKey));
 
   if (isMechRSA(pMechanism->mechanism))
     CNK_ENSURE_OK(validateRsaMech(session, pMechanism, algorithmType, abPublicKey, cbPublicKey));
   else if (!isMechEC(pMechanism->mechanism))
     CNK_RETURN(CKR_MECHANISM_INVALID, "Invalid mechanism");
 
-  // Store the key handle, mechanism, and validated info in the session for C_Sign
-  session->active_key = hKey;
-  session->active_mechanism_ptr = pMechanism;
-  session->active_key_piv_tag = piv_tag;
+  // Store active key and mechanism in the session
+  session->hActiveKey = hKey;
+  session->bActiveKeyPivTag = pivTag;
+  session->activeMechanism.mechanism = pMechanism->mechanism;
+  session->activeMechanism.pParameter = ck_malloc(pMechanism->ulParameterLen);
+  session->activeMechanism.ulParameterLen = pMechanism->ulParameterLen;
+  memcpy(session->activeMechanism.pParameter, pMechanism->pParameter, pMechanism->ulParameterLen);
 
-  CNK_DEBUG("Setting active_mechanism to %lu, PIV tag %u, algorithm type %u", pMechanism->mechanism, piv_tag,
+  CNK_DEBUG("Setting active mechanism to %lu, PIV tag %u, algorithm type %u", pMechanism->mechanism, pivTag,
             algorithmType);
 
   CNK_RET_OK;
@@ -193,22 +196,18 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   CK_RV rv = CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   // Verify that we have an active key and mechanism
-  if (session->active_key == 0)
+  if (session->hActiveKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called - no active key");
 
-  if (session->active_mechanism_ptr == NULL)
-    CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called - no active mechanism");
-
   // All key validation was already done in C_SignInit, so we use the cached values
-  CK_BYTE piv_tag = session->active_key_piv_tag;
-  CK_MECHANISM_PTR mechanism_ptr = session->active_mechanism_ptr;
+  CK_BYTE piv_tag = session->bActiveKeyPivTag;
 
   CNK_DEBUG("Signing with active key, PIV tag 0x%x", piv_tag);
 
   // For signature-only call to get the signature length
   if (pSignature == NULL) {
-    if (isMechRSA(session->active_mechanism_ptr->mechanism)) {
-      *pulSignatureLen = session->active_key_modulus_len;
+    if (isMechRSA(session->activeMechanism.mechanism)) {
+      *pulSignatureLen = session->cbActiveKeyModulus;
     } else
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "unsupported key algorithm");
 
@@ -220,13 +219,16 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   CK_BYTE prepared_data[512]; // Max RSA key size (4096 bits = 512 bytes)
   CK_ULONG prepared_data_len = sizeof(prepared_data);
 
-  rv = cnk_prepare_rsa_sign_data(mechanism_ptr, pData, ulDataLen, session->active_key_modulus,
-                                 session->active_key_modulus_len, prepared_data, &prepared_data_len);
+  rv = cnk_prepare_rsa_sign_data(&session->activeMechanism, pData, ulDataLen, session->abActiveKeyModulus,
+                                 session->cbActiveKeyModulus, prepared_data, &prepared_data_len);
   if (rv != CKR_OK) {
     // Reset the session state
-    session->active_mechanism_ptr = NULL;
-    session->active_key = 0;
-    session->active_key_piv_tag = 0;
+    session->hActiveKey = 0;
+    session->bActiveKeyPivTag = 0;
+    session->activeMechanism.mechanism = 0;
+    session->activeMechanism.ulParameterLen = 0;
+    ck_free(session->activeMechanism.pParameter);
+    session->activeMechanism.pParameter = NULL;
     return rv;
   }
 
@@ -234,9 +236,12 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   rv = cnk_piv_sign(session->slot_id, session, piv_tag, prepared_data, prepared_data_len, pSignature, pulSignatureLen);
 
   // Reset the active mechanism and related fields to indicate operation is complete
-  session->active_mechanism_ptr = NULL;
-  session->active_key = 0;
-  session->active_key_piv_tag = 0;
+  session->hActiveKey = 0;
+  session->bActiveKeyPivTag = 0;
+  session->activeMechanism.mechanism = 0;
+  session->activeMechanism.ulParameterLen = 0;
+  ck_free(session->activeMechanism.pParameter);
+  session->activeMechanism.pParameter = NULL;
 
   return rv;
 }

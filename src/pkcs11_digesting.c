@@ -77,13 +77,13 @@ CK_RV C_DigestInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism) {
   if (!md_info)
     CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "invalid md_info");
 
-  mbedtls_md_init(&session->digest_ctx);
-  if (mbedtls_md_setup(&session->digest_ctx, md_info, 0) != 0)
+  mbedtls_md_init(&session->digestContext);
+  if (mbedtls_md_setup(&session->digestContext, md_info, 0) != 0)
     CNK_RETURN(CKR_HOST_MEMORY, "md setup failed");
-  if (mbedtls_md_starts(&session->digest_ctx) != 0)
+  if (mbedtls_md_starts(&session->digestContext) != 0)
     CNK_RETURN(CKR_FUNCTION_FAILED, "md start failed");
-  session->digest_mech = pMechanism->mechanism;
-  session->digest_active = CK_TRUE;
+  session->digestMechanism = pMechanism->mechanism;
+  session->bDigestActive = CK_TRUE;
 
   CNK_RET_OK;
 }
@@ -98,7 +98,7 @@ CK_RV C_Digest(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   if (pDigest == NULL) {
-    size_t length = get_md_size(session->digest_mech);
+    size_t length = get_md_size(session->digestMechanism);
     if (length == 0)
       CNK_RETURN(CKR_MECHANISM_INVALID, "unsupported mechanism");
     *pulDigestLen = length;
@@ -124,10 +124,10 @@ CK_RV C_DigestUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart, CK_ULONG ulP
   CNK_PKCS11_SESSION *session;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
-  if (!session->digest_active)
+  if (!session->bDigestActive)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_DigestInit not called");
 
-  if (mbedtls_md_update(&session->digest_ctx, pPart, ulPartLen) != 0)
+  if (mbedtls_md_update(&session->digestContext, pPart, ulPartLen) != 0)
     CNK_RETURN(CKR_FUNCTION_FAILED, "md update failed");
 
   CNK_RET_OK;
@@ -145,10 +145,10 @@ CK_RV C_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest, CK_ULONG_PT
   CNK_PKCS11_SESSION *session;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
-  if (!session->digest_active)
+  if (!session->bDigestActive)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_DigestInit not called");
 
-  size_t hash_len = get_md_size(session->digest_mech);
+  size_t hash_len = get_md_size(session->digestMechanism);
   if (pDigest == NULL) {
     *pulDigestLen = hash_len;
     CNK_RET_OK;
@@ -157,11 +157,11 @@ CK_RV C_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest, CK_ULONG_PT
     *pulDigestLen = hash_len;
     CNK_RETURN(CKR_BUFFER_TOO_SMALL, "buffer too small");
   }
-  if (mbedtls_md_finish(&session->digest_ctx, pDigest) != 0)
+  if (mbedtls_md_finish(&session->digestContext, pDigest) != 0)
     CNK_RETURN(CKR_FUNCTION_FAILED, "md finish failed");
   *pulDigestLen = hash_len;
-  mbedtls_md_free(&session->digest_ctx);
-  session->digest_active = CK_FALSE;
+  mbedtls_md_free(&session->digestContext);
+  session->bDigestActive = CK_FALSE;
 
   CNK_RET_OK;
 }
