@@ -36,15 +36,15 @@ static CK_BBOOL mechInList(CK_MECHANISM_TYPE m, const CK_MECHANISM_TYPE *list, C
 }
 
 static inline CK_BBOOL isMechRSA(CK_MECHANISM_TYPE m) {
-  return mechInList(m, rsaMechs, sizeof(rsaMechs) / sizeof(rsaMechs[0]));
+  return mechInList(m, rsaMechs, sizeof(rsaMechs) / sizeof(CK_MECHANISM_TYPE));
 }
 
 static inline CK_BBOOL isMechRsaPss(CK_MECHANISM_TYPE m) {
-  return mechInList(m, rsaPssMechs, sizeof(rsaPssMechs) / sizeof(rsaPssMechs[0]));
+  return mechInList(m, rsaPssMechs, sizeof(rsaPssMechs) / sizeof(CK_MECHANISM_TYPE));
 }
 
 static inline CK_BBOOL isMechEC(CK_MECHANISM_TYPE m) {
-  return mechInList(m, ecMechs, sizeof(ecMechs) / sizeof(ecMechs[0]));
+  return mechInList(m, ecMechs, sizeof(ecMechs) / sizeof(CK_MECHANISM_TYPE));
 }
 
 static CK_RV validateRsaPssParams(const CK_MECHANISM *m) {
@@ -108,9 +108,9 @@ static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m,
   if (isMechRsaPss(m->mechanism))
     CNK_ENSURE_OK(validateRsaPssParams(m));
 
-  // Get modulus
-  session->cbActiveKeyModulus = 0;
+  session->signingContext.cbSignature = 0;
 
+  // Get modulus
   CK_ULONG vpos = 0;
   while (vpos < cbPublicKey) {
     CK_BYTE itag = abPublicKey[vpos++];
@@ -125,20 +125,32 @@ static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m,
 
     // RSA modulus lives in tag 0x81
     if (itag == 0x81) {
-      memcpy(session->abActiveKeyModulus, abPublicKey + vpos, ilen);
-      session->cbActiveKeyModulus = ilen;
+      memcpy(session->signingContext.abModulus, abPublicKey + vpos, ilen);
+      session->signingContext.cbSignature = ilen;
       break;
     }
 
     vpos += ilen;
   }
 
-  CNK_DEBUG("Modulus length: %lu", session->cbActiveKeyModulus);
+  CNK_DEBUG("Modulus and signature length: %lu", session->signingContext.cbSignature);
 
-  if (session->cbActiveKeyModulus == 0)
+  if (session->signingContext.cbSignature == 0)
     CNK_RETURN(CKR_DEVICE_ERROR, "Modulus not found in public key");
 
   return CKR_OK;
+}
+
+CK_ULONG getEcSignatureLength(CK_BYTE algorithmType) {
+  switch (algorithmType) {
+  case PIV_ALG_ECC_256:
+  case PIV_ALG_SECP256K1:
+    return 64;
+  case PIV_ALG_ECC_384:
+    return 96;
+  default:
+    return 0;
+  }
 }
 
 CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {
@@ -160,21 +172,21 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slot_id, pivTag, &algorithmType, abPublicKey, &cbPublicKey));
 
-  if (isMechRSA(pMechanism->mechanism))
+  if (isMechRSA(pMechanism->mechanism)) {
     CNK_ENSURE_OK(validateRsaMech(session, pMechanism, algorithmType, abPublicKey, cbPublicKey));
-  else if (!isMechEC(pMechanism->mechanism))
+  } else if (isMechEC(pMechanism->mechanism)) {
+    session->signingContext.cbSignature = getEcSignatureLength(algorithmType);
+  } else {
     CNK_RETURN(CKR_MECHANISM_INVALID, "Invalid mechanism");
+  }
 
   // Store active key and mechanism in the session
-  session->hActiveKey = hKey;
-  session->bActiveKeyPivTag = pivTag;
-  session->activeMechanism.mechanism = pMechanism->mechanism;
-  session->activeMechanism.pParameter = ck_malloc(pMechanism->ulParameterLen);
-  session->activeMechanism.ulParameterLen = pMechanism->ulParameterLen;
-  memcpy(session->activeMechanism.pParameter, pMechanism->pParameter, pMechanism->ulParameterLen);
-
-  CNK_DEBUG("Setting active mechanism to %lu, PIV tag %u, algorithm type %u", pMechanism->mechanism, pivTag,
-            algorithmType);
+  session->signingContext.hKey = hKey;
+  session->signingContext.pivSlot = pivTag;
+  session->signingContext.mechanism.mechanism = pMechanism->mechanism;
+  session->signingContext.mechanism.pParameter = ck_malloc(pMechanism->ulParameterLen);
+  session->signingContext.mechanism.ulParameterLen = pMechanism->ulParameterLen;
+  memcpy(session->signingContext.mechanism.pParameter, pMechanism->pParameter, pMechanism->ulParameterLen);
 
   CNK_RET_OK;
 }
@@ -196,52 +208,46 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   CK_RV rv = CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   // Verify that we have an active key and mechanism
-  if (session->hActiveKey == 0)
+  if (session->signingContext.hKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called - no active key");
 
   // All key validation was already done in C_SignInit, so we use the cached values
-  CK_BYTE piv_tag = session->bActiveKeyPivTag;
-
-  CNK_DEBUG("Signing with active key, PIV tag 0x%x", piv_tag);
+  CK_BYTE pivSlot = session->signingContext.pivSlot;
+  CNK_DEBUG("Signing with active key, PIV slot 0x%x", pivSlot);
 
   // For signature-only call to get the signature length
   if (pSignature == NULL) {
-    if (isMechRSA(session->activeMechanism.mechanism)) {
-      *pulSignatureLen = session->cbActiveKeyModulus;
-    } else
-      CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "unsupported key algorithm");
-
-    // We don't need to reset the session state here since we're just querying the length
+    *pulSignatureLen = session->signingContext.cbSignature;
     CNK_RET_OK;
   }
 
   // Prepare data for RSA signing (add padding, etc.)
   CK_BYTE prepared_data[512]; // Max RSA key size (4096 bits = 512 bytes)
   CK_ULONG prepared_data_len = sizeof(prepared_data);
-
-  rv = cnk_prepare_rsa_sign_data(&session->activeMechanism, pData, ulDataLen, session->abActiveKeyModulus,
-                                 session->cbActiveKeyModulus, prepared_data, &prepared_data_len);
+  rv =
+      cnk_prepare_rsa_sign_data(&session->signingContext.mechanism, pData, ulDataLen, session->signingContext.abModulus,
+                                session->signingContext.cbSignature, prepared_data, &prepared_data_len);
   if (rv != CKR_OK) {
     // Reset the session state
-    session->hActiveKey = 0;
-    session->bActiveKeyPivTag = 0;
-    session->activeMechanism.mechanism = 0;
-    session->activeMechanism.ulParameterLen = 0;
-    ck_free(session->activeMechanism.pParameter);
-    session->activeMechanism.pParameter = NULL;
+    session->signingContext.hKey = 0;
+    session->signingContext.pivSlot = 0;
+    session->signingContext.mechanism.mechanism = 0;
+    session->signingContext.mechanism.ulParameterLen = 0;
+    ck_free(session->signingContext.mechanism.pParameter);
+    session->signingContext.mechanism.pParameter = NULL;
     return rv;
   }
 
   // Now pass the prepared data to the PIV sign function
-  rv = cnk_piv_sign(session->slot_id, session, piv_tag, prepared_data, prepared_data_len, pSignature, pulSignatureLen);
+  rv = cnk_piv_sign(session->slot_id, session, pivSlot, prepared_data, prepared_data_len, pSignature, pulSignatureLen);
 
   // Reset the active mechanism and related fields to indicate operation is complete
-  session->hActiveKey = 0;
-  session->bActiveKeyPivTag = 0;
-  session->activeMechanism.mechanism = 0;
-  session->activeMechanism.ulParameterLen = 0;
-  ck_free(session->activeMechanism.pParameter);
-  session->activeMechanism.pParameter = NULL;
+  session->signingContext.hKey = 0;
+  session->signingContext.pivSlot = 0;
+  session->signingContext.mechanism.mechanism = 0;
+  session->signingContext.mechanism.ulParameterLen = 0;
+  ck_free(session->signingContext.mechanism.pParameter);
+  session->signingContext.mechanism.pParameter = NULL;
 
   return rv;
 }

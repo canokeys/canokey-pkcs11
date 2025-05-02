@@ -18,6 +18,19 @@ typedef enum {
 // Maximum number of objects that can be found
 #define MAX_FIND_OBJECTS 6
 
+typedef struct {
+  CK_OBJECT_HANDLE hKey;
+  CK_MECHANISM mechanism;
+  CK_BYTE pivSlot;
+  CK_BYTE abModulus[512];
+  CK_ULONG cbSignature;
+} CNK_PKCS11_SIGNING_CONTEXT;
+
+typedef struct {
+  CK_MECHANISM_TYPE mechanismType;
+  mbedtls_md_context_t context;
+} CNK_PKCS11_DIGESTING_CONTEXT;
+
 // Session structure
 typedef struct CNK_PKCS11_SESSION {
   CK_SESSION_HANDLE handle; // Session handle
@@ -42,14 +55,10 @@ typedef struct CNK_PKCS11_SESSION {
   CK_BBOOL find_class_specified;                   // Whether class was specified in the search template
 
   // Cryptographic operation fields
-  CK_OBJECT_HANDLE hActiveKey;        // Active key for crypto operations
-  CK_MECHANISM activeMechanism;       // Active mechanism structure
-  CK_BYTE bActiveKeyPivTag;           // PIV tag of the active key
-  CK_BYTE abActiveKeyModulus[512];    // Cached modulus for RSA operations (max 4096 bits)
-  CK_ULONG cbActiveKeyModulus;        // Length of the cached modulus
-  mbedtls_md_context_t digestContext; // Context for digest operations
-  CK_MECHANISM_TYPE digestMechanism;  // Active digest mechanism
-  CK_BBOOL bDigestActive;             // Whether a digest operation is active
+  union {
+    CNK_PKCS11_SIGNING_CONTEXT signingContext;
+    CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
+  };
 } CNK_PKCS11_SESSION;
 
 // Initialize the session manager
