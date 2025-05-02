@@ -115,8 +115,8 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR data, CK_ULON
 
 // Get metadata for a PIV key or object
 // This function retrieves metadata from a PIV key or object using the PIV metadata APDU command
-CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm_type, CK_BYTE_PTR modulus_ptr,
-                       CK_ULONG_PTR modulus_len_ptr);
+CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType, CK_BYTE_PTR pbPublicKey,
+                       CK_ULONG_PTR pulPublicKeyLen);
 
 // Sign data using PIV key
 // This function signs data using the PIV GENERAL AUTHENTICATE command

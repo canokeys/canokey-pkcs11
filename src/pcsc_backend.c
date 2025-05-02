@@ -980,15 +980,15 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   return CKR_OK;
 }
 
-CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm_type, CK_BYTE_PTR pPublicKey,
-                       CK_ULONG_PTR pPublicKeyLen) {
+CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType, CK_BYTE_PTR pbPublicKey,
+                       CK_ULONG_PTR pulPublicKeyLen) {
   SCARDHANDLE hCard;
 
-  CNK_ENSURE_NONNULL(algorithm_type);
+  CNK_ENSURE_NONNULL(pbAlgorithmType);
 
   // If modulus is requested, ensure the length pointer is provided
-  if (pPublicKey != NULL && pPublicKeyLen == NULL)
-    CNK_RETURN(CKR_ARGUMENTS_BAD, "pPublicKeyLen is NULL when pPublicKey is provided");
+  if (pbPublicKey != NULL && pulPublicKeyLen == NULL)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "pulPublicKeyLen is NULL when pbPublicKey is provided");
 
   // Connect to the card for this operation
   CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotID, &hCard));
@@ -1002,14 +1002,14 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
 
   // Prepare the APDU for getting metadata
   // Command: 00 F7 00 XX 00 where XX is the PIV tag
-  CK_BYTE metadata_apdu[] = {0x00, 0xF7, 0x00, piv_tag, 0x00};
+  CK_BYTE metadata_apdu[] = {0x00, 0xF7, 0x00, pivTag, 0x00};
 
   // Buffer to hold the complete response (up to 1024 bytes)
   CK_BYTE response[1024];
   DWORD response_len = sizeof(response);
 
   // Send the metadata command
-  CNK_DEBUG("Sending metadata command for PIV tag 0x%02X", piv_tag);
+  CNK_DEBUG("Sending metadata command for PIV tag 0x%02X", pivTag);
   LONG pcsc_rv = cnk_transceive_apdu(hCard, metadata_apdu, sizeof(metadata_apdu), response, &response_len, CK_TRUE);
   if (pcsc_rv != SCARD_S_SUCCESS) {
     CNK_ERROR("Failed to send metadata command: %ld", pcsc_rv);
@@ -1079,8 +1079,8 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
     switch (tag) {
     case 0x01: // Algorithm type
       if (length == 1) {
-        *algorithm_type = data[pos];
-        CNK_DEBUG("Algorithm type: 0x%02X", *algorithm_type);
+        *pbAlgorithmType = data[pos];
+        CNK_DEBUG("Algorithm type: 0x%02X", *pbAlgorithmType);
       }
       break;
 
@@ -1101,8 +1101,8 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
     case 0x04: // Public key encoding
       if (length > 0) {
         CNK_DEBUG("Public key data present, length: %lu bytes", length);
-        memcpy(pPublicKey, data + pos, length);
-        *pPublicKeyLen = length;
+        memcpy(pbPublicKey, data + pos, length);
+        *pulPublicKeyLen = length;
       }
       break;
 
