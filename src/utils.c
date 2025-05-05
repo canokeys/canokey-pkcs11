@@ -2,6 +2,8 @@
 #define _GNU_SOURCE
 #include <string.h>
 #endif
+#include <ctype.h>
+#include <stdlib.h>
 #include <stdint.h>
 
 #include "utils.h"
