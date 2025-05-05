@@ -602,14 +602,14 @@ static CK_RV cnk_verify_rsa_signature(CK_BYTE_PTR modulus, CK_ULONG modulus_len,
     if (md_type == MBEDTLS_MD_NONE) {
       // For raw RSA (no hash algorithm), use basic public key operation
       unsigned char decrypted[512]; // Large enough for any RSA key
-      
+
       // Perform the raw RSA public operation
       ret = mbedtls_rsa_public(&rsa, signature, decrypted);
       if (ret != 0) {
         printf("      RSA public operation failed: -0x%04x\n", (unsigned int)-ret);
         goto cleanup;
       }
-      
+
       // Verify the decryption matches the original data with PKCS#1 v1.5 padding
       // This is simplified - in a real implementation, we'd parse the PKCS#1 v1.5 padding
       printf("      Raw RSA public operation successful\n");
@@ -631,20 +631,97 @@ static CK_RV cnk_verify_rsa_signature(CK_BYTE_PTR modulus, CK_ULONG modulus_len,
       // For hashed algorithms, we still need to use the basic RSA operation
       // and then verify the PKCS#1 v1.5 padding structure manually
       unsigned char decrypted[512]; // Large enough for any RSA key
-      
+
       // Perform the RSA public operation
       ret = mbedtls_rsa_public(&rsa, signature, decrypted);
       if (ret != 0) {
         printf("      RSA public operation failed: -0x%04x\n", (unsigned int)-ret);
         goto cleanup;
       }
-      
-      // In a proper implementation, we would now verify:
-      // 1. The PKCS#1 v1.5 padding structure in decrypted data
-      // 2. The DER encoding of the hash algorithm
-      // 3. Compare the hash value in the signature with our computed hash
-      printf("      PKCS#1 v1.5 signature verification successful (simplified)\n");
-      // In production, add proper padding and DER encoding validation here
+
+      // Properly verify the PKCS#1 v1.5 signature
+      size_t hash_len = mbedtls_md_get_size(md_info);
+
+      // Get the key length in bytes
+      size_t key_len = mbedtls_rsa_get_len(&rsa);
+
+      // The decrypted signature should have format: 0x00 0x01 PS 0x00 T
+      // where PS is padding bytes (0xFF) and T is ASN.1 DER encoding of algorithm + hash
+
+      // 1. Check minimum decrypted length
+      if (key_len < hash_len + 11) {
+        printf("      Invalid signature length\n");
+        goto cleanup;
+      }
+
+      // 2. Check PKCS#1 v1.5 padding structure
+      if (decrypted[0] != 0x00 || decrypted[1] != 0x01) {
+        printf("      Invalid PKCS#1 v1.5 padding marker\n");
+        goto cleanup;
+      }
+
+      // 3. Find the 0x00 separator after padding
+      size_t idx = 2;
+      while (idx < key_len && decrypted[idx] == 0xFF) {
+        idx++;
+      }
+
+      // 4. Make sure we found the separator and have proper min padding length
+      if (idx < 10 || idx >= key_len || decrypted[idx] != 0x00) {
+        printf("      Invalid PKCS#1 v1.5 padding structure\n");
+        goto cleanup;
+      }
+      idx++;
+
+      // 5. Verify DER encoding prefix for the hash algorithm
+      const unsigned char *der_prefix = NULL;
+      size_t der_prefix_len = 0;
+
+      // Select the correct DER prefix for the hash algorithm
+      switch (md_type) {
+      case MBEDTLS_MD_SHA1:
+        der_prefix = (const unsigned char *)"\x30\x21\x30\x09\x06\x05\x2b\x0e\x03\x02\x1a\x05\x00\x04\x14";
+        der_prefix_len = 15;
+        break;
+      case MBEDTLS_MD_SHA224:
+        der_prefix =
+            (const unsigned char *)"\x30\x2d\x30\x0d\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x04\x05\x00\x04\x1c";
+        der_prefix_len = 19;
+        break;
+      case MBEDTLS_MD_SHA256:
+        der_prefix =
+            (const unsigned char *)"\x30\x31\x30\x0d\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x01\x05\x00\x04\x20";
+        der_prefix_len = 19;
+        break;
+      case MBEDTLS_MD_SHA384:
+        der_prefix =
+            (const unsigned char *)"\x30\x41\x30\x0d\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x02\x05\x00\x04\x30";
+        der_prefix_len = 19;
+        break;
+      case MBEDTLS_MD_SHA512:
+        der_prefix =
+            (const unsigned char *)"\x30\x51\x30\x0d\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x03\x05\x00\x04\x40";
+        der_prefix_len = 19;
+        break;
+      default:
+        printf("      Unsupported hash algorithm for PKCS#1 v1.5 DER encoding\n");
+        goto cleanup;
+      }
+
+      // 6. Check that DER prefix is present
+      if (idx + der_prefix_len + hash_len > key_len || memcmp(&decrypted[idx], der_prefix, der_prefix_len) != 0) {
+        printf("      Invalid DER encoding for hash algorithm\n");
+        goto cleanup;
+      }
+
+      // 7. Finally, compare the embedded hash value with our computed hash
+      idx += der_prefix_len;
+      if (memcmp(&decrypted[idx], hash, hash_len) != 0) {
+        printf("      Hash value mismatch in signature\n");
+        goto cleanup;
+      }
+
+      printf("      PKCS#1 v1.5 signature verification successful\n");
     }
   } else if (padding_mode == MBEDTLS_RSA_PKCS_V21) {
     // PSS padding requires a hash function
@@ -678,11 +755,26 @@ static CK_RV cnk_verify_rsa_signature(CK_BYTE_PTR modulus, CK_ULONG modulus_len,
       goto cleanup;
     }
 
-    // 2. For PSS verification, we should validate the PSS padding,
-    // but this is complex and depends on the exact mbedtls version
-    // As a simpler test, we'll report that we did the PSS operation
-    printf("      PSS signature decryption successful (complete verification requires PSS padding check)\n");
-    // In a production system, you would verify the PSS padding here
+    // 2. Use mbedtls built-in PSS verification function
+    size_t hash_len = mbedtls_md_get_size(md_info);
+
+    // Set RSA padding again explicitly for the verification
+    mbedtls_rsa_set_padding(&rsa, MBEDTLS_RSA_PKCS_V21, md_type);
+
+// Use mbedtls built-in PSS verification functions directly
+#if MBEDTLS_VERSION_NUMBER >= 0x03000000 // mbedTLS 3.0 and above
+    ret = mbedtls_rsa_rsassa_pss_verify(&rsa, md_type, (unsigned int)hash_len, hash, signature);
+#else
+    ret = mbedtls_rsa_rsassa_pss_verify(&rsa, NULL, NULL, MBEDTLS_RSA_PUBLIC, md_type, (unsigned int)hash_len, hash,
+                                        signature);
+#endif
+
+    if (ret != 0) {
+      printf("      PSS signature verification failed: -0x%04x\n", (unsigned int)-ret);
+      goto cleanup;
+    }
+
+    printf("      PSS signature verification successful\n");
   } else {
     printf("      Unsupported padding mode!\n");
     goto cleanup;

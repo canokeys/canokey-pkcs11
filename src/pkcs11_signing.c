@@ -243,6 +243,68 @@ CK_RV initDigestingContext(CNK_PKCS11_SESSION *session, CK_MECHANISM_TYPE mechan
   CNK_RET_OK;
 }
 
+/**
+ * @brief Reset signing context after operation completion
+ * @param session Active PKCS11 session
+ */
+static void resetSigningContext(CNK_PKCS11_SESSION *session) {
+  session->signingContext.hKey = 0;
+  session->signingContext.pivSlot = 0;
+  session->signingContext.mechanism.mechanism = 0;
+  session->signingContext.mechanism.ulParameterLen = 0;
+  ck_free(session->signingContext.mechanism.pParameter);
+  session->signingContext.mechanism.pParameter = NULL;
+}
+
+/**
+ * @brief Prepare data and execute PIV sign operation
+ * @param session Active PKCS11 session
+ * @param inputData The data to sign (plaintext or digest)
+ * @param inputDataLen Length of data to sign
+ * @param pSignature Buffer to receive signature
+ * @param pulSignatureLen Pointer to receive signature length
+ * @param pbData Pointer to store allocated data buffer
+ * @return CK_RV
+ */
+static CK_RV prepareAndSign(CNK_PKCS11_SESSION *session, CK_BYTE_PTR inputData, CK_ULONG inputDataLen,
+                            CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen, CK_BYTE_PTR *pbData) {
+  CK_RV rv = CKR_OK;
+  CK_BYTE pivSlot = session->signingContext.pivSlot;
+
+  CNK_DEBUG("Signing with active key, PIV slot 0x%x", pivSlot);
+
+  if (isMechRSA(session->signingContext.mechanism.mechanism)) {
+    *pbData = ck_malloc(session->signingContext.cbSignature);
+    if (isMechRsaPkcsV15(session->signingContext.mechanism.mechanism)) {
+      pkcs1_v1_5_pad(inputData, inputDataLen, *pbData, session->signingContext.cbSignature,
+                     session->digestingContext.type);
+    } else if (isMechRsaPss(session->signingContext.mechanism.mechanism)) {
+      const CK_RSA_PKCS_PSS_PARAMS *pss_params = (CK_RSA_PKCS_PSS_PARAMS *)session->signingContext.mechanism.pParameter;
+      CK_ULONG cbModulus = session->signingContext.cbSignature;
+      CK_ULONG cbSalt = pss_params->sLen;
+      pss_encode(inputData, inputDataLen, session->signingContext.abModulus, cbModulus, cbSalt,
+                 session->digestingContext.type, *pbData);
+    } else {
+      CNK_ERROR("Unexpected code path");
+      return CKR_FUNCTION_FAILED;
+    }
+  } else if (isMechEC(session->signingContext.mechanism.mechanism)) {
+    // Empty implementation for EC mechanism
+  } else {
+    CNK_ERROR("Unexpected code path");
+    return CKR_FUNCTION_FAILED;
+  }
+
+  // Sign the data
+  rv = cnk_piv_sign(session->slot_id, session, pivSlot, *pbData, session->signingContext.cbSignature, pSignature,
+                    pulSignatureLen);
+  if (rv != CKR_OK) {
+    CNK_ERROR("Failed to sign data: ret = %lu", rv);
+  }
+
+  return rv;
+}
+
 CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {
   CNK_LOG_FUNC(": hSession: %lu, pMechanism: %p, hKey: %lu", hSession, pMechanism, hKey);
 
@@ -320,48 +382,14 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   }
 
   // Otherwise, we compute the signature directly
-  CK_BYTE pivSlot = session->signingContext.pivSlot;
-  CNK_DEBUG("Signing with active key, PIV slot 0x%x", pivSlot);
-
-  if (isMechRSA(session->signingContext.mechanism.mechanism)) {
-    pbData = ck_malloc(session->signingContext.cbSignature);
-    if (isMechRsaPkcsV15(session->signingContext.mechanism.mechanism)) {
-      pkcs1_v1_5_pad(pbData, ulDataLen, pbData, session->signingContext.cbSignature, session->digestingContext.type);
-    } else if (isMechRsaPss(session->signingContext.mechanism.mechanism)) {
-      const CK_RSA_PKCS_PSS_PARAMS *pss_params = (CK_RSA_PKCS_PSS_PARAMS *)session->signingContext.mechanism.pParameter;
-      CK_ULONG cbModulus = session->signingContext.cbSignature;
-      CK_ULONG cbSalt = pss_params->sLen;
-      pss_encode(pbData, ulDataLen, session->signingContext.abModulus, cbModulus, cbSalt,
-                 session->digestingContext.type, pbData);
-    } else {
-      CNK_ERROR("Unexpected code path");
-      rv = CKR_FUNCTION_FAILED;
-      goto cleanup;
-    }
-  } else if (isMechEC(session->signingContext.mechanism.mechanism)) {
-
-  } else {
-    CNK_ERROR("Unexpected code path");
-    rv = CKR_FUNCTION_FAILED;
-    goto cleanup;
-  }
-
-  // Sign the data
-  rv = cnk_piv_sign(session->slot_id, session, pivSlot, pbData, session->signingContext.cbSignature, pSignature,
-                    pulSignatureLen);
+  rv = prepareAndSign(session, pData, ulDataLen, pSignature, pulSignatureLen, &pbData);
   if (rv != CKR_OK) {
-    CNK_ERROR("Failed to sign data: ret = %lu", rv);
     goto cleanup;
   }
 
 cleanup:
   // Reset the context
-  session->signingContext.hKey = 0;
-  session->signingContext.pivSlot = 0;
-  session->signingContext.mechanism.mechanism = 0;
-  session->signingContext.mechanism.ulParameterLen = 0;
-  ck_free(session->signingContext.mechanism.pParameter);
-  session->signingContext.mechanism.pParameter = NULL;
+  resetSigningContext(session);
 
   return rv;
 }
@@ -382,7 +410,13 @@ CK_RV C_SignUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart, CK_ULONG ulPar
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called");
 
   if (mbedtls_md_update(&session->digestingContext.context, pPart, ulPartLen) != 0) {
-    // TODO: cleanup
+    // Reset signing context
+    resetSigningContext(session);
+
+    // Reset digesting context
+    mbedtls_md_free(&session->digestingContext.context);
+    session->digestingContext.type = MBEDTLS_MD_NONE;
+
     CNK_RETURN(CKR_FUNCTION_FAILED, "md update failed");
   }
 
@@ -432,54 +466,20 @@ CK_RV C_SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG_P
   }
 
   // Compute signature
-  CK_BYTE pivSlot = session->signingContext.pivSlot;
-  CNK_DEBUG("Signing with active key, PIV slot 0x%x", pivSlot);
-
-  if (isMechRSA(session->signingContext.mechanism.mechanism)) {
-    pbData = ck_malloc(session->signingContext.cbSignature);
-    if (isMechRsaPkcsV15(session->signingContext.mechanism.mechanism)) {
-      pkcs1_v1_5_pad(pMD, cbMD, pbData, session->signingContext.cbSignature, session->digestingContext.type);
-    } else if (isMechRsaPss(session->signingContext.mechanism.mechanism)) {
-      const CK_RSA_PKCS_PSS_PARAMS *pss_params = (CK_RSA_PKCS_PSS_PARAMS *)session->signingContext.mechanism.pParameter;
-      CK_ULONG cbModulus = session->signingContext.cbSignature;
-      CK_ULONG cbSalt = pss_params->sLen;
-      pss_encode(pMD, cbMD, session->signingContext.abModulus, cbModulus, cbSalt, session->digestingContext.type,
-                 pbData);
-    } else {
-      CNK_ERROR("Unexpected code path");
-      rv = CKR_FUNCTION_FAILED;
-      goto cleanup;
-    }
-  } else if (isMechEC(session->signingContext.mechanism.mechanism)) {
-    // TODO
-  } else {
-    CNK_ERROR("Unexpected code path");
-    rv = CKR_FUNCTION_FAILED;
-    goto cleanup;
-  }
-
-  // Sign the data
-  rv = cnk_piv_sign(session->slot_id, session, pivSlot, pbData, session->signingContext.cbSignature, pSignature,
-                    pulSignatureLen);
+  rv = prepareAndSign(session, pMD, cbMD, pSignature, pulSignatureLen, &pbData);
   if (rv != CKR_OK) {
-    CNK_ERROR("Failed to sign data: ret = %lu", rv);
     goto cleanup;
   }
 
 cleanup:
+  // Reset signing context
+  resetSigningContext(session);
+
   // Reset digesting context
   ck_free(pbData);
   ck_free(pMD);
   mbedtls_md_free(&session->digestingContext.context);
   session->digestingContext.type = MBEDTLS_MD_NONE;
-
-  // Reset signing context
-  session->signingContext.hKey = 0;
-  session->signingContext.pivSlot = 0;
-  session->signingContext.mechanism.mechanism = 0;
-  session->signingContext.mechanism.ulParameterLen = 0;
-  ck_free(session->signingContext.mechanism.pParameter);
-  session->signingContext.mechanism.pParameter = NULL;
 
   CNK_RETURN(rv, "C_SignFinal finished");
 }
