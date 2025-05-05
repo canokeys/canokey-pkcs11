@@ -312,8 +312,8 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
     pInfo->ulMaxKeySize = 4096;
     break;
 
-  case CKM_ECDSA_KEY_PAIR_GEN | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_NAMEDCURVE:
-    pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR;
+  case CKM_ECDSA_KEY_PAIR_GEN:
+    pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_NAMEDCURVE;
     pInfo->ulMinKeySize = 256;
     pInfo->ulMaxKeySize = 384;
     break;
