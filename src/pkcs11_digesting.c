@@ -12,19 +12,15 @@ static size_t get_md_size(CK_MECHANISM_TYPE mechanism) {
   case CKM_SHA_1:
     return 20;
   case CKM_SHA224:
-    return 28;
-  case CKM_SHA256:
-    return 32;
-  case CKM_SHA384:
-    return 48;
-  case CKM_SHA512:
-    return 64;
   case CKM_SHA3_224:
     return 28;
+  case CKM_SHA256:
   case CKM_SHA3_256:
     return 32;
+  case CKM_SHA384:
   case CKM_SHA3_384:
     return 48;
+  case CKM_SHA512:
   case CKM_SHA3_512:
     return 64;
   default:

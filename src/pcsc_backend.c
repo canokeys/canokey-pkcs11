@@ -5,7 +5,6 @@
 #include "pkcs11_session.h"
 #include "utils.h"
 
-#include <PCSC/wintypes.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
