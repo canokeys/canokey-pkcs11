@@ -134,7 +134,7 @@ static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYT
 
       // Parse L1 (length of the entire structure)
       // We don't actually use l1_len for validation since tlv_get_length_safe already checks buffer bounds
-      tlv_get_length_safe(data + offset, data_len - offset, &fail, &length_size);
+      tlvGetLengthSafe(data + offset, data_len - offset, &fail, &length_size);
       if (fail) {
         CNK_DEBUG("Failed to parse L1 length field");
         rv = CKR_DATA_INVALID;
@@ -151,7 +151,7 @@ static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYT
         // Parse L2 (length of the certificate)
         fail = 0;
         length_size = 0;
-        uint16_t cert_len = tlv_get_length_safe(data + offset, data_len - offset, &fail, &length_size);
+        uint16_t cert_len = tlvGetLengthSafe(data + offset, data_len - offset, &fail, &length_size);
         if (fail) {
           CNK_DEBUG("Failed to parse L2 length field");
           rv = CKR_DATA_INVALID;
@@ -214,7 +214,7 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
     /* ---- read inner length (DER) ------------------------------ */
     CK_LONG fail;
     CK_ULONG lengthSize;
-    CK_ULONG ilen = tlv_get_length_safe(&pbPublicKey[vpos], cbPublicKey - vpos, &fail, &lengthSize);
+    CK_ULONG ilen = tlvGetLengthSafe(&pbPublicKey[vpos], cbPublicKey - vpos, &fail, &lengthSize);
     if (fail)
       CNK_RETURN(CKR_DEVICE_ERROR, "Bad length in public-key TLV");
     vpos += lengthSize;
@@ -317,7 +317,7 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
         break;
       }
       CK_BYTE_PTR pbEcParams = abEcParams + sizeof(abEcParams);
-      cbEcParams = mbedtls_asn1_write_oid(&pbEcParams, abEcParams, oid, MBEDTLS_OID_SIZE(oid));
+      cbEcParams = mbedtls_asn1_write_oid(&pbEcParams, abEcParams, oid, sizeof(oid));
       rv = cnk_set_single_attribute_value(attribute, pbEcParams, cbEcParams);
     } else {
       // Not applicable for non-ECC keys
@@ -381,7 +381,12 @@ static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYT
     break;
   }
 
-    // Add other private key attributes as needed
+  case CKA_DERIVE: {
+    // Only EC private keys can derive
+    CK_BBOOL value = (key_type == CKK_EC) ? CK_TRUE : CK_FALSE;
+    rv = cnk_set_single_attribute_value(attribute, &value, sizeof(value));
+    break;
+  }
 
   default:
     rv = CKR_ATTRIBUTE_TYPE_INVALID;

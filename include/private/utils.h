@@ -113,6 +113,6 @@ char *ck_strcasestr(const char *str, const char *pattern);
  *
  * @return The parsed length value as a uint16_t
  */
-CK_ULONG tlv_get_length_safe(const CK_BYTE *data, const CK_ULONG len, CK_LONG *fail, CK_ULONG_PTR length_size);
+CK_ULONG tlvGetLengthSafe(const CK_BYTE *data, const CK_ULONG len, CK_LONG *fail, CK_ULONG_PTR length_size);
 
 #endif // UTILS_H

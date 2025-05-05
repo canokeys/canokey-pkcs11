@@ -141,7 +141,7 @@ static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m,
       break;
     CK_LONG fail;
     CK_ULONG lengthSize;
-    CK_ULONG ilen = tlv_get_length_safe(&abPublicKey[vpos], cbPublicKey - vpos, &fail, &lengthSize);
+    CK_ULONG ilen = tlvGetLengthSafe(&abPublicKey[vpos], cbPublicKey - vpos, &fail, &lengthSize);
     if (fail)
       CNK_RETURN(CKR_DEVICE_ERROR, "Bad length in public-key TLV");
     vpos += lengthSize;
@@ -250,6 +250,7 @@ CK_RV initDigestingContext(CNK_PKCS11_SESSION *session, CK_MECHANISM_TYPE mechan
 static void resetSigningContext(CNK_PKCS11_SESSION *session) {
   session->signingContext.hKey = 0;
   session->signingContext.pivSlot = 0;
+  session->signingContext.algorithmType = 0;
   session->signingContext.mechanism.mechanism = 0;
   session->signingContext.mechanism.ulParameterLen = 0;
   ck_free(session->signingContext.mechanism.pParameter);
@@ -263,41 +264,48 @@ static void resetSigningContext(CNK_PKCS11_SESSION *session) {
  * @param inputDataLen Length of data to sign
  * @param pSignature Buffer to receive signature
  * @param pulSignatureLen Pointer to receive signature length
- * @param pbData Pointer to store allocated data buffer
+ * @param ppbData Pointer to store allocated data buffer
  * @return CK_RV
  */
-static CK_RV prepareAndSign(CNK_PKCS11_SESSION *session, CK_BYTE_PTR inputData, CK_ULONG inputDataLen,
-                            CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen, CK_BYTE_PTR *pbData) {
+static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData, CK_ULONG cbInputData,
+                            CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen, CK_BYTE_PTR *ppbData) {
   CK_RV rv = CKR_OK;
-  CK_BYTE pivSlot = session->signingContext.pivSlot;
-
+  CK_BYTE pivSlot = pSession->signingContext.pivSlot;
   CNK_DEBUG("Signing with active key, PIV slot 0x%x", pivSlot);
 
-  if (isMechRSA(session->signingContext.mechanism.mechanism)) {
-    *pbData = ck_malloc(session->signingContext.cbSignature);
-    if (isMechRsaPkcsV15(session->signingContext.mechanism.mechanism)) {
-      pkcs1_v1_5_pad(inputData, inputDataLen, *pbData, session->signingContext.cbSignature,
-                     session->digestingContext.type);
-    } else if (isMechRsaPss(session->signingContext.mechanism.mechanism)) {
-      const CK_RSA_PKCS_PSS_PARAMS *pss_params = (CK_RSA_PKCS_PSS_PARAMS *)session->signingContext.mechanism.pParameter;
-      CK_ULONG cbModulus = session->signingContext.cbSignature;
+  CK_ULONG cbData;
+
+  if (isMechRSA(pSession->signingContext.mechanism.mechanism)) {
+    *ppbData = ck_malloc(pSession->signingContext.cbSignature);
+    cbData = pSession->signingContext.cbSignature;
+    if (isMechRsaPkcsV15(pSession->signingContext.mechanism.mechanism)) {
+      pkcs1_v1_5_pad(pInputData, cbInputData, *ppbData, pSession->signingContext.cbSignature,
+                     pSession->digestingContext.type);
+    } else if (isMechRsaPss(pSession->signingContext.mechanism.mechanism)) {
+      const CK_RSA_PKCS_PSS_PARAMS *pss_params =
+          (CK_RSA_PKCS_PSS_PARAMS *)pSession->signingContext.mechanism.pParameter;
+      CK_ULONG cbModulus = pSession->signingContext.cbSignature;
       CK_ULONG cbSalt = pss_params->sLen;
-      pss_encode(inputData, inputDataLen, session->signingContext.abModulus, cbModulus, cbSalt,
-                 session->digestingContext.type, *pbData);
+      pss_encode(pInputData, cbInputData, pSession->signingContext.abModulus, cbModulus, cbSalt,
+                 pSession->digestingContext.type, *ppbData);
     } else {
       CNK_ERROR("Unexpected code path");
       return CKR_FUNCTION_FAILED;
     }
-  } else if (isMechEC(session->signingContext.mechanism.mechanism)) {
-    // Empty implementation for EC mechanism
+  } else if (isMechEC(pSession->signingContext.mechanism.mechanism)) {
+    cbData = pSession->signingContext.cbSignature / 2;
+    if (cbInputData > cbData)
+      return CKR_DATA_LEN_RANGE;
+    *ppbData = ck_malloc(cbData);
+    memset(*ppbData, 0, cbData);
+    memcpy(*ppbData + cbData - cbInputData, pInputData, cbInputData);
   } else {
     CNK_ERROR("Unexpected code path");
     return CKR_FUNCTION_FAILED;
   }
 
   // Sign the data
-  rv = cnk_piv_sign(session->slot_id, session, pivSlot, *pbData, session->signingContext.cbSignature, pSignature,
-                    pulSignatureLen);
+  rv = cnk_piv_sign(pSession->slot_id, pSession, *ppbData, cbData, pSignature, pulSignatureLen);
   if (rv != CKR_OK) {
     CNK_ERROR("Failed to sign data: ret = %lu", rv);
   }
@@ -339,6 +347,7 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   // Store active key and mechanism in the session
   session->signingContext.hKey = hKey;
   session->signingContext.pivSlot = pivTag;
+  session->signingContext.algorithmType = algorithmType;
   session->signingContext.mechanism.mechanism = pMechanism->mechanism;
   session->signingContext.mechanism.pParameter = ck_malloc(pMechanism->ulParameterLen);
   session->signingContext.mechanism.ulParameterLen = pMechanism->ulParameterLen;
@@ -347,7 +356,6 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   CNK_RET_OK;
 }
 
-// Main C_Sign function
 CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
              CK_ULONG_PTR pulSignatureLen) {
   CNK_LOG_FUNC(": hSession: %lu, ulDataLen: %lu, pSignature: %p, pulSignatureLen: %p", hSession, ulDataLen, pSignature,
@@ -383,9 +391,6 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
 
   // Otherwise, we compute the signature directly
   rv = prepareAndSign(session, pData, ulDataLen, pSignature, pulSignatureLen, &pbData);
-  if (rv != CKR_OK) {
-    goto cleanup;
-  }
 
 cleanup:
   // Reset the context

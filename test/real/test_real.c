@@ -7,6 +7,8 @@
 
 // Include mbedtls headers for signature verification
 #include <mbedtls/bignum.h>
+#include <mbedtls/ecdsa.h>
+#include <mbedtls/ecp.h>
 #include <mbedtls/md.h>
 #include <mbedtls/rsa.h>
 
@@ -446,6 +448,15 @@ void test_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID s
 void test_ecdsa_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_certificate_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_rsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
+void test_ecdsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
+
+// Verification function declarations
+static CK_RV cnk_verify_rsa_signature(CK_BYTE_PTR modulus, CK_ULONG modulus_len, CK_BYTE_PTR exponent,
+                                      CK_ULONG exponent_len, CK_BYTE_PTR data, CK_ULONG data_len, CK_BYTE_PTR signature,
+                                      mbedtls_md_type_t md_type, int padding_mode);
+static CK_RV cnk_verify_ecdsa_signature(CK_BYTE_PTR ec_params, CK_ULONG ec_params_len, CK_BYTE_PTR ec_point,
+                                        CK_ULONG ec_point_len, CK_BYTE_PTR data, CK_ULONG data_len,
+                                        CK_BYTE_PTR signature, CK_ULONG signature_len, mbedtls_md_type_t md_type);
 
 void test_ecdsa_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
   CK_SESSION_HANDLE pubSession;
@@ -543,6 +554,213 @@ void test_certificate_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID 
 
   // Close the session
   pFunctionList->C_CloseSession(certSession);
+}
+
+// Verify ECDSA signature using mbedtls
+static CK_RV cnk_verify_ecdsa_signature(CK_BYTE_PTR ec_params, CK_ULONG ec_params_len, CK_BYTE_PTR ec_point,
+                                        CK_ULONG ec_point_len, CK_BYTE_PTR data, CK_ULONG data_len,
+                                        CK_BYTE_PTR signature, CK_ULONG signature_len, mbedtls_md_type_t md_type) {
+  CK_RV rv = CKR_GENERAL_ERROR;
+  mbedtls_ecp_group grp;
+  mbedtls_ecp_point Q;
+  mbedtls_ecp_group_id grp_id = MBEDTLS_ECP_DP_NONE;
+  mbedtls_mpi r, s;
+
+  // Initialize the ECP structures
+  mbedtls_ecp_group_init(&grp);
+  mbedtls_ecp_point_init(&Q);
+  mbedtls_mpi_init(&r);
+  mbedtls_mpi_init(&s);
+
+  print_hex_data("ec_params", ec_params, ec_params_len, 32);
+
+  // Determine the curve type from EC_PARAMS
+  if (ec_params_len == 10 && memcmp(ec_params, "\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x07", 10) == 0) {
+    grp_id = MBEDTLS_ECP_DP_SECP256R1; // NIST P-256
+  } else if (ec_params_len == 5 && memcmp(ec_params, "\x06\x03\x2b\x81\x04", 5) == 0) {
+    grp_id = MBEDTLS_ECP_DP_SECP384R1; // NIST P-384
+  } else if (ec_params_len == 5 && memcmp(ec_params, "\x06\x03\x2b\x81\x0c", 5) == 0) {
+    grp_id = MBEDTLS_ECP_DP_SECP521R1; // NIST P-521
+  } else {
+    printf("    Unsupported curve (unrecognized OID)\n");
+    goto cleanup;
+  }
+
+  // Load the ECP group for the curve
+  int ret = mbedtls_ecp_group_load(&grp, grp_id);
+  if (ret != 0) {
+    printf("    Failed to load ECP group: -0x%04x\n", -ret);
+    goto cleanup;
+  }
+
+  // Parse the EC_POINT value (Q)
+  // The EC_POINT is in DER-encoded octet string format
+  if (ec_point[0] != 0x04) { // Check for uncompressed point format
+    printf("    EC point is not in uncompressed format\n");
+    goto cleanup;
+  }
+
+  // Parse EC point, skipping the DER encoding if present
+  const unsigned char *p = ec_point;
+  size_t point_len = ec_point_len;
+
+  // Check if there's ASN.1 wrapping (DER encoding)
+  if (ec_point[0] == 0x04 && ec_point[1] == ec_point_len - 2) {
+    // Skip the ASN.1 OCTET STRING tag and length
+    p += 2;
+    point_len -= 2;
+  }
+
+  // Read the public key from the point
+  ret = mbedtls_ecp_point_read_binary(&grp, &Q, p, point_len);
+  if (ret != 0) {
+    printf("    Failed to read ECP point: -0x%04x\n", -ret);
+    goto cleanup;
+  }
+
+  // Compute hash of the data if necessary
+  unsigned char hash[64]; // Max hash size (for SHA-512)
+  size_t hash_len = 0;
+
+  if (md_type != MBEDTLS_MD_NONE) {
+    const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(md_type);
+    if (md_info == NULL) {
+      printf("    Invalid hash algorithm\n");
+      goto cleanup;
+    }
+
+    hash_len = mbedtls_md_get_size(md_info);
+    ret = mbedtls_md(md_info, data, data_len, hash);
+    if (ret != 0) {
+      printf("    Failed to compute hash: -0x%04x\n", -ret);
+      goto cleanup;
+    }
+  } else {
+    // If no hash algo specified, use the data directly
+    // Note: This is usually not how ECDSA is used in practice as it requires data to be exactly the right size
+    if (data_len > sizeof(hash)) {
+      printf("    Data too large for direct ECDSA without hashing\n");
+      goto cleanup;
+    }
+    memcpy(hash, data, data_len);
+    hash_len = data_len;
+  }
+
+  // Check if the signature is in raw R|S format or DER format
+  if (signature[0] == 0x30) { // DER sequence marker
+    // Parse the DER encoded signature
+    size_t len = 0;
+    const unsigned char *sig_ptr = signature;
+
+    // Parse DER format: get sequence length
+    if (signature_len < 2 || sig_ptr[0] != 0x30) {
+      printf("    Invalid DER signature format (not a sequence)\n");
+      goto cleanup;
+    }
+
+    sig_ptr++; // Skip sequence tag
+
+    // Get sequence length
+    if (*sig_ptr & 0x80) {
+      // Length is multi-byte
+      int len_len = *sig_ptr & 0x7F;
+      sig_ptr++;
+
+      if (len_len > 2) {
+        printf("    DER sequence length too long\n");
+        goto cleanup;
+      }
+
+      len = 0;
+      for (int i = 0; i < len_len; i++) {
+        len = (len << 8) | *sig_ptr;
+        sig_ptr++;
+      }
+    } else {
+      // Single byte length
+      len = *sig_ptr;
+      sig_ptr++;
+    }
+
+    if (len + (sig_ptr - signature) != signature_len) {
+      printf("    DER sequence length mismatch\n");
+      goto cleanup;
+    }
+
+    // Parse first INTEGER (r)
+    if (sig_ptr[0] != 0x02) {
+      printf("    DER signature missing r INTEGER tag\n");
+      goto cleanup;
+    }
+    sig_ptr++;
+
+    // Get r length
+    int r_len = *sig_ptr;
+    sig_ptr++;
+
+    // Read r value
+    ret = mbedtls_mpi_read_binary(&r, sig_ptr, r_len);
+    if (ret != 0) {
+      printf("    Failed to read r component from DER: -0x%04x\n", -ret);
+      goto cleanup;
+    }
+    sig_ptr += r_len;
+
+    // Parse second INTEGER (s)
+    if (sig_ptr[0] != 0x02) {
+      printf("    DER signature missing s INTEGER tag\n");
+      goto cleanup;
+    }
+    sig_ptr++;
+
+    // Get s length
+    int s_len = *sig_ptr;
+    sig_ptr++;
+
+    // Read s value
+    ret = mbedtls_mpi_read_binary(&s, sig_ptr, s_len);
+    if (ret != 0) {
+      printf("    Failed to read s component from DER: -0x%04x\n", -ret);
+      goto cleanup;
+    }
+  } else {
+    // Assuming raw R|S format
+    size_t n = mbedtls_mpi_size(&grp.N);
+
+    if (signature_len != 2 * n) {
+      printf("    Invalid raw signature length\n");
+      goto cleanup;
+    }
+
+    ret = mbedtls_mpi_read_binary(&r, signature, n);
+    if (ret != 0) {
+      printf("    Failed to read R component: -0x%04x\n", -ret);
+      goto cleanup;
+    }
+
+    ret = mbedtls_mpi_read_binary(&s, signature + n, n);
+    if (ret != 0) {
+      printf("    Failed to read S component: -0x%04x\n", -ret);
+      goto cleanup;
+    }
+  }
+
+  // Verify the ECDSA signature
+  ret = mbedtls_ecdsa_verify(&grp, hash, hash_len, &Q, &r, &s);
+  if (ret != 0) {
+    printf("    ECDSA verification failed: -0x%04x\n", -ret);
+    goto cleanup;
+  }
+
+  printf("    ECDSA verification successful!\n");
+  rv = CKR_OK;
+
+cleanup:
+  mbedtls_mpi_free(&r);
+  mbedtls_mpi_free(&s);
+  mbedtls_ecp_point_free(&Q);
+  mbedtls_ecp_group_free(&grp);
+  return rv;
 }
 
 // Verify RSA signature using mbedtls
@@ -1387,6 +1605,317 @@ void test_rsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
   }
 }
 
+// Test ECDSA signing operations
+void test_ecdsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
+  // Check if the token supports ECDSA mechanisms
+  int has_ecdsa = 0;
+  int has_ecdsa_sha1 = 0;
+  int has_ecdsa_sha256 = 0;
+  CK_ULONG mechCount;
+
+  CK_RV rv = pFunctionList->C_GetMechanismList(slotID, NULL, &mechCount);
+  if (rv == CKR_OK && mechCount > 0) {
+    CK_MECHANISM_TYPE_PTR mechList = (CK_MECHANISM_TYPE_PTR)malloc(mechCount * sizeof(CK_MECHANISM_TYPE));
+    if (mechList) {
+      rv = pFunctionList->C_GetMechanismList(slotID, mechList, &mechCount);
+      if (rv == CKR_OK) {
+        for (CK_ULONG j = 0; j < mechCount; j++) {
+          if (mechList[j] == CKM_ECDSA)
+            has_ecdsa = 1;
+          if (mechList[j] == CKM_ECDSA_SHA1)
+            has_ecdsa_sha1 = 1;
+          if (mechList[j] == CKM_ECDSA_SHA256)
+            has_ecdsa_sha256 = 1;
+        }
+      }
+      free(mechList);
+    }
+  }
+
+  if (!(has_ecdsa || has_ecdsa_sha1 || has_ecdsa_sha256)) {
+    printf("    No ECDSA signing mechanisms available, skipping ECDSA signing tests.\n");
+    return;
+  }
+
+  printf("    Running ECDSA signing tests...\n");
+
+  // Open a new session for signing tests
+  CK_SESSION_HANDLE signSession;
+  rv = pFunctionList->C_OpenSession(slotID, CKF_SERIAL_SESSION, NULL, NULL, &signSession);
+  if (rv != CKR_OK) {
+    printf("    Error opening session for ECDSA signing tests: 0x%lx\n", rv);
+    return;
+  }
+
+  printf("    Session for ECDSA signing tests opened successfully. Session handle: %lu\n", signSession);
+
+  // Login with PIN
+  rv = perform_login(pFunctionList, signSession);
+  if (rv != CKR_OK) {
+    pFunctionList->C_CloseSession(signSession);
+    return;
+  }
+
+  // Find ECDSA private keys for signing
+  CK_OBJECT_CLASS keyClass = CKO_PRIVATE_KEY;
+  CK_KEY_TYPE keyType = CKK_EC;
+  CK_BBOOL sign_attribute = CK_TRUE; // Add explicit CKA_SIGN attribute
+  CK_ATTRIBUTE findTemplate[] = {
+      {CKA_CLASS, &keyClass, sizeof(keyClass)},
+      {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
+      {CKA_SIGN, &sign_attribute, sizeof(sign_attribute)} // Ensure key can be used for signing
+  };
+
+  rv = pFunctionList->C_FindObjectsInit(signSession, findTemplate, 3);
+  if (rv != CKR_OK) {
+    printf("    Error initializing object search: 0x%lx\n", rv);
+    perform_logout(pFunctionList, signSession);
+    pFunctionList->C_CloseSession(signSession);
+    return;
+  }
+
+  CK_OBJECT_HANDLE hKey;
+  CK_ULONG ulObjectCount;
+
+  rv = pFunctionList->C_FindObjects(signSession, &hKey, 1, &ulObjectCount);
+  if (rv != CKR_OK || ulObjectCount == 0) {
+    printf("    No ECDSA private keys found: 0x%lx\n", rv);
+    pFunctionList->C_FindObjectsFinal(signSession);
+    perform_logout(pFunctionList, signSession);
+    pFunctionList->C_CloseSession(signSession);
+    return;
+  }
+
+  printf("    Found ECDSA private key (handle: %lu)\n", hKey);
+
+  // Finalize the search
+  rv = pFunctionList->C_FindObjectsFinal(signSession);
+  if (rv != CKR_OK) {
+    printf("    Error finalizing object search: 0x%lx\n", rv);
+  }
+
+  // Get key attributes
+  CK_BBOOL sign, derive;
+  CK_ATTRIBUTE tmpl[] = {
+      {CKA_SIGN, &sign, sizeof(sign)},
+      {CKA_DERIVE, &derive, sizeof(derive)},
+  };
+
+  rv = pFunctionList->C_GetAttributeValue(signSession, hKey, tmpl, 2);
+  if (rv != CKR_OK) {
+    printf("    Error getting key attributes: 0x%lx\n", rv);
+  }
+
+  printf("    Key attributes:\n");
+  printf("      CKA_SIGN: %s\n", sign ? "true" : "false");
+  printf("      CKA_DERIVE: %s\n", derive ? "true" : "false");
+
+  // Get the corresponding public key for verification
+  CK_BYTE ec_params[64]; // Buffer for EC_PARAMS (curve OID)
+  CK_BYTE ec_point[256]; // Buffer for EC_POINT (public key)
+  CK_ULONG ec_params_len = sizeof(ec_params);
+  CK_ULONG ec_point_len = sizeof(ec_point);
+  CK_BBOOL has_public_key = CK_FALSE;
+
+  // First, get the CKA_ID of the private key
+  CK_BYTE key_id[32];
+  CK_ULONG key_id_len = sizeof(key_id);
+  CK_ATTRIBUTE id_tmpl = {CKA_ID, key_id, key_id_len};
+
+  rv = pFunctionList->C_GetAttributeValue(signSession, hKey, &id_tmpl, 1);
+  if (rv != CKR_OK) {
+    printf("    Error getting private key ID: 0x%lx\n", rv);
+  } else {
+    key_id_len = id_tmpl.ulValueLen;
+
+    // Search for the corresponding public key with the same ID
+    CK_OBJECT_CLASS pubKeyClass = CKO_PUBLIC_KEY;
+    CK_KEY_TYPE pubKeyType = CKK_EC;
+    CK_ATTRIBUTE pubKeyTemplate[] = {{CKA_CLASS, &pubKeyClass, sizeof(pubKeyClass)},
+                                     {CKA_KEY_TYPE, &pubKeyType, sizeof(pubKeyType)},
+                                     {CKA_ID, key_id, key_id_len}};
+
+    rv = pFunctionList->C_FindObjectsInit(signSession, pubKeyTemplate, 3);
+    if (rv != CKR_OK) {
+      printf("    Error initializing search for public key: 0x%lx\n", rv);
+    } else {
+      CK_OBJECT_HANDLE hPubKey;
+      CK_ULONG pubKeyCount;
+
+      rv = pFunctionList->C_FindObjects(signSession, &hPubKey, 1, &pubKeyCount);
+      if (rv == CKR_OK && pubKeyCount > 0) {
+        printf("    Found corresponding public key (handle: %lu)\n", hPubKey);
+
+        // Get the public key components (EC_PARAMS and EC_POINT)
+        CK_ATTRIBUTE pubKeyAttrs[] = {{CKA_EC_PARAMS, ec_params, ec_params_len},
+                                      {CKA_EC_POINT, ec_point, ec_point_len}};
+
+        rv = pFunctionList->C_GetAttributeValue(signSession, hPubKey, pubKeyAttrs, 2);
+        if (rv == CKR_OK) {
+          ec_params_len = pubKeyAttrs[0].ulValueLen;
+          ec_point_len = pubKeyAttrs[1].ulValueLen;
+          has_public_key = CK_TRUE;
+
+          printf("    Retrieved public key components for verification:\n");
+          printf("      EC_PARAMS length: %lu bytes\n", ec_params_len);
+          printf("      EC_POINT length: %lu bytes\n", ec_point_len);
+
+          print_hex_data("      EC_PARAMS", ec_params, ec_params_len, ec_params_len);
+          print_hex_data("      EC_POINT", ec_point, ec_point_len, 32);
+        } else {
+          printf("    Error getting public key components: 0x%lx\n", rv);
+        }
+      } else {
+        printf("    Corresponding public key not found: 0x%lx\n", rv);
+      }
+
+      rv = pFunctionList->C_FindObjectsFinal(signSession);
+      if (rv != CKR_OK) {
+        printf("    Error finalizing public key search: 0x%lx\n", rv);
+      }
+    }
+  }
+
+  // Test data to sign
+  CK_BYTE data[] = "Hello, CanoKey ECDSA PKCS#11!";
+  CK_ULONG dataLen = strlen((char *)data);
+  CK_BYTE signature[128]; // Buffer for ECDSA signature
+  CK_ULONG signatureLen;
+
+  // Test raw ECDSA signing
+  if (has_ecdsa) {
+    CK_MECHANISM mechanism = {CKM_ECDSA, NULL, 0};
+
+    printf("    Testing CKM_ECDSA signing...\n");
+
+    // Initialize signing operation
+    rv = pFunctionList->C_SignInit(signSession, &mechanism, hKey);
+    if (rv != CKR_OK) {
+      printf("    Error initializing ECDSA signing operation: 0x%lx\n", rv);
+    } else {
+      // First call to get buffer size
+      signatureLen = sizeof(signature);
+      rv = pFunctionList->C_Sign(signSession, data, dataLen, NULL, &signatureLen);
+      if (rv != CKR_OK && rv != CKR_BUFFER_TOO_SMALL) {
+        printf("    Error determining signature size: 0x%lx\n", rv);
+      } else {
+        printf("    Signature length will be %lu bytes\n", signatureLen);
+
+        // Second call to actually sign
+        rv = pFunctionList->C_Sign(signSession, data, dataLen, signature, &signatureLen);
+        if (rv != CKR_OK) {
+          printf("    Error creating signature: 0x%lx\n", rv);
+        } else {
+          printf("    CKM_ECDSA signing successful! Signature length: %lu\n", signatureLen);
+
+          // Display the signature
+          print_hex_data("    Signature", signature, signatureLen, 16);
+
+          // Verify the signature using mbedtls if public key is available
+          if (has_public_key) {
+            printf("    Verifying signature with mbedtls...\n");
+            rv = cnk_verify_ecdsa_signature(ec_params, ec_params_len, ec_point, ec_point_len, data, dataLen, signature,
+                                            signatureLen, MBEDTLS_MD_NONE);
+            if (rv != CKR_OK) {
+              printf("    mbedtls verification failed!\n");
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Test SHA1-ECDSA signing
+  if (has_ecdsa_sha1) {
+    // Logout and login again for SHA1-ECDSA test
+    perform_logout(pFunctionList, signSession);
+    rv = perform_login(pFunctionList, signSession);
+    if (rv != CKR_OK) {
+      pFunctionList->C_CloseSession(signSession);
+      return;
+    }
+
+    CK_MECHANISM mechanism = {CKM_ECDSA_SHA1, NULL, 0};
+
+    printf("    Testing CKM_ECDSA_SHA1 signing...\n");
+
+    // Initialize signing operation
+    rv = pFunctionList->C_SignInit(signSession, &mechanism, hKey);
+    if (rv != CKR_OK) {
+      printf("    Error initializing SHA1-ECDSA signing operation: 0x%lx\n", rv);
+    } else {
+      // Get signature length
+      signatureLen = sizeof(signature);
+      rv = pFunctionList->C_Sign(signSession, data, dataLen, signature, &signatureLen);
+      if (rv != CKR_OK) {
+        printf("    Error creating SHA1-ECDSA signature: 0x%lx\n", rv);
+      } else {
+        printf("    CKM_ECDSA_SHA1 signing successful! Signature length: %lu\n", signatureLen);
+
+        // Display the signature
+        print_hex_data("    Signature", signature, signatureLen, 16);
+
+        // Verify the signature using mbedtls if public key is available
+        if (has_public_key) {
+          printf("    Verifying SHA1-ECDSA signature with mbedtls...\n");
+          rv = cnk_verify_ecdsa_signature(ec_params, ec_params_len, ec_point, ec_point_len, data, dataLen, signature,
+                                          signatureLen, MBEDTLS_MD_SHA1);
+          if (rv != CKR_OK) {
+            printf("    mbedtls SHA1-ECDSA verification failed!\n");
+          }
+        }
+      }
+    }
+  }
+
+  // Test SHA256-ECDSA signing
+  if (has_ecdsa_sha256) {
+    // Logout and login again for SHA256-ECDSA test
+    perform_logout(pFunctionList, signSession);
+    rv = perform_login(pFunctionList, signSession);
+    if (rv != CKR_OK) {
+      pFunctionList->C_CloseSession(signSession);
+      return;
+    }
+
+    CK_MECHANISM mechanism = {CKM_ECDSA_SHA256, NULL, 0};
+
+    printf("    Testing CKM_ECDSA_SHA256 signing...\n");
+
+    // Initialize signing operation
+    rv = pFunctionList->C_SignInit(signSession, &mechanism, hKey);
+    if (rv != CKR_OK) {
+      printf("    Error initializing SHA256-ECDSA signing operation: 0x%lx\n", rv);
+    } else {
+      // Get signature length
+      signatureLen = sizeof(signature);
+      rv = pFunctionList->C_Sign(signSession, data, dataLen, signature, &signatureLen);
+      if (rv != CKR_OK) {
+        printf("    Error creating SHA256-ECDSA signature: 0x%lx\n", rv);
+      } else {
+        printf("    CKM_ECDSA_SHA256 signing successful! Signature length: %lu\n", signatureLen);
+
+        // Display the signature
+        print_hex_data("    Signature", signature, signatureLen, 16);
+
+        // Verify the signature using mbedtls if public key is available
+        if (has_public_key) {
+          printf("    Verifying SHA256-ECDSA signature with mbedtls...\n");
+          rv = cnk_verify_ecdsa_signature(ec_params, ec_params_len, ec_point, ec_point_len, data, dataLen, signature,
+                                          signatureLen, MBEDTLS_MD_SHA256);
+          if (rv != CKR_OK) {
+            printf("    mbedtls SHA256-ECDSA verification failed!\n");
+          }
+        }
+      }
+    }
+  }
+
+  // Logout and close session
+  perform_logout(pFunctionList, signSession);
+  pFunctionList->C_CloseSession(signSession);
+}
+
 int main(int argc, char *argv[]) {
   // Path to the PKCS#11 library
   const char *libraryPath = NULL;
@@ -1458,23 +1987,26 @@ int main(int argc, char *argv[]) {
 
       printf("    Session opened successfully. Session handle: %lu\n", hSession);
 
-      // Display session information
-      display_session_info(pFunctionList, hSession);
+      // // Display session information
+      // display_session_info(pFunctionList, hSession);
+      //
+      // // Get the mechanism list
+      // display_mechanism_list(pFunctionList, pSlotList[i]);
+      //
+      // // Test public key operations
+      // test_public_key_operations(pFunctionList, pSlotList[i]);
+      //
+      // // Test ECDSA public key operations
+      // test_ecdsa_public_key_operations(pFunctionList, pSlotList[i]);
+      //
+      // // Test certificate operations
+      // test_certificate_operations(pFunctionList, pSlotList[i]);
+      //
+      // // Test RSA signing
+      // test_rsa_signing(pFunctionList, pSlotList[i]);
 
-      // Get the mechanism list
-      display_mechanism_list(pFunctionList, pSlotList[i]);
-
-      // Test public key operations
-      test_public_key_operations(pFunctionList, pSlotList[i]);
-
-      // Test ECDSA public key operations
-      test_ecdsa_public_key_operations(pFunctionList, pSlotList[i]);
-
-      // Test certificate operations
-      test_certificate_operations(pFunctionList, pSlotList[i]);
-
-      // Test RSA signing
-      test_rsa_signing(pFunctionList, pSlotList[i]);
+      // Test ECDSA signing
+      test_ecdsa_signing(pFunctionList, pSlotList[i]);
 
       // Close the session
       rv = pFunctionList->C_CloseSession(hSession);

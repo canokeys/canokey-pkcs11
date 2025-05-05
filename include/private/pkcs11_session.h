@@ -22,6 +22,7 @@ typedef struct {
   CK_OBJECT_HANDLE hKey;
   CK_MECHANISM mechanism;
   CK_BYTE pivSlot;
+  CK_BYTE algorithmType;
   CK_BYTE abModulus[512];
   CK_ULONG cbSignature;
 } CNK_PKCS11_SIGNING_CONTEXT;
