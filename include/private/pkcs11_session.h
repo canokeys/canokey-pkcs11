@@ -28,6 +28,7 @@ typedef struct {
 
 typedef struct {
   CK_MECHANISM_TYPE mechanismType;
+  mbedtls_md_type_t type;
   mbedtls_md_context_t context;
 } CNK_PKCS11_DIGESTING_CONTEXT;
 
@@ -55,10 +56,8 @@ typedef struct CNK_PKCS11_SESSION {
   CK_BBOOL find_class_specified;                   // Whether class was specified in the search template
 
   // Cryptographic operation fields
-  union {
-    CNK_PKCS11_SIGNING_CONTEXT signingContext;
-    CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
-  };
+  CNK_PKCS11_SIGNING_CONTEXT signingContext;
+  CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
 } CNK_PKCS11_SESSION;
 
 // Initialize the session manager
