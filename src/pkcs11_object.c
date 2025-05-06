@@ -264,7 +264,7 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
 
   case CKA_MODULUS_BITS:
     if (keyType == CKK_RSA) {
-      CK_ULONG modulus_bits = cbPublicKey * 8;
+      CK_ULONG modulus_bits = cbModulus * 8;
       rv = cnk_set_single_attribute_value(attribute, &modulus_bits, sizeof(modulus_bits));
     } else {
       // Not applicable for non-RSA keys
@@ -454,32 +454,33 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CNK_DEBUG("Object handle: slot %lu, class %lu, id %lu", session->slot_id, obj_class, obj_id);
 
   // Map object ID to PIV tag
-  CK_BYTE piv_tag;
-  CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(obj_id, &piv_tag));
+  CK_BYTE bPivSlot;
+  CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(obj_id, &bPivSlot));
 
   // Fetch the PIV data for this object
   CK_BYTE data[4096];
   CK_ULONG data_len = sizeof(data);
-  CK_BYTE algorithm_type = 0;
+  CK_BYTE bAlgorithmType = 0;
   CK_BYTE abPublicKey[512];
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
 
   switch (obj_class) {
   case CKO_PUBLIC_KEY:
   case CKO_PRIVATE_KEY: {
-    CK_RV rv_meta = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, abPublicKey, &cbPublicKey);
+    CK_RV rv_meta = cnk_get_metadata(session->slot_id, bPivSlot, &bAlgorithmType, abPublicKey, &cbPublicKey);
     if (rv_meta != CKR_OK) {
-      CNK_DEBUG("Failed to get metadata for PIV tag 0x%02X: %lu", piv_tag, rv_meta);
+      CNK_DEBUG("Failed to get metadata for PIV slot 0x%02X: %lu", bPivSlot, rv_meta);
     } else {
-      CNK_DEBUG("Retrieved algorithm type %u for PIV tag 0x%02X", algorithm_type, piv_tag);
+      CNK_DEBUG("Retrieved algorithm type %u for PIV slot 0x%02X with public key size %lu", bAlgorithmType, bPivSlot,
+                cbPublicKey);
     }
     break;
   }
 
   case CKO_CERTIFICATE:
-    CNK_ENSURE_OK(cnk_get_piv_data(session->slot_id, piv_tag, data, &data_len, CK_TRUE));
+    CNK_ENSURE_OK(cnk_get_piv_data(session->slot_id, bPivSlot, data, &data_len, CK_TRUE));
     if (data_len == 0) {
-      CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "No data found for PIV tag");
+      CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "No data found for PIV slot");
     }
     break;
 
@@ -537,7 +538,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
         break;
       }
 
-      snprintf(label, sizeof(label), "PIV %s %02X", type_str, piv_tag);
+      snprintf(label, sizeof(label), "PIV %s %02X", type_str, bPivSlot);
       CK_ULONG label_len = (CK_ULONG)strlen(label);
       rv = cnk_set_single_attribute_value(&pTemplate[i], label, label_len);
       break;
@@ -561,11 +562,11 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       break;
 
     case CKO_PUBLIC_KEY:
-      rv = cnk_handle_public_key_attribute(&pTemplate[i], algorithm_type, abPublicKey, cbPublicKey);
+      rv = cnk_handle_public_key_attribute(&pTemplate[i], bAlgorithmType, abPublicKey, cbPublicKey);
       break;
 
     case CKO_PRIVATE_KEY:
-      rv = cnk_handle_private_key_attribute(&pTemplate[i], algorithm_type);
+      rv = cnk_handle_private_key_attribute(&pTemplate[i], bAlgorithmType);
       break;
 
     default:
