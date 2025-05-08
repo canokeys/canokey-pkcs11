@@ -264,52 +264,55 @@ static void resetSigningContext(CNK_PKCS11_SESSION *session) {
  * @param inputDataLen Length of data to sign
  * @param pSignature Buffer to receive signature
  * @param pulSignatureLen Pointer to receive signature length
- * @param ppbData Pointer to store allocated data buffer
  * @return CK_RV
  */
 static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData, CK_ULONG cbInputData,
-                            CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen, CK_BYTE_PTR *ppbData) {
+                            CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen) {
   CK_RV rv = CKR_OK;
   CK_BYTE pivSlot = pSession->signingContext.pivSlot;
   CNK_DEBUG("Signing with active key, PIV slot 0x%x", pivSlot);
 
-  CK_ULONG cbData;
+  CK_BYTE_PTR pbSignRawData = NULL_PTR;
+  CK_ULONG cbSignRawData;
 
   if (isMechRSA(pSession->signingContext.mechanism.mechanism)) {
-    *ppbData = ck_malloc(pSession->signingContext.cbSignature);
-    cbData = pSession->signingContext.cbSignature;
+    pbSignRawData = ck_malloc(pSession->signingContext.cbSignature);
+    cbSignRawData = pSession->signingContext.cbSignature;
     if (isMechRsaPkcsV15(pSession->signingContext.mechanism.mechanism)) {
-      pkcs1_v1_5_pad(pInputData, cbInputData, *ppbData, pSession->signingContext.cbSignature,
-                     pSession->digestingContext.type);
+      pkcs1_v1_5_pad(pInputData, cbInputData, pbSignRawData, cbSignRawData, pSession->digestingContext.type);
     } else if (isMechRsaPss(pSession->signingContext.mechanism.mechanism)) {
       const CK_RSA_PKCS_PSS_PARAMS *pss_params =
           (CK_RSA_PKCS_PSS_PARAMS *)pSession->signingContext.mechanism.pParameter;
       CK_ULONG cbModulus = pSession->signingContext.cbSignature;
       CK_ULONG cbSalt = pss_params->sLen;
       pss_encode(pInputData, cbInputData, pSession->signingContext.abModulus, cbModulus, cbSalt,
-                 pSession->digestingContext.type, *ppbData);
+                 pSession->digestingContext.type, pbSignRawData);
+    } else if (pSession->signingContext.mechanism.mechanism == CKM_RSA_X_509) {
+      CNK_ENSURE_EQUAL(cbSignRawData, cbInputData);
+      memcpy(pbSignRawData, pInputData, cbInputData);
     } else {
       CNK_ERROR("Unexpected code path");
       return CKR_FUNCTION_FAILED;
     }
   } else if (isMechEC(pSession->signingContext.mechanism.mechanism)) {
-    cbData = pSession->signingContext.cbSignature / 2;
-    if (cbInputData > cbData)
+    cbSignRawData = pSession->signingContext.cbSignature / 2;
+    if (cbInputData > cbSignRawData)
       return CKR_DATA_LEN_RANGE;
-    *ppbData = ck_malloc(cbData);
-    memset(*ppbData, 0, cbData);
-    memcpy(*ppbData + cbData - cbInputData, pInputData, cbInputData);
+    pbSignRawData = ck_malloc(cbSignRawData);
+    memset(pbSignRawData, 0, cbSignRawData);
+    memcpy(pbSignRawData + cbSignRawData - cbInputData, pInputData, cbInputData);
   } else {
     CNK_ERROR("Unexpected code path");
     return CKR_FUNCTION_FAILED;
   }
 
   // Sign the data
-  rv = cnk_piv_sign(pSession->slot_id, pSession, *ppbData, cbData, pSignature, pulSignatureLen);
+  rv = cnk_piv_sign(pSession->slot_id, pSession, pbSignRawData, cbSignRawData, pSignature, pulSignatureLen);
   if (rv != CKR_OK) {
     CNK_ERROR("Failed to sign data: ret = %lu", rv);
   }
 
+  ck_free(pbSignRawData);
   return rv;
 }
 
@@ -376,7 +379,6 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   }
 
   CK_RV rv = CKR_OK;
-  CK_BYTE_PTR pbData = NULL_PTR;
 
   // If the mechanism requires digesting, do it using C_SignUpdate and C_SignFinal
   if (isMechRequireDigesting(session->signingContext.mechanism.mechanism)) {
@@ -390,7 +392,7 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   }
 
   // Otherwise, we compute the signature directly
-  rv = prepareAndSign(session, pData, ulDataLen, pSignature, pulSignatureLen, &pbData);
+  rv = prepareAndSign(session, pData, ulDataLen, pSignature, pulSignatureLen);
 
 cleanup:
   // Reset the context
@@ -454,7 +456,6 @@ CK_RV C_SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG_P
   }
 
   CK_RV rv = CKR_OK;
-  CK_BYTE_PTR pbData = NULL_PTR;
 
   // Get the digest
   const mbedtls_md_info_t *mdInfo = mbedtls_md_info_from_type(session->digestingContext.type);
@@ -471,7 +472,7 @@ CK_RV C_SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG_P
   }
 
   // Compute signature
-  rv = prepareAndSign(session, pMD, cbMD, pSignature, pulSignatureLen, &pbData);
+  rv = prepareAndSign(session, pMD, cbMD, pSignature, pulSignatureLen);
   if (rv != CKR_OK) {
     goto cleanup;
   }
@@ -481,7 +482,6 @@ cleanup:
   resetSigningContext(session);
 
   // Reset digesting context
-  ck_free(pbData);
   ck_free(pMD);
   mbedtls_md_free(&session->digestingContext.context);
   session->digestingContext.type = MBEDTLS_MD_NONE;
