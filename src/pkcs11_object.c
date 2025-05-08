@@ -6,6 +6,8 @@
 #include "pkcs11_session.h"
 #include "utils.h"
 
+#include <mbedtls/asn1write.h>
+#include <mbedtls/oid.h>
 #include <string.h>
 
 // Helper function to extract object information from a handle
@@ -132,7 +134,7 @@ static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYT
 
       // Parse L1 (length of the entire structure)
       // We don't actually use l1_len for validation since tlv_get_length_safe already checks buffer bounds
-      tlv_get_length_safe(data + offset, data_len - offset, &fail, &length_size);
+      tlvGetLengthSafe(data + offset, data_len - offset, &fail, &length_size);
       if (fail) {
         CNK_DEBUG("Failed to parse L1 length field");
         rv = CKR_DATA_INVALID;
@@ -149,7 +151,7 @@ static CK_RV cnk_handle_certificate_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYT
         // Parse L2 (length of the certificate)
         fail = 0;
         length_size = 0;
-        uint16_t cert_len = tlv_get_length_safe(data + offset, data_len - offset, &fail, &length_size);
+        uint16_t cert_len = tlvGetLengthSafe(data + offset, data_len - offset, &fail, &length_size);
         if (fail) {
           CNK_DEBUG("Failed to parse L2 length field");
           rv = CKR_DATA_INVALID;
@@ -197,6 +199,10 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
   CK_ULONG cbModulus = 0;
   CK_BYTE_PTR pbPublicExponent = NULL;
   CK_ULONG cbPublicExponent = 0;
+  CK_BYTE_PTR pbPublicPoint = NULL;
+  CK_ULONG cbPublicPoint = 0;
+  CK_BYTE abEcParams[16];
+  CK_ULONG cbEcParams = 0;
 
   // Parse the public key data. The public key data is encoded in TLV.
   CK_ULONG vpos = 0; /* cursor inside the value buffer   */
@@ -208,7 +214,7 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
     /* ---- read inner length (DER) ------------------------------ */
     CK_LONG fail;
     CK_ULONG lengthSize;
-    CK_ULONG ilen = tlv_get_length_safe(&pbPublicKey[vpos], cbPublicKey - vpos, &fail, &lengthSize);
+    CK_ULONG ilen = tlvGetLengthSafe(&pbPublicKey[vpos], cbPublicKey - vpos, &fail, &lengthSize);
     if (fail)
       CNK_RETURN(CKR_DEVICE_ERROR, "Bad length in public-key TLV");
     vpos += lengthSize;
@@ -221,6 +227,11 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
     if (itag == 0x82) {
       pbPublicExponent = pbPublicKey + vpos;
       cbPublicExponent = ilen;
+    }
+    /* ---- ECC public point lives in tag 0x86 ---------------- */
+    if (itag == 0x86) {
+      pbPublicPoint = pbPublicKey + vpos;
+      cbPublicPoint = ilen;
     }
     vpos += ilen; /* advance to next inner TLV        */
   }
@@ -244,9 +255,16 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
     break;
   }
 
+  case CKA_DECRYPT: {
+    // Public keys cannot decrypt
+    CK_BBOOL value = CK_FALSE;
+    rv = cnk_set_single_attribute_value(attribute, &value, sizeof(value));
+    break;
+  }
+
   case CKA_MODULUS_BITS:
     if (keyType == CKK_RSA) {
-      CK_ULONG modulus_bits = cbPublicKey * 8;
+      CK_ULONG modulus_bits = cbModulus * 8;
       rv = cnk_set_single_attribute_value(attribute, &modulus_bits, sizeof(modulus_bits));
     } else {
       // Not applicable for non-RSA keys
@@ -272,7 +290,40 @@ static CK_RV cnk_handle_public_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE
     }
     break;
 
-    // TODO: Add other public key attributes
+  case CKA_EC_POINT:
+    if (keyType == CKK_EC) {
+      rv = cnk_set_single_attribute_value(attribute, pbPublicPoint, cbPublicPoint);
+    } else {
+      // Not applicable for non-ECC keys
+      rv = CKR_ATTRIBUTE_TYPE_INVALID;
+    }
+    break;
+
+  case CKA_EC_PARAMS:
+    if (keyType == CKK_EC || keyType == CKK_EC_EDWARDS) {
+      char *oid = NULL;
+      switch (algorithm_type) {
+      case PIV_ALG_ECC_256:
+        oid = MBEDTLS_OID_EC_GRP_SECP256R1;
+        break;
+      case PIV_ALG_ECC_384:
+        oid = MBEDTLS_OID_EC_GRP_SECP384R1;
+        break;
+      case PIV_ALG_SECP256K1:
+        oid = MBEDTLS_OID_EC_GRP_SECP256K1;
+        break;
+      default:
+        CNK_ERROR("Should not be reached");
+        break;
+      }
+      CK_BYTE_PTR pbEcParams = abEcParams + sizeof(abEcParams);
+      cbEcParams = mbedtls_asn1_write_oid(&pbEcParams, abEcParams, oid, sizeof(oid));
+      rv = cnk_set_single_attribute_value(attribute, pbEcParams, cbEcParams);
+    } else {
+      // Not applicable for non-ECC keys
+      rv = CKR_ATTRIBUTE_TYPE_INVALID;
+    }
+    break;
 
   default:
     rv = CKR_ATTRIBUTE_TYPE_INVALID;
@@ -308,6 +359,13 @@ static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYT
     break;
   }
 
+  case CKA_ENCRYPT: {
+    // Private keys cannot encrypt
+    CK_BBOOL value = CK_FALSE;
+    rv = cnk_set_single_attribute_value(attribute, &value, sizeof(value));
+    break;
+  }
+
   case CKA_SENSITIVE:
   case CKA_ALWAYS_SENSITIVE: {
     // Private keys are always sensitive
@@ -323,7 +381,12 @@ static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYT
     break;
   }
 
-    // Add other private key attributes as needed
+  case CKA_DERIVE: {
+    // Only EC private keys can derive
+    CK_BBOOL value = (key_type == CKK_EC) ? CK_TRUE : CK_FALSE;
+    rv = cnk_set_single_attribute_value(attribute, &value, sizeof(value));
+    break;
+  }
 
   default:
     rv = CKR_ATTRIBUTE_TYPE_INVALID;
@@ -332,6 +395,9 @@ static CK_RV cnk_handle_private_key_attribute(CK_ATTRIBUTE_PTR attribute, CK_BYT
 
   return rv;
 }
+
+static CK_BBOOL matchTemplate(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
+                              CK_ULONG ulCount);
 
 // Object operation implementations
 CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
@@ -388,32 +454,33 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CNK_DEBUG("Object handle: slot %lu, class %lu, id %lu", session->slot_id, obj_class, obj_id);
 
   // Map object ID to PIV tag
-  CK_BYTE piv_tag;
-  CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(obj_id, &piv_tag));
+  CK_BYTE bPivSlot;
+  CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(obj_id, &bPivSlot));
 
   // Fetch the PIV data for this object
   CK_BYTE data[4096];
   CK_ULONG data_len = sizeof(data);
-  CK_BYTE algorithm_type = 0;
+  CK_BYTE bAlgorithmType = 0;
   CK_BYTE abPublicKey[512];
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
 
   switch (obj_class) {
   case CKO_PUBLIC_KEY:
   case CKO_PRIVATE_KEY: {
-    CK_RV rv_meta = cnk_get_metadata(session->slot_id, piv_tag, &algorithm_type, abPublicKey, &cbPublicKey);
+    CK_RV rv_meta = cnk_get_metadata(session->slot_id, bPivSlot, &bAlgorithmType, abPublicKey, &cbPublicKey);
     if (rv_meta != CKR_OK) {
-      CNK_DEBUG("Failed to get metadata for PIV tag 0x%02X: %lu", piv_tag, rv_meta);
+      CNK_DEBUG("Failed to get metadata for PIV slot 0x%02X: %lu", bPivSlot, rv_meta);
     } else {
-      CNK_DEBUG("Retrieved algorithm type %u for PIV tag 0x%02X", algorithm_type, piv_tag);
+      CNK_DEBUG("Retrieved algorithm type %u for PIV slot 0x%02X with public key size %lu", bAlgorithmType, bPivSlot,
+                cbPublicKey);
     }
     break;
   }
 
   case CKO_CERTIFICATE:
-    CNK_ENSURE_OK(cnk_get_piv_data(session->slot_id, piv_tag, data, &data_len, CK_TRUE));
+    CNK_ENSURE_OK(cnk_get_piv_data(session->slot_id, bPivSlot, data, &data_len, CK_TRUE));
     if (data_len == 0) {
-      CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "No data found for PIV tag");
+      CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "No data found for PIV slot");
     }
     break;
 
@@ -471,7 +538,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
         break;
       }
 
-      snprintf(label, sizeof(label), "PIV %s %02X", type_str, piv_tag);
+      snprintf(label, sizeof(label), "PIV %s %02X", type_str, bPivSlot);
       CK_ULONG label_len = (CK_ULONG)strlen(label);
       rv = cnk_set_single_attribute_value(&pTemplate[i], label, label_len);
       break;
@@ -495,11 +562,11 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       break;
 
     case CKO_PUBLIC_KEY:
-      rv = cnk_handle_public_key_attribute(&pTemplate[i], algorithm_type, abPublicKey, cbPublicKey);
+      rv = cnk_handle_public_key_attribute(&pTemplate[i], bAlgorithmType, abPublicKey, cbPublicKey);
       break;
 
     case CKO_PRIVATE_KEY:
-      rv = cnk_handle_private_key_attribute(&pTemplate[i], algorithm_type);
+      rv = cnk_handle_private_key_attribute(&pTemplate[i], bAlgorithmType);
       break;
 
     default:
@@ -620,26 +687,9 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
 
     // No ID specified, check all possible IDs (1-6)
     for (CK_BYTE id = 1; id <= 6; id++) {
-      // Map ID to PIV tag
-      CK_BYTE piv_tag;
-      if (C_CNK_ObjIdToPivTag(id, &piv_tag) != CKR_OK) {
-        continue;
-      }
-
-      // Try to get the data for this tag
-      rv = cnk_get_piv_data(session->slot_id, piv_tag, NULL, NULL, CK_FALSE); // Just check existence
-
-      if (rv != CKR_OK && rv != CKR_DATA_INVALID) {
-        session->find_active = CK_FALSE;
-        cnk_mutex_unlock(&session->lock);
-        return rv;
-      }
-
-      // If data exists, add this object to the results
-      if (rv == CKR_OK) {
-        // Create a handle for this object: slot_id | object_class | object_id
-        CK_OBJECT_HANDLE handle = (session->slot_id << 16) | (session->find_object_class << 8) | id;
-        session->find_objects[session->find_objects_count++] = handle;
+      CK_OBJECT_HANDLE hObject = (session->slot_id << 16) | (session->find_object_class << 8) | id;
+      if (matchTemplate(hSession, hObject, pTemplate, ulCount)) {
+        session->find_objects[session->find_objects_count++] = hObject;
       }
     }
   }
@@ -713,4 +763,58 @@ CK_RV C_FindObjectsFinal(CK_SESSION_HANDLE hSession) {
 
   cnk_mutex_unlock(&session->lock);
   CNK_RET_OK;
+}
+
+static CK_BBOOL matchTemplate(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
+                              CK_ULONG ulCount) {
+  // Copy the template
+  CK_ATTRIBUTE_PTR attrs = (CK_ATTRIBUTE_PTR)ck_malloc(sizeof(CK_ATTRIBUTE) * ulCount);
+  if (attrs == NULL)
+    CNK_RETURN(CK_FALSE, "Failed to allocate memory for attributes");
+
+  for (CK_ULONG i = 0; i < ulCount; i++) {
+    attrs[i].type = pTemplate[i].type;
+    attrs[i].ulValueLen = pTemplate[i].ulValueLen;
+    attrs[i].pValue = ck_malloc(pTemplate[i].ulValueLen);
+    if (attrs[i].pValue == NULL) {
+      for (CK_ULONG j = 0; j < i; j++) {
+        ck_free(attrs[j].pValue);
+      }
+      ck_free(attrs);
+      CNK_RETURN(CK_FALSE, "Failed to allocate memory for attribute values");
+    }
+  }
+
+  // Get attribute values and compare
+  CK_BBOOL matched = CK_FALSE;
+
+  CK_RV rv = C_GetAttributeValue(hSession, hObject, attrs, ulCount);
+  if (rv != CKR_OK) {
+    for (CK_ULONG i = 0; i < ulCount; i++) {
+      ck_free(attrs[i].pValue);
+    }
+    ck_free(attrs);
+    CNK_RETURN(CK_FALSE, "Failed to get attribute values");
+  }
+
+  // Compare attribute values
+  for (CK_ULONG i = 0; i < ulCount; i++) {
+    if (attrs[i].ulValueLen != pTemplate[i].ulValueLen) {
+      matched = CK_FALSE;
+      break;
+    }
+    if (memcmp(attrs[i].pValue, pTemplate[i].pValue, attrs[i].ulValueLen) != 0) {
+      matched = CK_FALSE;
+      break;
+    }
+    matched = CK_TRUE;
+  }
+
+  // free memory
+  for (CK_ULONG i = 0; i < ulCount; i++) {
+    ck_free(attrs[i].pValue);
+  }
+  ck_free(attrs);
+
+  CNK_RETURN(matched, "Template matching finished");
 }
