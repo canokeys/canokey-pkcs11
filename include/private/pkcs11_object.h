@@ -2,6 +2,9 @@
 #define CANOKEY_PKCS11_OBJ_H
 
 #include "pkcs11.h"
+#include "pkcs11_session.h"
+
+#define AUTH_CHALLENGE_ID 0xF1
 
 /**
  * Validates an object.
@@ -11,7 +14,7 @@
  * @param expected_class The expected object class
  * @param obj_id The object ID
  */
-CK_RV cnk_validate_object(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS expected_class,
-                          CK_BYTE *obj_id);
+CK_RV CNK_ValidateObject(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS expected_class,
+                         CK_BYTE *obj_id);
 
 #endif // CANOKEY_PKCS11_OBJ_H

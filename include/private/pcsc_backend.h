@@ -70,6 +70,7 @@ void cnk_cleanup_pcsc(void);
 CK_RV cnk_select_piv_application(SCARDHANDLE hCard);
 CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
 CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard);
+CK_RV cnk_pivGetChallenge(CK_SLOT_ID slotId, CK_BYTE_PTR pbChallenge);
 
 // Forward declaration for session struct
 typedef struct CNK_PKCS11_SESSION CNK_PKCS11_SESSION;

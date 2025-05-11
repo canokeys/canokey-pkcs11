@@ -1,4 +1,5 @@
 #include "pkcs11.h"
+#include "pkcs11_object.h"
 
 #include <dlfcn.h>
 #include <stdio.h>
@@ -449,6 +450,7 @@ void test_ecdsa_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLO
 void test_certificate_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_rsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_ecdsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
+void test_auth_challenge(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 
 // Verification function declarations
 static CK_RV cnk_verify_rsa_signature(CK_BYTE_PTR modulus, CK_ULONG modulus_len, CK_BYTE_PTR exponent,
@@ -1916,6 +1918,55 @@ void test_ecdsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
   pFunctionList->C_CloseSession(signSession);
 }
 
+void test_auth_challenge(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotId) {
+  CK_SESSION_HANDLE hSession;
+  CK_RV rv = pFunctionList->C_OpenSession(slotId, CKF_SERIAL_SESSION, NULL, NULL, &hSession);
+  if (rv != CKR_OK) {
+    printf("    Error opening session for auth challenge tests: 0x%lx\n", rv);
+    return;
+  }
+
+  // Test certificate operations
+  CK_OBJECT_CLASS keyClass = CKO_DATA;
+  CK_BYTE keyId = AUTH_CHALLENGE_ID;
+  CK_ATTRIBUTE findTemplate[] = {{CKA_CLASS, &keyClass, sizeof(keyClass)}, {CKA_ID, &keyId, sizeof(keyId)}};
+
+  rv = pFunctionList->C_FindObjectsInit(hSession, findTemplate, 2);
+  if (rv != CKR_OK) {
+    printf("    Error initializing object search: 0x%lx\n", rv);
+    pFunctionList->C_CloseSession(hSession);
+    return;
+  }
+
+  CK_OBJECT_HANDLE hObject;
+  CK_ULONG ulObjectCount;
+
+  rv = pFunctionList->C_FindObjects(hSession, &hObject, 1, &ulObjectCount);
+  if (rv != CKR_OK || ulObjectCount == 0) {
+    printf("    No object found: 0x%lx\n", rv);
+  } else {
+    printf("    Found object (handle: %lu)\n", hObject);
+
+    // Finalize the search
+    rv = pFunctionList->C_FindObjectsFinal(hSession);
+    if (rv != CKR_OK) {
+      printf("    Error finalizing object search: 0x%lx\n", rv);
+    }
+
+    CK_BYTE chal[8];
+    CK_ATTRIBUTE temp = {CKA_VALUE, chal, sizeof(chal)};
+    rv = pFunctionList->C_GetAttributeValue(hSession, hObject, &temp, 1);
+    if (rv != CKR_OK) {
+      printf("      Error getting challenge value: 0x%lx\n", rv);
+    } else {
+      print_hex_data("Challenge value", chal, temp.ulValueLen, 32);
+    }
+  }
+
+  // Close the session
+  pFunctionList->C_CloseSession(hSession);
+}
+
 int main(int argc, char *argv[]) {
   // Path to the PKCS#11 library
   const char *libraryPath = NULL;
@@ -1987,26 +2038,29 @@ int main(int argc, char *argv[]) {
 
       printf("    Session opened successfully. Session handle: %lu\n", hSession);
 
-      // // Display session information
-      // display_session_info(pFunctionList, hSession);
-      //
-      // // Get the mechanism list
-      // display_mechanism_list(pFunctionList, pSlotList[i]);
-      //
-      // // Test public key operations
-      // test_public_key_operations(pFunctionList, pSlotList[i]);
-      //
-      // // Test ECDSA public key operations
-      // test_ecdsa_public_key_operations(pFunctionList, pSlotList[i]);
-      //
-      // // Test certificate operations
-      // test_certificate_operations(pFunctionList, pSlotList[i]);
-      //
-      // // Test RSA signing
-      // test_rsa_signing(pFunctionList, pSlotList[i]);
+      // Display session information
+      display_session_info(pFunctionList, hSession);
+
+      // Get the mechanism list
+      display_mechanism_list(pFunctionList, pSlotList[i]);
+
+      // Test public key operations
+      test_public_key_operations(pFunctionList, pSlotList[i]);
+
+      // Test ECDSA public key operations
+      test_ecdsa_public_key_operations(pFunctionList, pSlotList[i]);
+
+      // Test certificate operations
+      test_certificate_operations(pFunctionList, pSlotList[i]);
+
+      // Test RSA signing
+      test_rsa_signing(pFunctionList, pSlotList[i]);
 
       // Test ECDSA signing
       test_ecdsa_signing(pFunctionList, pSlotList[i]);
+
+      // Test auth challenge
+      test_auth_challenge(pFunctionList, pSlotList[i]);
 
       // Close the session
       rv = pFunctionList->C_CloseSession(hSession);

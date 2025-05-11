@@ -326,7 +326,7 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   CK_BYTE objId;
   CK_BYTE pivTag;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_ENSURE_OK(cnk_validate_object(hKey, session, CKO_PRIVATE_KEY, &objId));
+  CNK_ENSURE_OK(CNK_ValidateObject(hKey, session, CKO_PRIVATE_KEY, &objId));
   CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &pivTag));
 
   // Get metadata

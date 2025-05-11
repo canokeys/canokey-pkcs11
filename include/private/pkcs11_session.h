@@ -47,14 +47,14 @@ typedef struct CNK_PKCS11_SESSION {
   CNK_PKCS11_MUTEX lock;    // Session lock using abstract mutex
 
   // Object finding fields
-  CK_BBOOL find_active;                            // Whether a find operation is active
-  CK_OBJECT_HANDLE find_objects[MAX_FIND_OBJECTS]; // Array of found object handles
-  CK_ULONG find_objects_count;                     // Number of objects found
-  CK_ULONG find_objects_position;                  // Current position in the find_objects array
-  CK_OBJECT_CLASS find_object_class;               // Object class to find
-  CK_BYTE find_object_id;                          // Object ID to find
-  CK_BBOOL find_id_specified;                      // Whether ID was specified in the search template
-  CK_BBOOL find_class_specified;                   // Whether class was specified in the search template
+  CK_BBOOL findActive;                            // Whether a find operation is active
+  CK_OBJECT_HANDLE findObjects[MAX_FIND_OBJECTS]; // Array of found object handles
+  CK_ULONG findObjectsCount;                      // Number of objects found
+  CK_ULONG findObjectsPosition;                   // Current position in the find_objects array
+  CK_OBJECT_CLASS findObjectClass;                // Object class to find
+  CK_BYTE findObjectId;                           // Object ID to find
+  CK_BBOOL findIdSpecified;                       // Whether ID was specified in the search template
+  CK_BBOOL findClassSpecified;                    // Whether class was specified in the search template
 
   // Cryptographic operation fields
   CNK_PKCS11_SIGNING_CONTEXT signingContext;
