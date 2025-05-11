@@ -219,9 +219,26 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
       CKM_SHA3_256_RSA_PKCS,     // RSA PKCS #1 v1.5 with SHA3-256
       CKM_SHA3_384_RSA_PKCS,     // RSA PKCS #1 v1.5 with SHA3-384
       CKM_SHA3_512_RSA_PKCS,     // RSA PKCS #1 v1.5 with SHA3-512
-
-      CKM_ECDSA_KEY_PAIR_GEN, // ECDSA key pair generation
-      CKM_ECDSA               // ECDSA
+      CKM_ECDSA_KEY_PAIR_GEN,    // ECDSA key pair generation
+      CKM_ECDSA,                 // ECDSA
+      CKM_ECDSA_SHA1,            // ECDSA with SHA-1
+      CKM_ECDSA_SHA224,          // ECDSA with SHA-224
+      CKM_ECDSA_SHA256,          // ECDSA with SHA-256
+      CKM_ECDSA_SHA384,          // ECDSA with SHA-384
+      CKM_ECDSA_SHA512,          // ECDSA with SHA-512
+      CKM_ECDSA_SHA3_224,        // ECDSA with SHA3-224
+      CKM_ECDSA_SHA3_256,        // ECDSA with SHA3-256
+      CKM_ECDSA_SHA3_384,        // ECDSA with SHA3-384
+      CKM_ECDSA_SHA3_512,        // ECDSA with SHA3-512
+      CKM_SHA_1,
+      CKM_SHA224,
+      CKM_SHA256,
+      CKM_SHA384,
+      CKM_SHA512,
+      CKM_SHA3_224,
+      CKM_SHA3_256,
+      CKM_SHA3_384,
+      CKM_SHA3_512,
   };
 
   const CK_ULONG num_mechanisms = sizeof(supported_mechanisms) / sizeof(supported_mechanisms[0]);
@@ -258,20 +275,20 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   // Set mechanism info based on type
   switch (type) {
   case CKM_RSA_PKCS_KEY_PAIR_GEN:
-    pInfo->flags = CKF_GENERATE_KEY_PAIR;
+    pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR;
     pInfo->ulMinKeySize = 2048;
     pInfo->ulMaxKeySize = 4096;
     break;
 
   case CKM_RSA_X_509:
   case CKM_RSA_PKCS:
-    pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT | CKF_SIGN | CKF_VERIFY;
+    pInfo->flags = CKF_HW | CKF_ENCRYPT | CKF_DECRYPT | CKF_SIGN | CKF_VERIFY;
     pInfo->ulMinKeySize = 2048;
     pInfo->ulMaxKeySize = 4096;
     break;
 
   case CKM_RSA_PKCS_OAEP:
-    pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT;
+    pInfo->flags = CKF_HW | CKF_ENCRYPT | CKF_DECRYPT;
     pInfo->ulMinKeySize = 2048;
     pInfo->ulMaxKeySize = 4096;
     break;
@@ -290,12 +307,43 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   case CKM_SHA3_256_RSA_PKCS:
   case CKM_SHA3_384_RSA_PKCS:
   case CKM_SHA3_512_RSA_PKCS:
-    pInfo->flags = CKF_SIGN | CKF_VERIFY;
+    pInfo->flags = CKF_HW | CKF_SIGN | CKF_VERIFY;
     pInfo->ulMinKeySize = 2048;
     pInfo->ulMaxKeySize = 4096;
     break;
 
-    // TODO: add ECDSA
+  case CKM_ECDSA_KEY_PAIR_GEN:
+    pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_NAMEDCURVE;
+    pInfo->ulMinKeySize = 256;
+    pInfo->ulMaxKeySize = 384;
+    break;
+
+  case CKM_ECDSA:
+  case CKM_ECDSA_SHA1:
+  case CKM_ECDSA_SHA224:
+  case CKM_ECDSA_SHA256:
+  case CKM_ECDSA_SHA384:
+  case CKM_ECDSA_SHA512:
+  case CKM_ECDSA_SHA3_224:
+  case CKM_ECDSA_SHA3_256:
+  case CKM_ECDSA_SHA3_384:
+  case CKM_ECDSA_SHA3_512:
+    pInfo->flags = CKF_HW | CKF_SIGN | CKF_VERIFY | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_NAMEDCURVE;
+    pInfo->ulMinKeySize = 256;
+    pInfo->ulMaxKeySize = 384;
+    break;
+
+  case CKM_SHA_1:
+  case CKM_SHA224:
+  case CKM_SHA256:
+  case CKM_SHA384:
+  case CKM_SHA512:
+  case CKM_SHA3_224:
+  case CKM_SHA3_256:
+  case CKM_SHA3_384:
+  case CKM_SHA3_512:
+    pInfo->flags = CKF_DIGEST;
+    break;
 
   default:
     CNK_RETURN(CKR_MECHANISM_INVALID, "invalid mechanism");

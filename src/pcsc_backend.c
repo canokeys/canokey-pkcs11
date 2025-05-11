@@ -308,39 +308,39 @@ void cnk_disconnect_card(SCARDHANDLE hCard) {
 }
 
 // Helper function to transmit APDU commands and log both command and response
-static LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, DWORD command_len, CK_BYTE *response,
-                                DWORD *response_len, CK_BBOOL auto_get_response) {
-  DWORD available = *response_len;
-  CNK_LOG_FUNC(": hCard = %p, command = %p, command_len = %lu, response = %p, available = %lu, auto_get_response = %d",
-               hCard, command, command_len, response, available, auto_get_response);
+static LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *pCommand, CK_ULONG cbCommand, CK_BYTE *pResponse,
+                                DWORD *pcbResponse, CK_BBOOL auto_get_response) {
+  DWORD available = *pcbResponse;
+  CNK_LOG_FUNC(": hCard = %p, pCommand = %p, cbCommand = %lu, pResponse = %p, available = %lu, auto_get_response = %d",
+               hCard, pCommand, cbCommand, pResponse, available, auto_get_response);
 
-  if (hCard == 0 || command == NULL || response == NULL || response_len == NULL)
+  if (hCard == 0 || pCommand == NULL || pResponse == NULL || pcbResponse == NULL)
     CNK_RETURN(SCARD_E_INVALID_PARAMETER, "Invalid arguments");
 
   // Log the APDU command
-  CNK_LOG_APDU_COMMAND(command, command_len);
+  CNK_LOG_APDU_COMMAND(pCommand, cbCommand);
 
   // Transmit the command
-  LONG rv = SCardTransmit(hCard, SCARD_PCI_T1, command, command_len, NULL, response, response_len);
+  LONG rv = SCardTransmit(hCard, SCARD_PCI_T1, pCommand, cbCommand, NULL, pResponse, pcbResponse);
   if (rv != SCARD_S_SUCCESS) {
     CNK_ERROR("SCardTransmit failed: 0x%lX", rv);
     return rv;
   }
-  CNK_LOG_APDU_RESPONSE(response, *response_len);
+  CNK_LOG_APDU_RESPONSE(pResponse, *pcbResponse);
 
   // If auto_get_response is false, return here
   if (!auto_get_response)
     CNK_RET_OK;
 
   // At least two status bytes are expected
-  if (*response_len < 2)
+  if (*pcbResponse < 2)
     CNK_RETURN(SCARD_E_UNEXPECTED, "Response too short for status bytes");
 
   // Get the data length and status bytes
-  DWORD data_len = (*response_len > 2) ? (*response_len - 2) : 0;
+  DWORD data_len = (*pcbResponse > 2) ? (*pcbResponse - 2) : 0;
   DWORD total_len = data_len;
-  CK_BYTE sw1 = response[*response_len - 2];
-  CK_BYTE sw2 = response[*response_len - 1];
+  CK_BYTE sw1 = pResponse[*pcbResponse - 2];
+  CK_BYTE sw2 = pResponse[*pcbResponse - 1];
 
   // If SW1=0x61, loop to send GET RESPONSE
   while (sw1 == 0x61) {
@@ -377,18 +377,18 @@ static LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, DWORD
     }
 
     // Append this chunk's data to the main response buffer
-    memcpy(response + total_len, temp, chunk_len);
+    memcpy(pResponse + total_len, temp, chunk_len);
     total_len += chunk_len;
   }
 
   // Append status bytes
-  response[total_len++] = sw1;
-  response[total_len++] = sw2;
+  pResponse[total_len++] = sw1;
+  pResponse[total_len++] = sw2;
 
   // Update output length, only return data part (no status bytes)
-  *response_len = total_len;
-  CNK_DEBUG("Total response length (data only): %lu bytes", total_len);
-  CNK_LOG_APDU_RESPONSE(response, total_len);
+  *pcbResponse = total_len;
+  CNK_DEBUG("Total response length (data only): %lu bytes", total_len - 2);
+  CNK_LOG_APDU_RESPONSE(pResponse, total_len);
 
   CNK_RET_OK;
 }
@@ -783,9 +783,8 @@ CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
 
 // Sign data using PIV key
 // This function signs raw data using the PIV GENERAL AUTHENTICATE command
-// Supports input data up to 512 bytes (for RSA 4096)
-CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_tag, CK_BYTE_PTR pData,
-                   CK_ULONG ulDataLen, CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen) {
+CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pData, CK_ULONG cbDataLen,
+                   CK_BYTE_PTR pSignature, CK_ULONG_PTR pcbSignature) {
   SCARDHANDLE hCard;
 
   // Check if we're just getting the signature length
@@ -793,15 +792,16 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pSignature is NULL");
 
   // Check if input data is too large (max 512 bytes for RSA 4096)
-  if (ulDataLen > 512)
+  if (cbDataLen > 512)
     CNK_RETURN(CKR_DATA_LEN_RANGE, "Input data too large (max 512 bytes)");
 
   // Verify PIN before signing
-  if (session->piv_pin_len == 0)
+  if (pSession->piv_pin_len == 0)
     CNK_RETURN(CKR_PIN_INCORRECT, "PIN verification required before signing");
 
   // Use the extended version to keep the card connection open
-  CK_RV rv = cnk_verify_piv_pin_with_session_ex(slotID, session, session->piv_pin, session->piv_pin_len, NULL, &hCard);
+  CK_RV rv =
+      cnk_verify_piv_pin_with_session_ex(slotId, pSession, pSession->piv_pin, pSession->piv_pin_len, NULL, &hCard);
   if (rv != CKR_OK) {
     CNK_ERROR("Failed to verify PIN");
     cnk_disconnect_card(hCard);
@@ -826,19 +826,19 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   tlv_data[tlv_len++] = 0x81;
 
   // Encode the length of the input data
-  if (ulDataLen > 255) {
+  if (cbDataLen > 255) {
     // Use two-byte length encoding for lengths > 255
     tlv_data[tlv_len++] = 0x82;                               // Two-byte length marker
-    tlv_data[tlv_len++] = (CK_BYTE)((ulDataLen >> 8) & 0xFF); // Length high byte
-    tlv_data[tlv_len++] = (CK_BYTE)(ulDataLen & 0xFF);        // Length low byte
+    tlv_data[tlv_len++] = (CK_BYTE)((cbDataLen >> 8) & 0xFF); // Length high byte
+    tlv_data[tlv_len++] = (CK_BYTE)(cbDataLen & 0xFF);        // Length low byte
   } else {
     // Use one-byte length encoding for lengths <= 255
-    tlv_data[tlv_len++] = (CK_BYTE)ulDataLen;
+    tlv_data[tlv_len++] = (CK_BYTE)cbDataLen;
   }
 
   // Copy the raw input data
-  memcpy(tlv_data + tlv_len, pData, ulDataLen);
-  tlv_len += ulDataLen;
+  memcpy(tlv_data + tlv_len, pData, cbDataLen);
+  tlv_len += cbDataLen;
 
   // Now fill in the length of the outer template
   // The length needs to be updated based on the total length of the contents
@@ -865,39 +865,39 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
 
   // Build the GENERAL AUTHENTICATE APDU
   // Increased buffer size for Extended APDU (4 header + 3 Lc + ~1024 data + 3 Le)
-  CK_BYTE auth_apdu[1100];
-  DWORD apdu_len = 0;
+  CK_BYTE abAuthApdu[1100];
+  CK_ULONG cbAuthApdu = 0;
 
   // APDU header
-  auth_apdu[apdu_len++] = 0x00;    // CLA
-  auth_apdu[apdu_len++] = 0x87;    // INS - GENERAL AUTHENTICATE
-  auth_apdu[apdu_len++] = 0x07;    // P1 - Algorithm (RSA 2048)
-  auth_apdu[apdu_len++] = piv_tag; // P2 - Key reference (PIV slot)
+  abAuthApdu[cbAuthApdu++] = 0x00;                                   // CLA
+  abAuthApdu[cbAuthApdu++] = 0x87;                                   // INS - GENERAL AUTHENTICATE
+  abAuthApdu[cbAuthApdu++] = pSession->signingContext.algorithmType; // P1 - Algorithm
+  abAuthApdu[cbAuthApdu++] = pSession->signingContext.pivSlot;       // P2 - Key reference (PIV slot)
 
   // Handle Lc, Data, and Le based on APDU format and using the TLV data
   if (tlv_len <= 255) {
     // Standard APDU format
-    auth_apdu[apdu_len++] = (CK_BYTE)tlv_len;        // Lc
-    memcpy(auth_apdu + apdu_len, tlv_data, tlv_len); // Data
-    apdu_len += tlv_len;
-    auth_apdu[apdu_len++] = 0x00; // Le (request max available)
+    abAuthApdu[cbAuthApdu++] = (CK_BYTE)tlv_len;        // Lc
+    memcpy(abAuthApdu + cbAuthApdu, tlv_data, tlv_len); // Data
+    cbAuthApdu += tlv_len;
+    abAuthApdu[cbAuthApdu++] = 0x00; // Le (request max available)
   } else {
     // Extended APDU format
-    auth_apdu[apdu_len++] = 0x00;                             // Extended length marker
-    auth_apdu[apdu_len++] = (CK_BYTE)((tlv_len >> 8) & 0xFF); // Lc high byte
-    auth_apdu[apdu_len++] = (CK_BYTE)(tlv_len & 0xFF);        // Lc low byte
-    memcpy(auth_apdu + apdu_len, tlv_data, tlv_len);          // Data
-    apdu_len += tlv_len;
-    auth_apdu[apdu_len++] = 0x00; // Le high byte (request max available)
-    auth_apdu[apdu_len++] = 0x00; // Le low byte
+    abAuthApdu[cbAuthApdu++] = 0x00;                             // Extended length marker
+    abAuthApdu[cbAuthApdu++] = (CK_BYTE)((tlv_len >> 8) & 0xFF); // Lc high byte
+    abAuthApdu[cbAuthApdu++] = (CK_BYTE)(tlv_len & 0xFF);        // Lc low byte
+    memcpy(abAuthApdu + cbAuthApdu, tlv_data, tlv_len);          // Data
+    cbAuthApdu += tlv_len;
+    abAuthApdu[cbAuthApdu++] = 0x00; // Le high byte (request max available)
+    abAuthApdu[cbAuthApdu++] = 0x00; // Le low byte
   }
 
   // Send the GENERAL AUTHENTICATE command
-  CK_BYTE response[1024]; // Increased buffer size for larger responses
-  DWORD response_len = sizeof(response);
+  CK_BYTE response[1024];              // Increased buffer size for larger responses
+  DWORD cbResponse = sizeof(response); // Use DWORD for PC/SC API compatibility
 
   CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command for signing");
-  LONG pcsc_rv = cnk_transceive_apdu(hCard, auth_apdu, apdu_len, response, &response_len, CK_TRUE);
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, abAuthApdu, cbAuthApdu, response, &cbResponse, CK_TRUE);
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
     cnk_disconnect_card(hCard);
@@ -905,8 +905,8 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   }
 
   // Check for success (9000) or more data available (61XX)
-  CK_BYTE sw1 = response[response_len - 2];
-  CK_BYTE sw2 = response[response_len - 1];
+  CK_BYTE sw1 = response[cbResponse - 2];
+  CK_BYTE sw2 = response[cbResponse - 1];
   if (sw1 != 0x90 || sw2 != 0x00) {
     CNK_ERROR("GENERAL AUTHENTICATE returned error status: %02X%02X", sw1, sw2);
     cnk_disconnect_card(hCard);
@@ -914,13 +914,13 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   }
 
   // Remove the SW from the response
-  response_len -= 2;
+  cbResponse -= 2;
 
   // Parse the response
   // The signature is returned in the format: 7C len1 82 len2 <signature>
 
   // Check if we have enough data
-  if (response_len < 4) { // At least 7C len 82 len
+  if (cbResponse < 4) { // At least 7C len 82 len
     cnk_disconnect_card(hCard);
     CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: too short");
   }
@@ -942,7 +942,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   }
 
   // Check for the inner 82 tag (signature response)
-  if (offset < response_len && response[offset] != 0x82) {
+  if (offset < cbResponse && response[offset] != 0x82) {
     cnk_disconnect_card(hCard);
     CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: missing 82 tag");
   }
@@ -951,44 +951,206 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE piv_t
   offset++; // Skip the 82 tag
 
   // Handle the length field
-  if (offset < response_len) {
-    if (response[offset] == 0x82 && offset + 2 < response_len) {
-      // Two-byte length
-      offset += 3; // Skip 82 and two length bytes
-    } else if (response[offset] == 0x81 && offset + 1 < response_len) {
-      // One-byte length with 81 prefix
-      offset += 2; // Skip 81 and one length byte
+  if (offset < cbResponse) {
+    CK_LONG fail = 0;
+    CK_ULONG bcLength = 0;
+    tlvGetLengthSafe(&response[offset], cbResponse - offset, &fail, &bcLength);
+    if (!fail) {
+      offset += bcLength; // Skip length bytes
     } else {
-      // One-byte length
-      offset += 1; // Skip one length byte
+      cnk_disconnect_card(hCard);
+      *pcbSignature = 0;
+      CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: failed to parse length field");
     }
   }
 
-  // Copy the signature
-  size_t sig_len = response_len - offset;
-  CNK_DEBUG("Signature length: %zu, buffer size: %zu", sig_len, *pulSignatureLen);
-  if (sig_len > *pulSignatureLen) {
-    cnk_disconnect_card(hCard);
-    *pulSignatureLen = sig_len;
-    CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Signature buffer too small for actual signature");
-  }
+  // Extract ECDSA signature components if needed
+  size_t sig_len = cbResponse - offset;
+  CNK_DEBUG("Raw signature length: %zu, buffer size: %zu", sig_len, *pcbSignature);
 
-  memcpy(pSignature, response + offset, sig_len);
-  *pulSignatureLen = (CK_ULONG)sig_len;
+  // Check if this is an ECDSA signature
+  CK_BYTE algorithmType = pSession->signingContext.algorithmType;
+  if (algorithmType == PIV_ALG_ECC_256 || algorithmType == PIV_ALG_ECC_384) {
+    // ECDSA signature is in DER format, convert to raw r||s format
+    CNK_DEBUG("Converting ECDSA signature from DER to raw format");
+
+    CK_ULONG ec_size = (algorithmType == PIV_ALG_ECC_256) ? 32 : 48; // P-256 = 32 bytes, P-384 = 48 bytes
+    CK_ULONG expected_sig_size = ec_size * 2;                        // r || s
+
+    // Check buffer size for raw signature
+    if (expected_sig_size > *pcbSignature) {
+      cnk_disconnect_card(hCard);
+      *pcbSignature = expected_sig_size;
+      CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Signature buffer too small for raw ECDSA signature");
+    }
+
+    // Temp buffer for the raw signature
+    CK_BYTE raw_sig[128] = {0}; // Max size for P-521 would be 132 bytes
+
+    // Parse DER encoded signature
+    const CK_BYTE *der_sig = response + offset;
+    size_t der_len = sig_len;
+
+    // Expecting SEQUENCE { r INTEGER, s INTEGER }
+    if (der_len < 2 || der_sig[0] != 0x30) { // 0x30 is the SEQUENCE tag in DER
+      cnk_disconnect_card(hCard);
+      CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: not a valid SEQUENCE");
+    }
+
+    // Skip SEQUENCE tag
+    size_t der_pos = 1;
+
+    // Get sequence length
+    CK_LONG seq_len_fail = 0;
+    CK_ULONG seq_len_size = 0;
+    tlvGetLengthSafe(der_sig + der_pos, der_len - der_pos, &seq_len_fail, &seq_len_size);
+    if (seq_len_fail) {
+      cnk_disconnect_card(hCard);
+      CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: couldn't parse SEQUENCE length");
+    }
+    der_pos += seq_len_size;
+
+    // Expect r INTEGER
+    if (der_pos >= der_len || der_sig[der_pos] != 0x02) { // 0x02 is the INTEGER tag in DER
+      cnk_disconnect_card(hCard);
+      CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: r value not an INTEGER");
+    }
+    der_pos++; // Skip INTEGER tag
+
+    // Get r length
+    CK_LONG r_len_fail = 0;
+    CK_ULONG r_len_size = 0;
+    CK_ULONG r_len = tlvGetLengthSafe(der_sig + der_pos, der_len - der_pos, &r_len_fail, &r_len_size);
+    if (r_len_fail) {
+      cnk_disconnect_card(hCard);
+      CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: couldn't parse r INTEGER length");
+    }
+    der_pos += r_len_size;
+
+    // Adjust for negative numbers (where first byte is 0x00)
+    CK_ULONG r_value_offset = 0;
+    if (r_len > 0 && der_sig[der_pos] == 0x00) {
+      r_value_offset = 1;
+      r_len--;
+    }
+
+    // Copy r value with padding if needed
+    if (r_len <= ec_size) {
+      // Zero-pad to the left
+      memset(raw_sig, 0, ec_size - r_len);
+      memcpy(raw_sig + (ec_size - r_len), der_sig + der_pos + r_value_offset, r_len);
+    } else {
+      // Truncate extra leading bytes (this shouldn't happen with valid signatures)
+      memcpy(raw_sig, der_sig + der_pos + r_value_offset + (r_len - ec_size), ec_size);
+    }
+    der_pos += r_len + r_value_offset;
+
+    // Expect s INTEGER
+    if (der_pos >= der_len || der_sig[der_pos] != 0x02) { // 0x02 is the INTEGER tag in DER
+      cnk_disconnect_card(hCard);
+      CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: s value not an INTEGER");
+    }
+    der_pos++; // Skip INTEGER tag
+
+    // Get s length
+    CK_LONG s_len_fail = 0;
+    CK_ULONG s_len_size = 0;
+    CK_ULONG s_len = tlvGetLengthSafe(der_sig + der_pos, der_len - der_pos, &s_len_fail, &s_len_size);
+    if (s_len_fail) {
+      cnk_disconnect_card(hCard);
+      CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: couldn't parse s INTEGER length");
+    }
+    der_pos += s_len_size;
+
+    // Adjust for negative numbers (where first byte is 0x00)
+    CK_ULONG s_value_offset = 0;
+    if (s_len > 0 && der_sig[der_pos] == 0x00) {
+      s_value_offset = 1;
+      s_len--;
+    }
+
+    // Copy s value with padding if needed
+    if (s_len <= ec_size) {
+      // Zero-pad to the left
+      memset(raw_sig + ec_size, 0, ec_size - s_len);
+      memcpy(raw_sig + ec_size + (ec_size - s_len), der_sig + der_pos + s_value_offset, s_len);
+    } else {
+      // Truncate extra leading bytes
+      memcpy(raw_sig + ec_size, der_sig + der_pos + s_value_offset + (s_len - ec_size), ec_size);
+    }
+
+    // Copy the raw signature to output buffer
+    memcpy(pSignature, raw_sig, expected_sig_size);
+    *pcbSignature = expected_sig_size;
+    CNK_DEBUG("Converted ECDSA signature to %lu byte raw format", expected_sig_size);
+  } else {
+    // For non-ECDSA signatures, just copy the raw signature
+    if (sig_len > *pcbSignature) {
+      cnk_disconnect_card(hCard);
+      *pcbSignature = sig_len;
+      CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Signature buffer too small for actual signature");
+    }
+
+    memcpy(pSignature, response + offset, sig_len);
+    *pcbSignature = (CK_ULONG)sig_len;
+  }
 
   cnk_disconnect_card(hCard);
   return CKR_OK;
 }
 
-CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm_type, CK_BYTE_PTR pPublicKey,
-                       CK_ULONG_PTR pPublicKeyLen) {
+CK_RV cnk_pivGetChallenge(CK_SLOT_ID slotId, CK_BYTE_PTR pbChallenge) {
+  CK_RV rv;
   SCARDHANDLE hCard;
 
-  CNK_ENSURE_NONNULL(algorithm_type);
+  CNK_ENSURE_NONNULL(pbChallenge);
+
+  // Connect to the card for this operation
+  CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotId, &hCard));
+
+  // Select the PIV application
+  rv = cnk_select_piv_application(hCard);
+  if (rv != CKR_OK)
+    goto cleanup;
+
+  // Prepare the APDU for getting challenge
+  // Command: 00 87 03 9B 04 7C 02 81 00
+  CK_BYTE apdu[] = {0x00, 0x87, 0x03, 0x9B, 0x04, 0x7C, 0x02, 0x81, 0x00};
+
+  // Buffer to hold the complete response (up to 16 bytes)
+  CK_BYTE response[16];
+  DWORD cbResponse = sizeof(response);
+
+  // Send the GET CHALLENGE command
+  LONG rvTransceive = cnk_transceive_apdu(hCard, apdu, sizeof(apdu), response, &cbResponse, CK_TRUE);
+  if (rvTransceive != SCARD_S_SUCCESS) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+
+  // Check if the command was successful
+  if (cbResponse != 14 || response[cbResponse - 2] != 0x90 || response[cbResponse - 1] != 0x00) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+
+  // Copy the challenge to the output buffer
+  memcpy(pbChallenge, response + 4, 8);
+
+cleanup:
+  cnk_disconnect_card(hCard);
+  CNK_RETURN(rv, "");
+}
+
+CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType, CK_BYTE_PTR pbPublicKey,
+                       CK_ULONG_PTR pulPublicKeyLen) {
+  SCARDHANDLE hCard;
+
+  CNK_ENSURE_NONNULL(pbAlgorithmType);
 
   // If modulus is requested, ensure the length pointer is provided
-  if (pPublicKey != NULL && pPublicKeyLen == NULL)
-    CNK_RETURN(CKR_ARGUMENTS_BAD, "pPublicKeyLen is NULL when pPublicKey is provided");
+  if (pbPublicKey != NULL && pulPublicKeyLen == NULL)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "pulPublicKeyLen is NULL when pbPublicKey is provided");
 
   // Connect to the card for this operation
   CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotID, &hCard));
@@ -1002,14 +1164,14 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
 
   // Prepare the APDU for getting metadata
   // Command: 00 F7 00 XX 00 where XX is the PIV tag
-  CK_BYTE metadata_apdu[] = {0x00, 0xF7, 0x00, piv_tag, 0x00};
+  CK_BYTE metadata_apdu[] = {0x00, 0xF7, 0x00, pivTag, 0x00};
 
   // Buffer to hold the complete response (up to 1024 bytes)
   CK_BYTE response[1024];
   DWORD response_len = sizeof(response);
 
   // Send the metadata command
-  CNK_DEBUG("Sending metadata command for PIV tag 0x%02X", piv_tag);
+  CNK_DEBUG("Sending metadata command for PIV tag 0x%02X", pivTag);
   LONG pcsc_rv = cnk_transceive_apdu(hCard, metadata_apdu, sizeof(metadata_apdu), response, &response_len, CK_TRUE);
   if (pcsc_rv != SCARD_S_SUCCESS) {
     CNK_ERROR("Failed to send metadata command: %ld", pcsc_rv);
@@ -1028,9 +1190,9 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
   CK_BYTE sw1 = response[response_len - 2];
   CK_BYTE sw2 = response[response_len - 1];
   if (sw1 != 0x90 || sw2 != 0x00) {
-    CNK_ERROR("GENERAL AUTHENTICATE returned error status: %02X%02X", sw1, sw2);
+    CNK_ERROR("GET METADATA returned error status: %02X%02X", sw1, sw2);
     cnk_disconnect_card(hCard);
-    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to sign");
+    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to get metadata");
   }
 
   // Process the complete response data
@@ -1079,8 +1241,8 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
     switch (tag) {
     case 0x01: // Algorithm type
       if (length == 1) {
-        *algorithm_type = data[pos];
-        CNK_DEBUG("Algorithm type: 0x%02X", *algorithm_type);
+        *pbAlgorithmType = data[pos];
+        CNK_DEBUG("Algorithm type: 0x%02X", *pbAlgorithmType);
       }
       break;
 
@@ -1101,8 +1263,8 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE piv_tag, CK_BYTE_PTR algorithm
     case 0x04: // Public key encoding
       if (length > 0) {
         CNK_DEBUG("Public key data present, length: %lu bytes", length);
-        memcpy(pPublicKey, data + pos, length);
-        *pPublicKeyLen = length;
+        memcpy(pbPublicKey, data + pos, length);
+        *pulPublicKeyLen = length;
       }
       break;
 
