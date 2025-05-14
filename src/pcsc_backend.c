@@ -1,5 +1,6 @@
 #include "pcsc_backend.h"
 #include "logging.h"
+#include "mbedtls/des.h"
 #include "pkcs11.h"
 #include "pkcs11_mutex.h"
 #include "pkcs11_session.h"
@@ -1099,49 +1100,6 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
   return CKR_OK;
 }
 
-CK_RV cnk_pivGetChallenge(CK_SLOT_ID slotId, CK_BYTE_PTR pbChallenge) {
-  CK_RV rv;
-  SCARDHANDLE hCard;
-
-  CNK_ENSURE_NONNULL(pbChallenge);
-
-  // Connect to the card for this operation
-  CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotId, &hCard));
-
-  // Select the PIV application
-  rv = cnk_select_piv_application(hCard);
-  if (rv != CKR_OK)
-    goto cleanup;
-
-  // Prepare the APDU for getting challenge
-  // Command: 00 87 03 9B 04 7C 02 81 00
-  CK_BYTE apdu[] = {0x00, 0x87, 0x03, 0x9B, 0x04, 0x7C, 0x02, 0x81, 0x00};
-
-  // Buffer to hold the complete response (up to 16 bytes)
-  CK_BYTE response[16];
-  DWORD cbResponse = sizeof(response);
-
-  // Send the GET CHALLENGE command
-  LONG rvTransceive = cnk_transceive_apdu(hCard, apdu, sizeof(apdu), response, &cbResponse, CK_TRUE);
-  if (rvTransceive != SCARD_S_SUCCESS) {
-    rv = CKR_DEVICE_ERROR;
-    goto cleanup;
-  }
-
-  // Check if the command was successful
-  if (cbResponse != 14 || response[cbResponse - 2] != 0x90 || response[cbResponse - 1] != 0x00) {
-    rv = CKR_DEVICE_ERROR;
-    goto cleanup;
-  }
-
-  // Copy the challenge to the output buffer
-  memcpy(pbChallenge, response + 4, 8);
-
-cleanup:
-  cnk_disconnect_card(hCard);
-  CNK_RETURN(rv, "");
-}
-
 CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType, CK_BYTE_PTR pbPublicKey,
                        CK_ULONG_PTR pulPublicKeyLen) {
   SCARDHANDLE hCard;
@@ -1349,4 +1307,88 @@ CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
 CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
                                       CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries) {
   return cnk_verify_piv_pin_with_session_ex(slotID, session, pPin, ulPinLen, pPinTries, NULL);
+}
+
+/* Verify the PIV management key by 3‑DES‑encrypting the card’s challenge
+ * and sending the resulting host cryptogram back to the card.
+ *
+ * pKey  – 24‑byte raw management key.
+ */
+CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey) {
+  SCARDHANDLE hCard;
+  CK_BYTE capdu[32], rapdu[16], hostCryptogram[8];
+  DWORD cbRapdu = sizeof(rapdu);
+  CK_RV rv;
+  LONG rvTransceive;
+  mbedtls_des3_context ctx;
+  int mbedtlsRet;
+
+  // Connect to the card
+  CNK_ENSURE_OK(cnk_connect_and_select_canokey(session->slot_id, &hCard));
+
+  // Select the PIV application
+  rv = cnk_select_piv_application(hCard);
+  if (rv != CKR_OK)
+    goto cleanup;
+
+  // Prepare the APDU for getting challenge
+  // Command: 00 87 03 9B 04 7C 02 81 00
+  memcpy(capdu, (CK_BYTE[]){0x00, 0x87, 0x03, 0x9B, 0x04, 0x7C, 0x02, 0x81, 0x00}, 9);
+
+  // Send the GET CHALLENGE command
+  rvTransceive = cnk_transceive_apdu(hCard, capdu, 9, rapdu, &cbRapdu, CK_TRUE);
+  if (rvTransceive != SCARD_S_SUCCESS) {
+    CNK_ERROR("Failed to get challenge, pc/sc error: %ld", rvTransceive);
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+
+  // Check if the command was successful
+  if (cbRapdu != 14 || rapdu[cbRapdu - 2] != 0x90 || rapdu[cbRapdu - 1] != 0x00) {
+    CNK_ERROR("Failed to get challenge, SW not OK");
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+
+  // Encrypt the challenge using the management key
+  mbedtls_des3_init(&ctx);
+  mbedtlsRet = mbedtls_des3_set3key_enc(&ctx, pKey);
+  if (mbedtlsRet != 0) {
+    mbedtls_des3_free(&ctx);
+    CNK_RETURN(mbedtlsRet, "mbedtls_des3_set3key_enc() failed");
+  }
+
+  mbedtlsRet = mbedtls_des3_crypt_ecb(&ctx, rapdu + 4, hostCryptogram);
+  mbedtls_des3_free(&ctx);
+  if (mbedtlsRet != 0)
+    CNK_RETURN(mbedtlsRet, "mbedtls_des3_crypt_ecb() failed");
+
+  // Send the host cryptogram to the card
+  // Prepare the APDU for authentication
+  // Command: 00 87 03 9B 0C 7C 0A 82 08 <host_cryptogram>
+  memcpy(capdu, (CK_BYTE[]){0x00, 0x87, 0x03, 0x9B, 0x0C, 0x7C, 0x0A, 0x82, 0x08}, 9);
+  memcpy(capdu + 9, hostCryptogram, sizeof(hostCryptogram));
+
+  // Check if the command was successful
+  rvTransceive = cnk_transceive_apdu(hCard, capdu, 17, rapdu, &cbRapdu, CK_TRUE);
+  if (rvTransceive != SCARD_S_SUCCESS) {
+    CNK_ERROR("Failed to authenticate, pc/sc error: %ld", rvTransceive);
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+
+  // Check if the command was successful
+  if (cbRapdu != 2 || rapdu[cbRapdu - 2] != 0x90 || rapdu[cbRapdu - 1] != 0x00) {
+    CNK_ERROR("Failed to authenticate, SW not OK");
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+
+  // Authentication successful
+  rv = CKR_OK;
+
+cleanup:
+  mbedtls_des3_free(&ctx);
+  cnk_disconnect_card(hCard);
+  CNK_RETURN(rv, "");
 }

@@ -4,8 +4,6 @@
 #include "pkcs11.h"
 #include "pkcs11_session.h"
 
-#define AUTH_CHALLENGE_ID 0xF1
-
 /**
  * Validates an object.
  *

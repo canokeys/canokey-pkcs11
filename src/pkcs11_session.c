@@ -360,8 +360,10 @@ CK_RV C_SetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationStat
   CNK_RET_UNIMPL;
 }
 
-CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries) {
-  CNK_LOG_FUNC(": hSession: %lu, userType: %d, pPin: %p, ulPinLen: %lu, pPinTries: %p", hSession, userType, pPin, ulPinLen, pPinTries);
+CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,
+                  CK_BYTE_PTR pPinTries) {
+  CNK_LOG_FUNC(": hSession: %lu, userType: %d, pPin: %p, ulPinLen: %lu, pPinTries: %p", hSession, userType, pPin,
+               ulPinLen, pPinTries);
 
   // Check if the cryptoki library is initialized
   CNK_ENSURE_INITIALIZED();
@@ -371,34 +373,40 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
     return CKR_ARGUMENTS_BAD;
   }
 
-  // Only CKU_USER is supported for PIV
-  if (userType != CKU_USER) {
-    return CKR_USER_TYPE_INVALID;
-  }
-
   // Find the session
   CNK_PKCS11_SESSION *session;
   CK_RV rv = CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
-  // Check if already logged in (PIN is already cached)
-  if (session->piv_pin_len > 0) {
-    return CKR_USER_ALREADY_LOGGED_IN;
-  }
+  if (userType == CKU_USER) {
+    // Check if already logged in (PIN is already cached)
+    if (session->piv_pin_len > 0)
+      CNK_RETURN(CKR_USER_ALREADY_LOGGED_IN, "User already logged in");
 
-  // Verify the PIN and cache it in the session
-  rv = cnk_verify_piv_pin_with_session(session->slot_id, session, pPin, ulPinLen, pPinTries);
+    // Verify the PIN and cache it in the session
+    rv = cnk_verify_piv_pin_with_session(session->slot_id, session, pPin, ulPinLen, pPinTries);
 
-  // If PIN verification was successful, update the session state
-  if (rv == CKR_OK) {
-    // Update session state based on session type
-    if (session->flags & CKF_RW_SESSION) {
-      session->state = SESSION_STATE_RW_USER;
-    } else {
-      session->state = SESSION_STATE_RO_USER;
+    // If PIN verification was successful, update the session state
+    if (rv == CKR_OK) {
+      // Update session state based on session type
+      if (session->flags & CKF_RW_SESSION) {
+        session->state = SESSION_STATE_RW_USER;
+      } else {
+        session->state = SESSION_STATE_RO_USER;
+      }
     }
-  }
 
-  CNK_RETURN(rv, "verify_piv_pin_with_session");
+    CNK_RETURN(rv, "verify_piv_pin_with_session");
+  } else if (userType == CKU_SO) {
+    rv = cnkVerifyManagementKey(session, pPin);
+    if (rv != CKR_OK)
+      CNK_RETURN(rv, "cnkVerifyManagementKey");
+
+    session->state = SESSION_STATE_RW_SO;
+
+    CNK_RET_OK;
+  } else {
+    CNK_RETURN(CKR_USER_TYPE_INVALID, "Invalid user type");
+  }
 }
 
 CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {

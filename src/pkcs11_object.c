@@ -20,7 +20,6 @@ static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algori
 static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithm_type);
 static CK_BBOOL matchTemplate(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                               CK_ULONG ulCount);
-static CK_RV processAuthChallenge(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount);
 
 // Helper function to map object ID to PIV tag
 CK_RV C_CNK_ObjIdToPivTag(CK_BYTE obj_id, CK_BYTE *piv_tag) {
@@ -124,10 +123,6 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   // Get object class from handle
   extractObjectInfo(hObject, NULL, &objClass, NULL);
   CNK_DEBUG("Object handle: slot %lu, class %lu, id %lu", session->slot_id, objClass, objId);
-
-  if (objId == AUTH_CHALLENGE_ID) {
-    CNK_RETURN(processAuthChallenge(session, pTemplate, ulCount), "Get Auth Challenge");
-  }
 
   // Map object ID to PIV tag
   CK_BYTE bPivSlot;
@@ -327,32 +322,28 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
   if (session->findIdSpecified) {
     CNK_DEBUG("ID specified: %d", session->findObjectId);
 
-    if (session->findObjectId == AUTH_CHALLENGE_ID) {
-      // Auth challenge is always available
-      rv = CKR_OK;
-    } else { // Check if the ID is valid (1-6)
-      if (session->findObjectId < 1 || session->findObjectId > 6) {
-        session->findActive = CK_FALSE;
-        cnk_mutex_unlock(&session->lock);
-        CNK_RET_OK; // Return OK but with no results
-      }
+    // Check if the ID is valid (1-6)
+    if (session->findObjectId < 1 || session->findObjectId > 6) {
+      session->findActive = CK_FALSE;
+      cnk_mutex_unlock(&session->lock);
+      CNK_RET_OK; // Return OK but with no results
+    }
 
-      // Map CKA_ID to PIV tag
-      CK_BYTE piv_tag;
-      rv = C_CNK_ObjIdToPivTag(session->findObjectId, &piv_tag);
-      if (rv != CKR_OK) {
-        session->findActive = CK_FALSE;
-        cnk_mutex_unlock(&session->lock);
-        CNK_RET_OK; // Return OK but with no results
-      }
+    // Map CKA_ID to PIV tag
+    CK_BYTE piv_tag;
+    rv = C_CNK_ObjIdToPivTag(session->findObjectId, &piv_tag);
+    if (rv != CKR_OK) {
+      session->findActive = CK_FALSE;
+      cnk_mutex_unlock(&session->lock);
+      CNK_RET_OK; // Return OK but with no results
+    }
 
-      // Try to get the data for this tag
-      rv = cnk_get_piv_data(session->slot_id, piv_tag, NULL, NULL, CK_FALSE); // Just check existence
-      if (rv != CKR_OK && rv != CKR_DATA_INVALID) {
-        session->findActive = CK_FALSE;
-        cnk_mutex_unlock(&session->lock);
-        return rv;
-      }
+    // Try to get the data for this tag
+    rv = cnk_get_piv_data(session->slot_id, piv_tag, NULL, NULL, CK_FALSE); // Just check existence
+    if (rv != CKR_OK && rv != CKR_DATA_INVALID) {
+      session->findActive = CK_FALSE;
+      cnk_mutex_unlock(&session->lock);
+      return rv;
     }
 
     // If data exists, add this object to the results
@@ -834,26 +825,4 @@ static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algor
   }
 
   return rv;
-}
-
-static CK_RV processAuthChallenge(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
-  if (ulCount != 1)
-    CNK_RETURN(CKR_ARGUMENTS_BAD, "Invalid attribute count");
-
-  if (pTemplate->type != CKA_VALUE)
-    CNK_RETURN(CKR_ATTRIBUTE_TYPE_INVALID, "Invalid attribute type");
-
-  if (pTemplate->pValue == NULL) {
-    pTemplate->ulValueLen = 8;
-    CNK_RETURN(CKR_OK, "processAuthChallenge: pValue is NULL, return ulValueLen = 8");
-  }
-
-  if (pTemplate->ulValueLen < 8)
-    CNK_RETURN(CKR_BUFFER_TOO_SMALL, "processAuthChallenge: ulValueLen is too small");
-
-  pTemplate->ulValueLen = 8;
-
-  CNK_ENSURE_OK(cnk_pivGetChallenge(session->slot_id, pTemplate->pValue));
-
-  CNK_RET_OK;
 }
