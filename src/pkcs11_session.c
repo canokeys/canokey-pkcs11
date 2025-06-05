@@ -206,15 +206,15 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
   // Initialize the session
   memset(session, 0, sizeof(CNK_PKCS11_SESSION));
   session->handle = next_handle++;
-  session->slot_id = slotID;
+  session->slotId = slotID;
   session->flags = flags;
   session->application = pApplication;
   session->notify = Notify;
-  session->is_open = CK_TRUE;
+  session->isOpen = CK_TRUE;
 
   // Initialize PIN fields
-  memset(session->piv_pin, 0xFF, sizeof(session->piv_pin));
-  session->piv_pin_len = 0;
+  memset(session->pin, 0xFF, sizeof(session->pin));
+  session->cbPin = 0;
 
   // Initialize the session mutex
   rv = cnk_mutex_create(&session->lock);
@@ -288,7 +288,7 @@ CK_RV C_CloseAllSessions(CK_SLOT_ID slotID) {
 
   // Close all sessions for this slot
   for (CK_LONG i = 0; i < session_table_size; i++) {
-    if (session_table[i] != NULL && session_table[i]->slot_id == slotID) {
+    if (session_table[i] != NULL && session_table[i]->slotId == slotID) {
       // No need to disconnect card as we don't maintain the handle
 
       // Free the session
@@ -330,7 +330,7 @@ CK_RV C_GetSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
   }
 
   // Fill in the session info
-  pInfo->slotID = session->slot_id;
+  pInfo->slotID = session->slotId;
   pInfo->state = (CK_STATE)session->state;
   pInfo->flags = session->flags;
   pInfo->ulDeviceError = 0;
@@ -379,11 +379,11 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
 
   if (userType == CKU_USER) {
     // Check if already logged in (PIN is already cached)
-    if (session->piv_pin_len > 0)
+    if (session->cbPin > 0)
       CNK_RETURN(CKR_USER_ALREADY_LOGGED_IN, "User already logged in");
 
     // Verify the PIN and cache it in the session
-    rv = cnk_verify_piv_pin_with_session(session->slot_id, session, pPin, ulPinLen, pPinTries);
+    rv = cnk_verify_piv_pin_with_session(session->slotId, session, pPin, ulPinLen, pPinTries);
 
     // If PIN verification was successful, update the session state
     if (rv == CKR_OK) {
@@ -425,16 +425,16 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   // Check if logged in (PIN is cached)
-  if (session->piv_pin_len == 0) {
+  if (session->cbPin == 0) {
     return CKR_USER_NOT_LOGGED_IN;
   }
 
   // Send the logout APDU to the card
-  CNK_ENSURE_OK(cnk_logout_piv_pin_with_session(session->slot_id));
+  CNK_ENSURE_OK(cnk_logout_piv_pin_with_session(session->slotId));
 
   // Clear the cached PIN
-  memset(session->piv_pin, 0xFF, sizeof(session->piv_pin));
-  session->piv_pin_len = 0;
+  memset(session->pin, 0xFF, sizeof(session->pin));
+  session->cbPin = 0;
 
   // Reset session state based on session type
   if (session->flags & CKF_RW_SESSION) {

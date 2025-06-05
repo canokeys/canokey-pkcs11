@@ -307,7 +307,7 @@ static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData
   }
 
   // Sign the data
-  rv = cnk_piv_sign(pSession->slot_id, pSession, pbSignRawData, cbSignRawData, pSignature, pulSignatureLen);
+  rv = cnk_piv_sign(pSession->slotId, pSession, pbSignRawData, cbSignRawData, pSignature, pulSignatureLen);
   if (rv != CKR_OK) {
     CNK_ERROR("Failed to sign data: ret = %lu", rv);
   }
@@ -333,7 +333,7 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   CK_BYTE algorithmType;
   CK_BYTE abPublicKey[512];
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
-  CNK_ENSURE_OK(cnk_get_metadata(session->slot_id, pivTag, &algorithmType, abPublicKey, &cbPublicKey));
+  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey));
 
   if (isMechRSA(pMechanism->mechanism)) {
     CNK_ENSURE_OK(validateRsaMech(session, pMechanism, algorithmType, abPublicKey, cbPublicKey));

@@ -797,12 +797,11 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
     CNK_RETURN(CKR_DATA_LEN_RANGE, "Input data too large (max 512 bytes)");
 
   // Verify PIN before signing
-  if (pSession->piv_pin_len == 0)
+  if (pSession->cbPin == 0)
     CNK_RETURN(CKR_PIN_INCORRECT, "PIN verification required before signing");
 
   // Use the extended version to keep the card connection open
-  CK_RV rv =
-      cnk_verify_piv_pin_with_session_ex(slotId, pSession, pSession->piv_pin, pSession->piv_pin_len, NULL, &hCard);
+  CK_RV rv = cnk_verify_piv_pin_with_session_ex(slotId, pSession, pSession->pin, pSession->cbPin, NULL, &hCard);
   if (rv != CKR_OK) {
     CNK_ERROR("Failed to verify PIN");
     cnk_disconnect_card(hCard);
@@ -1274,11 +1273,11 @@ static CK_RV verify_pin_card_operation(SCARDHANDLE hCard, void *context) {
   CNK_ENSURE_OK(cnk_verify_piv_pin(hCard, ctx->pin, ctx->pin_len, ctx->pin_tries));
 
   // If PIN verification was successful, cache the PIN in the session
-  if (ctx->session->piv_pin != ctx->pin) {
+  if (ctx->session->pin != ctx->pin) {
     // Store the PIN in the session
-    memset(ctx->session->piv_pin, 0xFF, sizeof(ctx->session->piv_pin)); // Pad with 0xFF
-    memcpy(ctx->session->piv_pin, ctx->pin, ctx->pin_len);
-    ctx->session->piv_pin_len = ctx->pin_len;
+    memset(ctx->session->pin, 0xFF, sizeof(ctx->session->pin)); // Pad with 0xFF
+    memcpy(ctx->session->pin, ctx->pin, ctx->pin_len);
+    ctx->session->cbPin = ctx->pin_len;
   }
 
   CNK_RET_OK;
@@ -1324,7 +1323,7 @@ CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey) {
   int mbedtlsRet;
 
   // Connect to the card
-  CNK_ENSURE_OK(cnk_connect_and_select_canokey(session->slot_id, &hCard));
+  CNK_ENSURE_OK(cnk_connect_and_select_canokey(session->slotId, &hCard));
 
   // Select the PIV application
   rv = cnk_select_piv_application(hCard);

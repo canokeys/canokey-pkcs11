@@ -1,3 +1,11 @@
+/**
+ * @file pkcs11_object.c
+ * @brief PKCS#11 object management implementation
+ *
+ * This module implements the PKCS#11 object management functions for the CanoKey PKCS#11 module.
+ * It handles the creation, manipulation, and querying of cryptographic objects like keys and certificates.
+ */
+
 #include "pkcs11_object.h"
 #include "logging.h"
 #include "pcsc_backend.h"
@@ -8,66 +16,228 @@
 
 #include <mbedtls/asn1write.h>
 #include <mbedtls/oid.h>
+#include <stddef.h> // For size_t
 #include <string.h>
 
-static CK_RV setSingleAttributeValue(CK_ATTRIBUTE_PTR attribute, const void *value, CK_ULONG value_size);
-static void extractObjectInfo(CK_OBJECT_HANDLE hObject, CK_SLOT_ID *slot_id, CK_OBJECT_CLASS *obj_class,
-                              CK_BYTE *obj_id);
-static CK_KEY_TYPE algoType2KeyType(CK_BYTE algorithm_type);
+// Maximum size for certificate data buffer
+#define MAX_CERTIFICATE_SIZE 4096
+
+// Maximum size for public key buffer
+#define MAX_PUBLIC_KEY_SIZE 512
+
+// Object handle bit field masks
+#define OBJECT_SLOT_MASK 0xFFFF0000
+#define OBJECT_CLASS_MASK 0x0000FF00
+#define OBJECT_ID_MASK 0x000000FF
+
+// Object handle bit shifts
+#define OBJECT_SLOT_SHIFT 16
+#define OBJECT_CLASS_SHIFT 8
+
+// PIV slot to tag mapping
+typedef struct {
+  CK_BYTE objId;
+  CK_BYTE pivTag;
+} PivSlotMapping;
+
+static const PivSlotMapping PIV_SLOT_MAPPING[] = {
+    {PIV_SLOT_9A, 0x9A}, {PIV_SLOT_9C, 0x9C}, {PIV_SLOT_9D, 0x9D},
+    {PIV_SLOT_9E, 0x9E}, {PIV_SLOT_82, 0x82}, {PIV_SLOT_83, 0x83},
+};
+
+// Size of the PIV slot mapping array
+#define PIV_SLOT_MAPPING_SIZE (sizeof(PIV_SLOT_MAPPING) / sizeof(PIV_SLOT_MAPPING[0]))
+
+/**
+ * @brief Set a single attribute value with bounds checking
+ *
+ * @param attribute The attribute to set
+ * @param value The value to set
+ * @param cbValue Size of the value
+ * @return CK_RV CKR_OK on success, error code otherwise
+ */
+static CK_RV setSingleAttributeValue(CK_ATTRIBUTE_PTR attribute, const void *value, CK_ULONG cbValue) {
+  if (!attribute) {
+    CNK_ERROR("Attribute pointer is NULL");
+    return CKR_ARGUMENTS_BAD;
+  }
+
+  // Always update the value length
+  attribute->ulValueLen = cbValue;
+
+  // If pValue is NULL, we're just querying the required size
+  if (!attribute->pValue) {
+    return CKR_OK;
+  }
+
+  // Check if the provided buffer is large enough
+  if (attribute->ulValueLen < cbValue) {
+    return CKR_BUFFER_TOO_SMALL;
+  }
+
+  // Copy the value if provided
+  if (value && cbValue > 0) {
+    memcpy(attribute->pValue, value, cbValue);
+  }
+
+  return CKR_OK;
+}
+
+/**
+ * @brief Extract object information from a handle
+ *
+ * @param hObject The object handle
+ * @param slotId [out] Slot ID (can be NULL)
+ * @param objClass [out] Object class (can be NULL)
+ * @param objId [out] Object ID (can be NULL)
+ */
+static void extractObjectInfo(CK_OBJECT_HANDLE hObject, CK_SLOT_ID *slotId, CK_OBJECT_CLASS *objClass, CK_BYTE *objId) {
+  if (slotId) {
+    *slotId = (hObject & OBJECT_SLOT_MASK) >> OBJECT_SLOT_SHIFT;
+  }
+
+  if (objClass) {
+    *objClass = (hObject & OBJECT_CLASS_MASK) >> OBJECT_CLASS_SHIFT;
+  }
+
+  if (objId) {
+    *objId = hObject & OBJECT_ID_MASK;
+  }
+}
+
+/**
+ * @brief Convert algorithm type to key type
+ *
+ * @param algorithmType The algorithm type
+ * @return CK_KEY_TYPE The corresponding key type
+ */
+static CK_KEY_TYPE algoType2KeyType(CK_BYTE algorithmType) {
+  switch (algorithmType) {
+  case PIV_ALG_RSA_2048:
+  case PIV_ALG_RSA_3072:
+  case PIV_ALG_RSA_4096:
+    return CKK_RSA;
+
+  case PIV_ALG_ECC_256:
+  case PIV_ALG_ECC_384:
+  case PIV_ALG_SECP256K1:
+  case PIV_ALG_SM2:
+    return CKK_EC;
+
+  case PIV_ALG_ED25519:
+    return CKK_EC_EDWARDS;
+
+  case PIV_ALG_X25519:
+    return CKK_EC_MONTGOMERY;
+
+  default:
+    CNK_WARN("Unknown algorithm type: 0x%02X", algorithmType);
+    return CKK_VENDOR_DEFINED;
+  }
+}
+
+/**
+ * @brief Handle certificate-specific attributes
+ *
+ * @param attribute The attribute to handle
+ * @param data Certificate data
+ * @param data_len Length of certificate data
+ * @return CK_RV CKR_OK on success, error code otherwise
+ */
 static CK_RV handleCertificateAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE_PTR data, CK_ULONG data_len);
-static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithm_type, CK_BYTE_PTR pbPublicKey,
+
+/**
+ * @brief Handle public key attributes
+ *
+ * @param attribute The attribute to handle
+ * @param algorithmType The key algorithm type
+ * @param pbPublicKey Public key data
+ * @param cbPublicKey Length of public key data
+ * @return CK_RV CKR_OK on success, error code otherwise
+ */
+static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithmType, CK_BYTE_PTR pbPublicKey,
                                       CK_ULONG cbPublicKey);
-static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithm_type);
+
+/**
+ * @brief Handle private key attributes
+ *
+ * @param attribute The attribute to handle
+ * @param algorithmType The key algorithm type
+ * @return CK_RV CKR_OK on success, error code otherwise
+ */
+static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithmType);
+
+/**
+ * @brief Check if an object matches a template
+ *
+ * @param hSession Session handle
+ * @param hObject Object handle
+ * @param pTemplate Template to match against
+ * @param ulCount Number of attributes in template
+ * @return CK_BBOOL CK_TRUE if object matches template, CK_FALSE otherwise
+ */
 static CK_BBOOL matchTemplate(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                               CK_ULONG ulCount);
 
-// Helper function to map object ID to PIV tag
-CK_RV C_CNK_ObjIdToPivTag(CK_BYTE obj_id, CK_BYTE *piv_tag) {
-  switch (obj_id) {
-  case PIV_SLOT_9A:
-    *piv_tag = 0x9A;
-    break;
-  case PIV_SLOT_9C:
-    *piv_tag = 0x9C;
-    break;
-  case PIV_SLOT_9D:
-    *piv_tag = 0x9D;
-    break;
-  case PIV_SLOT_9E:
-    *piv_tag = 0x9E;
-    break;
-  case PIV_SLOT_82:
-    *piv_tag = 0x82;
-    break;
-  case PIV_SLOT_83:
-    *piv_tag = 0x83;
-    break;
-  default:
-    return CKR_OBJECT_HANDLE_INVALID;
+/**
+ * @brief Map a PIV object ID to its corresponding PIV tag
+ *
+ * @param objId The PIV object ID to map
+ * @param pivTag [out] Pointer to store the resulting PIV tag
+ * @return CK_RV CKR_OK on success, CKR_OBJECT_HANDLE_INVALID if the object ID is unknown
+ */
+CK_RV C_CNK_ObjIdToPivTag(CK_BYTE objId, CK_BYTE *pivTag) {
+  if (!pivTag) {
+    CNK_ERROR("piv_tag cannot be NULL");
+    return CKR_ARGUMENTS_BAD;
   }
-  CNK_RET_OK;
+
+  for (size_t i = 0; i < PIV_SLOT_MAPPING_SIZE; i++) {
+    if (PIV_SLOT_MAPPING[i].objId == objId) {
+      *pivTag = PIV_SLOT_MAPPING[i].pivTag;
+      CNK_DEBUG("Mapped object ID 0x%02X to PIV tag 0x%02X", objId, *pivTag);
+      return CKR_OK;
+    }
+  }
+
+  CNK_ERROR("Invalid object ID: 0x%02X", objId);
+  return CKR_OBJECT_HANDLE_INVALID;
 }
 
-// Helper function to validate an object handle against a session and expected class
-CK_RV CNK_ValidateObject(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS expected_class,
-                         CK_BYTE *obj_id) {
+/**
+ * @brief Validate an object handle against a session and expected class
+ *
+ * @param hObject The object handle to validate
+ * @param session The session to validate against
+ * @param expectedClass The expected object class (0 to skip check)
+ * @param objId [out] Will contain the object ID if not NULL
+ * @return CK_RV CKR_OK if valid, error code otherwise
+ */
+CK_RV CNK_ValidateObject(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS expectedClass,
+                         CK_BYTE *objId) {
+  if (!session) {
+    CNK_ERROR("Session handle is NULL");
+    return CKR_SESSION_HANDLE_INVALID;
+  }
+
   // Extract object information from the handle
   CK_SLOT_ID slot_id;
   CK_OBJECT_CLASS obj_class;
-
-  extractObjectInfo(hObject, &slot_id, &obj_class, obj_id);
+  extractObjectInfo(hObject, &slot_id, &obj_class, objId);
 
   // Verify the slot ID matches the session's slot ID
-  if (slot_id != session->slot_id) {
-    CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "slot ID mismatch");
+  if (slot_id != session->slotId) {
+    CNK_ERROR("Slot ID mismatch: handle=0x%04X, session=0x%04X", slot_id, session->slotId);
+    return CKR_OBJECT_HANDLE_INVALID;
   }
 
-  // Verify the object class if expected_class is not 0
-  if (expected_class != 0 && obj_class != expected_class) {
-    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "object class mismatch");
+  // Verify the object class if expectedClass is not 0
+  if (expectedClass != 0 && obj_class != expectedClass) {
+    CNK_ERROR("Object class mismatch: expected=0x%08lX, actual=0x%08lX", expectedClass, obj_class);
+    return CKR_KEY_TYPE_INCONSISTENT;
   }
 
-  CNK_RET_OK;
+  return CKR_OK;
 }
 
 // Object operation implementations
@@ -122,7 +292,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
   // Get object class from handle
   extractObjectInfo(hObject, NULL, &objClass, NULL);
-  CNK_DEBUG("Object handle: slot %lu, class %lu, id %lu", session->slot_id, objClass, objId);
+  CNK_DEBUG("Object handle: slot %lu, class %lu, id %lu", session->slotId, objClass, objId);
 
   // Map object ID to PIV tag
   CK_BYTE bPivSlot;
@@ -138,7 +308,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   switch (objClass) {
   case CKO_PUBLIC_KEY:
   case CKO_PRIVATE_KEY: {
-    CK_RV rvMeta = cnk_get_metadata(session->slot_id, bPivSlot, &bAlgorithmType, abPublicKey, &cbPublicKey);
+    CK_RV rvMeta = cnk_get_metadata(session->slotId, bPivSlot, &bAlgorithmType, abPublicKey, &cbPublicKey);
     if (rvMeta != CKR_OK) {
       CNK_DEBUG("Failed to get metadata for PIV slot 0x%02X: %lu", bPivSlot, rvMeta);
     } else {
@@ -149,7 +319,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   }
 
   case CKO_CERTIFICATE:
-    CNK_ENSURE_OK(cnk_get_piv_data(session->slot_id, bPivSlot, data, &cbData, CK_TRUE));
+    CNK_ENSURE_OK(cnk_get_piv_data(session->slotId, bPivSlot, data, &cbData, CK_TRUE));
     if (cbData == 0) {
       CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "No data found for PIV slot");
     }
@@ -339,7 +509,7 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
     }
 
     // Try to get the data for this tag
-    rv = cnk_get_piv_data(session->slot_id, piv_tag, NULL, NULL, CK_FALSE); // Just check existence
+    rv = cnk_get_piv_data(session->slotId, piv_tag, NULL, NULL, CK_FALSE); // Just check existence
     if (rv != CKR_OK && rv != CKR_DATA_INVALID) {
       session->findActive = CK_FALSE;
       cnk_mutex_unlock(&session->lock);
@@ -350,7 +520,7 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
     if (rv == CKR_OK) {
       // Create a handle for this object: slot_id | object_class | object_id
       // This will allow us to identify the object in future operations
-      CK_OBJECT_HANDLE handle = (session->slot_id << 16) | (session->findObjectClass << 8) | session->findObjectId;
+      CK_OBJECT_HANDLE handle = (session->slotId << 16) | (session->findObjectClass << 8) | session->findObjectId;
       session->findObjects[session->findObjectsCount++] = handle;
     }
   } else {
@@ -358,7 +528,7 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
 
     // No ID specified, check all possible IDs (1-6)
     for (CK_BYTE id = 1; id <= 6; id++) {
-      CK_OBJECT_HANDLE hObject = (session->slot_id << 16) | (session->findObjectClass << 8) | id;
+      CK_OBJECT_HANDLE hObject = (session->slotId << 16) | (session->findObjectClass << 8) | id;
       if (matchTemplate(hSession, hObject, pTemplate, ulCount)) {
         session->findObjects[session->findObjectsCount++] = hObject;
       }
@@ -481,7 +651,7 @@ static CK_BBOOL matchTemplate(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
     matched = CK_TRUE;
   }
 
-  // free memory
+  // Free memory
   for (CK_ULONG i = 0; i < ulCount; i++) {
     ck_free(attrs[i].pValue);
   }
@@ -490,59 +660,14 @@ static CK_BBOOL matchTemplate(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
   CNK_RETURN(matched, "Template matching finished");
 }
 
-// Helper function to set attribute values with proper buffer checking
-static CK_RV setSingleAttributeValue(CK_ATTRIBUTE_PTR attribute, const void *value, CK_ULONG value_size) {
-  attribute->ulValueLen = value_size;
-
-  if (attribute->pValue) {
-    if (attribute->ulValueLen >= value_size) {
-      memcpy(attribute->pValue, value, value_size);
-    } else {
-      return CKR_BUFFER_TOO_SMALL;
-    }
-  }
-
-  CNK_RET_OK;
-}
-
-// Helper function to extract object information from a handle
-// Object handle format: slot_id (16 bits) | object_class (8 bits) | object_id (8 bits)
-static void extractObjectInfo(CK_OBJECT_HANDLE hObject, CK_SLOT_ID *slot_id, CK_OBJECT_CLASS *obj_class,
-                              CK_BYTE *obj_id) {
-  if (slot_id) {
-    *slot_id = (hObject >> 16) & 0xFFFF;
-  }
-  if (obj_class) {
-    *obj_class = (hObject >> 8) & 0xFF;
-  }
-  if (obj_id) {
-    *obj_id = hObject & 0xFF;
-  }
-}
-
-static CK_KEY_TYPE algoType2KeyType(CK_BYTE algorithm_type) {
-  switch (algorithm_type) {
-  case PIV_ALG_RSA_2048:
-  case PIV_ALG_RSA_3072:
-  case PIV_ALG_RSA_4096:
-    return CKK_RSA;
-
-  case PIV_ALG_ECC_256:
-  case PIV_ALG_ECC_384:
-  case PIV_ALG_SECP256K1:
-  case PIV_ALG_SM2:
-    return CKK_EC;
-
-  case PIV_ALG_ED25519:
-  case PIV_ALG_X25519:
-    return CKK_EC_EDWARDS;
-
-  default:
-    return CKK_VENDOR_DEFINED;
-  }
-}
-
-// Handle certificate-specific attributes
+/**
+ * @brief Handle certificate-specific attributes
+ *
+ * @param attribute The attribute to handle
+ * @param data Certificate data
+ * @param data_len Length of certificate data
+ * @return CK_RV CKR_OK on success, error code otherwise
+ */
 static CK_RV handleCertificateAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE_PTR data, CK_ULONG data_len) {
   CNK_LOG_FUNC(" attribute = %d, data_len = %lu", attribute->type, data_len);
 
