@@ -5,8 +5,8 @@
 #include <cmocka.h>
 // clang-format on
 
-#include "logging.h"
-#include "pcsc_backend.h"
+#include "backend/pcsc.h"
+#include "internal/logging.h"
 #include "pkcs11.h"
 
 #include <stdlib.h>

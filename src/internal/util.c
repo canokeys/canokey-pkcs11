@@ -3,10 +3,10 @@
 #include <string.h>
 #endif
 #include <ctype.h>
-#include <stdlib.h>
 #include <stdint.h>
+#include <stdlib.h>
 
-#include "utils.h"
+#include "internal/util.h"
 
 char *ck_strcasestr(const char *str, const char *pattern) {
 #ifdef _MSC_VER

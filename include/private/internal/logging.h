@@ -1,5 +1,5 @@
-#ifndef LOGGING_H
-#define LOGGING_H
+#ifndef CNK_INTERNAL_LOGGING_H
+#define CNK_INTERNAL_LOGGING_H
 
 #pragma clang diagnostic ignored "-Wlanguage-extension-token"
 #pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
@@ -9,7 +9,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#include "utils.h"
+#include "internal/util.h"
 
 enum CNK_LOG_LEVEL {
   CNK_LOG_LEVEL_TRACE = 0,
@@ -86,4 +86,4 @@ void cnk_log_apdu_response(const unsigned char *response, unsigned long response
     cnk_log_apdu_response(response, response_len);                                                                     \
   }
 
-#endif // LOGGING_H
+#endif // CNK_INTERNAL_LOGGING_H

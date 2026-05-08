@@ -31,7 +31,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: 'recursive'
       - name: Pre-build script
@@ -45,7 +45,7 @@ jobs:
         run: ctest --test-dir build --output-on-failure
         if: matrix.os != 'windows-latest' # windows does not have cmocka installed now
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: canokey-pkcs11-${{ matrix.os }}
           path: |

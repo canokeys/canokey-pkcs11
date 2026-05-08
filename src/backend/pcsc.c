@@ -1,10 +1,10 @@
-#include "pcsc_backend.h"
-#include "logging.h"
+#include "backend/pcsc.h"
+#include "api/session.h"
+#include "internal/logging.h"
+#include "internal/mutex.h"
+#include "internal/util.h"
 #include "mbedtls/des.h"
 #include "pkcs11.h"
-#include "pkcs11_mutex.h"
-#include "pkcs11_session.h"
-#include "utils.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -1352,7 +1352,7 @@ CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *ses
 /* Verify the PIV management key by 3‑DES‑encrypting the card’s challenge
  * and sending the resulting host cryptogram back to the card.
  *
- * pKey  – 24‑byte raw management key.
+ * pKey  �?24‑byte raw management key.
  */
 CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey) {
   SCARDHANDLE hCard;

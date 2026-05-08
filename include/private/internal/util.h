@@ -1,5 +1,5 @@
-#ifndef UTILS_H
-#define UTILS_H
+#ifndef CNK_INTERNAL_UTIL_H
+#define CNK_INTERNAL_UTIL_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -115,4 +115,4 @@ char *ck_strcasestr(const char *str, const char *pattern);
  */
 CK_ULONG tlvGetLengthSafe(const CK_BYTE *data, const CK_ULONG len, CK_LONG *fail, CK_ULONG_PTR length_size);
 
-#endif // UTILS_H
+#endif // CNK_INTERNAL_UTIL_H

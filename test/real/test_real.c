@@ -1,5 +1,5 @@
 #include "pkcs11.h"
-#include "pkcs11_object.h"
+#include "api/object.h"
 
 #include <stdio.h>
 #include <stdlib.h>

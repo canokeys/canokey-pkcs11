@@ -5,5 +5,5 @@ message(STATUS "CMocka found: includedir ${CMOCKA_INCLUDE_DIRS}, lib ${CMOCKA_LI
 include(AddCMockaTest)
 include(AddMockedTest)
 
-add_mocked_test(rsa_utils LINK_LIBRARIES ${CNK_PKCS_TARGET}-test ${MBEDTLS_LIBRARIES})
+add_mocked_test(rsa LINK_LIBRARIES ${CNK_PKCS_TARGET}-test ${MBEDTLS_LIBRARIES})
 add_mocked_test(digest LINK_LIBRARIES ${CNK_PKCS_TARGET}-test ${MBEDTLS_LIBRARIES})

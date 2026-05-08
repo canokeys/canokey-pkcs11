@@ -8,10 +8,10 @@
 #include <cmocka.h>
 // clang-format on
 
-#include "logging.h"
-#include "pcsc_backend.h"
+#include "backend/pcsc.h"
+#include "internal/logging.h"
+#include "internal/rsa.h"
 #include "pkcs11.h"
-#include "rsa_utils.h"
 
 #include <mbedtls/bignum.h>
 #include <mbedtls/md.h>
@@ -129,8 +129,8 @@ static CK_RV verify_pss_encoding(CK_BYTE_PTR encoded, CK_ULONG encoded_len, CK_B
   if (dbLen < salt_len + 1)
     return CKR_FUNCTION_FAILED;
 
-  CK_BYTE *maskedDB = encoded;  /* [0 .. dbLenâ€‘1]   */
-  CK_BYTE *H = encoded + dbLen; /* [dbLen .. dbLen+hash_lenâ€‘1] */
+  CK_BYTE *maskedDB = encoded;  /* [0 .. dbLenâ€?]   */
+  CK_BYTE *H = encoded + dbLen; /* [dbLen .. dbLen+hash_lenâ€?] */
 
   /* ---------- 5. dbMask and decode ---------- */
   unsigned char *mask = ck_malloc(dbLen);
@@ -153,7 +153,7 @@ static CK_RV verify_pss_encoding(CK_BYTE_PTR encoded, CK_ULONG encoded_len, CK_B
   ck_free(mask);
 
   /* ---------- 6. Clear leftmost bits ---------- */
-  const unsigned leftBits = (unsigned)(8 * encoded_len - emBits); /* 1â€‘7 æˆ– 0 */
+  const unsigned leftBits = (unsigned)(8 * encoded_len - emBits); /* 1â€? æˆ?0 */
   if (leftBits)
     DB[0] &= 0xFFu >> leftBits;
 

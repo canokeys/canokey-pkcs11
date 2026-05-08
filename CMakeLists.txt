@@ -85,7 +85,7 @@ endif()
 
 set(CNK_PKCS_LIBS nsync ${MBEDTLS_LIBRARIES})
 
-file(GLOB CNK_PKCS_SRC src/*.c)
+file(GLOB_RECURSE CNK_PKCS_SRC CONFIGURE_DEPENDS src/*.c)
 
 # these files will be installed (excluding include/private)
 file(GLOB CNK_PKCS_PUBLIC_HEADERS include/*.h)

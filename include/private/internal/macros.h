@@ -1,9 +1,9 @@
-#ifndef PKCS11_MACROS_H
-#define PKCS11_MACROS_H
+#ifndef CNK_INTERNAL_MACROS_H
+#define CNK_INTERNAL_MACROS_H
 
-#include "logging.h"
+#include "internal/logging.h"
+#include "internal/util.h"
 #include "pkcs11.h"
-#include "utils.h"
 
 /**
  * Macro to check if the PKCS#11 library is initialized
@@ -59,4 +59,4 @@
     CNK_ENSURE_NONNULL(ptr);                                                                                           \
   } while (0)
 
-#endif /* PKCS11_MACROS_H */
+#endif /* CNK_INTERNAL_MACROS_H */

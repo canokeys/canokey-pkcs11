@@ -1,11 +1,11 @@
-#include "logging.h"
-#include "pcsc_backend.h"
+#include "api/object.h"
+#include "api/session.h"
+#include "backend/pcsc.h"
+#include "internal/logging.h"
+#include "internal/macros.h"
+#include "internal/rsa.h"
+#include "internal/util.h"
 #include "pkcs11.h"
-#include "pkcs11_macros.h"
-#include "pkcs11_object.h"
-#include "pkcs11_session.h"
-#include "rsa_utils.h"
-#include "utils.h"
 
 #include <string.h>
 

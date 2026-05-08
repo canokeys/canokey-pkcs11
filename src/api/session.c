@@ -1,9 +1,9 @@
-#include "pkcs11_session.h"
+#include "api/session.h"
 
-#include "logging.h"
-#include "pcsc_backend.h"
-#include "pkcs11_macros.h"
-#include "utils.h"
+#include "backend/pcsc.h"
+#include "internal/logging.h"
+#include "internal/macros.h"
+#include "internal/util.h"
 
 #include <string.h>
 

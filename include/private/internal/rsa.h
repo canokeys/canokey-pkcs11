@@ -1,5 +1,5 @@
-#ifndef RSA_UTILS_H
-#define RSA_UTILS_H
+#ifndef CNK_INTERNAL_RSA_H
+#define CNK_INTERNAL_RSA_H
 
 #include <mbedtls/md.h>
 
@@ -11,4 +11,4 @@ CK_RV pkcs1_v1_5_pad(CK_BYTE_PTR pbInput, CK_ULONG cbInput, CK_BYTE_PTR pbOutput
 CK_RV pss_encode(CK_BYTE_PTR pbHash, CK_ULONG cbHash, CK_BYTE_PTR pbModulus, CK_ULONG cbModulus, CK_ULONG cbSalt,
                  mbedtls_md_type_t mdType, CK_BYTE_PTR pbOutput);
 
-#endif // RSA_UTILS_H
+#endif // CNK_INTERNAL_RSA_H

@@ -1,8 +1,8 @@
-#include "rsa_utils.h"
-#include "logging.h"      // For logging macros
-#include "pcsc_backend.h" // For ck_malloc and ck_free
+#include "internal/rsa.h"
+#include "backend/pcsc.h"     // For ck_malloc and ck_free
+#include "internal/logging.h" // For logging macros
+#include "internal/util.h"
 #include "pkcs11.h"
-#include "utils.h"
 
 #include <mbedtls/bignum.h>
 #include <mbedtls/ctr_drbg.h>
@@ -178,7 +178,7 @@ CK_RV pss_encode(CK_BYTE_PTR pbHash, CK_ULONG cbHash, CK_BYTE_PTR pbModulus, CK_
   mbedtls_entropy_init(&entropyCtx);
   mbedtls_ctr_drbg_init(&ctrDrbgCtx);
 
-  /* emBits = modBits - 1  ——  RFC 8017 §9.1.1 */
+  /* emBits = modBits - 1  —�? RFC 8017 §9.1.1 */
   mbedtls_mpi_init(&modulus_mpi);
   mbedtls_mpi_read_binary(&modulus_mpi, pbModulus, cbModulus);
   const CK_ULONG modBits = mbedtls_mpi_bitlen(&modulus_mpi);
@@ -219,7 +219,7 @@ CK_RV pss_encode(CK_BYTE_PTR pbHash, CK_ULONG cbHash, CK_BYTE_PTR pbModulus, CK_
   memcpy(M_prime + 8, pbHash, hLen);
   memcpy(M_prime + 8 + hLen, pSalt, cbSalt);
 
-  CK_BYTE H[64]; /* hLen ≤ 64 */
+  CK_BYTE H[64]; /* hLen �?64 */
   if (mbedtls_md(pMdInfo, M_prime, 8 + hLen + cbSalt, H) != 0) {
     CNK_ERROR("Failed to generate hash");
     rv = CKR_FUNCTION_FAILED;
@@ -272,7 +272,7 @@ CK_RV pss_encode(CK_BYTE_PTR pbHash, CK_ULONG cbHash, CK_BYTE_PTR pbModulus, CK_
     memcpy(pDBMask + off, hash, clen);
   }
 
-  /* maskedDB = DB ⊕ dbMask */
+  /* maskedDB = DB �?dbMask */
   for (CK_ULONG i = 0; i < dbLen; i++)
     pDB[i] ^= pDBMask[i];
 

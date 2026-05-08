@@ -1,5 +1,5 @@
-#ifndef PKCS11_MUTEX_H
-#define PKCS11_MUTEX_H
+#ifndef CNK_INTERNAL_MUTEX_H
+#define CNK_INTERNAL_MUTEX_H
 
 #include "pkcs11.h"
 
@@ -36,4 +36,4 @@ CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex);
 // Unlock a mutex
 CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex);
 
-#endif /* PKCS11_MUTEX_H */
+#endif /* CNK_INTERNAL_MUTEX_H */

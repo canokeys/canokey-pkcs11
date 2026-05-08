@@ -2,11 +2,11 @@
 #define CRYPTOKI_EXPORTS
 #endif
 
-#include "pkcs11_canokey.h"
-#include "logging.h"
-#include "pcsc_backend.h"
+#include "backend/pcsc.h"
+#include "internal/logging.h"
+#include "internal/util.h"
 #include "pkcs11.h"
-#include "utils.h"
+#include "pkcs11_canokey.h"
 
 #include <mbedtls/platform.h>
 #include <nsync_malloc.h>

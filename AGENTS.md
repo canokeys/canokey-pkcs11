@@ -34,7 +34,9 @@ build-ninja-clangcl-x64\canokey-pkcs11.dll
 - Before committing C source or header changes, run `clang-format` on the touched `.c` and `.h` files.
 - The VS bundled formatter is:
   `C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin\clang-format.exe`
-- Commit messages must follow Conventional Commits, include enough detail in the body for non-trivial changes, and use signoff (`git commit -s`).
+- Commit messages must follow Conventional Commits, include enough detail in the
+  body for non-trivial changes, wrap subject/body lines to 80 columns, and use
+  signoff (`git commit -s`).
 
 ## OpenSC Test Tool
 
@@ -160,13 +162,19 @@ Additional probes that passed:
 
 ## Current Implementation Shape
 
-- `src/pkcs11_core.c`: PKCS#11 initialization/finalization, exported function list, standalone PC/SC init.
-- `src/pcsc_backend.c`: PC/SC reader discovery, PIV AID selection, PIN verify/logout, GET DATA, metadata, GENERAL AUTHENTICATE signing.
-- `src/pkcs11_slot.c`: slot/token info and mechanism list/info.
-- `src/pkcs11_session.c`: session table, login/logout, PIN caching per session.
-- `src/pkcs11_object.c`: virtual PIV object handles, object discovery, and partial attribute retrieval.
-- `src/pkcs11_signing.c`: RSA PKCS#1 v1.5/PSS and ECDSA signing path.
-- `src/pkcs11_digesting.c`: SHA/SHA3 digest support through mbedTLS.
+- `src/api/`: exported PKCS#11 and CanoKey extension entry points, including
+  initialization, slots, sessions, objects, digesting, signing, encryption
+  stubs, and crypto extension stubs.
+- `include/private/api/`: private declarations shared by the API entry-point
+  source files.
+- `src/backend/`: card/backend integrations. `pcsc.c` handles PC/SC
+  reader discovery, PIV AID selection, PIN verify/logout, GET DATA, metadata,
+  and GENERAL AUTHENTICATE signing.
+- `include/private/backend/`: private backend-facing declarations.
+- `src/internal/`: implementation helpers that are not direct API entry points,
+  including logging, mutex wrappers, RSA padding/PSS helpers, and TLV utilities.
+- `include/private/internal/`: private helper declarations for the internal
+  implementation layer.
 
 PIV object IDs map to slots as:
 

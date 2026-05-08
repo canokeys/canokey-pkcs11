@@ -1,8 +1,8 @@
-#ifndef CANOKEY_PKCS11_OBJ_H
-#define CANOKEY_PKCS11_OBJ_H
+#ifndef CNK_API_OBJECT_H
+#define CNK_API_OBJECT_H
 
+#include "api/session.h"
 #include "pkcs11.h"
-#include "pkcs11_session.h"
 
 /**
  * Validates an object.
@@ -15,4 +15,4 @@
 CK_RV CNK_ValidateObject(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS expected_class,
                          CK_BYTE *obj_id);
 
-#endif // CANOKEY_PKCS11_OBJ_H
+#endif // CNK_API_OBJECT_H

@@ -1,16 +1,20 @@
-#ifndef PCSC_BACKEND_H
-#define PCSC_BACKEND_H
+#ifndef CNK_BACKEND_PCSC_H
+#define CNK_BACKEND_PCSC_H
 
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
-#include "pkcs11_mutex.h"
-#include "pkcs11_session.h"
 
 #if defined(__APPLE__) || defined(__MACH__)
 #include <PCSC/PCSC.h>
 #else
 #include <winscard.h> // pcsc-lite also provides it
 #endif
+#undef CreateMutex // avoid conflicts between Windows API and PKCS#11 fields
+
+#include "internal/mutex.h"
+
+// Forward declaration for session struct
+typedef struct CNK_PKCS11_SESSION CNK_PKCS11_SESSION;
 
 // Define a struct to store reader information
 typedef struct {
@@ -73,9 +77,6 @@ CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPin
 CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard);
 CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey);
 
-// Forward declaration for session struct
-typedef struct CNK_PKCS11_SESSION CNK_PKCS11_SESSION;
-
 // Function to verify PIN with session
 CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
                                       CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
@@ -125,4 +126,4 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorith
 CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pData, CK_ULONG cbDataLen,
                    CK_BYTE_PTR pSignature, CK_ULONG_PTR pcbSignature);
 
-#endif /* PCSC_BACKEND_H */
+#endif /* CNK_BACKEND_PCSC_H */

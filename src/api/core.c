@@ -2,14 +2,14 @@
 #define CRYPTOKI_EXPORTS
 #endif
 
-#include "logging.h"
-#include "pcsc_backend.h"
+#include "api/session.h"
+#include "backend/pcsc.h"
+#include "internal/logging.h"
+#include "internal/macros.h"
+#include "internal/mutex.h"
+#include "internal/util.h"
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
-#include "pkcs11_macros.h"
-#include "pkcs11_mutex.h"
-#include "pkcs11_session.h"
-#include "utils.h"
 
 #include <stdatomic.h>
 #include <stdio.h>

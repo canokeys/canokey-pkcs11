@@ -1,7 +1,7 @@
-#include "logging.h"
-#include "pcsc_backend.h"
+#include "backend/pcsc.h"
+#include "internal/logging.h"
+#include "internal/util.h"
 #include "pkcs11.h"
-#include "utils.h"
 
 #include <string.h>
 

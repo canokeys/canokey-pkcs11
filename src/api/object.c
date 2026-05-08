@@ -1,18 +1,18 @@
 /**
- * @file pkcs11_object.c
+ * @file object.c
  * @brief PKCS#11 object management implementation
  *
  * This module implements the PKCS#11 object management functions for the CanoKey PKCS#11 module.
  * It handles the creation, manipulation, and querying of cryptographic objects like keys and certificates.
  */
 
-#include "pkcs11_object.h"
-#include "logging.h"
-#include "pcsc_backend.h"
+#include "api/object.h"
+#include "backend/pcsc.h"
+#include "internal/logging.h"
+#include "internal/macros.h"
+#include "internal/mutex.h"
+#include "internal/util.h"
 #include "pkcs11.h"
-#include "pkcs11_macros.h"
-#include "pkcs11_mutex.h"
-#include "utils.h"
 
 #include <mbedtls/asn1write.h>
 #include <mbedtls/oid.h>

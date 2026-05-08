@@ -1,9 +1,9 @@
-#ifndef PKCS11_SESSION_H
-#define PKCS11_SESSION_H
+#ifndef CNK_API_SESSION_H
+#define CNK_API_SESSION_H
 
 #include "pkcs11.h"
 
-#include "pkcs11_mutex.h"
+#include "internal/mutex.h"
 #include <mbedtls/md.h>
 
 // Session states as defined in PKCS#11 standard
@@ -70,4 +70,4 @@ void cnk_session_manager_cleanup(void);
 // Find a session by handle
 CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session);
 
-#endif /* PKCS11_SESSION_H */
+#endif /* CNK_API_SESSION_H */
