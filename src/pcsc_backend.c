@@ -1147,6 +1147,10 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorith
   CK_BYTE sw1 = response[response_len - 2];
   CK_BYTE sw2 = response[response_len - 1];
   if (sw1 != 0x90 || sw2 != 0x00) {
+    if (sw1 == 0x6A && (sw2 == 0x82 || sw2 == 0x88)) {
+      cnk_disconnect_card(hCard);
+      CNK_RETURN(CKR_DATA_INVALID, "PIV key metadata not found");
+    }
     CNK_ERROR("GET METADATA returned error status: %02X%02X", sw1, sw2);
     cnk_disconnect_card(hCard);
     CNK_RETURN(CKR_DEVICE_ERROR, "Failed to get metadata");

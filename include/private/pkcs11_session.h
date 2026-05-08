@@ -15,8 +15,8 @@ typedef enum {
   SESSION_STATE_RW_SO
 } SessionState;
 
-// Maximum number of objects that can be found
-#define MAX_FIND_OBJECTS 6
+// Maximum number of objects that can be found (6 PIV slots x cert/public/private)
+#define MAX_FIND_OBJECTS 18
 
 typedef struct {
   CK_OBJECT_HANDLE hKey;

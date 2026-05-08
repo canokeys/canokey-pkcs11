@@ -179,6 +179,89 @@ static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algor
 static CK_BBOOL matchTemplate(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                               CK_ULONG ulCount);
 
+static CK_OBJECT_HANDLE makeObjectHandle(CK_SLOT_ID slotId, CK_OBJECT_CLASS objectClass, CK_BYTE objectId) {
+  return (slotId << OBJECT_SLOT_SHIFT) | (objectClass << OBJECT_CLASS_SHIFT) | objectId;
+}
+
+static CK_RV checkObjectExists(CK_SLOT_ID slotId, CK_OBJECT_CLASS objectClass, CK_BYTE objectId, CK_BBOOL *exists) {
+  CK_BYTE pivTag;
+  CK_RV rv;
+
+  CNK_ENSURE_NONNULL(exists);
+  *exists = CK_FALSE;
+
+  if (objectId < 1 || objectId > 6) {
+    return CKR_OK;
+  }
+
+  rv = C_CNK_ObjIdToPivTag(objectId, &pivTag);
+  if (rv == CKR_OBJECT_HANDLE_INVALID) {
+    return CKR_OK;
+  }
+  if (rv != CKR_OK) {
+    return rv;
+  }
+
+  switch (objectClass) {
+  case CKO_CERTIFICATE:
+    rv = cnk_get_piv_data(slotId, pivTag, NULL, NULL, CK_FALSE);
+    if (rv == CKR_OK) {
+      *exists = CK_TRUE;
+      return CKR_OK;
+    }
+    if (rv == CKR_DATA_INVALID) {
+      return CKR_OK;
+    }
+    return rv;
+
+  case CKO_PUBLIC_KEY:
+  case CKO_PRIVATE_KEY: {
+    CK_BYTE algorithmType = 0;
+    CK_BYTE publicKey[MAX_PUBLIC_KEY_SIZE];
+    CK_ULONG publicKeyLen = sizeof(publicKey);
+    rv = cnk_get_metadata(slotId, pivTag, &algorithmType, publicKey, &publicKeyLen);
+    if (rv == CKR_OK) {
+      *exists = CK_TRUE;
+      return CKR_OK;
+    }
+    if (rv == CKR_DATA_INVALID || rv == CKR_OBJECT_HANDLE_INVALID || rv == CKR_KEY_HANDLE_INVALID) {
+      return CKR_OK;
+    }
+    return rv;
+  }
+
+  default:
+    return CKR_OK;
+  }
+}
+
+static CK_RV appendMatchingObjects(CNK_PKCS11_SESSION *session, CK_SESSION_HANDLE hSession, CK_OBJECT_CLASS objectClass,
+                                   CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
+  CK_BYTE firstId = session->findIdSpecified ? session->findObjectId : 1;
+  CK_BYTE lastId = session->findIdSpecified ? session->findObjectId : 6;
+
+  for (CK_BYTE id = firstId; id <= lastId; id++) {
+    CK_BBOOL exists;
+    CK_RV rv = checkObjectExists(session->slotId, objectClass, id, &exists);
+    if (rv != CKR_OK) {
+      return rv;
+    }
+    if (!exists) {
+      continue;
+    }
+
+    CK_OBJECT_HANDLE hObject = makeObjectHandle(session->slotId, objectClass, id);
+    if (ulCount == 0 || matchTemplate(hSession, hObject, pTemplate, ulCount)) {
+      if (session->findObjectsCount >= MAX_FIND_OBJECTS) {
+        return CKR_HOST_MEMORY;
+      }
+      session->findObjects[session->findObjectsCount++] = hObject;
+    }
+  }
+
+  return CKR_OK;
+}
+
 /**
  * @brief Map a PIV object ID to its corresponding PIV tag
  *
@@ -472,67 +555,34 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
     }
   }
 
-  // If no class is specified, we can't search
-  if (!session->findClassSpecified) {
-    session->findActive = CK_FALSE;
-    cnk_mutex_unlock(&session->lock);
-    CNK_RET_OK; // Return OK but with no results
-  }
-
   // Check if the specified class is supported
   if (session->findClassSpecified && session->findObjectClass != CKO_CERTIFICATE &&
-      session->findObjectClass != CKO_PUBLIC_KEY && session->findObjectClass != CKO_PRIVATE_KEY &&
-      session->findObjectClass != CKO_DATA) {
-    session->findActive = CK_FALSE;
+      session->findObjectClass != CKO_PUBLIC_KEY && session->findObjectClass != CKO_PRIVATE_KEY) {
     cnk_mutex_unlock(&session->lock);
     CNK_RET_OK; // Return OK but with no results
   }
 
-  // If an ID is specified, we only need to check that specific ID
-  if (session->findIdSpecified) {
-    CNK_DEBUG("ID specified: %d", session->findObjectId);
+  if (session->findIdSpecified && (session->findObjectId < 1 || session->findObjectId > 6)) {
+    cnk_mutex_unlock(&session->lock);
+    CNK_RET_OK; // Return OK but with no results
+  }
 
-    // Check if the ID is valid (1-6)
-    if (session->findObjectId < 1 || session->findObjectId > 6) {
-      session->findActive = CK_FALSE;
-      cnk_mutex_unlock(&session->lock);
-      CNK_RET_OK; // Return OK but with no results
-    }
-
-    // Map CKA_ID to PIV tag
-    CK_BYTE piv_tag;
-    rv = C_CNK_ObjIdToPivTag(session->findObjectId, &piv_tag);
-    if (rv != CKR_OK) {
-      session->findActive = CK_FALSE;
-      cnk_mutex_unlock(&session->lock);
-      CNK_RET_OK; // Return OK but with no results
-    }
-
-    // Try to get the data for this tag
-    rv = cnk_get_piv_data(session->slotId, piv_tag, NULL, NULL, CK_FALSE); // Just check existence
-    if (rv != CKR_OK && rv != CKR_DATA_INVALID) {
-      session->findActive = CK_FALSE;
-      cnk_mutex_unlock(&session->lock);
-      return rv;
-    }
-
-    // If data exists, add this object to the results
-    if (rv == CKR_OK) {
-      // Create a handle for this object: slot_id | object_class | object_id
-      // This will allow us to identify the object in future operations
-      CK_OBJECT_HANDLE handle = (session->slotId << 16) | (session->findObjectClass << 8) | session->findObjectId;
-      session->findObjects[session->findObjectsCount++] = handle;
-    }
+  if (session->findClassSpecified) {
+    rv = appendMatchingObjects(session, hSession, session->findObjectClass, pTemplate, ulCount);
   } else {
-    CNK_DEBUG("ID not specified");
-
-    // No ID specified, check all possible IDs (1-6)
-    for (CK_BYTE id = 1; id <= 6; id++) {
-      CK_OBJECT_HANDLE hObject = (session->slotId << 16) | (session->findObjectClass << 8) | id;
-      if (matchTemplate(hSession, hObject, pTemplate, ulCount)) {
-        session->findObjects[session->findObjectsCount++] = hObject;
+    static const CK_OBJECT_CLASS searchableClasses[] = {CKO_CERTIFICATE, CKO_PUBLIC_KEY, CKO_PRIVATE_KEY};
+    for (CK_ULONG i = 0; i < sizeof(searchableClasses) / sizeof(searchableClasses[0]); i++) {
+      rv = appendMatchingObjects(session, hSession, searchableClasses[i], pTemplate, ulCount);
+      if (rv != CKR_OK) {
+        break;
       }
     }
+  }
+
+  if (rv != CKR_OK) {
+    session->findActive = CK_FALSE;
+    cnk_mutex_unlock(&session->lock);
+    return rv;
   }
 
   cnk_mutex_unlock(&session->lock);
