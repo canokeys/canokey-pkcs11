@@ -1,10 +1,16 @@
 #include "pkcs11.h"
 #include "pkcs11_object.h"
 
-#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 // Include mbedtls headers for signature verification
 #include <mbedtls/bignum.h>
@@ -12,6 +18,51 @@
 #include <mbedtls/ecp.h>
 #include <mbedtls/md.h>
 #include <mbedtls/rsa.h>
+
+#ifdef _WIN32
+typedef HMODULE CNK_LIBRARY_HANDLE;
+
+static CNK_LIBRARY_HANDLE cnk_load_library(const char *libraryPath) { return LoadLibraryA(libraryPath); }
+
+static CK_C_GetFunctionList cnk_get_function_list(CNK_LIBRARY_HANDLE library) {
+  return (CK_C_GetFunctionList)GetProcAddress(library, "C_GetFunctionList");
+}
+
+static void cnk_close_library(CNK_LIBRARY_HANDLE library) {
+  if (library != NULL)
+    FreeLibrary(library);
+}
+
+static void cnk_print_library_error(const char *message) {
+  DWORD error = GetLastError();
+  DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+  char *buffer = NULL;
+
+  FormatMessageA(flags, NULL, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR)&buffer, 0, NULL);
+
+  if (buffer != NULL) {
+    printf("%s: %lu: %s\n", message, (unsigned long)error, buffer);
+    LocalFree(buffer);
+  } else {
+    printf("%s: %lu\n", message, (unsigned long)error);
+  }
+}
+#else
+typedef void *CNK_LIBRARY_HANDLE;
+
+static CNK_LIBRARY_HANDLE cnk_load_library(const char *libraryPath) { return dlopen(libraryPath, RTLD_LAZY); }
+
+static CK_C_GetFunctionList cnk_get_function_list(CNK_LIBRARY_HANDLE library) {
+  return (CK_C_GetFunctionList)dlsym(library, "C_GetFunctionList");
+}
+
+static void cnk_close_library(CNK_LIBRARY_HANDLE library) {
+  if (library != NULL)
+    dlclose(library);
+}
+
+static void cnk_print_library_error(const char *message) { printf("%s: %s\n", message, dlerror()); }
+#endif
 
 // Utility function to trim trailing spaces from fixed-length strings
 void trim_spaces(char *str, size_t length) {
@@ -38,19 +89,19 @@ CK_RV print_error_and_return(const char *message, CK_RV rv) {
 }
 
 // Utility function to load the PKCS#11 library and get the function list
-CK_RV load_pkcs11_library(const char *libraryPath, void **library, CK_FUNCTION_LIST_PTR *pFunctionList) {
+CK_RV load_pkcs11_library(const char *libraryPath, CNK_LIBRARY_HANDLE *library, CK_FUNCTION_LIST_PTR *pFunctionList) {
   // Load the PKCS#11 library dynamically
-  *library = dlopen(libraryPath, RTLD_LAZY);
+  *library = cnk_load_library(libraryPath);
   if (!*library) {
-    printf("Error loading library: %s\n", dlerror());
+    cnk_print_library_error("Error loading library");
     return CKR_GENERAL_ERROR;
   }
 
   // Get the C_GetFunctionList function
-  CK_C_GetFunctionList getFunc = (CK_C_GetFunctionList)dlsym(*library, "C_GetFunctionList");
+  CK_C_GetFunctionList getFunc = cnk_get_function_list(*library);
   if (!getFunc) {
-    printf("Error getting C_GetFunctionList function: %s\n", dlerror());
-    dlclose(*library);
+    cnk_print_library_error("Error getting C_GetFunctionList function");
+    cnk_close_library(*library);
     return CKR_GENERAL_ERROR;
   }
 
@@ -58,7 +109,7 @@ CK_RV load_pkcs11_library(const char *libraryPath, void **library, CK_FUNCTION_L
   CK_RV rv = getFunc(pFunctionList);
   if (rv != CKR_OK) {
     printf("Error getting function list: 0x%lx\n", rv);
-    dlclose(*library);
+    cnk_close_library(*library);
     return rv;
   }
 
@@ -1953,7 +2004,7 @@ int main(int argc, char *argv[]) {
   printf("Using PKCS#11 library: %s\n", libraryPath);
 
   // Load the PKCS#11 library and get the function list
-  void *library;
+  CNK_LIBRARY_HANDLE library;
   CK_FUNCTION_LIST_PTR pFunctionList;
   CK_RV rv = load_pkcs11_library(libraryPath, &library, &pFunctionList);
   if (rv != CKR_OK) {
@@ -1964,7 +2015,7 @@ int main(int argc, char *argv[]) {
   rv = pFunctionList->C_Initialize(NULL);
   if (rv != CKR_OK) {
     printf("Error initializing library: 0x%lx\n", rv);
-    dlclose(library);
+    cnk_close_library(library);
     return 1;
   }
 
@@ -1979,7 +2030,7 @@ int main(int argc, char *argv[]) {
   rv = get_slot_list(pFunctionList, &pSlotList, &ulSlotCount);
   if (rv != CKR_OK) {
     pFunctionList->C_Finalize(NULL);
-    dlclose(library);
+    cnk_close_library(library);
     return 1;
   }
 
@@ -2051,14 +2102,14 @@ int main(int argc, char *argv[]) {
   rv = pFunctionList->C_Finalize(NULL);
   if (rv != CKR_OK) {
     printf("Error finalizing library: 0x%lx\n", rv);
-    dlclose(library);
+    cnk_close_library(library);
     return 1;
   }
 
   printf("Library finalized successfully\n");
 
   // Close the library
-  dlclose(library);
+  cnk_close_library(library);
   printf("Library unloaded\n");
 
   return 0;

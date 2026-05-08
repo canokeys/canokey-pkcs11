@@ -155,12 +155,21 @@ install(TARGETS ${CNK_PKCS_TARGET}
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Modules")
 
 option(BUILD_TESTING "Build test programs" OFF)
-if(BUILD_TESTING)
+option(BUILD_UNIT_TESTING "Build unit test programs" ${BUILD_TESTING})
+option(BUILD_REAL_TESTING "Build real hardware test programs" ${BUILD_TESTING})
+option(RUN_REAL_TESTING "Register real hardware tests with CTest" OFF)
+if(BUILD_UNIT_TESTING OR BUILD_REAL_TESTING)
   enable_testing()
+endif()
+
+if(BUILD_UNIT_TESTING)
   # for test only, expose all symbols
   add_library(${CNK_PKCS_TARGET}-test SHARED ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
-  target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_LIB_STATIC" "CNK_VERBOSE")
+  target_compile_definitions(${CNK_PKCS_TARGET}-test PRIVATE "CNK_LIB_STATIC" "CNK_VERBOSE")
   target_link_libraries(${CNK_PKCS_TARGET}-test PRIVATE ${CNK_PKCS_LIBS})
   add_subdirectory(test/unit)
+endif()
+
+if(BUILD_REAL_TESTING)
   add_subdirectory(test/real)
 endif()

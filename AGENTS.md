@@ -149,6 +149,7 @@ Additional probes that passed:
 - `RSA-PKCS` with `openssl pkeyutl -verifyrecover`.
 - `SHA256-RSA-PKCS-PSS --salt-len 32` with OpenSSL PSS verification.
 - `ECDSA-SHA256 --signature-format openssl` on ID 02 with OpenSSL verification.
+- `test_real.exe` built and ran against the current hardware after the cross-platform loader/CMake changes. It covered RSA v1.5, RSA-PSS, RSA multipart, ECDSA, ECDSA-SHA1, and ECDSA-SHA256 with mbedTLS verification.
 
 ## Running Mode Notes
 
@@ -183,6 +184,6 @@ PIV object IDs map to slots as:
 - Encryption/decryption, verify, key generation, random generation, wrap/unwrap/derive, object create/delete/set-attribute, init/set PIN, and slot events are mostly stubs returning `CKR_FUNCTION_NOT_SUPPORTED`.
 - Current reader enumeration only keeps PC/SC reader names containing `canokey`, case-insensitive.
 - Debug builds define `CNK_VERBOSE`; `C_Initialize()` forces debug logging unless later changed through `C_CNK_ConfigLogging()`, so `pkcs11-tool` output is noisy.
-- `BUILD_TESTING=ON` with the Windows native MSVC/clang-cl toolchain currently fails before compiling tests because `test/unit/CMakeLists.txt` requires `PkgConfig`/`cmocka`.
-- `test/real/test_real.c` is useful as a manual diagnostic reference but is not yet a reliable Windows/MSVC regression test:
-  it unconditionally uses POSIX `dlopen`/`dlsym`/`dlclose`, hardcodes stale public-key object IDs for the current dev key state, and mostly prints per-case failures instead of accumulating an overall failing exit status.
+- `BUILD_UNIT_TESTING=ON` with the Windows native MSVC/clang-cl toolchain currently fails before compiling unit tests because `test/unit/CMakeLists.txt` requires `PkgConfig`/`cmocka`.
+- `BUILD_REAL_TESTING=ON -DBUILD_UNIT_TESTING=OFF` builds `test_real.exe` on Windows without requiring `PkgConfig`/`cmocka`.
+- `test/real/test_real.c` still mostly prints per-case failures instead of accumulating an overall failing exit status, so keep treating it as a hardware diagnostic until it has stricter result accounting.
