@@ -1,9 +1,9 @@
 #include "backend/pcsc.h"
 #include "api/session.h"
+#include "internal/des.h"
 #include "internal/logging.h"
 #include "internal/mutex.h"
 #include "internal/util.h"
-#include "mbedtls/des.h"
 #include "pkcs11.h"
 
 #include <ctype.h>
@@ -1360,8 +1360,6 @@ CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey) {
   DWORD cbRapdu = sizeof(rapdu);
   CK_RV rv;
   LONG rvTransceive;
-  mbedtls_des3_context ctx;
-  int mbedtlsRet;
 
   // Connect to the card
   CNK_ENSURE_OK(cnk_connect_and_select_canokey(session->slotId, &hCard));
@@ -1391,17 +1389,11 @@ CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey) {
   }
 
   // Encrypt the challenge using the management key
-  mbedtls_des3_init(&ctx);
-  mbedtlsRet = mbedtls_des3_set3key_enc(&ctx, pKey);
-  if (mbedtlsRet != 0) {
-    mbedtls_des3_free(&ctx);
-    CNK_RETURN(mbedtlsRet, "mbedtls_des3_set3key_enc() failed");
+  rv = cnk_des3_encrypt_block(pKey, rapdu + 4, hostCryptogram);
+  if (rv != CKR_OK) {
+    CNK_ERROR("cnk_des3_encrypt_block() failed: 0x%lx", rv);
+    goto cleanup;
   }
-
-  mbedtlsRet = mbedtls_des3_crypt_ecb(&ctx, rapdu + 4, hostCryptogram);
-  mbedtls_des3_free(&ctx);
-  if (mbedtlsRet != 0)
-    CNK_RETURN(mbedtlsRet, "mbedtls_des3_crypt_ecb() failed");
 
   // Send the host cryptogram to the card
   // Prepare the APDU for authentication
@@ -1428,7 +1420,6 @@ CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey) {
   rv = CKR_OK;
 
 cleanup:
-  mbedtls_des3_free(&ctx);
   cnk_disconnect_card(hCard);
   CNK_RETURN(rv, "");
 }

@@ -29,6 +29,23 @@ The DLL output is:
 build-ninja-clangcl-x64\canokey-pkcs11.dll
 ```
 
+The crypto backend is bundled TF-PSA-Crypto from:
+
+```text
+external\tf-psa-crypto\
+```
+
+Some TF-PSA-Crypto development checkouts do not include generated source
+files. The top-level CMake enables `GEN_FILES` automatically when those files
+are missing. Install the generator dependencies before building such a checkout:
+
+```powershell
+python -m pip install -r external\tf-psa-crypto\scripts\basic.requirements.txt
+```
+
+`external\mbedtls\` was removed from the tracked submodules after the
+TF-PSA-Crypto migration.
+
 ## Development Hygiene
 
 - Before committing C source or header changes, run `clang-format` on the touched `.c` and `.h` files.
@@ -151,7 +168,21 @@ Additional probes that passed:
 - `RSA-PKCS` with `openssl pkeyutl -verifyrecover`.
 - `SHA256-RSA-PKCS-PSS --salt-len 32` with OpenSSL PSS verification.
 - `ECDSA-SHA256 --signature-format openssl` on ID 02 with OpenSSL verification.
-- `test_real.exe` built and ran against the current hardware after the cross-platform loader/CMake changes. It covered RSA v1.5, RSA-PSS, RSA multipart, ECDSA, ECDSA-SHA1, and ECDSA-SHA256 with mbedTLS verification.
+- `test_real.exe` built and ran against the current hardware after the
+  cross-platform loader/CMake changes. It covered RSA v1.5, RSA-PSS, RSA
+  multipart, ECDSA, ECDSA-SHA1, and ECDSA-SHA256 with TF-PSA-Crypto's
+  mbedtls-compatible verification APIs.
+
+3DES note:
+
+- PIV management-key authentication still needs 3DES-EDE single-block
+  encryption for the card challenge in `cnkVerifyManagementKey()`.
+- TF-PSA-Crypto does not provide the old `mbedtls/des.h` API, so the module
+  has a narrow internal helper in `src/internal/des.c` instead of depending on
+  another crypto library.
+- The helper has been checked against the DES known-answer vector
+  `133457799BBCDFF1` / `0123456789ABCDEF` -> `85E813540F0AB405` by using the
+  same key for all three 3DES keys.
 
 ## Running Mode Notes
 
@@ -172,7 +203,8 @@ Additional probes that passed:
   and GENERAL AUTHENTICATE signing.
 - `include/private/backend/`: private backend-facing declarations.
 - `src/internal/`: implementation helpers that are not direct API entry points,
-  including logging, mutex wrappers, RSA padding/PSS helpers, and TLV utilities.
+  including logging, mutex wrappers, RSA padding/PSS helpers, TLV utilities, and
+  the PIV management-key 3DES block helper.
 - `include/private/internal/`: private helper declarations for the internal
   implementation layer.
 

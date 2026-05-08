@@ -1,5 +1,5 @@
-#include "pkcs11.h"
 #include "api/object.h"
+#include "pkcs11.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,12 +12,12 @@
 #include <dlfcn.h>
 #endif
 
-// Include mbedtls headers for signature verification
-#include <mbedtls/bignum.h>
-#include <mbedtls/ecdsa.h>
-#include <mbedtls/ecp.h>
+// Include TF-PSA-Crypto mbedtls-compatible headers for signature verification
 #include <mbedtls/md.h>
-#include <mbedtls/rsa.h>
+#include <mbedtls/private/bignum.h>
+#include <mbedtls/private/ecdsa.h>
+#include <mbedtls/private/ecp.h>
+#include <mbedtls/private/rsa.h>
 
 #ifdef _WIN32
 typedef HMODULE CNK_LIBRARY_HANDLE;
@@ -824,43 +824,28 @@ static CK_RV cnk_verify_rsa_signature(CK_BYTE_PTR modulus, CK_ULONG modulus_len,
   CK_RV rv = CKR_GENERAL_ERROR;
   int ret;
   mbedtls_rsa_context rsa;
-  mbedtls_mpi N, E;
   unsigned char hash[64]; // Large enough for any hash
+  size_t key_len = modulus_len;
 
   // Initialize mbedtls structures
   mbedtls_rsa_init(&rsa);
-  mbedtls_mpi_init(&N);
-  mbedtls_mpi_init(&E);
 
   // Import the public key components
-  ret = mbedtls_mpi_read_binary(&N, modulus, modulus_len);
+  ret = mbedtls_mpi_read_binary(&rsa.N, modulus, modulus_len);
   if (ret != 0) {
     printf("      Error loading modulus: -0x%04x\n", (unsigned int)-ret);
     goto cleanup;
   }
 
-  ret = mbedtls_mpi_read_binary(&E, exponent, exponent_len);
+  ret = mbedtls_mpi_read_binary(&rsa.E, exponent, exponent_len);
   if (ret != 0) {
     printf("      Error loading exponent: -0x%04x\n", (unsigned int)-ret);
     goto cleanup;
   }
 
-  // Import key components into RSA context
-  ret = mbedtls_rsa_import(&rsa, &N, NULL, NULL, NULL, &E);
-  if (ret != 0) {
-    printf("      Error importing RSA key: -0x%04x\n", (unsigned int)-ret);
-    goto cleanup;
-  }
-
   // Set RSA padding mode based on the parameter
   mbedtls_rsa_set_padding(&rsa, padding_mode, md_type);
-
-  // Complete/check the key
-  ret = mbedtls_rsa_complete(&rsa);
-  if (ret != 0) {
-    printf("      Error completing RSA key: -0x%04x\n", (unsigned int)-ret);
-    goto cleanup;
-  }
+  rsa.len = mbedtls_mpi_size(&rsa.N);
 
   if (mbedtls_rsa_check_pubkey(&rsa) != 0) {
     printf("      Invalid RSA public key!\n");
@@ -912,9 +897,6 @@ static CK_RV cnk_verify_rsa_signature(CK_BYTE_PTR modulus, CK_ULONG modulus_len,
 
       // Properly verify the PKCS#1 v1.5 signature
       size_t hash_len = mbedtls_md_get_size(md_info);
-
-      // Get the key length in bytes
-      size_t key_len = mbedtls_rsa_get_len(&rsa);
 
       // The decrypted signature should have format: 0x00 0x01 PS 0x00 T
       // where PS is padding bytes (0xFF) and T is ASN.1 DER encoding of algorithm + hash
@@ -1026,19 +1008,27 @@ static CK_RV cnk_verify_rsa_signature(CK_BYTE_PTR modulus, CK_ULONG modulus_len,
       goto cleanup;
     }
 
-    // 2. Use mbedtls built-in PSS verification function
+    // 2. Use the built-in PSS verification function
     size_t hash_len = mbedtls_md_get_size(md_info);
+    int expected_salt_len = 0;
+    switch (md_type) {
+    case MBEDTLS_MD_SHA1:
+      expected_salt_len = 20;
+      break;
+    case MBEDTLS_MD_SHA256:
+      expected_salt_len = 32;
+      break;
+    default:
+      expected_salt_len = (int)hash_len;
+      break;
+    }
 
     // Set RSA padding again explicitly for the verification
     mbedtls_rsa_set_padding(&rsa, MBEDTLS_RSA_PKCS_V21, md_type);
 
-// Use mbedtls built-in PSS verification functions directly
-#if MBEDTLS_VERSION_NUMBER >= 0x03000000 // mbedTLS 3.0 and above
-    ret = mbedtls_rsa_rsassa_pss_verify(&rsa, md_type, (unsigned int)hash_len, hash, signature);
-#else
-    ret = mbedtls_rsa_rsassa_pss_verify(&rsa, NULL, NULL, MBEDTLS_RSA_PUBLIC, md_type, (unsigned int)hash_len, hash,
-                                        signature);
-#endif
+    // Use TF-PSA-Crypto's built-in PSS verification function directly.
+    ret = mbedtls_rsa_rsassa_pss_verify_ext(&rsa, md_type, (unsigned int)hash_len, hash, md_type, expected_salt_len,
+                                            signature);
 
     if (ret != 0) {
       printf("      PSS signature verification failed: -0x%04x\n", (unsigned int)-ret);
@@ -1056,8 +1046,6 @@ static CK_RV cnk_verify_rsa_signature(CK_BYTE_PTR modulus, CK_ULONG modulus_len,
 
 cleanup:
   mbedtls_rsa_free(&rsa);
-  mbedtls_mpi_free(&N);
-  mbedtls_mpi_free(&E);
   return rv;
 }
 

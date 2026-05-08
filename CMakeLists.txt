@@ -60,30 +60,42 @@ else()
   find_package(nsync REQUIRED)
 endif()
 
-# Configure mbedtls from submodule or system
-option(USE_BUNDLED_MBEDTLS "Use bundled mbedtls" ON)
-if(USE_BUNDLED_MBEDTLS)
-  set(OLD_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+# Configure TF-PSA-Crypto from submodule or system
+option(USE_BUNDLED_TF_PSA_CRYPTO "Use bundled TF-PSA-Crypto" ON)
+if(USE_BUNDLED_TF_PSA_CRYPTO)
   set(OLD_ENABLE_TESTING ${ENABLE_TESTING})
-  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE) # we must build mbedtls as static library
-  set(ENABLE_TESTING OFF CACHE BOOL "" FORCE) # disable mbedtls tests
-  set(ENABLE_PROGRAMS OFF CACHE BOOL "Build Mbed TLS programs." FORCE) # disable mbedtls programs
-  set(MBEDTLS_USER_CONFIG_FILE "mbedtls_config_cnk.h" CACHE FILEPATH "" FORCE) # add user config
+  set(OLD_ENABLE_PROGRAMS ${ENABLE_PROGRAMS})
+  set(USE_STATIC_TF_PSA_CRYPTO_LIBRARY ON CACHE BOOL "" FORCE)
+  set(USE_SHARED_TF_PSA_CRYPTO_LIBRARY OFF CACHE BOOL "" FORCE)
+  set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+  set(ENABLE_PROGRAMS OFF CACHE BOOL "Build TF-PSA-Crypto programs." FORCE)
+  set(TF_PSA_CRYPTO_FATAL_WARNINGS OFF CACHE BOOL "Compiler warnings treated as errors" FORCE)
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/tf-psa-crypto/core/psa_crypto_driver_wrappers_no_static.c")
+    set(GEN_FILES ON CACHE BOOL "Generate TF-PSA-Crypto files as needed" FORCE)
+  else()
+    set(GEN_FILES OFF CACHE BOOL "Generate TF-PSA-Crypto files as needed" FORCE)
+  endif()
 
-  add_subdirectory(external/mbedtls)
+  set(CNK_TF_PSA_CRYPTO_USER_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/include/private/mbedtls_config_cnk.h")
+  file(TO_CMAKE_PATH "${CNK_TF_PSA_CRYPTO_USER_CONFIG_FILE}" CNK_TF_PSA_CRYPTO_USER_CONFIG_FILE)
+  set(TF_PSA_CRYPTO_USER_CONFIG_FILE "${CNK_TF_PSA_CRYPTO_USER_CONFIG_FILE}" CACHE FILEPATH "" FORCE)
 
-  set(BUILD_SHARED_LIBS ${OLD_BUILD_SHARED_LIBS} CACHE BOOL "" FORCE) # restore original value
-  set(ENABLE_TESTING ${OLD_ENABLE_TESTING} CACHE BOOL "" FORCE) # restore original value
+  add_subdirectory(external/tf-psa-crypto)
 
-  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/external/mbedtls/include)
-  set(MBEDTLS_LIBRARIES mbedcrypto)
-  set_default_visibility(${MBEDTLS_LIBRARIES})
+  set(ENABLE_TESTING ${OLD_ENABLE_TESTING} CACHE BOOL "" FORCE)
+  set(ENABLE_PROGRAMS ${OLD_ENABLE_PROGRAMS} CACHE BOOL "" FORCE)
+  set(CMAKE_C_STANDARD 17)
+  set(CMAKE_C_EXTENSIONS ON)
+  set(CMAKE_C_STANDARD_REQUIRED ON)
+
+  set(CNK_CRYPTO_LIBRARIES tfpsacrypto)
+  set_default_visibility(${CNK_CRYPTO_LIBRARIES})
 else()
-  find_package(MbedTLS REQUIRED)
-  set(MBEDTLS_LIBRARIES MBedTLS::mbedcrypto)
+  find_package(TF-PSA-Crypto REQUIRED)
+  set(CNK_CRYPTO_LIBRARIES TF-PSA-Crypto::tfpsacrypto)
 endif()
 
-set(CNK_PKCS_LIBS nsync ${MBEDTLS_LIBRARIES})
+set(CNK_PKCS_LIBS nsync ${CNK_CRYPTO_LIBRARIES})
 
 file(GLOB_RECURSE CNK_PKCS_SRC CONFIGURE_DEPENDS src/*.c)
 
@@ -114,6 +126,8 @@ endif()
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_VERBOSE")
 endif()
+
+target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "MBEDTLS_ALLOW_PRIVATE_ACCESS")
 
 # find PC/SC library on different platforms
 if(WIN32)
@@ -165,7 +179,7 @@ endif()
 if(BUILD_UNIT_TESTING)
   # for test only, expose all symbols
   add_library(${CNK_PKCS_TARGET}-test SHARED ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
-  target_compile_definitions(${CNK_PKCS_TARGET}-test PRIVATE "CNK_LIB_STATIC" "CNK_VERBOSE")
+  target_compile_definitions(${CNK_PKCS_TARGET}-test PRIVATE "CNK_LIB_STATIC" "CNK_VERBOSE" "MBEDTLS_ALLOW_PRIVATE_ACCESS")
   target_link_libraries(${CNK_PKCS_TARGET}-test PRIVATE ${CNK_PKCS_LIBS})
   add_subdirectory(test/unit)
 endif()

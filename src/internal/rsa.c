@@ -4,10 +4,10 @@
 #include "internal/util.h"
 #include "pkcs11.h"
 
-#include <mbedtls/bignum.h>
-#include <mbedtls/ctr_drbg.h>
-#include <mbedtls/entropy.h>
 #include <mbedtls/md.h>
+#include <mbedtls/private/bignum.h>
+#include <mbedtls/private/ctr_drbg.h>
+#include <mbedtls/private/entropy.h>
 #include <string.h>
 
 // PKCS#1 v1.5 padding for signature

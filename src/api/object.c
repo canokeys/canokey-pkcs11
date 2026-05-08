@@ -15,7 +15,6 @@
 #include "pkcs11.h"
 
 #include <mbedtls/asn1write.h>
-#include <mbedtls/oid.h>
 #include <stddef.h> // For size_t
 #include <string.h>
 
@@ -907,23 +906,31 @@ static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algori
 
   case CKA_EC_PARAMS:
     if (keyType == CKK_EC || keyType == CKK_EC_EDWARDS) {
-      char *oid = NULL;
+      const char *oid = NULL;
+      size_t cbOid = 0;
       switch (algorithm_type) {
       case PIV_ALG_ECC_256:
-        oid = MBEDTLS_OID_EC_GRP_SECP256R1;
+        oid = "\x2A\x86\x48\xCE\x3D\x03\x01\x07";
+        cbOid = 8;
         break;
       case PIV_ALG_ECC_384:
-        oid = MBEDTLS_OID_EC_GRP_SECP384R1;
+        oid = "\x2B\x81\x04\x00\x22";
+        cbOid = 5;
         break;
       case PIV_ALG_SECP256K1:
-        oid = MBEDTLS_OID_EC_GRP_SECP256K1;
+        oid = "\x2B\x81\x04\x00\x0A";
+        cbOid = 5;
         break;
       default:
         CNK_ERROR("Should not be reached");
         break;
       }
+      if (oid == NULL) {
+        rv = CKR_ATTRIBUTE_VALUE_INVALID;
+        break;
+      }
       CK_BYTE_PTR pbEcParams = abEcParams + sizeof(abEcParams);
-      cbEcParams = mbedtls_asn1_write_oid(&pbEcParams, abEcParams, oid, sizeof(oid));
+      cbEcParams = mbedtls_asn1_write_oid(&pbEcParams, abEcParams, oid, cbOid);
       rv = setSingleAttributeValue(attribute, pbEcParams, cbEcParams);
     } else {
       // Not applicable for non-ECC keys

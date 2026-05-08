@@ -1,6 +1,7 @@
 function(add_real_test NAME)
   add_executable(test_${NAME} test_${NAME}.c)
-  target_link_libraries(test_${NAME} PRIVATE ${ARGN} ${MBEDTLS_LIBRARIES})
+  target_compile_definitions(test_${NAME} PRIVATE "MBEDTLS_ALLOW_PRIVATE_ACCESS")
+  target_link_libraries(test_${NAME} PRIVATE ${ARGN} ${CNK_CRYPTO_LIBRARIES})
   if(APPLE OR UNIX)
     target_link_libraries(test_${NAME} PRIVATE dl)
   endif()

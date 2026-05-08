@@ -13,8 +13,8 @@
 #include "internal/rsa.h"
 #include "pkcs11.h"
 
-#include <mbedtls/bignum.h>
 #include <mbedtls/md.h>
+#include <mbedtls/private/bignum.h>
 
 // Mock functions and data structures
 static unsigned char test_data[] = "test data for RSA sign operation";
@@ -216,7 +216,7 @@ static CK_RV verify_pss_encoding(CK_BYTE_PTR encoded, CK_ULONG encoded_len, CK_B
   return CKR_OK;
 }
 
-// Helper function to verify PKCS#1 v1.5 padding structure
+// Helper function to verify PKCSi1 v1.5 padding structure
 static void verify_pkcs1_v1_5_padding(CK_BYTE *output, CK_ULONG outputSize, CK_BYTE *expectedData, CK_ULONG dataSize,
                                       CK_BYTE *derPrefix, CK_ULONG derSize) {
   // Verify basic structure: 0x00 | 0x01 | PS | 0x00 | [DER] | Data
@@ -908,7 +908,7 @@ static void test_pss_encode_hash_algorithms(void **state) {
 // Main function to run all tests
 int main(void) {
   const struct CMUnitTest tests[] = {
-      // PKCS#1 v1.5 individual digest algorithm tests
+      // PKCSi1 v1.5 individual digest algorithm tests
       cmocka_unit_test(test_pkcs1_v1_5_pad_no_digest),
       cmocka_unit_test(test_pkcs1_v1_5_pad_sha1),
       cmocka_unit_test(test_pkcs1_v1_5_pad_sha224),

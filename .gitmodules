@@ -1,7 +1,6 @@
 [submodule "external/nsync"]
 	path = external/nsync
 	url = ../nsync.git
-[submodule "external/mbedtls"]
-	path = external/mbedtls
-	url = ../../Mbed-TLS/mbedtls.git
-	branch = main
+[submodule "external/tf-psa-crypto"]
+	path = external/tf-psa-crypto
+	url = ../../Mbed-TLS/TF-PSA-Crypto.git

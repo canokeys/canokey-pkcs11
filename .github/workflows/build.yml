@@ -37,6 +37,8 @@ jobs:
       - name: Pre-build script
         run: ${{ matrix.pre-build-script }}
         if: matrix.pre-build-script != ''
+      - name: Install TF-PSA-Crypto Python requirements
+        run: python -m pip install -r external/tf-psa-crypto/scripts/basic.requirements.txt
       - name: Configure
         run: cmake -S . -B build ${{ matrix.cmake-config-args }}
       - name: Build
