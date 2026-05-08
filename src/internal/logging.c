@@ -1,15 +1,33 @@
 #include "internal/logging.h"
 
+#include <nsync_mu.h>
 #include <stdarg.h>
 #include <time.h>
 
-const char *g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE] = {
+static const char *const g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE] = {
     "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "NONE",
 };
 
 // default values
 atomic_int g_cnk_log_level = CNK_LOG_LEVEL_WARNING;
-FILE *g_cnk_log_file = NULL;
+static FILE *g_cnk_log_file = NULL;
+static nsync_mu g_cnk_log_mutex = NSYNC_MU_INIT;
+
+CK_RV cnk_config_logging(const int level, FILE *file) {
+  if (level >= 0 && level < CNK_LOG_LEVEL_SIZE) {
+    atomic_store(&g_cnk_log_level, level);
+  } else if (level != -1) {
+    return CKR_ARGUMENTS_BAD;
+  }
+
+  if (file != NULL) {
+    nsync_mu_lock(&g_cnk_log_mutex);
+    g_cnk_log_file = file;
+    nsync_mu_unlock(&g_cnk_log_mutex);
+  }
+
+  return CKR_OK;
+}
 
 static void print_time(FILE *out) {
   struct timespec ts;
@@ -26,23 +44,29 @@ static void print_time(FILE *out) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wformat-nonliteral"
 
-void cnk_printf(const int level, const bool prepend_date, const char *const format, ...) {
+void cnk_printlogf(const int level, const char *const function, const char *const file, const int line,
+                   const char *const format, ...) {
   if (level < atomic_load(&g_cnk_log_level)) {
     return;
   }
+
+  nsync_mu_lock(&g_cnk_log_mutex);
+
   FILE *out = g_cnk_log_file;
   if (out == NULL) {
     out = stderr;
   }
-  if (prepend_date) {
-    print_time(out);
-  }
-  // print the log line
+  print_time(out);
+  fprintf(out, "%-20s(%-20s:L%03d)[%-5s]: ", function, file, line, g_cnk_log_level_name[level]);
+
   va_list args;
   va_start(args, format);
   vfprintf(out, format, args);
   va_end(args);
+  fprintf(out, "\n");
   fflush(out);
+
+  nsync_mu_unlock(&g_cnk_log_mutex);
 }
 
 #pragma clang diagnostic pop
@@ -59,6 +83,8 @@ void cnk_log_apdu_command(const unsigned char *command, unsigned long command_le
   if (command == NULL || command_len == 0) {
     return;
   }
+
+  nsync_mu_lock(&g_cnk_log_mutex);
 
   FILE *out = g_cnk_log_file;
   if (out == NULL) {
@@ -81,6 +107,7 @@ void cnk_log_apdu_command(const unsigned char *command, unsigned long command_le
     }
     fprintf(out, "\n");
     fflush(out);
+    nsync_mu_unlock(&g_cnk_log_mutex);
     return;
   }
 
@@ -133,6 +160,7 @@ void cnk_log_apdu_command(const unsigned char *command, unsigned long command_le
 
   fprintf(out, "\n");
   fflush(out);
+  nsync_mu_unlock(&g_cnk_log_mutex);
 }
 
 /**
@@ -146,6 +174,8 @@ void cnk_log_apdu_response(const unsigned char *response, unsigned long response
   if (response == NULL || response_len == 0) {
     return;
   }
+
+  nsync_mu_lock(&g_cnk_log_mutex);
 
   FILE *out = g_cnk_log_file;
   if (out == NULL) {
@@ -178,4 +208,5 @@ void cnk_log_apdu_response(const unsigned char *response, unsigned long response
 
   fprintf(out, "\n");
   fflush(out);
+  nsync_mu_unlock(&g_cnk_log_mutex);
 }

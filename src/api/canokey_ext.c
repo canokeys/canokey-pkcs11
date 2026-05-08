@@ -10,7 +10,6 @@
 
 #include <mbedtls/platform.h>
 #include <nsync_malloc.h>
-#include <stdatomic.h>
 #include <stdlib.h>
 
 // Function pointers for memory allocation (global)
@@ -47,16 +46,4 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
   return CKR_ARGUMENTS_BAD;
 }
 
-CK_RV C_CNK_ConfigLogging(int level, FILE *file) {
-  if (level >= 0 && level < CNK_LOG_LEVEL_SIZE) {
-    atomic_store(&g_cnk_log_level, level);
-  } else if (level != -1) {
-    return CKR_ARGUMENTS_BAD;
-  }
-
-  if (file != NULL) {
-    g_cnk_log_file = file;
-  }
-
-  return CKR_OK;
-}
+CK_RV C_CNK_ConfigLogging(int level, FILE *file) { return cnk_config_logging(level, file); }
