@@ -970,11 +970,11 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
 
   // Check if this is an ECDSA signature
   CK_BYTE algorithmType = pSession->signingContext.algorithmType;
-  if (algorithmType == PIV_ALG_ECC_256 || algorithmType == PIV_ALG_ECC_384) {
+  if (algorithmType == PIV_ALG_ECC_256 || algorithmType == PIV_ALG_ECC_384 || algorithmType == PIV_ALG_SECP256K1) {
     // ECDSA signature is in DER format, convert to raw r||s format
     CNK_DEBUG("Converting ECDSA signature from DER to raw format");
 
-    CK_ULONG ec_size = (algorithmType == PIV_ALG_ECC_256) ? 32 : 48; // P-256 = 32 bytes, P-384 = 48 bytes
+    CK_ULONG ec_size = (algorithmType == PIV_ALG_ECC_384) ? 48 : 32; // P-256/secp256k1 = 32 bytes, P-384 = 48 bytes
     CK_ULONG expected_sig_size = ec_size * 2;                        // r || s
 
     // Check buffer size for raw signature

@@ -164,7 +164,7 @@ static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m,
   return CKR_OK;
 }
 
-CK_ULONG getEcSignatureLength(CK_BYTE algorithmType) {
+static CK_ULONG getEcSignatureLength(CK_BYTE algorithmType) {
   switch (algorithmType) {
   case PIV_ALG_ECC_256:
   case PIV_ALG_SECP256K1:
@@ -174,6 +174,15 @@ CK_ULONG getEcSignatureLength(CK_BYTE algorithmType) {
   default:
     return 0;
   }
+}
+
+static CK_RV validateEcMech(CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
+  CK_ULONG signatureLength = getEcSignatureLength(algorithmType);
+  if (signatureLength == 0)
+    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not a supported EC signing key");
+
+  session->signingContext.cbSignature = signatureLength;
+  return CKR_OK;
 }
 
 CK_RV initDigestingContext(CNK_PKCS11_SESSION *session, CK_MECHANISM_TYPE mechanism) {
@@ -233,10 +242,14 @@ CK_RV initDigestingContext(CNK_PKCS11_SESSION *session, CK_MECHANISM_TYPE mechan
     CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "invalid md_info");
 
   mbedtls_md_init(&session->digestingContext.context);
-  if (mbedtls_md_setup(&session->digestingContext.context, md_info, 0) != 0)
+  if (mbedtls_md_setup(&session->digestingContext.context, md_info, 0) != 0) {
+    mbedtls_md_free(&session->digestingContext.context);
     CNK_RETURN(CKR_HOST_MEMORY, "md setup failed");
-  if (mbedtls_md_starts(&session->digestingContext.context) != 0)
+  }
+  if (mbedtls_md_starts(&session->digestingContext.context) != 0) {
+    mbedtls_md_free(&session->digestingContext.context);
     CNK_RETURN(CKR_FUNCTION_FAILED, "md start failed");
+  }
   session->digestingContext.mechanismType = mechanism;
   session->digestingContext.type = mdType;
 
@@ -277,33 +290,54 @@ static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData
 
   if (isMechRSA(pSession->signingContext.mechanism.mechanism)) {
     pbSignRawData = ck_malloc(pSession->signingContext.cbSignature);
+    if (!pbSignRawData)
+      CNK_RETURN(CKR_HOST_MEMORY, "failed to allocate RSA sign buffer");
     cbSignRawData = pSession->signingContext.cbSignature;
     if (isMechRsaPkcsV15(pSession->signingContext.mechanism.mechanism)) {
-      pkcs1_v1_5_pad(pInputData, cbInputData, pbSignRawData, cbSignRawData, pSession->digestingContext.type);
+      rv = pkcs1_v1_5_pad(pInputData, cbInputData, pbSignRawData, cbSignRawData, pSession->digestingContext.type);
+      if (rv != CKR_OK)
+        goto cleanup;
     } else if (isMechRsaPss(pSession->signingContext.mechanism.mechanism)) {
       const CK_RSA_PKCS_PSS_PARAMS *pss_params =
           (CK_RSA_PKCS_PSS_PARAMS *)pSession->signingContext.mechanism.pParameter;
       CK_ULONG cbModulus = pSession->signingContext.cbSignature;
       CK_ULONG cbSalt = pss_params->sLen;
-      pss_encode(pInputData, cbInputData, pSession->signingContext.abModulus, cbModulus, cbSalt,
-                 pSession->digestingContext.type, pbSignRawData);
+      rv = pss_encode(pInputData, cbInputData, pSession->signingContext.abModulus, cbModulus, cbSalt,
+                      pSession->digestingContext.type, pbSignRawData);
+      if (rv != CKR_OK)
+        goto cleanup;
     } else if (pSession->signingContext.mechanism.mechanism == CKM_RSA_X_509) {
-      CNK_ENSURE_EQUAL(cbSignRawData, cbInputData);
+      if (cbSignRawData != cbInputData) {
+        rv = CKR_ARGUMENTS_BAD;
+        goto cleanup;
+      }
       memcpy(pbSignRawData, pInputData, cbInputData);
     } else {
       CNK_ERROR("Unexpected code path");
-      return CKR_FUNCTION_FAILED;
+      rv = CKR_FUNCTION_FAILED;
+      goto cleanup;
     }
   } else if (isMechEC(pSession->signingContext.mechanism.mechanism)) {
     cbSignRawData = pSession->signingContext.cbSignature / 2;
-    if (cbInputData > cbSignRawData)
-      return CKR_DATA_LEN_RANGE;
+    if (cbSignRawData == 0) {
+      rv = CKR_KEY_TYPE_INCONSISTENT;
+      goto cleanup;
+    }
+    if (cbInputData > cbSignRawData) {
+      rv = CKR_DATA_LEN_RANGE;
+      goto cleanup;
+    }
     pbSignRawData = ck_malloc(cbSignRawData);
+    if (!pbSignRawData) {
+      rv = CKR_HOST_MEMORY;
+      goto cleanup;
+    }
     memset(pbSignRawData, 0, cbSignRawData);
     memcpy(pbSignRawData + cbSignRawData - cbInputData, pInputData, cbInputData);
   } else {
     CNK_ERROR("Unexpected code path");
-    return CKR_FUNCTION_FAILED;
+    rv = CKR_FUNCTION_FAILED;
+    goto cleanup;
   }
 
   // Sign the data
@@ -312,6 +346,7 @@ static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData
     CNK_ERROR("Failed to sign data: ret = %lu", rv);
   }
 
+cleanup:
   ck_free(pbSignRawData);
   return rv;
 }
@@ -338,23 +373,37 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   if (isMechRSA(pMechanism->mechanism)) {
     CNK_ENSURE_OK(validateRsaMech(session, pMechanism, algorithmType, abPublicKey, cbPublicKey));
   } else if (isMechEC(pMechanism->mechanism)) {
-    session->signingContext.cbSignature = getEcSignatureLength(algorithmType);
+    CNK_ENSURE_OK(validateEcMech(session, algorithmType));
   } else {
     CNK_RETURN(CKR_MECHANISM_INVALID, "Invalid mechanism");
   }
 
-  if (isMechRequireDigesting(pMechanism->mechanism)) {
-    CNK_ENSURE_OK(initDigestingContext(session, pMechanism->mechanism));
-  }
+  if (pMechanism->ulParameterLen > 0)
+    CNK_ENSURE_NONNULL(pMechanism->pParameter);
 
   // Store active key and mechanism in the session
   session->signingContext.hKey = hKey;
   session->signingContext.pivSlot = pivTag;
   session->signingContext.algorithmType = algorithmType;
   session->signingContext.mechanism.mechanism = pMechanism->mechanism;
-  session->signingContext.mechanism.pParameter = ck_malloc(pMechanism->ulParameterLen);
+  session->signingContext.mechanism.pParameter = NULL_PTR;
   session->signingContext.mechanism.ulParameterLen = pMechanism->ulParameterLen;
-  memcpy(session->signingContext.mechanism.pParameter, pMechanism->pParameter, pMechanism->ulParameterLen);
+  if (pMechanism->ulParameterLen > 0) {
+    session->signingContext.mechanism.pParameter = ck_malloc(pMechanism->ulParameterLen);
+    if (!session->signingContext.mechanism.pParameter) {
+      resetSigningContext(session);
+      CNK_RETURN(CKR_HOST_MEMORY, "failed to copy mechanism parameters");
+    }
+    memcpy(session->signingContext.mechanism.pParameter, pMechanism->pParameter, pMechanism->ulParameterLen);
+  }
+
+  if (isMechRequireDigesting(pMechanism->mechanism)) {
+    CK_RV rv = initDigestingContext(session, pMechanism->mechanism);
+    if (rv != CKR_OK) {
+      resetSigningContext(session);
+      CNK_RETURN(rv, "initDigestingContext failed");
+    }
+  }
 
   CNK_RET_OK;
 }
