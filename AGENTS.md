@@ -199,7 +199,11 @@ Additional probes that passed:
 
 - For OpenSC and other normal PKCS#11 consumers, run this as a standalone DLL.
 - Standalone mode is the default when no caller invokes `C_CNK_EnableManagedMode()` before `C_Initialize()`.
-- The README says managed mode is selected via non-null `pReserved`, but the current code actually uses the `C_CNK_EnableManagedMode()` extension to set `g_cnk_is_managed_mode`.
+- Managed mode is selected through `C_CNK_EnableManagedMode()` with a non-NULL
+  `CNK_MANAGED_MODE_INIT_ARGS` pointer before `C_Initialize()`.
+- `C_Initialize()` treats `pInitArgs` as standard PKCS#11
+  `CK_C_INITIALIZE_ARGS`; `pReserved` must be NULL and is not a managed-mode
+  entry point.
 - The `pkcs11-tool --show-info` smoke test reached `C_Initialize` with `pInitArgs == NULL`, so it was using standalone mode.
 
 ## Current Implementation Shape

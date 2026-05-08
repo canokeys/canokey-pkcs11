@@ -37,7 +37,17 @@ ctest --test-dir build --output-on-failure # for unit tests
 
 This module can be run in two modes, namely managed mode and standalone mode.
 
-If `pInitArgs->pReserved` is not NULL, the module is in managed mode.
-The module will try to use `pReserved` as a pointer to a `struct CNK_INIT_ARGS`, which provides the PC/SC context and other helper functions (e.g. memory management, logging). This mode is mainly used by CanoKey minidriver for Windows.
+Standalone mode is the default. In standalone mode, the module manages PC/SC
+contexts and sessions by itself. This is the normal mode when used as a plugin
+for applications like OpenSC, GnuPG, etc.
 
-Otherwise, the module is in standalone mode. It would manage PC/SC contexts and sessions by itself. This is the default mode when used as plugin for applications like OpenSC, GnuPG, etc.
+Managed mode must be enabled explicitly before `C_Initialize()` by calling
+`C_CNK_EnableManagedMode()` with a non-NULL `CNK_MANAGED_MODE_INIT_ARGS`
+pointer. The managed-mode arguments provide the PC/SC context, card handle, and
+helper functions such as memory allocation callbacks. This mode is mainly used
+by CanoKey minidriver for Windows.
+
+`C_Initialize()` no longer uses `pInitArgs->pReserved` to enter managed mode.
+Its `pInitArgs` parameter is treated as the standard PKCS#11
+`CK_C_INITIALIZE_ARGS` pointer, and `pReserved` must be NULL as required by the
+PKCS#11 specification.
