@@ -99,6 +99,57 @@ Local compatibility fixes made during probing:
 - `MAX_FIND_OBJECTS` is 18 to fit 6 PIV slots x 3 object classes.
 - `cnk_get_metadata()` maps `6A82` and `6A88` to `CKR_DATA_INVALID` so object enumeration skips missing PIV keys.
 
+## Current Dev Hardware PIV State
+
+The inserted development key uses the default CanoKey PIV credentials:
+
+```text
+PIN: 123456
+PUK: 12345678
+Management Key: 010203040506070801020304050607080102030405060708
+```
+
+`piv-tool` expects the management key as colon-separated bytes through `PIV_EXT_AUTH_KEY`.
+
+Prepared objects on the current key:
+
+```text
+ID 01 -> slot 9A -> RSA-2048 key and certificate
+ID 02 -> slot 9C -> EC P-256 key and certificate
+```
+
+Generated test artifacts are under:
+
+```text
+build-ninja-clangcl-x64\piv-9a-rsa-test\
+build-ninja-clangcl-x64\piv-9c-test\
+```
+
+OpenSC's own module is useful as an external comparison point:
+
+```text
+C:\Program Files\OpenSC Project\OpenSC\pkcs11\opensc-pkcs11.dll
+```
+
+RSA signing note:
+
+- CanoKey accepts RSA-sized PIV GENERAL AUTHENTICATE requests through short APDU command chaining.
+- CanoKey rejects the equivalent extended APDU form with `6700`.
+- OpenSC sends the RSA-2048 request as `10 87 07 9A FF <first 255 bytes>` followed by `00 87 07 9A 0B <last 11 bytes> 00`.
+
+Known-good real-hardware probes after the chaining fix:
+
+```powershell
+& 'C:\Program Files\OpenSC Project\OpenSC\tools\pkcs11-tool.exe' --module "$PWD\build-ninja-clangcl-x64\canokey-pkcs11.dll" --slot-index 0 --login --pin 123456 --sign --type privkey --id 01 --mechanism SHA256-RSA-PKCS --input-file .\build-ninja-clangcl-x64\piv-9a-rsa-test\rsa-message.txt --output-file .\build-ninja-clangcl-x64\piv-9a-rsa-test\rsa-message.sha256-rsa-pkcs.sig
+& 'C:\Program Files\Git\mingw64\bin\openssl.exe' dgst -sha256 -verify .\build-ninja-clangcl-x64\piv-9a-rsa-test\piv-9a-rsa-pub.pem -signature .\build-ninja-clangcl-x64\piv-9a-rsa-test\rsa-message.sha256-rsa-pkcs.sig .\build-ninja-clangcl-x64\piv-9a-rsa-test\rsa-message.txt
+```
+
+Additional probes that passed:
+
+- `RSA-PKCS` with `openssl pkeyutl -verifyrecover`.
+- `SHA256-RSA-PKCS-PSS --salt-len 32` with OpenSSL PSS verification.
+- `ECDSA-SHA256 --signature-format openssl` on ID 02 with OpenSSL verification.
+
 ## Running Mode Notes
 
 - For OpenSC and other normal PKCS#11 consumers, run this as a standalone DLL.
@@ -132,3 +183,6 @@ PIV object IDs map to slots as:
 - Encryption/decryption, verify, key generation, random generation, wrap/unwrap/derive, object create/delete/set-attribute, init/set PIN, and slot events are mostly stubs returning `CKR_FUNCTION_NOT_SUPPORTED`.
 - Current reader enumeration only keeps PC/SC reader names containing `canokey`, case-insensitive.
 - Debug builds define `CNK_VERBOSE`; `C_Initialize()` forces debug logging unless later changed through `C_CNK_ConfigLogging()`, so `pkcs11-tool` output is noisy.
+- `BUILD_TESTING=ON` with the Windows native MSVC/clang-cl toolchain currently fails before compiling tests because `test/unit/CMakeLists.txt` requires `PkgConfig`/`cmocka`.
+- `test/real/test_real.c` is useful as a manual diagnostic reference but is not yet a reliable Windows/MSVC regression test:
+  it unconditionally uses POSIX `dlopen`/`dlsym`/`dlclose`, hardcodes stale public-key object IDs for the current dev key state, and mostly prints per-case failures instead of accumulating an overall failing exit status.

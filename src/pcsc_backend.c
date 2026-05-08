@@ -864,40 +864,77 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
   }
 
   // Build the GENERAL AUTHENTICATE APDU
-  // Increased buffer size for Extended APDU (4 header + 3 Lc + ~1024 data + 3 Le)
+  // CanoKey rejects extended GENERAL AUTHENTICATE APDUs for RSA-sized data, so
+  // large templates are sent with short APDU command chaining.
   CK_BYTE abAuthApdu[1100];
   CK_ULONG cbAuthApdu = 0;
 
-  // APDU header
-  abAuthApdu[cbAuthApdu++] = 0x00;                                   // CLA
-  abAuthApdu[cbAuthApdu++] = 0x87;                                   // INS - GENERAL AUTHENTICATE
-  abAuthApdu[cbAuthApdu++] = pSession->signingContext.algorithmType; // P1 - Algorithm
-  abAuthApdu[cbAuthApdu++] = pSession->signingContext.pivSlot;       // P2 - Key reference (PIV slot)
-
-  // Handle Lc, Data, and Le based on APDU format and using the TLV data
-  if (tlv_len <= 255) {
-    // Standard APDU format
-    abAuthApdu[cbAuthApdu++] = (CK_BYTE)tlv_len;        // Lc
-    memcpy(abAuthApdu + cbAuthApdu, tlv_data, tlv_len); // Data
-    cbAuthApdu += tlv_len;
-    abAuthApdu[cbAuthApdu++] = 0x00; // Le (request max available)
-  } else {
-    // Extended APDU format
-    abAuthApdu[cbAuthApdu++] = 0x00;                             // Extended length marker
-    abAuthApdu[cbAuthApdu++] = (CK_BYTE)((tlv_len >> 8) & 0xFF); // Lc high byte
-    abAuthApdu[cbAuthApdu++] = (CK_BYTE)(tlv_len & 0xFF);        // Lc low byte
-    memcpy(abAuthApdu + cbAuthApdu, tlv_data, tlv_len);          // Data
-    cbAuthApdu += tlv_len;
-    abAuthApdu[cbAuthApdu++] = 0x00; // Le high byte (request max available)
-    abAuthApdu[cbAuthApdu++] = 0x00; // Le low byte
-  }
-
-  // Send the GENERAL AUTHENTICATE command
   CK_BYTE response[1024];              // Increased buffer size for larger responses
   DWORD cbResponse = sizeof(response); // Use DWORD for PC/SC API compatibility
+  LONG pcsc_rv = SCARD_S_SUCCESS;
 
-  CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command for signing");
-  LONG pcsc_rv = cnk_transceive_apdu(hCard, abAuthApdu, cbAuthApdu, response, &cbResponse, CK_TRUE);
+  if (tlv_len <= 255) {
+    // APDU header
+    abAuthApdu[cbAuthApdu++] = 0x00;                                   // CLA
+    abAuthApdu[cbAuthApdu++] = 0x87;                                   // INS - GENERAL AUTHENTICATE
+    abAuthApdu[cbAuthApdu++] = pSession->signingContext.algorithmType; // P1 - Algorithm
+    abAuthApdu[cbAuthApdu++] = pSession->signingContext.pivSlot;       // P2 - Key reference (PIV slot)
+    abAuthApdu[cbAuthApdu++] = (CK_BYTE)tlv_len;                       // Lc
+    memcpy(abAuthApdu + cbAuthApdu, tlv_data, tlv_len);                // Data
+    cbAuthApdu += tlv_len;
+    abAuthApdu[cbAuthApdu++] = 0x00; // Le (request max available)
+
+    CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command for signing");
+    pcsc_rv = cnk_transceive_apdu(hCard, abAuthApdu, cbAuthApdu, response, &cbResponse, CK_TRUE);
+  } else {
+    CK_ULONG offset = 0;
+    CK_ULONG remaining = tlv_len;
+
+    while (remaining > 0) {
+      CK_ULONG chunk_len = remaining > 0xFF ? 0xFF : remaining;
+      CK_BBOOL has_more_chunks = remaining > chunk_len;
+      cbAuthApdu = 0;
+
+      // Set the ISO command-chaining bit while more chunks follow.
+      abAuthApdu[cbAuthApdu++] = has_more_chunks ? 0x10 : 0x00;          // CLA
+      abAuthApdu[cbAuthApdu++] = 0x87;                                   // INS - GENERAL AUTHENTICATE
+      abAuthApdu[cbAuthApdu++] = pSession->signingContext.algorithmType; // P1 - Algorithm
+      abAuthApdu[cbAuthApdu++] = pSession->signingContext.pivSlot;       // P2 - Key reference (PIV slot)
+      abAuthApdu[cbAuthApdu++] = (CK_BYTE)chunk_len;                     // Lc
+      memcpy(abAuthApdu + cbAuthApdu, tlv_data + offset, chunk_len);     // Data chunk
+      cbAuthApdu += chunk_len;
+
+      if (!has_more_chunks)
+        abAuthApdu[cbAuthApdu++] = 0x00; // Le (request max available)
+
+      cbResponse = sizeof(response);
+      CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command chunk: offset=%lu, length=%lu, more=%d", offset, chunk_len,
+                has_more_chunks);
+      pcsc_rv = cnk_transceive_apdu(hCard, abAuthApdu, cbAuthApdu, response, &cbResponse,
+                                    has_more_chunks ? CK_FALSE : CK_TRUE);
+      if (pcsc_rv != SCARD_S_SUCCESS)
+        break;
+
+      if (cbResponse < 2) {
+        CNK_ERROR("GENERAL AUTHENTICATE chunk response too short");
+        pcsc_rv = SCARD_E_UNEXPECTED;
+        break;
+      }
+
+      if (has_more_chunks) {
+        CK_BYTE sw1 = response[cbResponse - 2];
+        CK_BYTE sw2 = response[cbResponse - 1];
+        if (sw1 != 0x90 || sw2 != 0x00) {
+          CNK_ERROR("GENERAL AUTHENTICATE chunk returned error status: %02X%02X", sw1, sw2);
+          cnk_disconnect_card(hCard);
+          CNK_RETURN(CKR_DEVICE_ERROR, "Failed to send GENERAL AUTHENTICATE command chunk");
+        }
+      }
+
+      offset += chunk_len;
+      remaining -= chunk_len;
+    }
+  }
 
   if (pcsc_rv != SCARD_S_SUCCESS) {
     cnk_disconnect_card(hCard);
