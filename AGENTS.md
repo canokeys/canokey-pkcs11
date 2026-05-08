@@ -40,8 +40,19 @@ files. The top-level CMake enables `GEN_FILES` automatically when those files
 are missing. Install the generator dependencies before building such a checkout:
 
 ```powershell
-python -m pip install -r external\tf-psa-crypto\scripts\basic.requirements.txt
+python -m pip install -r cmake\tf-psa-crypto-generator-requirements.txt
 ```
+
+CI uses `actions/setup-python` and passes that exact interpreter to CMake as
+`Python3_EXECUTABLE`, so TF-PSA-Crypto's generators run with the same Python
+environment that received the `pip install`. CI pins Python 3.10 because the
+required generator packages have reliable binary wheels there. The local
+requirements file is kept narrower than TF-PSA-Crypto's upstream
+`basic.requirements.txt` to avoid unneeded typing-stub packages and old
+MarkupSafe constraints during CI builds.
+
+Bundled static dependencies are built with position-independent code because
+the PKCS#11 module and unit-test shim are shared libraries on Unix-like hosts.
 
 `external\mbedtls\` was removed from the tracked submodules after the
 TF-PSA-Crypto migration.

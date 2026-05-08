@@ -39,6 +39,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include/private)
 
 option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # hide all symbols by default (clang-cl does not support this)
 function(set_default_visibility)
@@ -71,6 +72,19 @@ if(USE_BUNDLED_TF_PSA_CRYPTO)
   set(ENABLE_PROGRAMS OFF CACHE BOOL "Build TF-PSA-Crypto programs." FORCE)
   set(TF_PSA_CRYPTO_FATAL_WARNINGS OFF CACHE BOOL "Compiler warnings treated as errors" FORCE)
   if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/tf-psa-crypto/core/psa_crypto_driver_wrappers_no_static.c")
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    execute_process(
+      COMMAND "${Python3_EXECUTABLE}" -c "import jinja2, jsonschema"
+      RESULT_VARIABLE CNK_TF_PSA_CRYPTO_PYTHON_DEPS_RESULT
+      OUTPUT_QUIET
+      ERROR_QUIET)
+    if(NOT CNK_TF_PSA_CRYPTO_PYTHON_DEPS_RESULT EQUAL 0)
+      message(FATAL_ERROR
+        "TF-PSA-Crypto generated files are missing and GEN_FILES is required, "
+        "but ${Python3_EXECUTABLE} cannot import jinja2 and jsonschema. "
+        "Install cmake/tf-psa-crypto-generator-requirements.txt or pass "
+        "-DPython3_EXECUTABLE to the Python environment that has them.")
+    endif()
     set(GEN_FILES ON CACHE BOOL "Generate TF-PSA-Crypto files as needed" FORCE)
   else()
     set(GEN_FILES OFF CACHE BOOL "Generate TF-PSA-Crypto files as needed" FORCE)

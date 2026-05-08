@@ -34,13 +34,23 @@ jobs:
         uses: actions/checkout@v6
         with:
           submodules: 'recursive'
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: cmake/tf-psa-crypto-generator-requirements.txt
       - name: Pre-build script
         run: ${{ matrix.pre-build-script }}
         if: matrix.pre-build-script != ''
-      - name: Install TF-PSA-Crypto Python requirements
-        run: python -m pip install -r external/tf-psa-crypto/scripts/basic.requirements.txt
+      - name: Install TF-PSA-Crypto generator requirements
+        run: >
+          python -m pip install --disable-pip-version-check
+          --prefer-binary -r cmake/tf-psa-crypto-generator-requirements.txt
       - name: Configure
-        run: cmake -S . -B build ${{ matrix.cmake-config-args }}
+        run: >
+          cmake -S . -B build ${{ matrix.cmake-config-args }}
+          -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')"
       - name: Build
         run: cmake --build build -v
       - name: Run tests
