@@ -34,6 +34,7 @@ build-ninja-clangcl-x64\canokey-pkcs11.dll
 - Before committing C source or header changes, run `clang-format` on the touched `.c` and `.h` files.
 - The VS bundled formatter is:
   `C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin\clang-format.exe`
+- Commit messages must follow Conventional Commits, include enough detail in the body for non-trivial changes, and use signoff (`git commit -s`).
 
 ## OpenSC Test Tool
 
