@@ -54,6 +54,14 @@ extern CNK_FREE_FUNC g_cnk_free_func;
 #define PIV_ALG_SECP256K1 0x53
 #define PIV_ALG_SM2 0x54
 
+// PIV object tags mapped by GET DATA / PUT DATA.
+#define PIV_OBJECT_TAG_CERT_9A 0x05
+#define PIV_OBJECT_TAG_CERT_9C 0x0A
+#define PIV_OBJECT_TAG_CERT_9D 0x0B
+#define PIV_OBJECT_TAG_CERT_9E 0x01
+#define PIV_OBJECT_TAG_CERT_82 0x0D
+#define PIV_OBJECT_TAG_CERT_83 0x0E
+
 // Helper functions for memory allocation
 static __attribute__((unused)) void *ck_malloc(size_t size) { return g_cnk_malloc_func(size); }
 static __attribute__((unused)) void *ck_calloc(size_t num, size_t size) { return g_cnk_malloc_func(num * size); }
@@ -116,10 +124,23 @@ CK_ULONG cnk_get_slot_count(void);
 // If fetch_data is CK_FALSE, only checks for existence and sets data_len to 1 if found, 0 if not
 CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data);
 
+// Write a PIV data object. The tag is the one-byte 0x5FC1xx object tag.
+CK_RV cnk_put_piv_data(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE tag, CK_BYTE_PTR data,
+                       CK_ULONG data_len);
+
 // Get metadata for a PIV key or object
 // This function retrieves metadata from a PIV key or object using the PIV metadata APDU command
 CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType, CK_BYTE_PTR pbPublicKey,
                        CK_ULONG_PTR pulPublicKeyLen);
+
+// Generate a PIV asymmetric key pair.
+CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
+                               CK_BYTE pinPolicy, CK_BYTE touchPolicy, CK_BYTE_PTR pbPublicKey,
+                               CK_ULONG_PTR pcbPublicKey);
+
+// Import a PIV asymmetric private key.
+CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
+                         CK_BYTE_PTR keyData, CK_ULONG keyDataLen);
 
 // Sign data using PIV key
 // This function signs data using the PIV GENERAL AUTHENTICATE command

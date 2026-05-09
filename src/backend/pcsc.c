@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define CNK_PIV_MAX_PUBLIC_KEY_RESPONSE 527
+
 // Global variables for reader management
 ReaderInfo *g_cnk_readers = NULL; // Array of reader info structs
 CK_LONG g_cnk_num_readers = 0;
@@ -394,6 +396,59 @@ static LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *pCommand, CK_U
   CNK_RET_OK;
 }
 
+static CK_RV cnk_transmit_chained_apdu(SCARDHANDLE hCard, CK_BYTE ins, CK_BYTE p1, CK_BYTE p2, const CK_BYTE *data,
+                                       CK_ULONG data_len, CK_BYTE *response, CK_ULONG_PTR response_len,
+                                       CK_BBOOL request_le) {
+  CNK_ENSURE_NONNULL(data);
+  if (response != NULL)
+    CNK_ENSURE_NONNULL(response_len);
+
+  CK_ULONG offset = 0;
+  LONG pcsc_rv = SCARD_S_SUCCESS;
+  CK_BYTE local_response[258];
+  CK_ULONG response_capacity = response != NULL ? *response_len : sizeof(local_response);
+
+  do {
+    CK_ULONG remaining = data_len - offset;
+    CK_ULONG chunk_len = remaining > 0xFF ? 0xFF : remaining;
+    CK_BBOOL has_more_chunks = remaining > chunk_len;
+    CK_BYTE apdu[5 + 255 + 1];
+    CK_ULONG apdu_len = 0;
+
+    apdu[apdu_len++] = has_more_chunks ? 0x10 : 0x00;
+    apdu[apdu_len++] = ins;
+    apdu[apdu_len++] = p1;
+    apdu[apdu_len++] = p2;
+    apdu[apdu_len++] = (CK_BYTE)chunk_len;
+    if (chunk_len > 0) {
+      memcpy(apdu + apdu_len, data + offset, chunk_len);
+      apdu_len += chunk_len;
+    }
+    if (!has_more_chunks && request_le)
+      apdu[apdu_len++] = 0x00;
+
+    CK_BYTE *response_buffer = !has_more_chunks && response != NULL ? response : local_response;
+    DWORD cbResponse = !has_more_chunks && response != NULL ? (DWORD)response_capacity : sizeof(local_response);
+    pcsc_rv = cnk_transceive_apdu(hCard, apdu, apdu_len, response_buffer, &cbResponse,
+                                  has_more_chunks ? CK_FALSE : request_le);
+    if (pcsc_rv != SCARD_S_SUCCESS)
+      CNK_RETURN(CKR_DEVICE_ERROR, "failed to transmit APDU");
+    if (cbResponse < 2)
+      CNK_RETURN(CKR_DEVICE_ERROR, "APDU response too short");
+
+    CK_BYTE sw1 = response_buffer[cbResponse - 2];
+    CK_BYTE sw2 = response_buffer[cbResponse - 1];
+    if (sw1 != 0x90 || sw2 != 0x00)
+      CNK_RETURN(CKR_DEVICE_ERROR, "APDU command failed");
+
+    offset += chunk_len;
+    if (!has_more_chunks && response != NULL)
+      *response_len = (CK_ULONG)cbResponse;
+  } while (offset < data_len);
+
+  CNK_RET_OK;
+}
+
 // PIV application functions
 
 // Select the PIV application using AID A000000308
@@ -615,6 +670,75 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR data, CK_ULON
   }
 
   cnk_disconnect_card(hCard);
+  CNK_RET_OK;
+}
+
+static CK_RV authenticateAdminForWrite(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, SCARDHANDLE *hCard) {
+  CNK_ENSURE_NONNULL(session, hCard);
+
+  if (session->cbManagementKey != 24)
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "CKU_SO login is required");
+
+  CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotID, hCard));
+  CNK_ENSURE_OK(cnk_select_piv_application(*hCard));
+
+  CK_BYTE capdu[32], rapdu[16], hostCryptogram[8];
+  DWORD cbRapdu = sizeof(rapdu);
+  LONG rvTransceive;
+
+  memcpy(capdu, (CK_BYTE[]){0x00, 0x87, 0x03, 0x9B, 0x04, 0x7C, 0x02, 0x81, 0x00}, 9);
+  rvTransceive = cnk_transceive_apdu(*hCard, capdu, 9, rapdu, &cbRapdu, CK_TRUE);
+  if (rvTransceive != SCARD_S_SUCCESS || cbRapdu != 14 || rapdu[cbRapdu - 2] != 0x90 || rapdu[cbRapdu - 1] != 0x00) {
+    cnk_disconnect_card(*hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to get management key challenge");
+  }
+
+  CK_RV rv = cnk_des3_encrypt_block(session->managementKey, rapdu + 4, hostCryptogram);
+  if (rv != CKR_OK) {
+    cnk_disconnect_card(*hCard);
+    CNK_RETURN(rv, "Failed to encrypt management key challenge");
+  }
+
+  memcpy(capdu, (CK_BYTE[]){0x00, 0x87, 0x03, 0x9B, 0x0C, 0x7C, 0x0A, 0x82, 0x08}, 9);
+  memcpy(capdu + 9, hostCryptogram, sizeof(hostCryptogram));
+  cbRapdu = sizeof(rapdu);
+  rvTransceive = cnk_transceive_apdu(*hCard, capdu, 17, rapdu, &cbRapdu, CK_TRUE);
+  if (rvTransceive != SCARD_S_SUCCESS || cbRapdu != 2 || rapdu[cbRapdu - 2] != 0x90 || rapdu[cbRapdu - 1] != 0x00) {
+    cnk_disconnect_card(*hCard);
+    CNK_RETURN(CKR_PIN_INCORRECT, "Management key authentication failed");
+  }
+
+  CNK_RET_OK;
+}
+
+CK_RV cnk_put_piv_data(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE tag, CK_BYTE_PTR data,
+                       CK_ULONG data_len) {
+  CNK_LOG_FUNC(": slotID: %ld, tag: 0x%02X, data: %p, data_len: %lu", slotID, tag, data, data_len);
+
+  if (data_len > 0)
+    CNK_ENSURE_NONNULL(data);
+
+  CK_BYTE object_data[5 + 4096];
+  if (data_len > sizeof(object_data) - 5)
+    CNK_RETURN(CKR_DATA_LEN_RANGE, "PIV data object too large");
+
+  object_data[0] = 0x5C;
+  object_data[1] = 0x03;
+  object_data[2] = 0x5F;
+  object_data[3] = 0xC1;
+  object_data[4] = tag;
+  if (data_len > 0)
+    memcpy(object_data + 5, data, data_len);
+
+  SCARDHANDLE hCard = 0;
+  CK_RV rv = authenticateAdminForWrite(slotID, session, &hCard);
+  if (rv != CKR_OK)
+    return rv;
+
+  rv = cnk_transmit_chained_apdu(hCard, 0xDB, 0x3F, 0xFF, object_data, data_len + 5, NULL, NULL, CK_FALSE);
+  cnk_disconnect_card(hCard);
+  if (rv != CKR_OK)
+    CNK_RETURN(rv, "PUT DATA");
   CNK_RET_OK;
 }
 
@@ -1522,6 +1646,85 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorith
   // Disconnect from the card when done
   cnk_disconnect_card(hCard);
   return CKR_OK;
+}
+
+CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
+                               CK_BYTE pinPolicy, CK_BYTE touchPolicy, CK_BYTE_PTR pbPublicKey,
+                               CK_ULONG_PTR pcbPublicKey) {
+  CNK_LOG_FUNC(": slotID: %ld, algorithmType: 0x%02X, pivSlot: 0x%02X, pinPolicy: %u, touchPolicy: %u", slotID,
+               algorithmType, pivSlot, pinPolicy, touchPolicy);
+  CNK_ENSURE_NONNULL(pbPublicKey, pcbPublicKey);
+
+  CK_BYTE data[16];
+  CK_ULONG data_len = 0;
+  data[data_len++] = 0xAC;
+  data[data_len++] = 0x03;
+  data[data_len++] = 0x80;
+  data[data_len++] = 0x01;
+  data[data_len++] = algorithmType;
+  data[data_len++] = 0xAA;
+  data[data_len++] = 0x01;
+  data[data_len++] = pinPolicy;
+  data[data_len++] = 0xAB;
+  data[data_len++] = 0x01;
+  data[data_len++] = touchPolicy;
+
+  CK_BYTE response[CNK_PIV_MAX_PUBLIC_KEY_RESPONSE];
+  CK_ULONG response_len = sizeof(response);
+  SCARDHANDLE hCard = 0;
+
+  CK_RV rv = authenticateAdminForWrite(slotID, session, &hCard);
+  if (rv != CKR_OK)
+    return rv;
+
+  rv = cnk_transmit_chained_apdu(hCard, 0x47, 0x00, pivSlot, data, data_len, response, &response_len, CK_TRUE);
+  cnk_disconnect_card(hCard);
+  if (rv != CKR_OK)
+    CNK_RETURN(rv, "GENERATE ASYMMETRIC KEY PAIR");
+  if (response_len < 2)
+    CNK_RETURN(CKR_DEVICE_ERROR, "generate response too short");
+
+  CK_ULONG public_key_len = response_len - 2;
+  if (public_key_len < 2 || response[0] != 0x7F || response[1] != 0x49)
+    CNK_RETURN(CKR_DEVICE_ERROR, "bad generate public key response");
+
+  CK_ULONG encoded_offset = 2;
+  CK_ULONG encoded_len = public_key_len - encoded_offset;
+  CK_LONG fail = 0;
+  CK_ULONG wrapper_len_size = 0;
+  CK_ULONG wrapper_len =
+      tlvGetLengthSafe(response + encoded_offset, public_key_len - encoded_offset, &fail, &wrapper_len_size);
+  if (!fail && wrapper_len_size > 0 && wrapper_len == public_key_len - encoded_offset - wrapper_len_size) {
+    encoded_offset += wrapper_len_size;
+    encoded_len = wrapper_len;
+  }
+
+  if (*pcbPublicKey < encoded_len) {
+    *pcbPublicKey = encoded_len;
+    CNK_RETURN(CKR_BUFFER_TOO_SMALL, "public key buffer too small");
+  }
+
+  memcpy(pbPublicKey, response + encoded_offset, encoded_len);
+  *pcbPublicKey = encoded_len;
+  CNK_RET_OK;
+}
+
+CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
+                         CK_BYTE_PTR keyData, CK_ULONG keyDataLen) {
+  CNK_LOG_FUNC(": slotID: %ld, algorithmType: 0x%02X, pivSlot: 0x%02X, keyData: %p, keyDataLen: %lu", slotID,
+               algorithmType, pivSlot, keyData, keyDataLen);
+  CNK_ENSURE_NONNULL(keyData);
+
+  SCARDHANDLE hCard = 0;
+  CK_RV rv = authenticateAdminForWrite(slotID, session, &hCard);
+  if (rv != CKR_OK)
+    return rv;
+
+  rv = cnk_transmit_chained_apdu(hCard, 0xFE, algorithmType, pivSlot, keyData, keyDataLen, NULL, NULL, CK_FALSE);
+  cnk_disconnect_card(hCard);
+  if (rv != CKR_OK)
+    CNK_RETURN(rv, "IMPORT ASYMMETRIC KEY");
+  CNK_RET_OK;
 }
 
 // Card operation function for logout

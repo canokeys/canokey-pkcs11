@@ -24,4 +24,20 @@ CK_RV CNK_ValidateObject(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, 
  */
 CK_OBJECT_HANDLE CNK_MakeObjectHandle(CK_SLOT_ID slot_id, CK_OBJECT_CLASS object_class, CK_BYTE object_id);
 
+/**
+ * Maps a PIV object ID to its PIV key reference.
+ *
+ * @param obj_id Internal object ID
+ * @param piv_tag PIV key reference
+ */
+CK_RV CNK_ObjectIdToPivTag(CK_BYTE obj_id, CK_BYTE *piv_tag);
+
+/**
+ * Maps a PIV object ID to its PIV certificate data-object tag.
+ *
+ * @param obj_id Internal object ID
+ * @param data_tag PIV 0x5FC1xx data-object tag
+ */
+CK_RV CNK_ObjectIdToCertificateTag(CK_BYTE obj_id, CK_BYTE *data_tag);
+
 #endif // CNK_API_OBJECT_H

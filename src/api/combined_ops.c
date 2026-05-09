@@ -14,6 +14,103 @@
 #define CNK_MAX_ECDH_PUBLIC_DATA 133
 #define CNK_MAX_ECDH_SECRET_LEN 66
 
+static CK_RV getTemplateAttr(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type,
+                             CK_ATTRIBUTE_PTR *attr) {
+  CNK_ENSURE_NONNULL(attr);
+  *attr = NULL;
+
+  for (CK_ULONG i = 0; i < ulCount; i++) {
+    if (pTemplate[i].type == type) {
+      *attr = &pTemplate[i];
+      CNK_RET_OK;
+    }
+  }
+
+  CNK_RETURN(CKR_TEMPLATE_INCOMPLETE, "required attribute is missing");
+}
+
+static CK_RV getOptionalTemplateAttr(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type,
+                                     CK_ATTRIBUTE_PTR *attr) {
+  CNK_ENSURE_NONNULL(attr);
+  *attr = NULL;
+
+  for (CK_ULONG i = 0; i < ulCount; i++) {
+    if (pTemplate[i].type == type) {
+      *attr = &pTemplate[i];
+      break;
+    }
+  }
+
+  CNK_RET_OK;
+}
+
+static CK_RV getTemplateByte(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type, CK_BYTE *value) {
+  CK_ATTRIBUTE_PTR attr;
+  CNK_ENSURE_NONNULL(value);
+  CNK_ENSURE_OK(getTemplateAttr(pTemplate, ulCount, type, &attr));
+  if (attr->pValue == NULL || attr->ulValueLen != sizeof(CK_BYTE))
+    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad byte template attribute");
+  *value = *(CK_BYTE *)attr->pValue;
+  CNK_RET_OK;
+}
+
+static CK_RV getTemplateObjectClass(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type,
+                                    CK_OBJECT_CLASS *value) {
+  CK_ATTRIBUTE_PTR attr;
+  CNK_ENSURE_NONNULL(value);
+  CNK_ENSURE_OK(getTemplateAttr(pTemplate, ulCount, type, &attr));
+  if (attr->pValue == NULL || attr->ulValueLen != sizeof(CK_OBJECT_CLASS))
+    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_CLASS template attribute");
+  *value = *(CK_OBJECT_CLASS *)attr->pValue;
+  CNK_RET_OK;
+}
+
+static CK_RV getOptionalTemplateBbool(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type,
+                                      CK_BBOOL defaultValue, CK_BBOOL *value) {
+  CK_ATTRIBUTE_PTR attr;
+  CNK_ENSURE_NONNULL(value);
+  CNK_ENSURE_OK(getOptionalTemplateAttr(pTemplate, ulCount, type, &attr));
+  if (attr == NULL) {
+    *value = defaultValue;
+    CNK_RET_OK;
+  }
+  if (attr->pValue == NULL || attr->ulValueLen != sizeof(CK_BBOOL))
+    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CK_BBOOL template attribute");
+  *value = *(CK_BBOOL *)attr->pValue;
+  if (*value != CK_FALSE && *value != CK_TRUE)
+    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CK_BBOOL template value");
+  CNK_RET_OK;
+}
+
+static CK_RV getOptionalPivPolicy(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type,
+                                  CK_BYTE defaultValue, CK_BYTE *value) {
+  CK_BBOOL boolValue;
+  CNK_ENSURE_NONNULL(value);
+  CNK_ENSURE_OK(getOptionalTemplateBbool(pTemplate, ulCount, type, CK_FALSE, &boolValue));
+  *value = boolValue ? 0x03 : defaultValue;
+  CNK_RET_OK;
+}
+
+static CK_RV ecParamsToAlgorithm(CK_BYTE_PTR params, CK_ULONG paramsLen, CK_BYTE *algorithmType) {
+  CNK_ENSURE_NONNULL(params, algorithmType);
+
+  static const CK_BYTE p256[] = {0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07};
+  static const CK_BYTE p384[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22};
+  static const CK_BYTE secp256k1[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x0A};
+
+  if (paramsLen == sizeof(p256) && memcmp(params, p256, sizeof(p256)) == 0) {
+    *algorithmType = PIV_ALG_ECC_256;
+  } else if (paramsLen == sizeof(p384) && memcmp(params, p384, sizeof(p384)) == 0) {
+    *algorithmType = PIV_ALG_ECC_384;
+  } else if (paramsLen == sizeof(secp256k1) && memcmp(params, secp256k1, sizeof(secp256k1)) == 0) {
+    *algorithmType = PIV_ALG_SECP256K1;
+  } else {
+    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "unsupported EC params");
+  }
+
+  CNK_RET_OK;
+}
+
 static CK_RV x963Kdf(mbedtls_md_type_t mdType, CK_BYTE_PTR pSharedSecret, CK_ULONG cbSharedSecret,
                      CK_BYTE_PTR pSharedData, CK_ULONG cbSharedData, CK_BYTE_PTR pOutput, CK_ULONG cbOutput) {
   const mbedtls_md_info_t *mdInfo = mbedtls_md_info_from_type(mdType);
@@ -111,7 +208,81 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
                "pPrivateKeyTemplate: %p, ulPrivateKeyAttributeCount: %lu, phPublicKey: %p, phPrivateKey: %p",
                hSession, pMechanism, pPublicKeyTemplate, ulPublicKeyAttributeCount, pPrivateKeyTemplate,
                ulPrivateKeyAttributeCount, phPublicKey, phPrivateKey);
-  CNK_RET_NOT_IMPLEMENTED;
+  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pMechanism);
+  CNK_ENSURE_NONNULL(phPublicKey, phPrivateKey);
+  if (ulPublicKeyAttributeCount > 0)
+    CNK_ENSURE_NONNULL(pPublicKeyTemplate);
+  if (ulPrivateKeyAttributeCount > 0)
+    CNK_ENSURE_NONNULL(pPrivateKeyTemplate);
+
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (!(session->flags & CKF_RW_SESSION))
+    CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
+  if (session->state != SESSION_STATE_RW_SO)
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "CKU_SO login is required");
+
+  CK_OBJECT_CLASS publicClass;
+  CK_OBJECT_CLASS privateClass;
+  CK_BYTE publicId;
+  CK_BYTE privateId;
+  CNK_ENSURE_OK(getTemplateObjectClass(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_CLASS, &publicClass));
+  CNK_ENSURE_OK(getTemplateObjectClass(pPrivateKeyTemplate, ulPrivateKeyAttributeCount, CKA_CLASS, &privateClass));
+  CNK_ENSURE_OK(getTemplateByte(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_ID, &publicId));
+  CNK_ENSURE_OK(getTemplateByte(pPrivateKeyTemplate, ulPrivateKeyAttributeCount, CKA_ID, &privateId));
+
+  if (publicClass != CKO_PUBLIC_KEY || privateClass != CKO_PRIVATE_KEY)
+    CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "bad key pair object classes");
+  if (publicId != privateId || publicId < 1 || publicId > 6)
+    CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "bad or mismatched PIV key ID");
+
+  CK_BYTE algorithmType;
+  switch (pMechanism->mechanism) {
+  case CKM_RSA_PKCS_KEY_PAIR_GEN: {
+    CK_ATTRIBUTE_PTR bitsAttr;
+    CK_ULONG modulusBits;
+    CNK_ENSURE_OK(getTemplateAttr(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_MODULUS_BITS, &bitsAttr));
+    if (bitsAttr->pValue == NULL || bitsAttr->ulValueLen != sizeof(CK_ULONG))
+      CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_MODULUS_BITS");
+    modulusBits = *(CK_ULONG *)bitsAttr->pValue;
+    if (modulusBits == 2048)
+      algorithmType = PIV_ALG_RSA_2048;
+    else if (modulusBits == 3072)
+      algorithmType = PIV_ALG_RSA_3072;
+    else if (modulusBits == 4096)
+      algorithmType = PIV_ALG_RSA_4096;
+    else
+      CNK_RETURN(CKR_KEY_SIZE_RANGE, "unsupported RSA key size");
+    break;
+  }
+
+  case CKM_EC_KEY_PAIR_GEN: {
+    CK_ATTRIBUTE_PTR paramsAttr;
+    CNK_ENSURE_OK(getTemplateAttr(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_EC_PARAMS, &paramsAttr));
+    CNK_ENSURE_OK(ecParamsToAlgorithm((CK_BYTE_PTR)paramsAttr->pValue, paramsAttr->ulValueLen, &algorithmType));
+    break;
+  }
+
+  default:
+    CNK_RETURN(CKR_MECHANISM_INVALID, "unsupported key pair generation mechanism");
+  }
+
+  CK_BYTE pivTag;
+  CK_BYTE pinPolicy;
+  CK_BYTE touchPolicy;
+  CNK_ENSURE_OK(CNK_ObjectIdToPivTag(publicId, &pivTag));
+  CNK_ENSURE_OK(
+      getOptionalPivPolicy(pPrivateKeyTemplate, ulPrivateKeyAttributeCount, CKA_ALWAYS_AUTHENTICATE, 0x02, &pinPolicy));
+  touchPolicy = 0x01;
+
+  CK_BYTE publicKey[512];
+  CK_ULONG publicKeyLen = sizeof(publicKey);
+  CNK_ENSURE_OK(cnk_piv_generate_keypair(session->slotId, session, algorithmType, pivTag, pinPolicy, touchPolicy,
+                                         publicKey, &publicKeyLen));
+
+  *phPublicKey = CNK_MakeObjectHandle(session->slotId, CKO_PUBLIC_KEY, publicId);
+  *phPrivateKey = CNK_MakeObjectHandle(session->slotId, CKO_PRIVATE_KEY, privateId);
+  CNK_RET_OK;
 }
 
 CK_RV C_WrapKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hWrappingKey,

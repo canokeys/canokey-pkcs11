@@ -14,7 +14,11 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <time.h>
 #endif
+
+#define CNK_REAL_WRITE_TEST_ENV "CNK_RUN_DESTRUCTIVE_REAL_TESTS"
+#define CNK_REAL_WRITE_TEST_ID 6
 
 // Include TF-PSA-Crypto mbedtls-compatible headers for signature verification
 #include <mbedtls/md.h>
@@ -53,6 +57,8 @@ static void cnk_print_library_error(const char *message) {
 }
 
 static int cnk_setenv(const char *name, const char *value) { return _putenv_s(name, value); }
+
+static void cnk_sleep_milliseconds(unsigned int milliseconds) { Sleep(milliseconds); }
 #else
 typedef void *CNK_LIBRARY_HANDLE;
 
@@ -70,7 +76,21 @@ static void cnk_close_library(CNK_LIBRARY_HANDLE library) {
 static void cnk_print_library_error(const char *message) { printf("%s: %s\n", message, dlerror()); }
 
 static int cnk_setenv(const char *name, const char *value) { return setenv(name, value, 1); }
+
+static void cnk_sleep_milliseconds(unsigned int milliseconds) {
+  struct timespec ts;
+  ts.tv_sec = milliseconds / 1000;
+  ts.tv_nsec = (long)(milliseconds % 1000) * 1000000L;
+  while (nanosleep(&ts, &ts) == -1) {
+  }
+}
 #endif
+
+static int cnk_env_is_enabled(const char *name) {
+  const char *value = getenv(name);
+  return value != NULL && (strcmp(value, "1") == 0 || strcmp(value, "true") == 0 || strcmp(value, "TRUE") == 0 ||
+                           strcmp(value, "yes") == 0 || strcmp(value, "YES") == 0);
+}
 
 // Utility function to trim trailing spaces from fixed-length strings
 void trim_spaces(char *str, size_t length) {
@@ -512,6 +532,7 @@ void test_rsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_ecdsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_ecdh_derivation(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_management_challenge(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
+void test_destructive_write_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 
 // Verification function declarations
 static CK_RV cnk_verify_rsa_signature(CK_BYTE_PTR modulus, CK_ULONG modulus_len, CK_BYTE_PTR exponent,
@@ -715,6 +736,324 @@ static CK_RV decrypt_with_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HAN
     return rv;
 
   return pFunctionList->C_Decrypt(hSession, ciphertext, ciphertextLen, plaintext, pPlaintextLen);
+}
+
+static CK_RV perform_management_login(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSession) {
+  CK_BYTE key[] = "\x01\x02\x03\x04\x05\x06\x07\x08\x01\x02\x03\x04\x05\x06\x07\x08\x01\x02\x03\x04\x05\x06\x07\x08";
+  return pFunctionList->C_Login(hSession, CKU_SO, key, 24);
+}
+
+static CK_RV write_mpi_fixed(mbedtls_mpi *mpi, CK_BYTE_PTR output, CK_ULONG outputLen) {
+  size_t mpiSize = mbedtls_mpi_size(mpi);
+  if (mpiSize > outputLen)
+    return CKR_ATTRIBUTE_VALUE_INVALID;
+
+  memset(output, 0, outputLen);
+  int ret = mbedtls_mpi_write_binary(mpi, output + outputLen - mpiSize, mpiSize);
+  if (ret != 0) {
+    printf("    Failed to encode MPI: -0x%04x\n", (unsigned int)-ret);
+    return CKR_GENERAL_ERROR;
+  }
+
+  return CKR_OK;
+}
+
+static CK_RV generate_card_ec_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSession) {
+  CK_BYTE keyId = CNK_REAL_WRITE_TEST_ID;
+  CK_OBJECT_CLASS pubClass = CKO_PUBLIC_KEY;
+  CK_OBJECT_CLASS privClass = CKO_PRIVATE_KEY;
+  CK_KEY_TYPE keyType = CKK_EC;
+  CK_BBOOL token = CK_TRUE;
+  CK_BBOOL private = CK_TRUE;
+  CK_BBOOL sign = CK_TRUE;
+  CK_BBOOL derive = CK_TRUE;
+  CK_BBOOL alwaysAuthenticate = CK_FALSE;
+  CK_BYTE ecParams[] = "\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x07";
+
+  CK_ATTRIBUTE publicTemplate[] = {
+      {CKA_CLASS, &pubClass, sizeof(pubClass)},        {CKA_TOKEN, &token, sizeof(token)},
+      {CKA_KEY_TYPE, &keyType, sizeof(keyType)},       {CKA_ID, &keyId, sizeof(keyId)},
+      {CKA_EC_PARAMS, ecParams, sizeof(ecParams) - 1},
+  };
+  CK_ATTRIBUTE privateTemplate[] = {
+      {CKA_CLASS, &privClass, sizeof(privClass)},
+      {CKA_TOKEN, &token, sizeof(token)},
+      {CKA_PRIVATE, &private, sizeof(private)},
+      {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
+      {CKA_ID, &keyId, sizeof(keyId)},
+      {CKA_SIGN, &sign, sizeof(sign)},
+      {CKA_DERIVE, &derive, sizeof(derive)},
+      {CKA_ALWAYS_AUTHENTICATE, &alwaysAuthenticate, sizeof(alwaysAuthenticate)},
+  };
+  CK_MECHANISM mechanism = {CKM_EC_KEY_PAIR_GEN, NULL, 0};
+  CK_OBJECT_HANDLE hPublicKey = 0;
+  CK_OBJECT_HANDLE hPrivateKey = 0;
+
+  CK_RV rv = pFunctionList->C_GenerateKeyPair(
+      hSession, &mechanism, publicTemplate, sizeof(publicTemplate) / sizeof(publicTemplate[0]), privateTemplate,
+      sizeof(privateTemplate) / sizeof(privateTemplate[0]), &hPublicKey, &hPrivateKey);
+  if (rv != CKR_OK)
+    return rv;
+
+  CK_BYTE ecPoint[128];
+  CK_ATTRIBUTE attrs[] = {{CKA_EC_POINT, ecPoint, sizeof(ecPoint)}};
+  rv = pFunctionList->C_GetAttributeValue(hSession, hPublicKey, attrs, 1);
+  if (rv != CKR_OK)
+    return rv;
+  if (attrs[0].ulValueLen == 0 || attrs[0].ulValueLen == CK_UNAVAILABLE_INFORMATION)
+    return CKR_ATTRIBUTE_VALUE_INVALID;
+
+  printf("    Generated EC P-256 key pair in test slot ID %u\n", (unsigned int)keyId);
+  return CKR_OK;
+}
+
+static CK_RV open_management_write_session(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID,
+                                           CK_SESSION_HANDLE_PTR phSession) {
+  if (phSession == NULL)
+    return CKR_ARGUMENTS_BAD;
+  *phSession = 0;
+
+  CK_RV rv = pFunctionList->C_OpenSession(slotID, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, phSession);
+  if (rv != CKR_OK)
+    return rv;
+
+  rv = perform_management_login(pFunctionList, *phSession);
+  if (rv != CKR_OK) {
+    pFunctionList->C_CloseSession(*phSession);
+    *phSession = 0;
+    return rv;
+  }
+
+  return CKR_OK;
+}
+
+static void close_management_write_session(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSession) {
+  CK_RV rv = pFunctionList->C_Logout(hSession);
+  if (rv != CKR_OK)
+    record_real_test_failure("Error logging out of management write session", rv);
+
+  rv = pFunctionList->C_CloseSession(hSession);
+  if (rv != CKR_OK)
+    record_real_test_failure("Error closing management write session", rv);
+
+  cnk_sleep_milliseconds(100);
+}
+
+static CK_RV sign_with_test_private_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID, CK_KEY_TYPE keyType) {
+  CK_SESSION_HANDLE hSession;
+  CK_RV rv = pFunctionList->C_OpenSession(slotID, CKF_SERIAL_SESSION, NULL, NULL, &hSession);
+  if (rv != CKR_OK)
+    return rv;
+
+  rv = perform_login(pFunctionList, hSession);
+  if (rv != CKR_OK) {
+    pFunctionList->C_CloseSession(hSession);
+    return rv;
+  }
+
+  CK_BYTE keyId = CNK_REAL_WRITE_TEST_ID;
+  CK_OBJECT_HANDLE hPrivateKey;
+  rv = find_object(pFunctionList, hSession, CKO_PRIVATE_KEY, &keyType, &keyId, sizeof(keyId), &hPrivateKey);
+  if (rv != CKR_OK)
+    goto cleanup;
+
+  if (keyType == CKK_EC) {
+    CK_MECHANISM mechanism = {CKM_ECDSA, NULL, 0};
+    CK_BYTE digest[32] = {0};
+    CK_BYTE signature[64];
+    CK_ULONG signatureLen = sizeof(signature);
+
+    rv = pFunctionList->C_SignInit(hSession, &mechanism, hPrivateKey);
+    if (rv == CKR_OK)
+      rv = pFunctionList->C_Sign(hSession, digest, sizeof(digest), signature, &signatureLen);
+    if (rv == CKR_OK && signatureLen != sizeof(signature))
+      rv = CKR_SIGNATURE_LEN_RANGE;
+  } else if (keyType == CKK_RSA) {
+    CK_MECHANISM mechanism = {CKM_RSA_PKCS, NULL, 0};
+    CK_BYTE digestInfo[51] = "\x30\x31\x30\x0d\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x01\x05\x00\x04\x20";
+    CK_BYTE signature[256];
+    CK_ULONG signatureLen = sizeof(signature);
+
+    memset(digestInfo + 19, 0x42, 32);
+    rv = pFunctionList->C_SignInit(hSession, &mechanism, hPrivateKey);
+    if (rv == CKR_OK)
+      rv = pFunctionList->C_Sign(hSession, digestInfo, sizeof(digestInfo), signature, &signatureLen);
+    if (rv == CKR_OK && signatureLen != sizeof(signature))
+      rv = CKR_SIGNATURE_LEN_RANGE;
+  } else {
+    rv = CKR_KEY_TYPE_INCONSISTENT;
+  }
+
+cleanup:
+  perform_logout(pFunctionList, hSession);
+  CK_RV closeRv = pFunctionList->C_CloseSession(hSession);
+  if (rv == CKR_OK)
+    rv = closeRv;
+  cnk_sleep_milliseconds(100);
+  return rv;
+}
+
+static CK_RV write_test_certificate(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSession) {
+  CK_BYTE keyId = CNK_REAL_WRITE_TEST_ID;
+  CK_OBJECT_CLASS certClass = CKO_CERTIFICATE;
+  CK_CERTIFICATE_TYPE certType = CKC_X_509;
+  CK_BBOOL token = CK_TRUE;
+  CK_BYTE certValue[] = {
+      0x30, 0x82, 0x01, 0x02, 0x30, 0x81, 0xAD, 0x02, 0x14, 0x51, 0x18, 0x8B, 0xAC, 0x1E, 0x22, 0x1B, 0xC2, 0x96, 0x05,
+      0xD6, 0x59, 0x4D, 0xDA, 0x09, 0x0A, 0xFC, 0xA5, 0x7E, 0xF6, 0x30, 0x0A, 0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D,
+      0x04, 0x03, 0x02, 0x30, 0x18, 0x31, 0x16, 0x30, 0x14, 0x06, 0x03, 0x55, 0x04, 0x03, 0x13, 0x0D, 0x63, 0x61, 0x6E,
+      0x6F, 0x6B, 0x65, 0x79, 0x2D, 0x74, 0x65, 0x73, 0x74, 0x30, 0x20, 0x17, 0x0D, 0x32, 0x36, 0x30, 0x35, 0x30, 0x39,
+      0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x5A, 0x18, 0x0F, 0x32, 0x31, 0x32, 0x36, 0x30, 0x34, 0x31, 0x35, 0x30, 0x30,
+      0x30, 0x30, 0x30, 0x30, 0x5A, 0x30, 0x18, 0x31, 0x16, 0x30, 0x14, 0x06, 0x03, 0x55, 0x04, 0x03, 0x13, 0x0D, 0x63,
+      0x61, 0x6E, 0x6F, 0x6B, 0x65, 0x79, 0x2D, 0x74, 0x65, 0x73, 0x74, 0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2A, 0x86,
+      0x48, 0xCE, 0x3D, 0x02, 0x01, 0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00, 0x04,
+      0x9B, 0x6D, 0x06, 0x9D, 0x7E, 0xF3, 0x17, 0x1F, 0x42, 0x23, 0xA9, 0xBD, 0x64, 0x09, 0xE0, 0x38, 0xEB, 0x68, 0xD6,
+      0xA1, 0xF7, 0xAC, 0xCD, 0x0C, 0x7C, 0xAB, 0x93, 0x7E, 0xF4, 0x3C, 0x0B, 0xFE, 0x5C, 0x00, 0x52, 0x95, 0xC9, 0x12,
+      0x83, 0x6E, 0x5D, 0x42, 0x36, 0x50, 0xBB, 0xE8, 0x06, 0x9E, 0xBC, 0xF1, 0xF1, 0xC6, 0x71, 0xF7, 0x6A, 0x06, 0x28,
+      0x73, 0x44, 0x50, 0xF3, 0xF4, 0xF0, 0x21, 0x30, 0x0A, 0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02,
+      0x03, 0x48, 0x00, 0x30, 0x45, 0x02, 0x20, 0x7F, 0x19, 0xD4, 0x74, 0x47, 0xDA, 0x54, 0x7F, 0xBF, 0x5B, 0x9C, 0xE4,
+      0x79, 0x28, 0x77, 0x28, 0x5F, 0x10, 0xEA, 0x68, 0x6B, 0x78, 0xFE, 0xB9, 0xA0, 0xC4, 0x8D, 0x7C, 0x17, 0x2E, 0x90,
+      0x3F, 0x02, 0x21, 0x00, 0xFA, 0xCE, 0x65, 0xE0, 0x12, 0x00, 0x26, 0x76, 0x24, 0xD8, 0xB5, 0x49, 0x21, 0x7A, 0x96,
+      0x53, 0xEC, 0xF8, 0x2D, 0xB3, 0xD0, 0xA7, 0x3C, 0xB3, 0x67, 0x5D, 0x62, 0xBE, 0xB2, 0x54, 0x41, 0x21,
+  };
+  CK_ATTRIBUTE certTemplate[] = {
+      {CKA_CLASS, &certClass, sizeof(certClass)}, {CKA_CERTIFICATE_TYPE, &certType, sizeof(certType)},
+      {CKA_TOKEN, &token, sizeof(token)},         {CKA_ID, &keyId, sizeof(keyId)},
+      {CKA_VALUE, certValue, sizeof(certValue)},
+  };
+  CK_OBJECT_HANDLE hCertificate = 0;
+
+  CK_RV rv = pFunctionList->C_CreateObject(hSession, certTemplate, sizeof(certTemplate) / sizeof(certTemplate[0]),
+                                           &hCertificate);
+  if (rv != CKR_OK)
+    return rv;
+
+  CK_BYTE value[sizeof(certValue)];
+  CK_ATTRIBUTE valueAttr = {CKA_VALUE, value, sizeof(value)};
+  rv = pFunctionList->C_GetAttributeValue(hSession, hCertificate, &valueAttr, 1);
+  if (rv != CKR_OK)
+    return rv;
+  if (valueAttr.ulValueLen != sizeof(certValue) || memcmp(value, certValue, sizeof(certValue)) != 0)
+    return CKR_DATA_INVALID;
+
+  printf("    Wrote and read certificate object in test slot ID %u\n", (unsigned int)keyId);
+  return CKR_OK;
+}
+
+static CK_RV import_software_ec_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSession) {
+  CK_RV rv = CKR_OK;
+  CK_BYTE keyId = CNK_REAL_WRITE_TEST_ID;
+  CK_OBJECT_CLASS keyClass = CKO_PRIVATE_KEY;
+  CK_KEY_TYPE keyType = CKK_EC;
+  CK_BBOOL token = CK_TRUE;
+  CK_BBOOL private = CK_TRUE;
+  CK_BBOOL sign = CK_TRUE;
+  CK_BBOOL derive = CK_TRUE;
+  CK_BBOOL alwaysAuthenticate = CK_FALSE;
+  CK_BYTE ecParams[] = "\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x07";
+  CK_BYTE privateScalar[32];
+  mbedtls_ecp_keypair key;
+
+  mbedtls_ecp_keypair_init(&key);
+  unsigned int rngState = 0x6ec0ffeeu;
+  int ret = mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, &key, cnk_test_rng, &rngState);
+  if (ret != 0) {
+    printf("    Failed to generate software EC key: -0x%04x\n", (unsigned int)-ret);
+    rv = CKR_GENERAL_ERROR;
+    goto cleanup;
+  }
+
+  rv = write_mpi_fixed(&key.d, privateScalar, sizeof(privateScalar));
+  if (rv != CKR_OK)
+    goto cleanup;
+
+  CK_ATTRIBUTE privateTemplate[] = {
+      {CKA_CLASS, &keyClass, sizeof(keyClass)},
+      {CKA_TOKEN, &token, sizeof(token)},
+      {CKA_PRIVATE, &private, sizeof(private)},
+      {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
+      {CKA_ID, &keyId, sizeof(keyId)},
+      {CKA_EC_PARAMS, ecParams, sizeof(ecParams) - 1},
+      {CKA_VALUE, privateScalar, sizeof(privateScalar)},
+      {CKA_SIGN, &sign, sizeof(sign)},
+      {CKA_DERIVE, &derive, sizeof(derive)},
+      {CKA_ALWAYS_AUTHENTICATE, &alwaysAuthenticate, sizeof(alwaysAuthenticate)},
+  };
+  CK_OBJECT_HANDLE hPrivateKey = 0;
+  rv = pFunctionList->C_CreateObject(hSession, privateTemplate, sizeof(privateTemplate) / sizeof(privateTemplate[0]),
+                                     &hPrivateKey);
+  if (rv != CKR_OK)
+    goto cleanup;
+
+  printf("    Imported EC P-256 private key into test slot ID %u\n", (unsigned int)keyId);
+
+cleanup:
+  memset(privateScalar, 0, sizeof(privateScalar));
+  mbedtls_ecp_keypair_free(&key);
+  return rv;
+}
+
+static CK_RV import_software_rsa_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSession) {
+  CK_RV rv = CKR_OK;
+  CK_BYTE keyId = CNK_REAL_WRITE_TEST_ID;
+  CK_OBJECT_CLASS keyClass = CKO_PRIVATE_KEY;
+  CK_KEY_TYPE keyType = CKK_RSA;
+  CK_BBOOL token = CK_TRUE;
+  CK_BBOOL private = CK_TRUE;
+  CK_BBOOL sign = CK_TRUE;
+  CK_BBOOL decrypt = CK_TRUE;
+  CK_BBOOL alwaysAuthenticate = CK_FALSE;
+  CK_BYTE p[128], q[128], dp[128], dq[128], qInv[128];
+  mbedtls_rsa_context rsa;
+
+  mbedtls_rsa_init(&rsa);
+  unsigned int rngState = 0x21524111u;
+  int ret = mbedtls_rsa_gen_key(&rsa, cnk_test_rng, &rngState, 2048, 65537);
+  if (ret != 0) {
+    printf("    Failed to generate software RSA key: -0x%04x\n", (unsigned int)-ret);
+    rv = CKR_GENERAL_ERROR;
+    goto cleanup;
+  }
+
+  if ((rv = write_mpi_fixed(&rsa.P, p, sizeof(p))) != CKR_OK ||
+      (rv = write_mpi_fixed(&rsa.Q, q, sizeof(q))) != CKR_OK ||
+      (rv = write_mpi_fixed(&rsa.DP, dp, sizeof(dp))) != CKR_OK ||
+      (rv = write_mpi_fixed(&rsa.DQ, dq, sizeof(dq))) != CKR_OK ||
+      (rv = write_mpi_fixed(&rsa.QP, qInv, sizeof(qInv))) != CKR_OK) {
+    goto cleanup;
+  }
+
+  CK_ATTRIBUTE privateTemplate[] = {
+      {CKA_CLASS, &keyClass, sizeof(keyClass)},
+      {CKA_TOKEN, &token, sizeof(token)},
+      {CKA_PRIVATE, &private, sizeof(private)},
+      {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
+      {CKA_ID, &keyId, sizeof(keyId)},
+      {CKA_PRIME_1, p, sizeof(p)},
+      {CKA_PRIME_2, q, sizeof(q)},
+      {CKA_EXPONENT_1, dp, sizeof(dp)},
+      {CKA_EXPONENT_2, dq, sizeof(dq)},
+      {CKA_COEFFICIENT, qInv, sizeof(qInv)},
+      {CKA_SIGN, &sign, sizeof(sign)},
+      {CKA_DECRYPT, &decrypt, sizeof(decrypt)},
+      {CKA_ALWAYS_AUTHENTICATE, &alwaysAuthenticate, sizeof(alwaysAuthenticate)},
+  };
+  CK_OBJECT_HANDLE hPrivateKey = 0;
+  rv = pFunctionList->C_CreateObject(hSession, privateTemplate, sizeof(privateTemplate) / sizeof(privateTemplate[0]),
+                                     &hPrivateKey);
+  if (rv != CKR_OK)
+    goto cleanup;
+
+  printf("    Imported RSA-2048 private key into test slot ID %u\n", (unsigned int)keyId);
+
+cleanup:
+  memset(p, 0, sizeof(p));
+  memset(q, 0, sizeof(q));
+  memset(dp, 0, sizeof(dp));
+  memset(dq, 0, sizeof(dq));
+  memset(qInv, 0, sizeof(qInv));
+  mbedtls_rsa_free(&rsa);
+  return rv;
 }
 
 void test_ecdsa_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
@@ -2702,6 +3041,85 @@ cleanup_session:
     record_real_test_failure("Error closing ECDH derive session", rv);
 }
 
+void test_destructive_write_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
+  if (!cnk_env_is_enabled(CNK_REAL_WRITE_TEST_ENV)) {
+    printf("    Skipping destructive write tests; set %s=1 to overwrite test slot ID %u.\n", CNK_REAL_WRITE_TEST_ENV,
+           CNK_REAL_WRITE_TEST_ID);
+    return;
+  }
+
+  printf("    Running destructive key write tests on test slot ID %u...\n", CNK_REAL_WRITE_TEST_ID);
+
+  CK_SESSION_HANDLE hSession;
+  CK_RV rv = open_management_write_session(pFunctionList, slotID, &hSession);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Error opening management session for EC generation", rv);
+    return;
+  }
+
+  rv = generate_card_ec_key(pFunctionList, hSession);
+  if (rv != CKR_OK)
+    record_real_test_failure("C_GenerateKeyPair EC write smoke failed", rv);
+  close_management_write_session(pFunctionList, hSession);
+
+  if (rv == CKR_OK) {
+    rv = sign_with_test_private_key(pFunctionList, slotID, CKK_EC);
+    if (rv != CKR_OK)
+      record_real_test_failure("Generated EC private key sign smoke failed", rv);
+    else
+      printf("    Signed with generated EC P-256 private key\n");
+  }
+
+  rv = open_management_write_session(pFunctionList, slotID, &hSession);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Error opening management session for EC import", rv);
+    return;
+  }
+
+  CK_RV writeRv = import_software_ec_key(pFunctionList, hSession);
+  if (writeRv != CKR_OK)
+    record_real_test_failure("C_CreateObject EC private-key import smoke failed", writeRv);
+  close_management_write_session(pFunctionList, hSession);
+
+  if (writeRv == CKR_OK) {
+    rv = sign_with_test_private_key(pFunctionList, slotID, CKK_EC);
+    if (rv != CKR_OK)
+      record_real_test_failure("Imported EC private key sign smoke failed", rv);
+    else
+      printf("    Signed with imported EC P-256 private key\n");
+  }
+
+  rv = open_management_write_session(pFunctionList, slotID, &hSession);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Error opening management session for RSA import", rv);
+    return;
+  }
+
+  writeRv = import_software_rsa_key(pFunctionList, hSession);
+  if (writeRv != CKR_OK)
+    record_real_test_failure("C_CreateObject RSA private-key import smoke failed", writeRv);
+  close_management_write_session(pFunctionList, hSession);
+
+  if (writeRv == CKR_OK) {
+    rv = sign_with_test_private_key(pFunctionList, slotID, CKK_RSA);
+    if (rv != CKR_OK)
+      record_real_test_failure("Imported RSA private key sign smoke failed", rv);
+    else
+      printf("    Signed with imported RSA-2048 private key\n");
+  }
+
+  rv = open_management_write_session(pFunctionList, slotID, &hSession);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Error opening management session for certificate write", rv);
+    return;
+  }
+
+  writeRv = write_test_certificate(pFunctionList, hSession);
+  if (writeRv != CKR_OK)
+    record_real_test_failure("C_CreateObject certificate write smoke failed", writeRv);
+  close_management_write_session(pFunctionList, hSession);
+}
+
 void test_management_challenge(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotId) {
   CK_SESSION_HANDLE hSession;
   CK_RV rv = pFunctionList->C_OpenSession(slotId, CKF_SERIAL_SESSION, NULL, NULL, &hSession);
@@ -2710,8 +3128,7 @@ void test_management_challenge(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID sl
     return;
   }
 
-  CK_BYTE key[] = "\x01\x02\x03\x04\x05\x06\x07\x08\x01\x02\x03\x04\x05\x06\x07\x08\x01\x02\x03\x04\x05\x06\x07\x08";
-  rv = pFunctionList->C_Login(hSession, CKU_SO, key, 24);
+  rv = perform_management_login(pFunctionList, hSession);
   if (rv != CKR_OK) {
     printf("    Error logging in: 0x%lx\n", rv);
   } else {
@@ -2822,6 +3239,9 @@ int main(int argc, char *argv[]) {
 
       // Test ECDH key derivation
       test_ecdh_derivation(pFunctionList, pSlotList[i]);
+
+      // Test write paths only when explicitly requested; it overwrites ID 06.
+      test_destructive_write_operations(pFunctionList, pSlotList[i]);
 
       // Test auth challenge
       test_management_challenge(pFunctionList, pSlotList[i]);

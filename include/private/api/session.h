@@ -70,16 +70,18 @@ typedef struct {
 
 // Session structure
 typedef struct CNK_PKCS11_SESSION {
-  CK_SESSION_HANDLE handle; // Session handle
-  CK_SLOT_ID slotId;        // Slot ID associated with this session
-  CK_FLAGS flags;           // Session flags
-  CK_VOID_PTR application;  // Application pointer
-  CK_NOTIFY notify;         // Notification callback
-  SessionState state;       // Current session state
-  CK_BBOOL isOpen;          // Flag indicating if the session is open
-  CK_BYTE pin[8];           // Cached PIV PIN (padded with 0xFF)
-  CK_ULONG cbPin;           // Length of the cached PIV PIN
-  CNK_PKCS11_MUTEX lock;    // Session lock using abstract mutex
+  CK_SESSION_HANDLE handle;  // Session handle
+  CK_SLOT_ID slotId;         // Slot ID associated with this session
+  CK_FLAGS flags;            // Session flags
+  CK_VOID_PTR application;   // Application pointer
+  CK_NOTIFY notify;          // Notification callback
+  SessionState state;        // Current session state
+  CK_BBOOL isOpen;           // Flag indicating if the session is open
+  CK_BYTE pin[8];            // Cached PIV PIN (padded with 0xFF)
+  CK_ULONG cbPin;            // Length of the cached PIV PIN
+  CK_BYTE managementKey[24]; // Cached PIV management key after CKU_SO login
+  CK_ULONG cbManagementKey;  // Length of the cached PIV management key
+  CNK_PKCS11_MUTEX lock;     // Session lock using abstract mutex
 
   // Object finding fields
   CK_BBOOL findActive;                            // Whether a find operation is active

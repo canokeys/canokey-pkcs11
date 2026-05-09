@@ -62,6 +62,8 @@ static void free_session(CNK_PKCS11_SESSION *session) {
 
   ck_free(session->signingContext.mechanism.pParameter);
   ck_free(session->decryptingContext.mechanism.pParameter);
+  if (session->cbManagementKey > 0)
+    mbedtls_platform_zeroize(session->managementKey, sizeof(session->managementKey));
   for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
     if (session->secretKeys[i].active)
       mbedtls_platform_zeroize(session->secretKeys[i].value, sizeof(session->secretKeys[i].value));
@@ -228,6 +230,8 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
   // Initialize PIN fields
   memset(session->pin, 0xFF, sizeof(session->pin));
   session->cbPin = 0;
+  mbedtls_platform_zeroize(session->managementKey, sizeof(session->managementKey));
+  session->cbManagementKey = 0;
   session->nextSecretKeyId = CNK_SESSION_SECRET_KEY_FIRST_ID;
 
   // Initialize the session mutex
@@ -409,10 +413,19 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
 
     CNK_RETURN(rv, "verify_piv_pin_with_session");
   } else if (userType == CKU_SO) {
+    if (session->cbPin > 0)
+      CNK_RETURN(CKR_USER_ANOTHER_ALREADY_LOGGED_IN, "User PIN session is already logged in");
+    if (session->cbManagementKey > 0)
+      CNK_RETURN(CKR_USER_ALREADY_LOGGED_IN, "SO already logged in");
+    if (pPin == NULL || ulPinLen != sizeof(session->managementKey))
+      CNK_RETURN(CKR_PIN_LEN_RANGE, "Invalid management key length");
+
     rv = cnkVerifyManagementKey(session, pPin);
     if (rv != CKR_OK)
       CNK_RETURN(rv, "cnkVerifyManagementKey");
 
+    memcpy(session->managementKey, pPin, ulPinLen);
+    session->cbManagementKey = ulPinLen;
     session->state = SESSION_STATE_RW_SO;
 
     CNK_RET_OK;
@@ -436,17 +449,21 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
   CNK_PKCS11_SESSION *session;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
-  // Check if logged in (PIN is cached)
-  if (session->cbPin == 0) {
+  // Check if logged in. CKU_USER caches a PIN; CKU_SO caches a management key.
+  if (session->cbPin == 0 && session->cbManagementKey == 0) {
     return CKR_USER_NOT_LOGGED_IN;
   }
 
-  // Send the logout APDU to the card
-  CNK_ENSURE_OK(cnk_logout_piv_pin_with_session(session->slotId));
+  // Send the logout APDU only for user PIN sessions. Management-key
+  // authentication is per-card transaction and has no matching logout APDU.
+  if (session->cbPin > 0)
+    CNK_ENSURE_OK(cnk_logout_piv_pin_with_session(session->slotId));
 
   // Clear the cached PIN
   memset(session->pin, 0xFF, sizeof(session->pin));
   session->cbPin = 0;
+  mbedtls_platform_zeroize(session->managementKey, sizeof(session->managementKey));
+  session->cbManagementKey = 0;
 
   // Reset session state based on session type
   if (session->flags & CKF_RW_SESSION) {

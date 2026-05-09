@@ -161,6 +161,22 @@ OpenSC's own module is useful as an external comparison point:
 C:\Program Files\OpenSC Project\OpenSC\pkcs11\opensc-pkcs11.dll
 ```
 
+Write-path notes:
+
+- `C_GenerateKeyPair`, `C_CreateObject(CKO_PRIVATE_KEY)`, and
+  `C_CreateObject(CKO_CERTIFICATE)` require a read-write session logged in as
+  `CKU_SO` with the PIV management key.
+- These operations overwrite the selected PIV slot/object. Avoid using ID 03
+  / slot 9D for destructive development probes because it is also used by
+  another project.
+- Private-key import currently accepts explicit PKCS#11 template components:
+  RSA CRT attributes (`CKA_PRIME_1`, `CKA_PRIME_2`, `CKA_EXPONENT_1`,
+  `CKA_EXPONENT_2`, `CKA_COEFFICIENT`) or an EC private scalar in
+  `CKA_VALUE` with matching `CKA_EC_PARAMS`.
+- Object deletion is not implemented. CanoKey has PUT DATA and a special empty
+  certificate delete encoding, but there is no standard PIV APDU that deletes
+  both the certificate and private key with PKCS#11-style object semantics.
+
 RSA signing note:
 
 - CanoKey accepts RSA-sized PIV GENERAL AUTHENTICATE requests through short APDU command chaining.
@@ -236,7 +252,12 @@ PIV object IDs map to slots as:
 
 ## Known Gaps
 
-- Encryption/decryption, verify, key generation, random generation, wrap/unwrap/derive, object create/delete/set-attribute, init/set PIN, and slot events are mostly stubs returning `CKR_FUNCTION_NOT_SUPPORTED`.
+- Verify, random generation, wrap/unwrap, object delete/set-attribute, init/set
+  PIN, and slot events are mostly stubs returning `CKR_FUNCTION_NOT_SUPPORTED`.
+- `C_DestroyObject` is intentionally not wired up yet. CanoKey PIV supports
+  PUT DATA (`00 DB`) for certificate writes and a special `53 00` certificate
+  delete case, but there is no standard PIV APDU that deletes both certificates
+  and asymmetric keys with matching PKCS#11 object semantics.
 - Current reader enumeration only keeps PC/SC reader names containing `canokey`, case-insensitive.
 - Standalone `C_Initialize()` reads `CNK_LOG_LEVEL` and
   `CNK_UNSAFE_LOG_APDU`. Raw APDU logs require both debug-or-lower log level
@@ -245,4 +266,8 @@ PIV object IDs map to slots as:
   `C_CNK_ConfigLogging(level, file, unsafe_log_apdu)`.
 - `BUILD_UNIT_TESTING=ON` with the Windows native MSVC/clang-cl toolchain currently fails before compiling unit tests because `test/unit/CMakeLists.txt` requires `PkgConfig`/`cmocka`.
 - `BUILD_REAL_TESTING=ON -DBUILD_UNIT_TESTING=OFF` builds `test_real.exe` on Windows without requiring `PkgConfig`/`cmocka`.
-- `test/real/test_real.c` still mostly prints per-case failures instead of accumulating an overall failing exit status, so keep treating it as a hardware diagnostic until it has stricter result accounting.
+- Destructive real-card write tests in `test_real.exe` are opt-in. Set
+  `CNK_RUN_DESTRUCTIVE_REAL_TESTS=1` to exercise `C_GenerateKeyPair` and
+  `C_CreateObject(CKO_PRIVATE_KEY)` against ID 06 / slot 83. These tests
+  intentionally separate SO-authenticated write sessions from USER-authenticated
+  signing sessions.
