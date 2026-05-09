@@ -1,7 +1,3 @@
-#if defined(_WIN32)
-#define CRYPTOKI_EXPORTS
-#endif
-
 #include "backend/pcsc.h"
 #include "internal/logging.h"
 #include "internal/util.h"

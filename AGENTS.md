@@ -176,6 +176,9 @@ Write-path notes:
 - Object deletion is not implemented. CanoKey has PUT DATA and a special empty
   certificate delete encoding, but there is no standard PIV APDU that deletes
   both the certificate and private key with PKCS#11-style object semantics.
+- Windows minidriver `CardQueryFreeSpace` should report unknown free space for
+  now. There is no PIV APDU for real object-store capacity, and adding one would
+  require extending the CanoKey PIV applet.
 
 RSA signing note:
 

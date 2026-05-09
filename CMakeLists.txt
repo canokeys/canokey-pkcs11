@@ -132,7 +132,7 @@ elseif(MSVC)
 endif()
 
 if(BUILD_SHARED_LIBS)
-  target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_LIB_SHARED")
+  target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_LIB_SHARED" "CRYPTOKI_EXPORTS")
 else()
   target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_LIB_STATIC")
 endif()

@@ -1,7 +1,3 @@
-#if defined(_WIN32)
-#define CRYPTOKI_EXPORTS
-#endif
-
 #include "api/session.h"
 #include "backend/pcsc.h"
 #include "internal/logging.h"
