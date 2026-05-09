@@ -532,6 +532,7 @@ void test_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID s
 void test_ecdsa_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_certificate_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_decryption(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
+void test_pin_never_private_key_operation(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_rsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_ecdsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_ecdh_derivation(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
@@ -762,7 +763,8 @@ static CK_RV write_mpi_fixed(mbedtls_mpi *mpi, CK_BYTE_PTR output, CK_ULONG outp
   return CKR_OK;
 }
 
-static CK_RV generate_card_ec_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSession) {
+static CK_RV generate_card_ec_key_with_policy(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSession,
+                                              CK_BYTE pinPolicy) {
   CK_BYTE keyId = CNK_REAL_WRITE_TEST_ID;
   CK_OBJECT_CLASS pubClass = CKO_PUBLIC_KEY;
   CK_OBJECT_CLASS privClass = CKO_PRIVATE_KEY;
@@ -772,7 +774,6 @@ static CK_RV generate_card_ec_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION
   CK_BBOOL sign = CK_TRUE;
   CK_BBOOL derive = CK_TRUE;
   CK_BBOOL alwaysAuthenticate = CK_FALSE;
-  CK_BYTE pinPolicy = CNK_REAL_WRITE_TEST_PIN_POLICY;
   CK_BYTE touchPolicy = CNK_REAL_WRITE_TEST_TOUCH_POLICY;
   CK_BYTE ecParams[] = "\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x07";
 
@@ -815,8 +816,12 @@ static CK_RV generate_card_ec_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION
   return CKR_OK;
 }
 
+static CK_RV generate_card_ec_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSession) {
+  return generate_card_ec_key_with_policy(pFunctionList, hSession, CNK_REAL_WRITE_TEST_PIN_POLICY);
+}
+
 static CK_RV check_test_key_policies(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSession,
-                                     CK_KEY_TYPE keyType) {
+                                     CK_KEY_TYPE keyType, CK_BYTE expectedPinPolicy) {
   CK_BYTE keyId = CNK_REAL_WRITE_TEST_ID;
   CK_OBJECT_HANDLE hPrivateKey;
   CK_RV rv = find_object(pFunctionList, hSession, CKO_PRIVATE_KEY, &keyType, &keyId, sizeof(keyId), &hPrivateKey);
@@ -834,7 +839,7 @@ static CK_RV check_test_key_policies(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESS
     return rv;
   if (attrs[0].ulValueLen != sizeof(pinPolicy) || attrs[1].ulValueLen != sizeof(touchPolicy))
     return CKR_ATTRIBUTE_VALUE_INVALID;
-  if (pinPolicy != CNK_REAL_WRITE_TEST_PIN_POLICY || touchPolicy != CNK_REAL_WRITE_TEST_TOUCH_POLICY)
+  if (pinPolicy != expectedPinPolicy || touchPolicy != CNK_REAL_WRITE_TEST_TOUCH_POLICY)
     return CKR_ATTRIBUTE_VALUE_INVALID;
 
   printf("    Read back vendor key policies: PIN=0x%02x touch=0x%02x\n", pinPolicy, touchPolicy);
@@ -921,6 +926,39 @@ static CK_RV sign_with_test_private_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_S
 cleanup:
   perform_logout(pFunctionList, hSession);
   CK_RV closeRv = pFunctionList->C_CloseSession(hSession);
+  if (rv == CKR_OK)
+    rv = closeRv;
+  cnk_sleep_milliseconds(100);
+  return rv;
+}
+
+static CK_RV sign_with_pin_never_test_key_without_login(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
+  CK_SESSION_HANDLE hSession;
+  CK_RV rv = pFunctionList->C_OpenSession(slotID, CKF_SERIAL_SESSION, NULL, NULL, &hSession);
+  CK_RV closeRv;
+  if (rv != CKR_OK)
+    return rv;
+
+  CK_BYTE keyId = CNK_REAL_WRITE_TEST_ID;
+  CK_KEY_TYPE keyType = CKK_EC;
+  CK_OBJECT_HANDLE hPrivateKey;
+  rv = find_object(pFunctionList, hSession, CKO_PRIVATE_KEY, &keyType, &keyId, sizeof(keyId), &hPrivateKey);
+  if (rv != CKR_OK)
+    goto cleanup;
+
+  CK_MECHANISM mechanism = {CKM_ECDSA, NULL, 0};
+  CK_BYTE digest[32] = {0};
+  CK_BYTE signature[64];
+  CK_ULONG signatureLen = sizeof(signature);
+
+  rv = pFunctionList->C_SignInit(hSession, &mechanism, hPrivateKey);
+  if (rv == CKR_OK)
+    rv = pFunctionList->C_Sign(hSession, digest, sizeof(digest), signature, &signatureLen);
+  if (rv == CKR_OK && signatureLen != sizeof(signature))
+    rv = CKR_SIGNATURE_LEN_RANGE;
+
+cleanup:
+  closeRv = pFunctionList->C_CloseSession(hSession);
   if (rv == CKR_OK)
     rv = closeRv;
   cnk_sleep_milliseconds(100);
@@ -2008,6 +2046,61 @@ void test_decryption(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
   rv = pFunctionList->C_CloseSession(decryptSession);
   if (rv != CKR_OK)
     record_real_test_failure("Error closing decrypt test session", rv);
+}
+
+void test_pin_never_private_key_operation(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
+  CK_SESSION_HANDLE signSession;
+  CK_RV rv = pFunctionList->C_OpenSession(slotID, CKF_SERIAL_SESSION, NULL, NULL, &signSession);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Error opening PIN-never signing session", rv);
+    return;
+  }
+
+  CK_BYTE keyId = 0x05;
+  CK_KEY_TYPE keyType = CKK_EC;
+  CK_OBJECT_HANDLE hPrivateKey;
+  rv = find_object(pFunctionList, signSession, CKO_PRIVATE_KEY, &keyType, &keyId, sizeof(keyId), &hPrivateKey);
+  if (rv != CKR_OK) {
+    printf("    No 9E EC private key found for PIN-never signing smoke, skipping.\n");
+    pFunctionList->C_CloseSession(signSession);
+    return;
+  }
+
+  CK_BYTE pinPolicy = 0;
+  CK_ATTRIBUTE policyAttr = {CKA_CNK_PIV_PIN_POLICY, &pinPolicy, sizeof(pinPolicy)};
+  rv = pFunctionList->C_GetAttributeValue(signSession, hPrivateKey, &policyAttr, 1);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Could not read 9E PIN policy", rv);
+    pFunctionList->C_CloseSession(signSession);
+    return;
+  }
+
+  if (pinPolicy != CNK_PIV_PIN_POLICY_NEVER) {
+    printf("    9E EC key PIN policy is 0x%02x, not PIN-never; skipping no-login smoke.\n", pinPolicy);
+    pFunctionList->C_CloseSession(signSession);
+    return;
+  }
+
+  CK_MECHANISM mechanism = {CKM_ECDSA, NULL, 0};
+  CK_BYTE digest[32] = {0};
+  CK_BYTE signature[64];
+  CK_ULONG signatureLen = sizeof(signature);
+
+  rv = pFunctionList->C_SignInit(signSession, &mechanism, hPrivateKey);
+  if (rv == CKR_OK)
+    rv = pFunctionList->C_Sign(signSession, digest, sizeof(digest), signature, &signatureLen);
+  if (rv == CKR_OK && signatureLen != sizeof(signature))
+    rv = CKR_SIGNATURE_LEN_RANGE;
+
+  if (rv != CKR_OK) {
+    record_real_test_failure("PIN-never 9E signing without USER login failed", rv);
+  } else {
+    printf("    PIN-never 9E signing succeeded without USER login.\n");
+  }
+
+  rv = pFunctionList->C_CloseSession(signSession);
+  if (rv != CKR_OK)
+    record_real_test_failure("Error closing PIN-never signing session", rv);
 }
 
 // Test RSA signing operations
@@ -3103,7 +3196,7 @@ void test_destructive_write_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SL
   if (rv != CKR_OK)
     record_real_test_failure("C_GenerateKeyPair EC write smoke failed", rv);
   if (rv == CKR_OK) {
-    rv = check_test_key_policies(pFunctionList, hSession, CKK_EC);
+    rv = check_test_key_policies(pFunctionList, hSession, CKK_EC, CNK_REAL_WRITE_TEST_PIN_POLICY);
     if (rv != CKR_OK)
       record_real_test_failure("Generated EC key policy readback failed", rv);
   }
@@ -3119,6 +3212,30 @@ void test_destructive_write_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SL
 
   rv = open_management_write_session(pFunctionList, slotID, &hSession);
   if (rv != CKR_OK) {
+    record_real_test_failure("Error opening management session for PIN-never EC generation", rv);
+    return;
+  }
+
+  rv = generate_card_ec_key_with_policy(pFunctionList, hSession, CNK_PIV_PIN_POLICY_NEVER);
+  if (rv != CKR_OK)
+    record_real_test_failure("C_GenerateKeyPair PIN-never EC write smoke failed", rv);
+  if (rv == CKR_OK) {
+    rv = check_test_key_policies(pFunctionList, hSession, CKK_EC, CNK_PIV_PIN_POLICY_NEVER);
+    if (rv != CKR_OK)
+      record_real_test_failure("PIN-never EC key policy readback failed", rv);
+  }
+  close_management_write_session(pFunctionList, hSession);
+
+  if (rv == CKR_OK) {
+    rv = sign_with_pin_never_test_key_without_login(pFunctionList, slotID);
+    if (rv != CKR_OK)
+      record_real_test_failure("PIN-never EC private key no-login sign smoke failed", rv);
+    else
+      printf("    Signed with generated PIN-never EC P-256 private key without USER login\n");
+  }
+
+  rv = open_management_write_session(pFunctionList, slotID, &hSession);
+  if (rv != CKR_OK) {
     record_real_test_failure("Error opening management session for EC import", rv);
     return;
   }
@@ -3127,7 +3244,7 @@ void test_destructive_write_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SL
   if (writeRv != CKR_OK)
     record_real_test_failure("C_CreateObject EC private-key import smoke failed", writeRv);
   if (writeRv == CKR_OK) {
-    writeRv = check_test_key_policies(pFunctionList, hSession, CKK_EC);
+    writeRv = check_test_key_policies(pFunctionList, hSession, CKK_EC, CNK_REAL_WRITE_TEST_PIN_POLICY);
     if (writeRv != CKR_OK)
       record_real_test_failure("Imported EC key policy readback failed", writeRv);
   }
@@ -3151,7 +3268,7 @@ void test_destructive_write_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SL
   if (writeRv != CKR_OK)
     record_real_test_failure("C_CreateObject RSA private-key import smoke failed", writeRv);
   if (writeRv == CKR_OK) {
-    writeRv = check_test_key_policies(pFunctionList, hSession, CKK_RSA);
+    writeRv = check_test_key_policies(pFunctionList, hSession, CKK_RSA, CNK_REAL_WRITE_TEST_PIN_POLICY);
     if (writeRv != CKR_OK)
       record_real_test_failure("Imported RSA key policy readback failed", writeRv);
   }
@@ -3287,6 +3404,9 @@ int main(int argc, char *argv[]) {
 
       // Test hardware decrypt
       test_decryption(pFunctionList, pSlotList[i]);
+
+      // Test PIN-never private-key operation without USER login
+      test_pin_never_private_key_operation(pFunctionList, pSlotList[i]);
 
       // Test RSA signing
       test_rsa_signing(pFunctionList, pSlotList[i]);

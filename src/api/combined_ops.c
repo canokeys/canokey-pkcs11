@@ -228,7 +228,7 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   }
 
   CK_BYTE pivTag;
-  CK_BYTE pinPolicy;
+  CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(privateId);
   CK_BYTE touchPolicy;
   CNK_ENSURE_OK(CNK_ObjectIdToPivTag(publicId, &pivTag));
   CNK_ENSURE_OK(CNK_GetPivPolicies(pPrivateKeyTemplate, ulPrivateKeyAttributeCount,
@@ -296,9 +296,10 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &pivTag));
 
   CK_BYTE algorithmType;
+  CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objId);
   CK_BYTE abPublicKey[512];
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
-  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, NULL, NULL));
+  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
 
   if (!CNK_PivPrivateKeyCanDerive(algorithmType))
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for ECDH derive");
@@ -454,8 +455,8 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
 
   CK_BYTE sharedSecret[CNK_MAX_ECDH_SECRET_LEN] = {0};
   CK_ULONG sharedSecretLen = sizeof(sharedSecret);
-  CK_RV rv = cnk_piv_ecdh(session->slotId, session, algorithmType, pivTag, params->pPublicData, params->ulPublicDataLen,
-                          sharedSecret, &sharedSecretLen);
+  CK_RV rv = cnk_piv_ecdh(session->slotId, session, algorithmType, pivTag, pinPolicy, params->pPublicData,
+                          params->ulPublicDataLen, sharedSecret, &sharedSecretLen);
   if (rv != CKR_OK)
     CNK_RETURN(rv, "PIV ECDH failed");
   if (params->kdf == CKD_NULL && sharedSecretLen < requestedValueLen) {

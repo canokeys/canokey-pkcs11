@@ -95,3 +95,7 @@ CanoKey PIV defaults are used: 9E uses PIN never and touch never, while the
 other PIV key slots use PIN once and touch never. The stored policy values can
 be read back from public or private PIV key objects with
 `C_GetAttributeValue`.
+
+Private-key operations honor the stored PIN policy. Keys with PIN policy never
+can sign, decrypt, or derive without `CKU_USER` login; keys with PIN policy once
+or always require a logged-in user PIN before the operation.

@@ -182,6 +182,7 @@ static void resetSigningContext(CNK_PKCS11_SESSION *session) {
   session->signingContext.hKey = 0;
   session->signingContext.pivSlot = 0;
   session->signingContext.algorithmType = 0;
+  session->signingContext.pinPolicy = 0;
   session->signingContext.mechanism.mechanism = 0;
   session->signingContext.mechanism.ulParameterLen = 0;
   ck_free(session->signingContext.mechanism.pParameter);
@@ -284,9 +285,10 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
 
   // Get metadata
   CK_BYTE algorithmType;
+  CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objId);
   CK_BYTE abPublicKey[512];
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
-  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, NULL, NULL));
+  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
 
   if (!CNK_PivPrivateKeyCanSign(algorithmType))
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for signing");
@@ -306,6 +308,7 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   session->signingContext.hKey = hKey;
   session->signingContext.pivSlot = pivTag;
   session->signingContext.algorithmType = algorithmType;
+  session->signingContext.pinPolicy = pinPolicy;
   session->signingContext.mechanism.mechanism = pMechanism->mechanism;
   session->signingContext.mechanism.pParameter = NULL_PTR;
   session->signingContext.mechanism.ulParameterLen = pMechanism->ulParameterLen;

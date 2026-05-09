@@ -52,6 +52,36 @@ static CK_RV cnk_with_card(CK_SLOT_ID slotID, CardOperationFunc operation, void 
   return rv;
 }
 
+static CK_RV connectForPrivateKeyOperation(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *session, CK_BYTE pinPolicy,
+                                           SCARDHANDLE *hCard, const char *operationName) {
+  CNK_ENSURE_NONNULL(session, hCard);
+
+  if (pinPolicy == CNK_PIV_PIN_POLICY_NEVER) {
+    CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotId, hCard));
+    CK_RV rv = cnk_select_piv_application(*hCard);
+    if (rv != CKR_OK) {
+      cnk_disconnect_card(*hCard);
+      *hCard = 0;
+      return rv;
+    }
+    CNK_RET_OK;
+  }
+
+  if (session->cbPin == 0)
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN verification required before private-key operation");
+
+  CK_RV rv = cnk_verify_piv_pin_with_session_ex(slotId, session, session->pin, session->cbPin, NULL, hCard);
+  if (rv != CKR_OK) {
+    CNK_ERROR("Failed to verify PIN before %s", operationName ? operationName : "private-key operation");
+    if (*hCard != 0)
+      cnk_disconnect_card(*hCard);
+    *hCard = 0;
+    return rv;
+  }
+
+  CNK_RET_OK;
+}
+
 // Helper function to check if a string contains 'canokey' (case-insensitive)
 static CK_BBOOL contains_canokey(const char *str) { return str && ck_strcasestr(str, "canokey") ? CK_TRUE : CK_FALSE; }
 
@@ -1035,8 +1065,9 @@ CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
 }
 
 static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType,
-                                              CK_BYTE pivSlot, CK_BYTE inputTag, CK_BYTE_PTR pData, CK_ULONG cbDataLen,
-                                              CK_BYTE_PTR pOutput, CK_ULONG_PTR pcbOutput, const char *operationName) {
+                                              CK_BYTE pivSlot, CK_BYTE pinPolicy, CK_BYTE inputTag, CK_BYTE_PTR pData,
+                                              CK_ULONG cbDataLen, CK_BYTE_PTR pOutput, CK_ULONG_PTR pcbOutput,
+                                              const char *operationName) {
   SCARDHANDLE hCard = 0;
   CK_RV rv = CKR_OK;
 
@@ -1049,18 +1080,9 @@ static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESS
   if (cbDataLen > 512)
     CNK_RETURN(CKR_DATA_LEN_RANGE, "Input data too large (max 512 bytes)");
 
-  // Verify PIN before private-key operations
-  if (pSession->cbPin == 0)
-    CNK_RETURN(CKR_PIN_INCORRECT, "PIN verification required before GENERAL AUTHENTICATE");
-
-  // Use the extended version to keep the card connection open
-  rv = cnk_verify_piv_pin_with_session_ex(slotId, pSession, pSession->pin, pSession->cbPin, NULL, &hCard);
-  if (rv != CKR_OK) {
-    CNK_ERROR("Failed to verify PIN");
-    if (hCard != 0)
-      cnk_disconnect_card(hCard);
+  rv = connectForPrivateKeyOperation(slotId, pSession, pinPolicy, &hCard, operationName);
+  if (rv != CKR_OK)
     return rv;
-  }
 
   // Now construct the PIV TLV structure for GENERAL AUTHENTICATE
   // Buffer for TLV data structure (tag + length + value)
@@ -1267,15 +1289,15 @@ static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESS
 CK_RV cnk_piv_decrypt(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pEncryptedData,
                       CK_ULONG cbEncryptedData, CK_BYTE_PTR pRawData, CK_ULONG_PTR pcbRawData) {
   return cnk_piv_general_authenticate_raw(slotId, pSession, pSession->decryptingContext.algorithmType,
-                                          pSession->decryptingContext.pivSlot, 0x81, pEncryptedData, cbEncryptedData,
-                                          pRawData, pcbRawData, "decrypt");
+                                          pSession->decryptingContext.pivSlot, pSession->decryptingContext.pinPolicy,
+                                          0x81, pEncryptedData, cbEncryptedData, pRawData, pcbRawData, "decrypt");
 }
 
 CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
-                   CK_BYTE_PTR pPublicData, CK_ULONG cbPublicData, CK_BYTE_PTR pSharedSecret,
+                   CK_BYTE pinPolicy, CK_BYTE_PTR pPublicData, CK_ULONG cbPublicData, CK_BYTE_PTR pSharedSecret,
                    CK_ULONG_PTR pcbSharedSecret) {
-  return cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, 0x85, pPublicData, cbPublicData,
-                                          pSharedSecret, pcbSharedSecret, "ECDH");
+  return cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, pinPolicy, 0x85, pPublicData,
+                                          cbPublicData, pSharedSecret, pcbSharedSecret, "ECDH");
 }
 
 // Sign data using PIV key
@@ -1292,17 +1314,9 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
   if (cbDataLen > 512)
     CNK_RETURN(CKR_DATA_LEN_RANGE, "Input data too large (max 512 bytes)");
 
-  // Verify PIN before signing
-  if (pSession->cbPin == 0)
-    CNK_RETURN(CKR_PIN_INCORRECT, "PIN verification required before signing");
-
-  // Use the extended version to keep the card connection open
-  CK_RV rv = cnk_verify_piv_pin_with_session_ex(slotId, pSession, pSession->pin, pSession->cbPin, NULL, &hCard);
-  if (rv != CKR_OK) {
-    CNK_ERROR("Failed to verify PIN");
-    cnk_disconnect_card(hCard);
+  CK_RV rv = connectForPrivateKeyOperation(slotId, pSession, pSession->signingContext.pinPolicy, &hCard, "sign");
+  if (rv != CKR_OK)
     return rv;
-  }
 
   // Now construct the PIV TLV structure for GENERAL AUTHENTICATE
   // Buffer for TLV data structure (tag + length + value)

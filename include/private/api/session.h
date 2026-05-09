@@ -50,6 +50,7 @@ typedef struct {
   CK_MECHANISM mechanism;
   CK_BYTE pivSlot;
   CK_BYTE algorithmType;
+  CK_BYTE pinPolicy;
   CK_BYTE abModulus[512];
   CK_ULONG cbSignature;
 } CNK_PKCS11_SIGNING_CONTEXT;
@@ -59,6 +60,7 @@ typedef struct {
   CK_MECHANISM mechanism;
   CK_BYTE pivSlot;
   CK_BYTE algorithmType;
+  CK_BYTE pinPolicy;
   CK_ULONG cbModulus;
 } CNK_PKCS11_DECRYPTING_CONTEXT;
 

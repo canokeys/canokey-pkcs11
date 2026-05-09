@@ -161,7 +161,7 @@ CK_RV cnk_piv_decrypt(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_P
 // Perform ECDH key agreement using a PIV EC key
 // This function returns the raw shared secret from GENERAL AUTHENTICATE
 CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
-                   CK_BYTE_PTR pPublicData, CK_ULONG cbPublicData, CK_BYTE_PTR pSharedSecret,
+                   CK_BYTE pinPolicy, CK_BYTE_PTR pPublicData, CK_ULONG cbPublicData, CK_BYTE_PTR pSharedSecret,
                    CK_ULONG_PTR pcbSharedSecret);
 
 #endif /* CNK_BACKEND_PCSC_H */

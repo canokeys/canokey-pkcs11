@@ -195,6 +195,9 @@ Write-path notes:
   a compatibility input for PIN policy when the vendor PIN policy is absent.
 - CanoKey PIV default key policies are: slot 9E uses PIN never and touch never;
   other PIV key slots use PIN once and touch never.
+- Runtime private-key operations must honor stored PIN policy. PIN-never keys
+  can use GENERAL AUTHENTICATE without `CKU_USER`; PIN-once and PIN-always keys
+  require a cached user PIN and must verify it before the operation.
 - `CKA_CNK_VENDOR_BASE` uses ASCII `CNK` (`0x43 0x4E 0x4B`) in the high bytes
   of the vendor-defined attribute range and reserves the low byte for CanoKey
   attribute IDs.

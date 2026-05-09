@@ -192,9 +192,10 @@ CK_RV C_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &pivTag));
 
   CK_BYTE algorithmType;
+  CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objId);
   CK_BYTE abPublicKey[512];
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
-  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, NULL, NULL));
+  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
 
   if (!CNK_PivPrivateKeyCanDecrypt(algorithmType))
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for decrypt");
@@ -210,6 +211,7 @@ CK_RV C_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   session->decryptingContext.hKey = hKey;
   session->decryptingContext.pivSlot = pivTag;
   session->decryptingContext.algorithmType = algorithmType;
+  session->decryptingContext.pinPolicy = pinPolicy;
   session->decryptingContext.cbModulus = cbModulus;
 
   CK_RV rv = copyDecryptMechanism(&session->decryptingContext, pMechanism);
