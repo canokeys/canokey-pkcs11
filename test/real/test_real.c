@@ -1120,6 +1120,112 @@ cleanup:
   return rv;
 }
 
+static CK_RV compute_x963_kdf(mbedtls_md_type_t md_type, CK_BYTE_PTR sharedSecret, CK_ULONG sharedSecretLen,
+                              CK_BYTE_PTR sharedData, CK_ULONG sharedDataLen, CK_BYTE_PTR output, CK_ULONG outputLen) {
+  const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(md_type);
+  if (md_info == NULL)
+    return CKR_MECHANISM_PARAM_INVALID;
+
+  CK_BYTE digest[64];
+  CK_ULONG digestLen = mbedtls_md_get_size(md_info);
+  CK_ULONG produced = 0;
+  CK_ULONG counter = 1;
+
+  while (produced < outputLen) {
+    CK_BYTE counterBytes[4] = {
+        (CK_BYTE)(counter >> 24),
+        (CK_BYTE)(counter >> 16),
+        (CK_BYTE)(counter >> 8),
+        (CK_BYTE)counter,
+    };
+
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    int ret = mbedtls_md_setup(&ctx, md_info, 0);
+    if (ret == 0)
+      ret = mbedtls_md_starts(&ctx);
+    if (ret == 0)
+      ret = mbedtls_md_update(&ctx, sharedSecret, sharedSecretLen);
+    if (ret == 0)
+      ret = mbedtls_md_update(&ctx, counterBytes, sizeof(counterBytes));
+    if (ret == 0 && sharedDataLen > 0)
+      ret = mbedtls_md_update(&ctx, sharedData, sharedDataLen);
+    if (ret == 0)
+      ret = mbedtls_md_finish(&ctx, digest);
+    mbedtls_md_free(&ctx);
+
+    if (ret != 0) {
+      printf("    X9.63 KDF hash failed: -0x%04x\n", (unsigned int)-ret);
+      return CKR_GENERAL_ERROR;
+    }
+
+    CK_ULONG copyLen = outputLen - produced;
+    if (copyLen > digestLen)
+      copyLen = digestLen;
+    memcpy(output + produced, digest, copyLen);
+    produced += copyLen;
+    counter++;
+  }
+
+  return CKR_OK;
+}
+
+static CK_RV derive_and_check_ecdh_secret(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE deriveSession,
+                                          CK_OBJECT_HANDLE hEcPrivateKey, CK_ECDH1_DERIVE_PARAMS *deriveParams,
+                                          CK_BYTE_PTR expectedSecret, CK_ULONG expectedSecretLen,
+                                          const char *description) {
+  CK_MECHANISM mechanism = {CKM_ECDH1_DERIVE, deriveParams, sizeof(*deriveParams)};
+  CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
+  CK_KEY_TYPE secretType = CKK_GENERIC_SECRET;
+  CK_BBOOL token = CK_FALSE;
+  CK_BBOOL sensitive = CK_FALSE;
+  CK_BBOOL extractable = CK_TRUE;
+  CK_ULONG valueLen = expectedSecretLen;
+  CK_ATTRIBUTE secretTemplate[] = {
+      {CKA_CLASS, &secretClass, sizeof(secretClass)},
+      {CKA_KEY_TYPE, &secretType, sizeof(secretType)},
+      {CKA_TOKEN, &token, sizeof(token)},
+      {CKA_SENSITIVE, &sensitive, sizeof(sensitive)},
+      {CKA_EXTRACTABLE, &extractable, sizeof(extractable)},
+      {CKA_VALUE_LEN, &valueLen, sizeof(valueLen)},
+  };
+
+  CK_OBJECT_HANDLE hDerivedKey = 0;
+  CK_RV rv = pFunctionList->C_DeriveKey(deriveSession, &mechanism, hEcPrivateKey, secretTemplate,
+                                        sizeof(secretTemplate) / sizeof(secretTemplate[0]), &hDerivedKey);
+  if (rv != CKR_OK) {
+    record_real_test_failure(description, rv);
+    return rv;
+  }
+
+  CK_OBJECT_CLASS derivedClass = 0;
+  CK_KEY_TYPE derivedType = 0;
+  CK_ULONG derivedValueLen = 0;
+  CK_BBOOL derivedToken = CK_TRUE;
+  CK_BYTE derivedSecret[128];
+  CK_ATTRIBUTE derivedAttrs[] = {
+      {CKA_CLASS, &derivedClass, sizeof(derivedClass)},  {CKA_KEY_TYPE, &derivedType, sizeof(derivedType)},
+      {CKA_TOKEN, &derivedToken, sizeof(derivedToken)},  {CKA_VALUE_LEN, &derivedValueLen, sizeof(derivedValueLen)},
+      {CKA_VALUE, derivedSecret, sizeof(derivedSecret)},
+  };
+
+  rv = pFunctionList->C_GetAttributeValue(deriveSession, hDerivedKey, derivedAttrs, 5);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Could not read derived ECDH secret attributes", rv);
+    return rv;
+  }
+
+  if (derivedClass != CKO_SECRET_KEY || derivedType != CKK_GENERIC_SECRET || derivedToken != CK_FALSE ||
+      derivedValueLen != expectedSecretLen || derivedAttrs[4].ulValueLen != expectedSecretLen ||
+      memcmp(derivedSecret, expectedSecret, expectedSecretLen) != 0) {
+    record_real_test_failure(description, CKR_GENERAL_ERROR);
+    return CKR_GENERAL_ERROR;
+  }
+
+  printf("    %s (%lu bytes)\n", description, expectedSecretLen);
+  return CKR_OK;
+}
+
 // Verify RSA signature using mbedtls
 static CK_RV cnk_verify_rsa_signature(CK_BYTE_PTR modulus, CK_ULONG modulus_len, CK_BYTE_PTR exponent,
                                       CK_ULONG exponent_len, CK_BYTE_PTR data, CK_ULONG data_len, CK_BYTE_PTR signature,
@@ -2557,54 +2663,24 @@ void test_ecdh_derivation(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID)
   }
 
   CK_ECDH1_DERIVE_PARAMS deriveParams = {CKD_NULL, 0, NULL, (CK_ULONG)peerPublicDataLen, peerPublicData};
-  CK_MECHANISM mechanism = {CKM_ECDH1_DERIVE, &deriveParams, sizeof(deriveParams)};
-  CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
-  CK_KEY_TYPE secretType = CKK_GENERIC_SECRET;
-  CK_BBOOL token = CK_FALSE;
-  CK_BBOOL sensitive = CK_FALSE;
-  CK_BBOOL extractable = CK_TRUE;
-  CK_ULONG valueLen = expectedSecretLen;
-  CK_ATTRIBUTE secretTemplate[] = {
-      {CKA_CLASS, &secretClass, sizeof(secretClass)},
-      {CKA_KEY_TYPE, &secretType, sizeof(secretType)},
-      {CKA_TOKEN, &token, sizeof(token)},
-      {CKA_SENSITIVE, &sensitive, sizeof(sensitive)},
-      {CKA_EXTRACTABLE, &extractable, sizeof(extractable)},
-      {CKA_VALUE_LEN, &valueLen, sizeof(valueLen)},
-  };
-
-  CK_OBJECT_HANDLE hDerivedKey = 0;
-  rv = pFunctionList->C_DeriveKey(deriveSession, &mechanism, hEcPrivateKey, secretTemplate,
-                                  sizeof(secretTemplate) / sizeof(secretTemplate[0]), &hDerivedKey);
+  rv = derive_and_check_ecdh_secret(pFunctionList, deriveSession, hEcPrivateKey, &deriveParams, expectedSecret,
+                                    expectedSecretLen, "ECDH CKD_NULL secret matches software result");
   if (rv != CKR_OK) {
-    record_real_test_failure("Hardware ECDH C_DeriveKey failed", rv);
     goto cleanup_ecp;
   }
 
-  CK_OBJECT_CLASS derivedClass = 0;
-  CK_KEY_TYPE derivedType = 0;
-  CK_ULONG derivedValueLen = 0;
-  CK_BBOOL derivedToken = CK_TRUE;
-  CK_BYTE derivedSecret[64];
-  CK_ATTRIBUTE derivedAttrs[] = {
-      {CKA_CLASS, &derivedClass, sizeof(derivedClass)},  {CKA_KEY_TYPE, &derivedType, sizeof(derivedType)},
-      {CKA_TOKEN, &derivedToken, sizeof(derivedToken)},  {CKA_VALUE_LEN, &derivedValueLen, sizeof(derivedValueLen)},
-      {CKA_VALUE, derivedSecret, sizeof(derivedSecret)},
-  };
-
-  rv = pFunctionList->C_GetAttributeValue(deriveSession, hDerivedKey, derivedAttrs, 5);
+  CK_BYTE sharedInfo[] = {'c', 'a', 'n', 'o', 'k', 'e', 'y', '-', 'p', 'k', 'c', 's', '1', '1'};
+  CK_BYTE expectedKdfSecret[32];
+  rv = compute_x963_kdf(MBEDTLS_MD_SHA256, expectedSecret, expectedSecretLen, sharedInfo, sizeof(sharedInfo),
+                        expectedKdfSecret, sizeof(expectedKdfSecret));
   if (rv != CKR_OK) {
-    record_real_test_failure("Could not read derived ECDH secret attributes", rv);
     goto cleanup_ecp;
   }
 
-  if (derivedClass != CKO_SECRET_KEY || derivedType != CKK_GENERIC_SECRET || derivedToken != CK_FALSE ||
-      derivedValueLen != expectedSecretLen || derivedAttrs[4].ulValueLen != expectedSecretLen ||
-      memcmp(derivedSecret, expectedSecret, expectedSecretLen) != 0) {
-    record_real_test_failure("Derived ECDH secret does not match software result", CKR_GENERAL_ERROR);
-  } else {
-    printf("    ECDH derived secret matches software result (%lu bytes)\n", expectedSecretLen);
-  }
+  CK_ECDH1_DERIVE_PARAMS kdfParams = {CKD_SHA256_KDF, sizeof(sharedInfo), sharedInfo, (CK_ULONG)peerPublicDataLen,
+                                      peerPublicData};
+  rv = derive_and_check_ecdh_secret(pFunctionList, deriveSession, hEcPrivateKey, &kdfParams, expectedKdfSecret,
+                                    sizeof(expectedKdfSecret), "ECDH CKD_SHA256_KDF secret matches software result");
 
 cleanup_ecp:
   mbedtls_ecp_point_free(&ephemeralPublic);

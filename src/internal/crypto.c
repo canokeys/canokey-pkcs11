@@ -134,6 +134,32 @@ CK_RV cnk_mgf_to_md(CK_RSA_PKCS_MGF_TYPE mgf, mbedtls_md_type_t *mdType) {
   CNK_RET_OK;
 }
 
+CK_RV cnk_ec_kdf_to_md(CK_ULONG kdf, mbedtls_md_type_t *mdType) {
+  CNK_ENSURE_NONNULL(mdType);
+
+  switch (kdf) {
+  case CKD_SHA1_KDF:
+    *mdType = MBEDTLS_MD_SHA1;
+    break;
+  case CKD_SHA224_KDF:
+    *mdType = MBEDTLS_MD_SHA224;
+    break;
+  case CKD_SHA256_KDF:
+    *mdType = MBEDTLS_MD_SHA256;
+    break;
+  case CKD_SHA384_KDF:
+    *mdType = MBEDTLS_MD_SHA384;
+    break;
+  case CKD_SHA512_KDF:
+    *mdType = MBEDTLS_MD_SHA512;
+    break;
+  default:
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unsupported EC KDF");
+  }
+
+  CNK_RET_OK;
+}
+
 CK_RV cnk_rsa_pkcs_pss_mech_to_hash_mgf(CK_MECHANISM_TYPE mechanism, CK_MECHANISM_TYPE *hashAlg,
                                         CK_RSA_PKCS_MGF_TYPE *mgf) {
   CNK_ENSURE_NONNULL(hashAlg, mgf);

@@ -1,16 +1,72 @@
 #include "api/object.h"
 #include "api/session.h"
 #include "backend/pcsc.h"
+#include "internal/crypto.h"
 #include "internal/logging.h"
 #include "internal/macros.h"
 #include "internal/util.h"
 #include "pkcs11.h"
 
+#include <mbedtls/md.h>
 #include <mbedtls/platform_util.h>
 #include <string.h>
 
 #define CNK_MAX_ECDH_PUBLIC_DATA 133
 #define CNK_MAX_ECDH_SECRET_LEN 66
+
+static CK_RV x963Kdf(mbedtls_md_type_t mdType, CK_BYTE_PTR pSharedSecret, CK_ULONG cbSharedSecret,
+                     CK_BYTE_PTR pSharedData, CK_ULONG cbSharedData, CK_BYTE_PTR pOutput, CK_ULONG cbOutput) {
+  const mbedtls_md_info_t *mdInfo = mbedtls_md_info_from_type(mdType);
+  if (mdInfo == NULL)
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unsupported KDF hash");
+
+  CK_ULONG hashLen = mbedtls_md_get_size(mdInfo);
+  if (hashLen == 0)
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad KDF hash size");
+
+  CK_BYTE digest[MBEDTLS_MD_MAX_SIZE];
+  CK_ULONG produced = 0;
+  CK_ULONG counter = 1;
+  CK_RV rv = CKR_OK;
+
+  while (produced < cbOutput) {
+    CK_BYTE counterBytes[4] = {
+        (CK_BYTE)(counter >> 24),
+        (CK_BYTE)(counter >> 16),
+        (CK_BYTE)(counter >> 8),
+        (CK_BYTE)counter,
+    };
+
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    if (mbedtls_md_setup(&ctx, mdInfo, 0) != 0 || mbedtls_md_starts(&ctx) != 0 ||
+        mbedtls_md_update(&ctx, pSharedSecret, cbSharedSecret) != 0 ||
+        mbedtls_md_update(&ctx, counterBytes, sizeof(counterBytes)) != 0 ||
+        (cbSharedData > 0 && mbedtls_md_update(&ctx, pSharedData, cbSharedData) != 0) ||
+        mbedtls_md_finish(&ctx, digest) != 0) {
+      mbedtls_md_free(&ctx);
+      rv = CKR_DEVICE_ERROR;
+      goto cleanup;
+    }
+    mbedtls_md_free(&ctx);
+
+    CK_ULONG copyLen = cbOutput - produced;
+    if (copyLen > hashLen)
+      copyLen = hashLen;
+    memcpy(pOutput + produced, digest, copyLen);
+    produced += copyLen;
+
+    if (counter == 0xFFFFFFFFUL && produced < cbOutput) {
+      rv = CKR_KEY_SIZE_RANGE;
+      goto cleanup;
+    }
+    counter++;
+  }
+
+cleanup:
+  mbedtls_platform_zeroize(digest, sizeof(digest));
+  return rv;
+}
 
 CK_RV C_DigestEncryptUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart, CK_ULONG ulPartLen,
                             CK_BYTE_PTR pEncryptedPart, CK_ULONG_PTR pulEncryptedPartLen) {
@@ -91,12 +147,16 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
     CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad ECDH parameters");
 
   const CK_ECDH1_DERIVE_PARAMS *params = (const CK_ECDH1_DERIVE_PARAMS *)pMechanism->pParameter;
-  if (params->kdf != CKD_NULL)
-    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "only CKD_NULL is supported");
-  if (params->ulSharedDataLen > 0 || params->pSharedData != NULL)
+  if (params->kdf == CKD_NULL && params->ulSharedDataLen > 0)
     CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "shared data is not supported with CKD_NULL");
+  if (params->kdf != CKD_NULL && params->ulSharedDataLen > 0)
+    CNK_ENSURE_NONNULL(params->pSharedData);
   if (params->pPublicData == NULL || params->ulPublicDataLen == 0 || params->ulPublicDataLen > CNK_MAX_ECDH_PUBLIC_DATA)
     CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad peer public key data");
+
+  mbedtls_md_type_t kdfMdType = MBEDTLS_MD_NONE;
+  if (params->kdf != CKD_NULL)
+    CNK_ENSURE_OK(cnk_ec_kdf_to_md(params->kdf, &kdfMdType));
 
   CNK_PKCS11_SESSION *session;
   CK_BYTE objId;
@@ -242,7 +302,9 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
     CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "only generic secret and AES derived keys are supported");
   if (token)
     CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "token derived keys are not supported");
-  if (requestedValueLen == 0 || requestedValueLen > expectedSecretLen || requestedValueLen > CNK_MAX_ECDH_SECRET_LEN)
+  CK_ULONG maxDerivedSecretLen =
+      params->kdf == CKD_NULL ? expectedSecretLen : (CK_ULONG)sizeof(session->secretKeys[0].value);
+  if (requestedValueLen == 0 || requestedValueLen > maxDerivedSecretLen)
     CNK_RETURN(CKR_KEY_SIZE_RANGE, "bad derived key length");
   if (keyType == CKK_AES && requestedValueLen != 16 && requestedValueLen != 24 && requestedValueLen != 32)
     CNK_RETURN(CKR_KEY_SIZE_RANGE, "bad AES derived key length");
@@ -263,9 +325,26 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
                           sharedSecret, &sharedSecretLen);
   if (rv != CKR_OK)
     CNK_RETURN(rv, "PIV ECDH failed");
-  if (sharedSecretLen < requestedValueLen) {
+  if (params->kdf == CKD_NULL && sharedSecretLen < requestedValueLen) {
     mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
     CNK_RETURN(CKR_DEVICE_ERROR, "ECDH secret shorter than requested key");
+  }
+  if (params->kdf != CKD_NULL && sharedSecretLen == 0) {
+    mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
+    CNK_RETURN(CKR_DEVICE_ERROR, "ECDH secret is empty");
+  }
+
+  CK_BYTE derivedSecret[sizeof(session->secretKeys[0].value)] = {0};
+  if (params->kdf == CKD_NULL) {
+    memcpy(derivedSecret, sharedSecret, requestedValueLen);
+  } else {
+    rv = x963Kdf(kdfMdType, sharedSecret, sharedSecretLen, params->pSharedData, params->ulSharedDataLen, derivedSecret,
+                 requestedValueLen);
+    if (rv != CKR_OK) {
+      mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
+      mbedtls_platform_zeroize(derivedSecret, sizeof(derivedSecret));
+      CNK_RETURN(rv, "ECDH KDF failed");
+    }
   }
 
   CNK_PKCS11_SECRET_KEY_OBJECT *secret = &session->secretKeys[secretIndex];
@@ -304,7 +383,7 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   secret->unwrap = unwrap;
   secret->derive = derive;
 
-  memcpy(secret->value, sharedSecret, requestedValueLen);
+  memcpy(secret->value, derivedSecret, requestedValueLen);
   if (label != NULL && labelLen > 0) {
     secret->labelLen = labelLen > sizeof(secret->label) ? sizeof(secret->label) : labelLen;
     memcpy(secret->label, label, secret->labelLen);
@@ -315,6 +394,7 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   }
 
   mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
+  mbedtls_platform_zeroize(derivedSecret, sizeof(derivedSecret));
 
   session->nextSecretKeyId = newId + 1;
   if (session->nextSecretKeyId < CNK_SESSION_SECRET_KEY_FIRST_ID)
