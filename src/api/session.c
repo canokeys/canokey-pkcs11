@@ -360,7 +360,7 @@ CK_RV C_GetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationStat
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pOperationState);
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pulOperationStateLen);
 
-  CNK_RET_UNIMPL;
+  CNK_RET_UNSUPPORTED;
 }
 
 CK_RV C_SetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationState, CK_ULONG ulOperationStateLen,
@@ -369,7 +369,7 @@ CK_RV C_SetOperationState(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pOperationStat
       ": hSession: %lu, pOperationState: %p, ulOperationStateLen: %lu, hEncryptionKey: %lu, hAuthenticationKey: %lu",
       hSession, pOperationState, ulOperationStateLen, hEncryptionKey, hAuthenticationKey);
 
-  CNK_RET_UNIMPL;
+  CNK_RET_UNSUPPORTED;
 }
 
 CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,

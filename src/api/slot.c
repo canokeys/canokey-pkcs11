@@ -190,7 +190,7 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
 
 CK_RV C_WaitForSlotEvent(CK_FLAGS flags, CK_SLOT_ID_PTR pSlot, CK_VOID_PTR pReserved) {
   CNK_LOG_FUNC(": flags: %lu, pSlot: %p, pReserved: %p", flags, pSlot, pReserved);
-  CNK_RET_UNIMPL;
+  CNK_RET_UNSUPPORTED;
 }
 
 CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList, CK_ULONG_PTR pulCount) {
@@ -363,17 +363,17 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
 
 CK_RV C_InitToken(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_UTF8CHAR_PTR pLabel) {
   CNK_LOG_FUNC(": slotID: %lu, pPin: %p, ulPinLen: %lu, pLabel: %p", slotID, pPin, ulPinLen, pLabel);
-  CNK_RET_UNIMPL;
+  CNK_RET_NOT_IMPLEMENTED;
 }
 
 CK_RV C_InitPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
   CNK_LOG_FUNC(": hSession: %lu, pPin: %p, ulPinLen: %lu", hSession, pPin, ulPinLen);
-  CNK_RET_UNIMPL;
+  CNK_RET_NOT_IMPLEMENTED;
 }
 
 CK_RV C_SetPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pOldPin, CK_ULONG ulOldLen, CK_UTF8CHAR_PTR pNewPin,
                CK_ULONG ulNewLen) {
   CNK_LOG_FUNC(": hSession: %lu, pOldPin: %p, ulOldLen: %lu, pNewPin: %p, ulNewLen: %lu", hSession, pOldPin, ulOldLen,
                pNewPin, ulNewLen);
-  CNK_RET_UNIMPL;
+  CNK_RET_NOT_IMPLEMENTED;
 }

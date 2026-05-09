@@ -407,7 +407,7 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
   CNK_LOG_FUNC(": hSession: %lu, pTempate: %p, ulCount: %lu, phObject: %p", hSession, pTemplate, ulCount, phObject);
   CNK_ENSURE_INITIALIZED();
 
-  CNK_RET_UNIMPL;
+  CNK_RET_NOT_IMPLEMENTED;
 }
 
 CK_RV C_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
@@ -416,20 +416,20 @@ CK_RV C_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTR
                pTemplate, ulCount, phNewObject);
   CNK_ENSURE_INITIALIZED();
 
-  CNK_RET_UNIMPL;
+  CNK_RET_NOT_IMPLEMENTED;
 }
 
 CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
   CNK_LOG_FUNC(": hSession: %lu, hObject: %lu", hSession, hObject);
   CNK_ENSURE_INITIALIZED();
-  CNK_RET_UNIMPL;
+  CNK_RET_NOT_IMPLEMENTED;
 }
 
 CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ULONG_PTR pulSize) {
   CNK_LOG_FUNC(": hSession: %lu, hObject: %lu, pulSize: %p", hSession, hObject, pulSize);
   CNK_ENSURE_INITIALIZED();
 
-  CNK_RET_UNIMPL;
+  CNK_RET_NOT_IMPLEMENTED;
 }
 
 CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
@@ -632,7 +632,7 @@ CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CNK_LOG_FUNC(": hSession: %lu, hObject: %lu, pTemplate: %p, ulCount: %lu", hSession, hObject, pTemplate, ulCount);
   CNK_ENSURE_INITIALIZED();
 
-  CNK_RET_UNIMPL;
+  CNK_RET_NOT_IMPLEMENTED;
 }
 
 CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {

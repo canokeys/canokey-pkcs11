@@ -65,7 +65,11 @@ extern void cnk_printlogf(const int level, const char *function, const char *fil
 
 #define CNK_RET_OK CNK_RETURN(CKR_OK, "Success")
 
-#define CNK_RET_UNIMPL CNK_RETURN(CKR_FUNCTION_NOT_SUPPORTED, "Not implemented")
+// Use this for features that are plausible for this module but not wired up yet.
+#define CNK_RET_NOT_IMPLEMENTED CNK_RETURN(CKR_FUNCTION_NOT_SUPPORTED, "Not implemented yet")
+
+// Use this for functions that are outside the module's intended feature set.
+#define CNK_RET_UNSUPPORTED CNK_RETURN(CKR_FUNCTION_NOT_SUPPORTED, "Intentionally unsupported")
 
 #define CNK_RET_FWD(EXP) CNK_RETURN(EXP, "Directly forwarded")
 
