@@ -25,6 +25,22 @@ typedef struct {
 
 typedef CNK_MANAGED_MODE_INIT_ARGS *CNK_MANAGED_MODE_INIT_ARGS_PTR;
 
+// CanoKey vendor-defined attributes.
+// Policy attributes use CK_BYTE values matching CanoKey PIV key metadata.
+// CKA_CNK_VENDOR_BASE uses ASCII "CNK" (0x43 0x4E 0x4B) in the
+// vendor-defined attribute range and reserves the low byte for attribute IDs.
+#define CKA_CNK_VENDOR_BASE (CKA_VENDOR_DEFINED | 0x434E4B00UL)
+#define CKA_CNK_PIV_PIN_POLICY (CKA_CNK_VENDOR_BASE + 0x0001UL)
+#define CKA_CNK_PIV_TOUCH_POLICY (CKA_CNK_VENDOR_BASE + 0x0002UL)
+
+#define CNK_PIV_PIN_POLICY_NEVER 0x01
+#define CNK_PIV_PIN_POLICY_ONCE 0x02
+#define CNK_PIV_PIN_POLICY_ALWAYS 0x03
+
+#define CNK_PIV_TOUCH_POLICY_NEVER 0x01
+#define CNK_PIV_TOUCH_POLICY_ALWAYS 0x02
+#define CNK_PIV_TOUCH_POLICY_CACHED 0x03
+
 // Extension API to enable managed mode (must be called before `C_Initialize`)
 // pInitArgs: non-NULL pointer to CNK_MANAGED_MODE_INIT_ARGS
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_EnableManagedMode)(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs);

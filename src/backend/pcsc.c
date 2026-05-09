@@ -1633,7 +1633,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
 }
 
 CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType, CK_BYTE_PTR pbPublicKey,
-                       CK_ULONG_PTR pulPublicKeyLen) {
+                       CK_ULONG_PTR pulPublicKeyLen, CK_BYTE_PTR pbPinPolicy, CK_BYTE_PTR pbTouchPolicy) {
   SCARDHANDLE hCard;
 
   CNK_ENSURE_NONNULL(pbAlgorithmType);
@@ -1743,7 +1743,10 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorith
     case 0x02: // Pin and touch policies
       if (length >= 2) {
         CNK_DEBUG("Pin and touch policies: 0x%02X 0x%02X", data[pos], data[pos + 1]);
-        // First byte is pin policy, second byte is touch policy
+        if (pbPinPolicy != NULL)
+          *pbPinPolicy = data[pos];
+        if (pbTouchPolicy != NULL)
+          *pbTouchPolicy = data[pos + 1];
       }
       break;
 

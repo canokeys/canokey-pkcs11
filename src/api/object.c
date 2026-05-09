@@ -13,6 +13,7 @@
 #include "internal/mutex.h"
 #include "internal/util.h"
 #include "pkcs11.h"
+#include "pkcs11_canokey.h"
 
 #include <mbedtls/asn1write.h>
 #include <mbedtls/platform_util.h>
@@ -377,7 +378,7 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
     CK_BYTE algorithmType = 0;
     CK_BYTE publicKey[MAX_PUBLIC_KEY_SIZE];
     CK_ULONG publicKeyLen = sizeof(publicKey);
-    rv = cnk_get_metadata(slotId, pivTag, &algorithmType, publicKey, &publicKeyLen);
+    rv = cnk_get_metadata(slotId, pivTag, &algorithmType, publicKey, &publicKeyLen, NULL, NULL);
     if (rv == CKR_OK) {
       *exists = CK_TRUE;
       return CKR_OK;
@@ -439,13 +440,43 @@ static CK_RV getOptionalBbool(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_A
   CNK_RET_OK;
 }
 
+static CK_RV getOptionalByte(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type, CK_BYTE defaultValue,
+                             CK_BYTE *value) {
+  CK_ATTRIBUTE_PTR attr;
+  CNK_ENSURE_NONNULL(value);
+  CNK_ENSURE_OK(getOptionalAttr(pTemplate, ulCount, type, &attr));
+  if (attr == NULL) {
+    *value = defaultValue;
+    CNK_RET_OK;
+  }
+  CNK_ENSURE_OK(attrGetByte(attr, value));
+  CNK_RET_OK;
+}
+
+static CK_RV validatePivPinPolicy(CK_BYTE policy) {
+  if (policy < CNK_PIV_PIN_POLICY_NEVER || policy > CNK_PIV_PIN_POLICY_ALWAYS)
+    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_CNK_PIV_PIN_POLICY");
+
+  CNK_RET_OK;
+}
+
+static CK_RV validatePivTouchPolicy(CK_BYTE policy) {
+  if (policy < CNK_PIV_TOUCH_POLICY_NEVER || policy > CNK_PIV_TOUCH_POLICY_CACHED)
+    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_CNK_PIV_TOUCH_POLICY");
+
+  CNK_RET_OK;
+}
+
 static CK_RV getPivPolicies(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_BYTE *pinPolicy, CK_BYTE *touchPolicy) {
   CK_BBOOL alwaysAuthenticate;
   CNK_ENSURE_NONNULL(pinPolicy, touchPolicy);
   CNK_ENSURE_OK(getOptionalBbool(pTemplate, ulCount, CKA_ALWAYS_AUTHENTICATE, CK_FALSE, &alwaysAuthenticate));
 
-  *pinPolicy = alwaysAuthenticate ? 0x03 : 0x02;
-  *touchPolicy = 0x01;
+  *pinPolicy = alwaysAuthenticate ? CNK_PIV_PIN_POLICY_ALWAYS : CNK_PIV_PIN_POLICY_ONCE;
+  CNK_ENSURE_OK(getOptionalByte(pTemplate, ulCount, CKA_CNK_PIV_PIN_POLICY, *pinPolicy, pinPolicy));
+  CNK_ENSURE_OK(getOptionalByte(pTemplate, ulCount, CKA_CNK_PIV_TOUCH_POLICY, CNK_PIV_TOUCH_POLICY_NEVER, touchPolicy));
+  CNK_ENSURE_OK(validatePivPinPolicy(*pinPolicy));
+  CNK_ENSURE_OK(validatePivTouchPolicy(*touchPolicy));
   CNK_RET_OK;
 }
 
@@ -868,21 +899,38 @@ CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_U
     size += sizeof(CK_ATTRIBUTE) + sizeAttrs[i].ulValueLen;
   }
 
-  if (objClass == CKO_PUBLIC_KEY) {
+  if (objClass == CKO_PUBLIC_KEY || objClass == CKO_PRIVATE_KEY) {
     CK_ULONG baseSize = size;
-    CK_ATTRIBUTE publicAttrs[] = {
-        {CKA_MODULUS, NULL_PTR, 0},   {CKA_PUBLIC_EXPONENT, NULL_PTR, 0}, {CKA_EC_POINT, NULL_PTR, 0},
-        {CKA_EC_PARAMS, NULL_PTR, 0}, {CKA_MODULUS_BITS, NULL_PTR, 0},
+    CK_ATTRIBUTE keyPolicyAttrs[] = {
+        {CKA_CNK_PIV_PIN_POLICY, NULL_PTR, 0},
+        {CKA_CNK_PIV_TOUCH_POLICY, NULL_PTR, 0},
     };
-    rv = C_GetAttributeValue(hSession, hObject, publicAttrs, sizeof(publicAttrs) / sizeof(publicAttrs[0]));
-    if (rv != CKR_OK && rv != CKR_ATTRIBUTE_TYPE_INVALID && rv != CKR_ATTRIBUTE_VALUE_INVALID)
-      CNK_RETURN(rv, "failed to query public object size attributes");
-    for (CK_ULONG i = 0; i < sizeof(publicAttrs) / sizeof(publicAttrs[0]); i++) {
-      if (publicAttrs[i].ulValueLen != CK_UNAVAILABLE_INFORMATION)
-        size += sizeof(CK_ATTRIBUTE) + publicAttrs[i].ulValueLen;
+    rv = C_GetAttributeValue(hSession, hObject, keyPolicyAttrs, sizeof(keyPolicyAttrs) / sizeof(keyPolicyAttrs[0]));
+    if (rv != CKR_OK)
+      CNK_RETURN(rv, "failed to query PIV key policy size attributes");
+    for (CK_ULONG i = 0; i < sizeof(keyPolicyAttrs) / sizeof(keyPolicyAttrs[0]); i++) {
+      if (keyPolicyAttrs[i].ulValueLen != CK_UNAVAILABLE_INFORMATION)
+        size += sizeof(CK_ATTRIBUTE) + keyPolicyAttrs[i].ulValueLen;
     }
-    if (size == baseSize)
-      CNK_RETURN(rv, "failed to find any public object size attributes");
+
+    if (objClass == CKO_PRIVATE_KEY) {
+      if (size == baseSize)
+        CNK_RETURN(rv, "failed to find any private object size attributes");
+    } else {
+      CK_ATTRIBUTE publicAttrs[] = {
+          {CKA_MODULUS, NULL_PTR, 0},   {CKA_PUBLIC_EXPONENT, NULL_PTR, 0}, {CKA_EC_POINT, NULL_PTR, 0},
+          {CKA_EC_PARAMS, NULL_PTR, 0}, {CKA_MODULUS_BITS, NULL_PTR, 0},
+      };
+      rv = C_GetAttributeValue(hSession, hObject, publicAttrs, sizeof(publicAttrs) / sizeof(publicAttrs[0]));
+      if (rv != CKR_OK && rv != CKR_ATTRIBUTE_TYPE_INVALID && rv != CKR_ATTRIBUTE_VALUE_INVALID)
+        CNK_RETURN(rv, "failed to query public object size attributes");
+      for (CK_ULONG i = 0; i < sizeof(publicAttrs) / sizeof(publicAttrs[0]); i++) {
+        if (publicAttrs[i].ulValueLen != CK_UNAVAILABLE_INFORMATION)
+          size += sizeof(CK_ATTRIBUTE) + publicAttrs[i].ulValueLen;
+      }
+      if (size == baseSize)
+        CNK_RETURN(rv, "failed to find any public object size attributes");
+    }
   } else if (objClass == CKO_CERTIFICATE) {
     CK_ATTRIBUTE certValue = {CKA_VALUE, NULL_PTR, 0};
     rv = C_GetAttributeValue(hSession, hObject, &certValue, 1);
@@ -979,13 +1027,16 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CK_BYTE data[4096];
   CK_ULONG cbData = sizeof(data);
   CK_BYTE bAlgorithmType = 0;
+  CK_BYTE bPinPolicy = 0;
+  CK_BYTE bTouchPolicy = 0;
   CK_BYTE abPublicKey[512];
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
 
   switch (objClass) {
   case CKO_PUBLIC_KEY:
   case CKO_PRIVATE_KEY: {
-    CK_RV rvMeta = cnk_get_metadata(session->slotId, bPivSlot, &bAlgorithmType, abPublicKey, &cbPublicKey);
+    CK_RV rvMeta = cnk_get_metadata(session->slotId, bPivSlot, &bAlgorithmType, abPublicKey, &cbPublicKey, &bPinPolicy,
+                                    &bTouchPolicy);
     if (rvMeta != CKR_OK) {
       CNK_DEBUG("Failed to get metadata for PIV slot 0x%02X: %lu", bPivSlot, rvMeta);
     } else {
@@ -1081,11 +1132,23 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       break;
 
     case CKO_PUBLIC_KEY:
-      rv = handlePublicKeyAttribute(&pTemplate[i], bAlgorithmType, abPublicKey, cbPublicKey);
+      if (pTemplate[i].type == CKA_CNK_PIV_PIN_POLICY) {
+        rv = setSingleAttributeValue(&pTemplate[i], &bPinPolicy, sizeof(bPinPolicy));
+      } else if (pTemplate[i].type == CKA_CNK_PIV_TOUCH_POLICY) {
+        rv = setSingleAttributeValue(&pTemplate[i], &bTouchPolicy, sizeof(bTouchPolicy));
+      } else {
+        rv = handlePublicKeyAttribute(&pTemplate[i], bAlgorithmType, abPublicKey, cbPublicKey);
+      }
       break;
 
     case CKO_PRIVATE_KEY:
-      rv = handlePrivateKeyAttribute(&pTemplate[i], bAlgorithmType);
+      if (pTemplate[i].type == CKA_CNK_PIV_PIN_POLICY) {
+        rv = setSingleAttributeValue(&pTemplate[i], &bPinPolicy, sizeof(bPinPolicy));
+      } else if (pTemplate[i].type == CKA_CNK_PIV_TOUCH_POLICY) {
+        rv = setSingleAttributeValue(&pTemplate[i], &bTouchPolicy, sizeof(bTouchPolicy));
+      } else {
+        rv = handlePrivateKeyAttribute(&pTemplate[i], bAlgorithmType);
+      }
       break;
 
     default:

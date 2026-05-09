@@ -4,6 +4,7 @@
 
 #include "api/object.h"
 #include "pkcs11.h"
+#include "pkcs11_canokey.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +20,9 @@
 
 #define CNK_REAL_WRITE_TEST_ENV "CNK_RUN_DESTRUCTIVE_REAL_TESTS"
 #define CNK_REAL_WRITE_TEST_ID 6
+
+#define CNK_REAL_WRITE_TEST_PIN_POLICY CNK_PIV_PIN_POLICY_ONCE
+#define CNK_REAL_WRITE_TEST_TOUCH_POLICY CNK_PIV_TOUCH_POLICY_NEVER
 
 // Include TF-PSA-Crypto mbedtls-compatible headers for signature verification
 #include <mbedtls/md.h>
@@ -768,6 +772,8 @@ static CK_RV generate_card_ec_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION
   CK_BBOOL sign = CK_TRUE;
   CK_BBOOL derive = CK_TRUE;
   CK_BBOOL alwaysAuthenticate = CK_FALSE;
+  CK_BYTE pinPolicy = CNK_REAL_WRITE_TEST_PIN_POLICY;
+  CK_BYTE touchPolicy = CNK_REAL_WRITE_TEST_TOUCH_POLICY;
   CK_BYTE ecParams[] = "\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x07";
 
   CK_ATTRIBUTE publicTemplate[] = {
@@ -784,6 +790,8 @@ static CK_RV generate_card_ec_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION
       {CKA_SIGN, &sign, sizeof(sign)},
       {CKA_DERIVE, &derive, sizeof(derive)},
       {CKA_ALWAYS_AUTHENTICATE, &alwaysAuthenticate, sizeof(alwaysAuthenticate)},
+      {CKA_CNK_PIV_PIN_POLICY, &pinPolicy, sizeof(pinPolicy)},
+      {CKA_CNK_PIV_TOUCH_POLICY, &touchPolicy, sizeof(touchPolicy)},
   };
   CK_MECHANISM mechanism = {CKM_EC_KEY_PAIR_GEN, NULL, 0};
   CK_OBJECT_HANDLE hPublicKey = 0;
@@ -804,6 +812,32 @@ static CK_RV generate_card_ec_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION
     return CKR_ATTRIBUTE_VALUE_INVALID;
 
   printf("    Generated EC P-256 key pair in test slot ID %u\n", (unsigned int)keyId);
+  return CKR_OK;
+}
+
+static CK_RV check_test_key_policies(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSession,
+                                     CK_KEY_TYPE keyType) {
+  CK_BYTE keyId = CNK_REAL_WRITE_TEST_ID;
+  CK_OBJECT_HANDLE hPrivateKey;
+  CK_RV rv = find_object(pFunctionList, hSession, CKO_PRIVATE_KEY, &keyType, &keyId, sizeof(keyId), &hPrivateKey);
+  if (rv != CKR_OK)
+    return rv;
+
+  CK_BYTE pinPolicy = 0;
+  CK_BYTE touchPolicy = 0;
+  CK_ATTRIBUTE attrs[] = {
+      {CKA_CNK_PIV_PIN_POLICY, &pinPolicy, sizeof(pinPolicy)},
+      {CKA_CNK_PIV_TOUCH_POLICY, &touchPolicy, sizeof(touchPolicy)},
+  };
+  rv = pFunctionList->C_GetAttributeValue(hSession, hPrivateKey, attrs, sizeof(attrs) / sizeof(attrs[0]));
+  if (rv != CKR_OK)
+    return rv;
+  if (attrs[0].ulValueLen != sizeof(pinPolicy) || attrs[1].ulValueLen != sizeof(touchPolicy))
+    return CKR_ATTRIBUTE_VALUE_INVALID;
+  if (pinPolicy != CNK_REAL_WRITE_TEST_PIN_POLICY || touchPolicy != CNK_REAL_WRITE_TEST_TOUCH_POLICY)
+    return CKR_ATTRIBUTE_VALUE_INVALID;
+
+  printf("    Read back vendor key policies: PIN=0x%02x touch=0x%02x\n", pinPolicy, touchPolicy);
   return CKR_OK;
 }
 
@@ -950,6 +984,8 @@ static CK_RV import_software_ec_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSI
   CK_BBOOL sign = CK_TRUE;
   CK_BBOOL derive = CK_TRUE;
   CK_BBOOL alwaysAuthenticate = CK_FALSE;
+  CK_BYTE pinPolicy = CNK_REAL_WRITE_TEST_PIN_POLICY;
+  CK_BYTE touchPolicy = CNK_REAL_WRITE_TEST_TOUCH_POLICY;
   CK_BYTE ecParams[] = "\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x07";
   CK_BYTE privateScalar[32];
   mbedtls_ecp_keypair key;
@@ -978,6 +1014,8 @@ static CK_RV import_software_ec_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSI
       {CKA_SIGN, &sign, sizeof(sign)},
       {CKA_DERIVE, &derive, sizeof(derive)},
       {CKA_ALWAYS_AUTHENTICATE, &alwaysAuthenticate, sizeof(alwaysAuthenticate)},
+      {CKA_CNK_PIV_PIN_POLICY, &pinPolicy, sizeof(pinPolicy)},
+      {CKA_CNK_PIV_TOUCH_POLICY, &touchPolicy, sizeof(touchPolicy)},
   };
   CK_OBJECT_HANDLE hPrivateKey = 0;
   rv = pFunctionList->C_CreateObject(hSession, privateTemplate, sizeof(privateTemplate) / sizeof(privateTemplate[0]),
@@ -1003,6 +1041,8 @@ static CK_RV import_software_rsa_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESS
   CK_BBOOL sign = CK_TRUE;
   CK_BBOOL decrypt = CK_TRUE;
   CK_BBOOL alwaysAuthenticate = CK_FALSE;
+  CK_BYTE pinPolicy = CNK_REAL_WRITE_TEST_PIN_POLICY;
+  CK_BYTE touchPolicy = CNK_REAL_WRITE_TEST_TOUCH_POLICY;
   CK_BYTE p[128], q[128], dp[128], dq[128], qInv[128];
   mbedtls_rsa_context rsa;
 
@@ -1037,6 +1077,8 @@ static CK_RV import_software_rsa_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESS
       {CKA_SIGN, &sign, sizeof(sign)},
       {CKA_DECRYPT, &decrypt, sizeof(decrypt)},
       {CKA_ALWAYS_AUTHENTICATE, &alwaysAuthenticate, sizeof(alwaysAuthenticate)},
+      {CKA_CNK_PIV_PIN_POLICY, &pinPolicy, sizeof(pinPolicy)},
+      {CKA_CNK_PIV_TOUCH_POLICY, &touchPolicy, sizeof(touchPolicy)},
   };
   CK_OBJECT_HANDLE hPrivateKey = 0;
   rv = pFunctionList->C_CreateObject(hSession, privateTemplate, sizeof(privateTemplate) / sizeof(privateTemplate[0]),
@@ -3060,6 +3102,11 @@ void test_destructive_write_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SL
   rv = generate_card_ec_key(pFunctionList, hSession);
   if (rv != CKR_OK)
     record_real_test_failure("C_GenerateKeyPair EC write smoke failed", rv);
+  if (rv == CKR_OK) {
+    rv = check_test_key_policies(pFunctionList, hSession, CKK_EC);
+    if (rv != CKR_OK)
+      record_real_test_failure("Generated EC key policy readback failed", rv);
+  }
   close_management_write_session(pFunctionList, hSession);
 
   if (rv == CKR_OK) {
@@ -3079,6 +3126,11 @@ void test_destructive_write_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SL
   CK_RV writeRv = import_software_ec_key(pFunctionList, hSession);
   if (writeRv != CKR_OK)
     record_real_test_failure("C_CreateObject EC private-key import smoke failed", writeRv);
+  if (writeRv == CKR_OK) {
+    writeRv = check_test_key_policies(pFunctionList, hSession, CKK_EC);
+    if (writeRv != CKR_OK)
+      record_real_test_failure("Imported EC key policy readback failed", writeRv);
+  }
   close_management_write_session(pFunctionList, hSession);
 
   if (writeRv == CKR_OK) {
@@ -3098,6 +3150,11 @@ void test_destructive_write_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SL
   writeRv = import_software_rsa_key(pFunctionList, hSession);
   if (writeRv != CKR_OK)
     record_real_test_failure("C_CreateObject RSA private-key import smoke failed", writeRv);
+  if (writeRv == CKR_OK) {
+    writeRv = check_test_key_policies(pFunctionList, hSession, CKK_RSA);
+    if (writeRv != CKR_OK)
+      record_real_test_failure("Imported RSA key policy readback failed", writeRv);
+  }
   close_management_write_session(pFunctionList, hSession);
 
   if (writeRv == CKR_OK) {

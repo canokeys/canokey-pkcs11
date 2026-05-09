@@ -186,6 +186,20 @@ Write-path notes:
   APDUs with the same fixed 8-byte, `0xFF`-padded fields.
 - `CKF_RNG` is intentionally not advertised because CanoKey PIV does not expose
   a random-generation APDU through this module.
+- `CKA_CNK_PIV_PIN_POLICY` and `CKA_CNK_PIV_TOUCH_POLICY` are public
+  vendor-defined `CK_BYTE` attributes in `include/pkcs11_canokey.h`. They can
+  be supplied on private-key templates for `C_GenerateKeyPair` and
+  `C_CreateObject(CKO_PRIVATE_KEY)`, and can be read back through
+  `C_GetAttributeValue` from CanoKey metadata. `CKA_ALWAYS_AUTHENTICATE` remains
+  a compatibility input for PIN policy when the vendor PIN policy is absent.
+- `CKA_CNK_VENDOR_BASE` uses ASCII `CNK` (`0x43 0x4E 0x4B`) in the high bytes
+  of the vendor-defined attribute range and reserves the low byte for CanoKey
+  attribute IDs.
+- CanoKey PIV policy values match `include/key.h` in canokey-core:
+  `CNK_PIV_PIN_POLICY_NEVER` = 0x01, `CNK_PIV_PIN_POLICY_ONCE` = 0x02,
+  `CNK_PIV_PIN_POLICY_ALWAYS` = 0x03, `CNK_PIV_TOUCH_POLICY_NEVER` = 0x01,
+  `CNK_PIV_TOUCH_POLICY_ALWAYS` = 0x02, and
+  `CNK_PIV_TOUCH_POLICY_CACHED` = 0x03.
 
 RSA signing note:
 

@@ -74,3 +74,22 @@ CNK_LOG_LEVEL=debug CNK_UNSAFE_LOG_APDU=1 pkcs11-tool --module ./libcanokey-pkcs
 In managed mode, environment variables are ignored. The caller should use
 `C_CNK_ConfigLogging(level, file, unsafe_log_apdu)` to configure logging and to
 decide whether raw APDU bytes are printed.
+
+## CanoKey Extensions
+
+`include/pkcs11_canokey.h` exposes CanoKey-specific PKCS#11 extensions. The
+vendor-defined attribute base uses ASCII `CNK` (`0x43 0x4E 0x4B`) in the
+vendor-defined attribute range.
+
+The private-key templates for `C_GenerateKeyPair` and
+`C_CreateObject(CKO_PRIVATE_KEY)` may include these `CK_BYTE` attributes:
+
+- `CKA_CNK_PIV_PIN_POLICY`: `CNK_PIV_PIN_POLICY_NEVER`,
+  `CNK_PIV_PIN_POLICY_ONCE`, or `CNK_PIV_PIN_POLICY_ALWAYS`.
+- `CKA_CNK_PIV_TOUCH_POLICY`: `CNK_PIV_TOUCH_POLICY_NEVER`,
+  `CNK_PIV_TOUCH_POLICY_ALWAYS`, or `CNK_PIV_TOUCH_POLICY_CACHED`.
+
+If `CKA_CNK_PIV_PIN_POLICY` is absent, `CKA_ALWAYS_AUTHENTICATE` is still
+accepted as a compatibility input for the PIN policy. The stored policy values
+can be read back from public or private PIV key objects with
+`C_GetAttributeValue`.

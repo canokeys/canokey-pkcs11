@@ -137,7 +137,7 @@ CK_RV cnk_put_piv_data(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE t
 // Get metadata for a PIV key or object
 // This function retrieves metadata from a PIV key or object using the PIV metadata APDU command
 CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType, CK_BYTE_PTR pbPublicKey,
-                       CK_ULONG_PTR pulPublicKeyLen);
+                       CK_ULONG_PTR pulPublicKeyLen, CK_BYTE_PTR pbPinPolicy, CK_BYTE_PTR pbTouchPolicy);
 
 // Generate a PIV asymmetric key pair.
 CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
