@@ -59,7 +59,8 @@ TF-PSA-Crypto migration.
 
 ## Development Hygiene
 
-- Before committing C source or header changes, run `clang-format` on the touched `.c` and `.h` files.
+- Before committing C source or header changes, run `clang-format` on the
+  touched `.c` and `.h` files only. Do not run `clang-format` on CMake files.
 - The VS bundled formatter is:
   `C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin\clang-format.exe`
 - Commit messages must follow Conventional Commits, include enough detail in the
@@ -192,6 +193,8 @@ Write-path notes:
   `C_CreateObject(CKO_PRIVATE_KEY)`, and can be read back through
   `C_GetAttributeValue` from CanoKey metadata. `CKA_ALWAYS_AUTHENTICATE` remains
   a compatibility input for PIN policy when the vendor PIN policy is absent.
+- CanoKey PIV default key policies are: slot 9E uses PIN never and touch never;
+  other PIV key slots use PIN once and touch never.
 - `CKA_CNK_VENDOR_BASE` uses ASCII `CNK` (`0x43 0x4E 0x4B`) in the high bytes
   of the vendor-defined attribute range and reserves the low byte for CanoKey
   attribute IDs.
@@ -293,7 +296,9 @@ PIV object IDs map to slots as:
   and `CNK_UNSAFE_LOG_APDU=1`.
 - Managed mode ignores logging environment variables; callers must use
   `C_CNK_ConfigLogging(level, file, unsafe_log_apdu)`.
-- `BUILD_UNIT_TESTING=ON` with the Windows native MSVC/clang-cl toolchain currently fails before compiling unit tests because `test/unit/CMakeLists.txt` requires `PkgConfig`/`cmocka`.
+- Windows CI and local native MSVC/clang-cl builds do not run unit tests for
+  now because `test/unit/CMakeLists.txt` requires `PkgConfig` and `cmocka`,
+  which are not installed in that environment.
 - `BUILD_REAL_TESTING=ON -DBUILD_UNIT_TESTING=OFF` builds `test_real.exe` on Windows without requiring `PkgConfig`/`cmocka`.
 - Destructive real-card write tests in `test_real.exe` are opt-in. Set
   `CNK_RUN_DESTRUCTIVE_REAL_TESTS=1` to exercise `C_GenerateKeyPair` and

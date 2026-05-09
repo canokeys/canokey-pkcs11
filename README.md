@@ -90,6 +90,8 @@ The private-key templates for `C_GenerateKeyPair` and
   `CNK_PIV_TOUCH_POLICY_ALWAYS`, or `CNK_PIV_TOUCH_POLICY_CACHED`.
 
 If `CKA_CNK_PIV_PIN_POLICY` is absent, `CKA_ALWAYS_AUTHENTICATE` is still
-accepted as a compatibility input for the PIN policy. The stored policy values
-can be read back from public or private PIV key objects with
+accepted as a compatibility input for the PIN policy. Without either attribute,
+CanoKey PIV defaults are used: 9E uses PIN never and touch never, while the
+other PIV key slots use PIN once and touch never. The stored policy values can
+be read back from public or private PIV key objects with
 `C_GetAttributeValue`.

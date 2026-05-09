@@ -196,6 +196,9 @@ CK_RV C_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, NULL, NULL));
 
+  if (!CNK_PivPrivateKeyCanDecrypt(algorithmType))
+    CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for decrypt");
+
   if (algorithmType != PIV_ALG_RSA_2048 && algorithmType != PIV_ALG_RSA_3072 && algorithmType != PIV_ALG_RSA_4096)
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "decrypt key is not RSA");
 

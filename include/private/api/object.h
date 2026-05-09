@@ -32,6 +32,33 @@ CK_OBJECT_HANDLE CNK_MakeObjectHandle(CK_SLOT_ID slot_id, CK_OBJECT_CLASS object
  */
 CK_RV CNK_ObjectIdToPivTag(CK_BYTE obj_id, CK_BYTE *piv_tag);
 
+CK_RV CNK_GetPivPolicies(CK_ATTRIBUTE_PTR p_template, CK_ULONG ul_count, CK_BYTE default_pin_policy,
+                         CK_BYTE *pin_policy, CK_BYTE *touch_policy);
+
+/**
+ * Returns the CanoKey PIV default PIN policy for a key slot.
+ *
+ * CanoKey defaults 9E to PIN never and other PIV key slots to PIN once.
+ * Touch policy defaults are handled by CNK_GetPivPolicies().
+ *
+ * @param obj_id Internal object ID
+ */
+CK_BYTE CNK_DefaultPinPolicyForPivObjectId(CK_BYTE obj_id);
+
+/**
+ * Reports whether a stored PIV key algorithm supports PKCS#11 signing.
+ *
+ * PIV retired slots can also sign, so this is intentionally based on the
+ * algorithm metadata instead of a slot whitelist.
+ *
+ * @param algorithm_type PIV algorithm type from metadata
+ */
+CK_BBOOL CNK_PivPrivateKeyCanSign(CK_BYTE algorithm_type);
+
+CK_BBOOL CNK_PivPrivateKeyCanDecrypt(CK_BYTE algorithm_type);
+
+CK_BBOOL CNK_PivPrivateKeyCanDerive(CK_BYTE algorithm_type);
+
 /**
  * Maps a PIV object ID to its PIV certificate data-object tag.
  *

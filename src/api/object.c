@@ -222,9 +222,10 @@ static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algori
  *
  * @param attribute The attribute to handle
  * @param algorithmType The key algorithm type
+ * @param pinPolicy The stored PIV PIN policy
  * @return CK_RV CKR_OK on success, error code otherwise
  */
-static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithmType);
+static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithmType, CK_BYTE pinPolicy);
 
 /**
  * @brief Handle session secret-key attributes
@@ -467,12 +468,14 @@ static CK_RV validatePivTouchPolicy(CK_BYTE policy) {
   CNK_RET_OK;
 }
 
-static CK_RV getPivPolicies(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_BYTE *pinPolicy, CK_BYTE *touchPolicy) {
+CK_RV CNK_GetPivPolicies(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_BYTE defaultPinPolicy, CK_BYTE *pinPolicy,
+                         CK_BYTE *touchPolicy) {
   CK_BBOOL alwaysAuthenticate;
   CNK_ENSURE_NONNULL(pinPolicy, touchPolicy);
+  CNK_ENSURE_OK(validatePivPinPolicy(defaultPinPolicy));
   CNK_ENSURE_OK(getOptionalBbool(pTemplate, ulCount, CKA_ALWAYS_AUTHENTICATE, CK_FALSE, &alwaysAuthenticate));
 
-  *pinPolicy = alwaysAuthenticate ? CNK_PIV_PIN_POLICY_ALWAYS : CNK_PIV_PIN_POLICY_ONCE;
+  *pinPolicy = alwaysAuthenticate ? CNK_PIV_PIN_POLICY_ALWAYS : defaultPinPolicy;
   CNK_ENSURE_OK(getOptionalByte(pTemplate, ulCount, CKA_CNK_PIV_PIN_POLICY, *pinPolicy, pinPolicy));
   CNK_ENSURE_OK(getOptionalByte(pTemplate, ulCount, CKA_CNK_PIV_TOUCH_POLICY, CNK_PIV_TOUCH_POLICY_NEVER, touchPolicy));
   CNK_ENSURE_OK(validatePivPinPolicy(*pinPolicy));
@@ -577,7 +580,10 @@ static CK_RV buildRsaImportData(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK
   }
 
   CNK_ENSURE_OK(rsaComponentSizeToAlgorithm(pAttr->ulValueLen, algorithmType));
-  CNK_ENSURE_OK(getPivPolicies(pTemplate, ulCount, &pinPolicy, &touchPolicy));
+  CK_BYTE objId;
+  CNK_ENSURE_OK(getTemplateObjectId(pTemplate, ulCount, &objId));
+  CNK_ENSURE_OK(
+      CNK_GetPivPolicies(pTemplate, ulCount, CNK_DefaultPinPolicyForPivObjectId(objId), &pinPolicy, &touchPolicy));
 
   CNK_ENSURE_OK(appendImportTlv(output, outputLen, &offset, 0x01, pAttr));
   CNK_ENSURE_OK(appendImportTlv(output, outputLen, &offset, 0x02, qAttr));
@@ -620,7 +626,10 @@ static CK_RV buildEcImportData(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_
     CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "unsupported EC key type");
   }
 
-  CNK_ENSURE_OK(getPivPolicies(pTemplate, ulCount, &pinPolicy, &touchPolicy));
+  CK_BYTE objId;
+  CNK_ENSURE_OK(getTemplateObjectId(pTemplate, ulCount, &objId));
+  CNK_ENSURE_OK(
+      CNK_GetPivPolicies(pTemplate, ulCount, CNK_DefaultPinPolicyForPivObjectId(objId), &pinPolicy, &touchPolicy));
   CNK_ENSURE_OK(appendImportTlv(output, outputLen, &offset, 0x06, valueAttr));
   CNK_ENSURE_OK(appendTlv(output, outputLen, &offset, 0xAA, &pinPolicy, sizeof(pinPolicy)));
   CNK_ENSURE_OK(appendTlv(output, outputLen, &offset, 0xAB, &touchPolicy, sizeof(touchPolicy)));
@@ -704,6 +713,46 @@ CK_RV C_CNK_ObjIdToPivTag(CK_BYTE objId, CK_BYTE *pivTag) {
 }
 
 CK_RV CNK_ObjectIdToPivTag(CK_BYTE objId, CK_BYTE *pivTag) { return C_CNK_ObjIdToPivTag(objId, pivTag); }
+
+CK_BYTE CNK_DefaultPinPolicyForPivObjectId(CK_BYTE objId) {
+  return objId == PIV_SLOT_9E ? CNK_PIV_PIN_POLICY_NEVER : CNK_PIV_PIN_POLICY_ONCE;
+}
+
+CK_BBOOL CNK_PivPrivateKeyCanSign(CK_BYTE algorithmType) {
+  switch (algorithmType) {
+  case PIV_ALG_RSA_2048:
+  case PIV_ALG_RSA_3072:
+  case PIV_ALG_RSA_4096:
+  case PIV_ALG_ECC_256:
+  case PIV_ALG_ECC_384:
+  case PIV_ALG_SECP256K1:
+    return CK_TRUE;
+  default:
+    return CK_FALSE;
+  }
+}
+
+CK_BBOOL CNK_PivPrivateKeyCanDecrypt(CK_BYTE algorithmType) {
+  switch (algorithmType) {
+  case PIV_ALG_RSA_2048:
+  case PIV_ALG_RSA_3072:
+  case PIV_ALG_RSA_4096:
+    return CK_TRUE;
+  default:
+    return CK_FALSE;
+  }
+}
+
+CK_BBOOL CNK_PivPrivateKeyCanDerive(CK_BYTE algorithmType) {
+  switch (algorithmType) {
+  case PIV_ALG_ECC_256:
+  case PIV_ALG_ECC_384:
+  case PIV_ALG_SECP256K1:
+    return CK_TRUE;
+  default:
+    return CK_FALSE;
+  }
+}
 
 CK_RV CNK_ObjectIdToCertificateTag(CK_BYTE objId, CK_BYTE *dataTag) {
   if (!dataTag) {
@@ -1147,7 +1196,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       } else if (pTemplate[i].type == CKA_CNK_PIV_TOUCH_POLICY) {
         rv = setSingleAttributeValue(&pTemplate[i], &bTouchPolicy, sizeof(bTouchPolicy));
       } else {
-        rv = handlePrivateKeyAttribute(&pTemplate[i], bAlgorithmType);
+        rv = handlePrivateKeyAttribute(&pTemplate[i], bAlgorithmType, bPinPolicy);
       }
       break;
 
@@ -1701,7 +1750,7 @@ static CK_RV handleSecretKeyAttribute(CK_ATTRIBUTE_PTR attribute, const CNK_PKCS
 }
 
 // Handle private key specific attributes
-static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithm_type) {
+static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithm_type, CK_BYTE pinPolicy) {
   CNK_LOG_FUNC(" attribute = %d, algorithm_type = %d", attribute->type, algorithm_type);
 
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
@@ -1713,8 +1762,7 @@ static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algor
     break;
 
   case CKA_SIGN: {
-    // Private keys can be used for signing
-    CK_BBOOL value = CK_TRUE;
+    CK_BBOOL value = CNK_PivPrivateKeyCanSign(algorithm_type);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -1726,8 +1774,7 @@ static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algor
   }
 
   case CKA_DECRYPT: {
-    // Only RSA private keys can decrypt
-    CK_BBOOL value = (key_type == CKK_RSA) ? CK_TRUE : CK_FALSE;
+    CK_BBOOL value = CNK_PivPrivateKeyCanDecrypt(algorithm_type);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -1746,7 +1793,7 @@ static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algor
   }
 
   case CKA_ALWAYS_AUTHENTICATE: {
-    CK_BBOOL value = CK_FALSE;
+    CK_BBOOL value = pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS ? CK_TRUE : CK_FALSE;
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -1779,8 +1826,7 @@ static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algor
   }
 
   case CKA_DERIVE: {
-    // Only EC private keys can derive
-    CK_BBOOL value = (key_type == CKK_EC) ? CK_TRUE : CK_FALSE;
+    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }

@@ -30,21 +30,6 @@ static CK_RV getTemplateAttr(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_AT
   CNK_RETURN(CKR_TEMPLATE_INCOMPLETE, "required attribute is missing");
 }
 
-static CK_RV getOptionalTemplateAttr(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type,
-                                     CK_ATTRIBUTE_PTR *attr) {
-  CNK_ENSURE_NONNULL(attr);
-  *attr = NULL;
-
-  for (CK_ULONG i = 0; i < ulCount; i++) {
-    if (pTemplate[i].type == type) {
-      *attr = &pTemplate[i];
-      break;
-    }
-  }
-
-  CNK_RET_OK;
-}
-
 static CK_RV getTemplateByte(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type, CK_BYTE *value) {
   CK_ATTRIBUTE_PTR attr;
   CNK_ENSURE_NONNULL(value);
@@ -63,74 +48,6 @@ static CK_RV getTemplateObjectClass(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount
   if (attr->pValue == NULL || attr->ulValueLen != sizeof(CK_OBJECT_CLASS))
     CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_CLASS template attribute");
   *value = *(CK_OBJECT_CLASS *)attr->pValue;
-  CNK_RET_OK;
-}
-
-static CK_RV getOptionalTemplateBbool(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type,
-                                      CK_BBOOL defaultValue, CK_BBOOL *value) {
-  CK_ATTRIBUTE_PTR attr;
-  CNK_ENSURE_NONNULL(value);
-  CNK_ENSURE_OK(getOptionalTemplateAttr(pTemplate, ulCount, type, &attr));
-  if (attr == NULL) {
-    *value = defaultValue;
-    CNK_RET_OK;
-  }
-  if (attr->pValue == NULL || attr->ulValueLen != sizeof(CK_BBOOL))
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CK_BBOOL template attribute");
-  *value = *(CK_BBOOL *)attr->pValue;
-  if (*value != CK_FALSE && *value != CK_TRUE)
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CK_BBOOL template value");
-  CNK_RET_OK;
-}
-
-static CK_RV getOptionalPivPolicy(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type,
-                                  CK_BYTE defaultValue, CK_BYTE *value) {
-  CK_BBOOL boolValue;
-  CNK_ENSURE_NONNULL(value);
-  CNK_ENSURE_OK(getOptionalTemplateBbool(pTemplate, ulCount, type, CK_FALSE, &boolValue));
-  *value = boolValue ? CNK_PIV_PIN_POLICY_ALWAYS : defaultValue;
-  CNK_RET_OK;
-}
-
-static CK_RV getOptionalTemplateByte(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type,
-                                     CK_BYTE defaultValue, CK_BYTE *value) {
-  CK_ATTRIBUTE_PTR attr;
-  CNK_ENSURE_NONNULL(value);
-  CNK_ENSURE_OK(getOptionalTemplateAttr(pTemplate, ulCount, type, &attr));
-  if (attr == NULL) {
-    *value = defaultValue;
-    CNK_RET_OK;
-  }
-  if (attr->pValue == NULL || attr->ulValueLen != sizeof(CK_BYTE))
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CK_BYTE template attribute");
-  *value = *(CK_BYTE *)attr->pValue;
-  CNK_RET_OK;
-}
-
-static CK_RV validatePivPinPolicy(CK_BYTE policy) {
-  if (policy < CNK_PIV_PIN_POLICY_NEVER || policy > CNK_PIV_PIN_POLICY_ALWAYS)
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_CNK_PIV_PIN_POLICY");
-
-  CNK_RET_OK;
-}
-
-static CK_RV validatePivTouchPolicy(CK_BYTE policy) {
-  if (policy < CNK_PIV_TOUCH_POLICY_NEVER || policy > CNK_PIV_TOUCH_POLICY_CACHED)
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_CNK_PIV_TOUCH_POLICY");
-
-  CNK_RET_OK;
-}
-
-static CK_RV getKeyGenerationPivPolicies(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_BYTE *pinPolicy,
-                                         CK_BYTE *touchPolicy) {
-  CNK_ENSURE_NONNULL(pinPolicy, touchPolicy);
-
-  CNK_ENSURE_OK(getOptionalPivPolicy(pTemplate, ulCount, CKA_ALWAYS_AUTHENTICATE, CNK_PIV_PIN_POLICY_ONCE, pinPolicy));
-  CNK_ENSURE_OK(getOptionalTemplateByte(pTemplate, ulCount, CKA_CNK_PIV_PIN_POLICY, *pinPolicy, pinPolicy));
-  CNK_ENSURE_OK(
-      getOptionalTemplateByte(pTemplate, ulCount, CKA_CNK_PIV_TOUCH_POLICY, CNK_PIV_TOUCH_POLICY_NEVER, touchPolicy));
-  CNK_ENSURE_OK(validatePivPinPolicy(*pinPolicy));
-  CNK_ENSURE_OK(validatePivTouchPolicy(*touchPolicy));
   CNK_RET_OK;
 }
 
@@ -314,7 +231,8 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   CK_BYTE pinPolicy;
   CK_BYTE touchPolicy;
   CNK_ENSURE_OK(CNK_ObjectIdToPivTag(publicId, &pivTag));
-  CNK_ENSURE_OK(getKeyGenerationPivPolicies(pPrivateKeyTemplate, ulPrivateKeyAttributeCount, &pinPolicy, &touchPolicy));
+  CNK_ENSURE_OK(CNK_GetPivPolicies(pPrivateKeyTemplate, ulPrivateKeyAttributeCount,
+                                   CNK_DefaultPinPolicyForPivObjectId(privateId), &pinPolicy, &touchPolicy));
 
   CK_BYTE publicKey[512];
   CK_ULONG publicKeyLen = sizeof(publicKey);
@@ -381,6 +299,9 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   CK_BYTE abPublicKey[512];
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, NULL, NULL));
+
+  if (!CNK_PivPrivateKeyCanDerive(algorithmType))
+    CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for ECDH derive");
 
   CK_ULONG expectedSecretLen = 0;
   switch (algorithmType) {

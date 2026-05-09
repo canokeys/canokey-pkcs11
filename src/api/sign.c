@@ -288,6 +288,9 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, NULL, NULL));
 
+  if (!CNK_PivPrivateKeyCanSign(algorithmType))
+    CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for signing");
+
   if (isMechRSA(pMechanism->mechanism)) {
     CNK_ENSURE_OK(validateRsaMech(session, pMechanism, algorithmType, abPublicKey, cbPublicKey));
   } else if (isMechEC(pMechanism->mechanism)) {
