@@ -22,10 +22,8 @@ static CK_FUNCTION_LIST ck_function_list;
 static atomic_int g_ref_count = 0;
 
 CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
-#ifdef CNK_VERBOSE
-  // forcibly enable debug logging, can be overridden by C_CNK_ConfigLogging later
-  C_CNK_ConfigLogging(CNK_LOG_LEVEL_DEBUG, NULL);
-#endif
+  if (!g_cnk_is_managed_mode)
+    cnk_config_logging_from_env();
 
   CNK_LOG_FUNC(": pInitArgs: %p", pInitArgs);
 

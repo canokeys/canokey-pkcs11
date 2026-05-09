@@ -30,14 +30,16 @@ typedef CNK_MANAGED_MODE_INIT_ARGS *CNK_MANAGED_MODE_INIT_ARGS_PTR;
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_EnableManagedMode)(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs);
 
 // Extension API to configure logging
-// level: must be CNK_LOG_LEVEL_*, -1 for unchanged (default: CNK_LOG_LEVEL_WARNING)
-// file: a valid FILE pointer, NULL for unchaged (default: stderr)
-CK_DEFINE_FUNCTION(CK_RV, C_CNK_ConfigLogging)(int level, FILE *file);
+// level: must be CNK_LOG_LEVEL_*, -1 for unchanged (default: CNK_LOG_LEVEL_WARN)
+// file: a valid FILE pointer, NULL for unchanged (default: stderr)
+// unsafe_log_apdu: CK_TRUE enables raw APDU logging, including sensitive data
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_ConfigLogging)(int level, FILE *file, CK_BBOOL unsafe_log_apdu);
 
 // Extension API to login and get remaining PIN tries
 // pPinTries: pointer to an integer to receive the number of remaining PIN tries (NULL for not needed)
 // See C_Login for other arguments
-CK_DEFINE_FUNCTION(CK_RV, C_CNK_Login)(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_Login)(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin,
+                                       CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
 
 // Extension API to convert object ID to PIV tag
 // obj_id: must be a valid object ID

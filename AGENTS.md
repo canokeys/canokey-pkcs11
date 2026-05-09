@@ -238,7 +238,11 @@ PIV object IDs map to slots as:
 
 - Encryption/decryption, verify, key generation, random generation, wrap/unwrap/derive, object create/delete/set-attribute, init/set PIN, and slot events are mostly stubs returning `CKR_FUNCTION_NOT_SUPPORTED`.
 - Current reader enumeration only keeps PC/SC reader names containing `canokey`, case-insensitive.
-- Debug builds define `CNK_VERBOSE`; `C_Initialize()` forces debug logging unless later changed through `C_CNK_ConfigLogging()`, so `pkcs11-tool` output is noisy.
+- Standalone `C_Initialize()` reads `CNK_LOG_LEVEL` and
+  `CNK_UNSAFE_LOG_APDU`. Raw APDU logs require both debug-or-lower log level
+  and `CNK_UNSAFE_LOG_APDU=1`.
+- Managed mode ignores logging environment variables; callers must use
+  `C_CNK_ConfigLogging(level, file, unsafe_log_apdu)`.
 - `BUILD_UNIT_TESTING=ON` with the Windows native MSVC/clang-cl toolchain currently fails before compiling unit tests because `test/unit/CMakeLists.txt` requires `PkgConfig`/`cmocka`.
 - `BUILD_REAL_TESTING=ON -DBUILD_UNIT_TESTING=OFF` builds `test_real.exe` on Windows without requiring `PkgConfig`/`cmocka`.
 - `test/real/test_real.c` still mostly prints per-case failures instead of accumulating an overall failing exit status, so keep treating it as a hardware diagnostic until it has stricter result accounting.

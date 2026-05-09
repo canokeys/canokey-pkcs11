@@ -265,6 +265,6 @@ int main(void) {
       cmocka_unit_test(test_digest_sha3_256_one_shot),
       cmocka_unit_test(test_digest_sha3_256_buffer_too_small),
   };
-  C_CNK_ConfigLogging(CNK_LOG_LEVEL_DEBUG, NULL);
+  C_CNK_ConfigLogging(CNK_LOG_LEVEL_DEBUG, NULL, CK_TRUE);
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

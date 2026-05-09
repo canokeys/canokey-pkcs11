@@ -46,4 +46,6 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
   return CKR_ARGUMENTS_BAD;
 }
 
-CK_RV C_CNK_ConfigLogging(int level, FILE *file) { return cnk_config_logging(level, file); }
+CK_RV C_CNK_ConfigLogging(int level, FILE *file, CK_BBOOL unsafe_log_apdu) {
+  return cnk_config_logging(level, file, unsafe_log_apdu);
+}

@@ -1,3 +1,7 @@
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200112L
+#endif
+
 #include "api/object.h"
 #include "pkcs11.h"
 
@@ -47,6 +51,8 @@ static void cnk_print_library_error(const char *message) {
     printf("%s: %lu\n", message, (unsigned long)error);
   }
 }
+
+static int cnk_setenv(const char *name, const char *value) { return _putenv_s(name, value); }
 #else
 typedef void *CNK_LIBRARY_HANDLE;
 
@@ -62,6 +68,8 @@ static void cnk_close_library(CNK_LIBRARY_HANDLE library) {
 }
 
 static void cnk_print_library_error(const char *message) { printf("%s: %s\n", message, dlerror()); }
+
+static int cnk_setenv(const char *name, const char *value) { return setenv(name, value, 1); }
 #endif
 
 // Utility function to trim trailing spaces from fixed-length strings
@@ -2727,6 +2735,9 @@ int main(int argc, char *argv[]) {
   }
 
   printf("Using PKCS#11 library: %s\n", libraryPath);
+
+  cnk_setenv("CNK_LOG_LEVEL", "debug");
+  cnk_setenv("CNK_UNSAFE_LOG_APDU", "1");
 
   // Load the PKCS#11 library and get the function list
   CNK_LIBRARY_HANDLE library;

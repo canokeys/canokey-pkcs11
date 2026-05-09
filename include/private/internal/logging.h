@@ -6,6 +6,7 @@
 #pragma clang diagnostic ignored "-Wgnu-statement-expression-from-macro-expansion"
 
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 
 #include "internal/util.h"
@@ -14,7 +15,7 @@ enum CNK_LOG_LEVEL {
   CNK_LOG_LEVEL_TRACE = 0,
   CNK_LOG_LEVEL_DEBUG,
   CNK_LOG_LEVEL_INFO,
-  CNK_LOG_LEVEL_WARNING,
+  CNK_LOG_LEVEL_WARN,
   CNK_LOG_LEVEL_ERROR,
   CNK_LOG_LEVEL_FATAL,
   CNK_LOG_LEVEL_NONE,
@@ -22,8 +23,10 @@ enum CNK_LOG_LEVEL {
 };
 
 extern atomic_int g_cnk_log_level;
+extern atomic_bool g_cnk_unsafe_log_apdu;
 
-extern CK_RV cnk_config_logging(const int level, FILE *file);
+extern CK_RV cnk_config_logging(const int level, FILE *file, CK_BBOOL unsafe_log_apdu);
+extern void cnk_config_logging_from_env(void);
 
 extern void cnk_printlogf(const int level, const char *function, const char *file, const int line, const char *format,
                           ...);
@@ -41,7 +44,7 @@ extern void cnk_printlogf(const int level, const char *function, const char *fil
 #define CNK_TRACE(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_TRACE, format, ##__VA_ARGS__)
 #define CNK_DEBUG(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_DEBUG, format, ##__VA_ARGS__)
 #define CNK_INFO(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_INFO, format, ##__VA_ARGS__)
-#define CNK_WARN(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_WARNING, format, ##__VA_ARGS__)
+#define CNK_WARN(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_WARN, format, ##__VA_ARGS__)
 #define CNK_ERROR(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_ERROR, format, ##__VA_ARGS__)
 #define CNK_FATAL(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_FATAL, format, ##__VA_ARGS__)
 
@@ -82,14 +85,14 @@ void cnk_log_apdu_response(const unsigned char *response, unsigned long response
 // Macros to call the APDU logging functions only if the log level is appropriate
 #define CNK_LOG_APDU_COMMAND(command, command_len)                                                                     \
   do {                                                                                                                 \
-    if (atomic_load(&g_cnk_log_level) <= CNK_LOG_LEVEL_DEBUG) {                                                        \
+    if (atomic_load(&g_cnk_unsafe_log_apdu) && atomic_load(&g_cnk_log_level) <= CNK_LOG_LEVEL_DEBUG) {                 \
       cnk_log_apdu_command((command), (command_len));                                                                  \
     }                                                                                                                  \
   } while (0)
 
 #define CNK_LOG_APDU_RESPONSE(response, response_len)                                                                  \
   do {                                                                                                                 \
-    if (atomic_load(&g_cnk_log_level) <= CNK_LOG_LEVEL_DEBUG) {                                                        \
+    if (atomic_load(&g_cnk_unsafe_log_apdu) && atomic_load(&g_cnk_log_level) <= CNK_LOG_LEVEL_DEBUG) {                 \
       cnk_log_apdu_response((response), (response_len));                                                               \
     }                                                                                                                  \
   } while (0)

@@ -2,6 +2,9 @@
 
 #include <nsync_mu.h>
 #include <stdarg.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 static const char *const g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE] = {
@@ -9,11 +12,72 @@ static const char *const g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE] = {
 };
 
 // default values
-atomic_int g_cnk_log_level = CNK_LOG_LEVEL_WARNING;
+atomic_int g_cnk_log_level = CNK_LOG_LEVEL_WARN;
+atomic_bool g_cnk_unsafe_log_apdu = false;
 static FILE *g_cnk_log_file = NULL;
 static nsync_mu g_cnk_log_mutex = NSYNC_MU_INIT;
 
-CK_RV cnk_config_logging(const int level, FILE *file) {
+static int cnk_ascii_tolower(int ch) {
+  if (ch >= 'A' && ch <= 'Z')
+    return ch - 'A' + 'a';
+  return ch;
+}
+
+static CK_BBOOL cnk_ascii_equals_ignore_case(const char *lhs, const char *rhs) {
+  if (lhs == NULL || rhs == NULL)
+    return CK_FALSE;
+
+  while (*lhs != '\0' && *rhs != '\0') {
+    if (cnk_ascii_tolower((unsigned char)*lhs) != cnk_ascii_tolower((unsigned char)*rhs))
+      return CK_FALSE;
+    lhs++;
+    rhs++;
+  }
+
+  return *lhs == '\0' && *rhs == '\0';
+}
+
+static CK_BBOOL cnk_parse_log_level(const char *value, int *level) {
+  if (value == NULL || level == NULL)
+    return CK_FALSE;
+
+  char *end = NULL;
+  long numeric = strtol(value, &end, 10);
+  if (end != value && *end == '\0' && numeric >= 0 && numeric < CNK_LOG_LEVEL_SIZE) {
+    *level = (int)numeric;
+    return CK_TRUE;
+  }
+
+  for (int i = 0; i < CNK_LOG_LEVEL_SIZE; i++) {
+    if (cnk_ascii_equals_ignore_case(value, g_cnk_log_level_name[i])) {
+      *level = i;
+      return CK_TRUE;
+    }
+  }
+
+  return CK_FALSE;
+}
+
+static CK_BBOOL cnk_parse_bool(const char *value, CK_BBOOL *result) {
+  if (value == NULL || result == NULL)
+    return CK_FALSE;
+
+  if (cnk_ascii_equals_ignore_case(value, "1") || cnk_ascii_equals_ignore_case(value, "true") ||
+      cnk_ascii_equals_ignore_case(value, "yes") || cnk_ascii_equals_ignore_case(value, "on")) {
+    *result = CK_TRUE;
+    return CK_TRUE;
+  }
+
+  if (cnk_ascii_equals_ignore_case(value, "0") || cnk_ascii_equals_ignore_case(value, "false") ||
+      cnk_ascii_equals_ignore_case(value, "no") || cnk_ascii_equals_ignore_case(value, "off")) {
+    *result = CK_FALSE;
+    return CK_TRUE;
+  }
+
+  return CK_FALSE;
+}
+
+CK_RV cnk_config_logging(const int level, FILE *file, CK_BBOOL unsafe_log_apdu) {
   if (level >= 0 && level < CNK_LOG_LEVEL_SIZE) {
     atomic_store(&g_cnk_log_level, level);
   } else if (level != -1) {
@@ -26,7 +90,26 @@ CK_RV cnk_config_logging(const int level, FILE *file) {
     nsync_mu_unlock(&g_cnk_log_mutex);
   }
 
+  atomic_store(&g_cnk_unsafe_log_apdu, unsafe_log_apdu ? true : false);
+
   return CKR_OK;
+}
+
+void cnk_config_logging_from_env(void) {
+  atomic_store(&g_cnk_log_level, CNK_LOG_LEVEL_WARN);
+  atomic_store(&g_cnk_unsafe_log_apdu, false);
+
+  int level;
+  const char *level_env = getenv("CNK_LOG_LEVEL");
+  if (cnk_parse_log_level(level_env, &level)) {
+    atomic_store(&g_cnk_log_level, level);
+  }
+
+  CK_BBOOL unsafe_log_apdu;
+  const char *apdu_env = getenv("CNK_UNSAFE_LOG_APDU");
+  if (cnk_parse_bool(apdu_env, &unsafe_log_apdu)) {
+    atomic_store(&g_cnk_unsafe_log_apdu, unsafe_log_apdu ? true : false);
+  }
 }
 
 static void print_time(FILE *out) {
