@@ -12,6 +12,9 @@
 
 #define CNK_PIV_MAX_PUBLIC_KEY_RESPONSE 527
 
+#define PIV_REFERENCE_PIN 0x80
+#define PIV_PADDED_PIN_LEN 8
+
 // Global variables for reader management
 ReaderInfo *g_cnk_readers = NULL; // Array of reader info structs
 CK_LONG g_cnk_num_readers = 0;
@@ -51,6 +54,48 @@ static CK_RV cnk_with_card(CK_SLOT_ID slotID, CardOperationFunc operation, void 
 
 // Helper function to check if a string contains 'canokey' (case-insensitive)
 static CK_BBOOL contains_canokey(const char *str) { return str && ck_strcasestr(str, "canokey") ? CK_TRUE : CK_FALSE; }
+
+static CK_RV validate_piv_pin_len(CK_ULONG pinLen) {
+  if (pinLen < 1 || pinLen > PIV_PADDED_PIN_LEN)
+    CNK_RETURN(CKR_PIN_LEN_RANGE, "Invalid PIN length");
+
+  CNK_RET_OK;
+}
+
+static CK_RV pad_piv_pin(CK_UTF8CHAR_PTR pin, CK_ULONG pinLen, CK_BYTE output[PIV_PADDED_PIN_LEN]) {
+  CNK_ENSURE_NONNULL(pin, output);
+  CNK_ENSURE_OK(validate_piv_pin_len(pinLen));
+
+  memset(output, 0xFF, PIV_PADDED_PIN_LEN);
+  memcpy(output, pin, pinLen);
+  CNK_RET_OK;
+}
+
+static CK_RV handle_pin_status(CK_BYTE sw1, CK_BYTE sw2, CK_BYTE_PTR pPinTries, const char *operationName) {
+  if (sw1 == 0x90 && sw2 == 0x00)
+    CNK_RET_OK;
+
+  if (sw1 == 0x63) {
+    CK_BYTE attempts = sw2 & 0x0F;
+    if (pPinTries != NULL)
+      *pPinTries = attempts;
+    CNK_RETURN(CKR_PIN_INCORRECT, operationName);
+  }
+
+  if (sw1 == 0x69 && sw2 == 0x83)
+    CNK_RETURN(CKR_PIN_LOCKED, operationName);
+
+  if (sw1 == 0x67 || (sw1 == 0x6A && sw2 == 0x80))
+    CNK_RETURN(CKR_PIN_LEN_RANGE, operationName);
+
+  CNK_RETURN(CKR_DEVICE_ERROR, operationName);
+}
+
+static void cache_piv_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+  memset(session->pin, 0xFF, sizeof(session->pin));
+  memcpy(session->pin, pPin, ulPinLen);
+  session->cbPin = ulPinLen;
+}
 
 CK_RV cnk_initialize_backend(void) {
   cnk_mutex_create(&g_cnk_readers_mutex);
@@ -484,10 +529,7 @@ CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPin
     CNK_RETURN(CKR_ARGUMENTS_BAD, "Invalid arguments");
   }
 
-  // PIN length must be between 1 and 8 characters
-  if (ulPinLen < 1 || ulPinLen > 8) {
-    CNK_RETURN(CKR_PIN_LEN_RANGE, "Invalid PIN length");
-  }
+  CNK_ENSURE_OK(validate_piv_pin_len(ulPinLen));
 
   // First select the PIV application
   CK_RV rv = cnk_select_piv_application(hCard);
@@ -496,11 +538,8 @@ CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPin
   }
 
   // Prepare the VERIFY command: 00 20 00 80 08 [PIN padded with 0xFF]
-  CK_BYTE verify_apdu[14] = {0x00, 0x20, 0x00, 0x80, 0x08};
-
-  // Pad the PIN with 0xFF
-  memset(verify_apdu + 5, 0xFF, 8);
-  memcpy(verify_apdu + 5, pPin, ulPinLen);
+  CK_BYTE verify_apdu[5 + PIV_PADDED_PIN_LEN] = {0x00, 0x20, 0x00, PIV_REFERENCE_PIN, PIV_PADDED_PIN_LEN};
+  CNK_ENSURE_OK(pad_piv_pin(pPin, ulPinLen, verify_apdu + 5));
 
   // Prepare response buffer
   CK_BYTE response[258];
@@ -521,26 +560,8 @@ CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPin
   const CK_BYTE sw1 = response[response_len - 2];
   const CK_BYTE sw2 = response[response_len - 1];
 
-  // Check status words
-  if (sw1 == 0x90 && sw2 == 0x00) {
-    CNK_RETURN(CKR_OK, "PIV PIN verified");
-  }
-
-  if (sw1 == 0x63) {
-    // PIN verification failed, remaining attempts in low nibble of SW2
-    CK_BYTE attempts = sw2 & 0x0F;
-    if (pPinTries != NULL) {
-      *pPinTries = attempts;
-    }
-    CNK_RETURN(CKR_PIN_INCORRECT, "PIV PIN verification failed");
-  }
-
-  if (sw1 == 0x69 && sw2 == 0x83) {
-    // PIN blocked
-    CNK_RETURN(CKR_PIN_LOCKED, "PIV PIN blocked");
-  }
-
-  CNK_RETURN(CKR_DEVICE_ERROR, "Failed to verify PIV PIN");
+  CNK_ENSURE_OK(handle_pin_status(sw1, sw2, pPinTries, "PIV PIN verification failed"));
+  CNK_RETURN(CKR_OK, "PIV PIN verified");
 }
 
 // Logout PIV PIN using APDU 00 20 FF 80
@@ -580,6 +601,113 @@ CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard) {
   }
 
   CNK_RETURN(CKR_DEVICE_ERROR, "Failed to logout PIV PIN");
+}
+
+static CK_RV cnk_update_piv_pin(SCARDHANDLE hCard, CK_BYTE ins, CK_UTF8CHAR_PTR pCurrentSecret,
+                                CK_ULONG ulCurrentSecretLen, CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewPinLen,
+                                CK_BYTE_PTR pPinTries, const char *operationName) {
+  if (hCard == 0 || pCurrentSecret == NULL || pNewPin == NULL)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "Invalid arguments");
+
+  CNK_ENSURE_OK(validate_piv_pin_len(ulCurrentSecretLen));
+  CNK_ENSURE_OK(validate_piv_pin_len(ulNewPinLen));
+
+  CK_RV rv = cnk_select_piv_application(hCard);
+  if (rv != CKR_OK)
+    CNK_RETURN(rv, "Failed to select PIV application");
+
+  CK_BYTE apdu[5 + PIV_PADDED_PIN_LEN * 2] = {0x00, ins, 0x00, PIV_REFERENCE_PIN, (CK_BYTE)(PIV_PADDED_PIN_LEN * 2)};
+  CNK_ENSURE_OK(pad_piv_pin(pCurrentSecret, ulCurrentSecretLen, apdu + 5));
+  CNK_ENSURE_OK(pad_piv_pin(pNewPin, ulNewPinLen, apdu + 5 + PIV_PADDED_PIN_LEN));
+
+  CK_BYTE response[258];
+  DWORD response_len = sizeof(response);
+  LONG pcsc_rv = cnk_transceive_apdu(hCard, apdu, sizeof(apdu), response, &response_len, CK_FALSE);
+  if (pcsc_rv != SCARD_S_SUCCESS)
+    CNK_RETURN(CKR_DEVICE_ERROR, operationName);
+  if (response_len < 2)
+    CNK_RETURN(CKR_DEVICE_ERROR, operationName);
+
+  CK_BYTE sw1 = response[response_len - 2];
+  CK_BYTE sw2 = response[response_len - 1];
+  CNK_ENSURE_OK(handle_pin_status(sw1, sw2, pPinTries, operationName));
+  CNK_RET_OK;
+}
+
+typedef struct {
+  CNK_PKCS11_SESSION *session;
+  CK_UTF8CHAR_PTR old_pin;
+  CK_ULONG old_pin_len;
+  CK_UTF8CHAR_PTR new_pin;
+  CK_ULONG new_pin_len;
+  CK_BYTE_PTR pin_tries;
+} ChangePinContext;
+
+static CK_RV change_pin_card_operation(SCARDHANDLE hCard, void *context) {
+  ChangePinContext *ctx = (ChangePinContext *)context;
+  CK_RV rv = cnk_update_piv_pin(hCard, 0x24, ctx->old_pin, ctx->old_pin_len, ctx->new_pin, ctx->new_pin_len,
+                                ctx->pin_tries, "PIV PIN change failed");
+  if (rv == CKR_OK && ctx->session->cbPin > 0 && ctx->session->cbPin == ctx->old_pin_len &&
+      memcmp(ctx->session->pin, ctx->old_pin, ctx->old_pin_len) == 0) {
+    cache_piv_pin(ctx->session, ctx->new_pin, ctx->new_pin_len);
+  }
+  return rv;
+}
+
+CK_RV cnk_change_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pOldPin,
+                                      CK_ULONG ulOldPinLen, CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewPinLen,
+                                      CK_BYTE_PTR pPinTries) {
+  if (session == NULL || pOldPin == NULL || pNewPin == NULL)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "Invalid arguments");
+
+  CNK_ENSURE_OK(validate_piv_pin_len(ulOldPinLen));
+  CNK_ENSURE_OK(validate_piv_pin_len(ulNewPinLen));
+
+  ChangePinContext ctx = {.session = session,
+                          .old_pin = pOldPin,
+                          .old_pin_len = ulOldPinLen,
+                          .new_pin = pNewPin,
+                          .new_pin_len = ulNewPinLen,
+                          .pin_tries = pPinTries};
+  return cnk_with_card(slotID, change_pin_card_operation, &ctx, NULL);
+}
+
+typedef struct {
+  CNK_PKCS11_SESSION *session;
+  CK_UTF8CHAR_PTR puk;
+  CK_ULONG puk_len;
+  CK_UTF8CHAR_PTR new_pin;
+  CK_ULONG new_pin_len;
+  CK_BYTE_PTR pin_tries;
+} UnblockPinContext;
+
+static CK_RV unblock_pin_card_operation(SCARDHANDLE hCard, void *context) {
+  UnblockPinContext *ctx = (UnblockPinContext *)context;
+  CK_RV rv = cnk_update_piv_pin(hCard, 0x2C, ctx->puk, ctx->puk_len, ctx->new_pin, ctx->new_pin_len, ctx->pin_tries,
+                                "PIV PIN unblock failed");
+  if (rv == CKR_OK) {
+    cache_piv_pin(ctx->session, ctx->new_pin, ctx->new_pin_len);
+    ctx->session->state = (ctx->session->flags & CKF_RW_SESSION) ? SESSION_STATE_RW_USER : SESSION_STATE_RO_USER;
+  }
+  return rv;
+}
+
+CK_RV cnk_unblock_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPuk,
+                                       CK_ULONG ulPukLen, CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewPinLen,
+                                       CK_BYTE_PTR pPinTries) {
+  if (session == NULL || pPuk == NULL || pNewPin == NULL)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "Invalid arguments");
+
+  CNK_ENSURE_OK(validate_piv_pin_len(ulPukLen));
+  CNK_ENSURE_OK(validate_piv_pin_len(ulNewPinLen));
+
+  UnblockPinContext ctx = {.session = session,
+                           .puk = pPuk,
+                           .puk_len = ulPukLen,
+                           .new_pin = pNewPin,
+                           .new_pin_len = ulNewPinLen,
+                           .pin_tries = pPinTries};
+  return cnk_with_card(slotID, unblock_pin_card_operation, &ctx, NULL);
 }
 
 // Get PIV data from the CanoKey device
@@ -1762,10 +1890,7 @@ static CK_RV verify_pin_card_operation(SCARDHANDLE hCard, void *context) {
 
   // If PIN verification was successful, cache the PIN in the session
   if (ctx->session->pin != ctx->pin) {
-    // Store the PIN in the session
-    memset(ctx->session->pin, 0xFF, sizeof(ctx->session->pin)); // Pad with 0xFF
-    memcpy(ctx->session->pin, ctx->pin, ctx->pin_len);
-    ctx->session->cbPin = ctx->pin_len;
+    cache_piv_pin(ctx->session, ctx->pin, ctx->pin_len);
   }
 
   CNK_RET_OK;
@@ -1778,10 +1903,7 @@ CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
     CNK_RETURN(CKR_ARGUMENTS_BAD, "Invalid arguments");
   }
 
-  // PIN length must be between 1 and 8 characters
-  if (ulPinLen < 1 || ulPinLen > 8) {
-    CNK_RETURN(CKR_PIN_LEN_RANGE, "Invalid PIN length");
-  }
+  CNK_ENSURE_OK(validate_piv_pin_len(ulPinLen));
 
   // Set up the context for the operation
   VerifyPinContext ctx = {.session = session, .pin = pPin, .pin_len = ulPinLen, .pin_tries = pPinTries};

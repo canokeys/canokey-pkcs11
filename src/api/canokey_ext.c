@@ -1,5 +1,7 @@
+#include "api/session.h"
 #include "backend/pcsc.h"
 #include "internal/logging.h"
+#include "internal/macros.h"
 #include "internal/util.h"
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
@@ -44,4 +46,20 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
 
 CK_RV C_CNK_ConfigLogging(int level, FILE *file, CK_BBOOL unsafe_log_apdu) {
   return cnk_config_logging(level, file, unsafe_log_apdu);
+}
+
+CK_RV C_CNK_UnblockPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULONG ulPukLen, CK_UTF8CHAR_PTR pNewPin,
+                       CK_ULONG ulNewPinLen, CK_BYTE_PTR pPinTries) {
+  CNK_LOG_FUNC(": hSession: %lu, pPuk: %p, ulPukLen: %lu, pNewPin: %p, ulNewPinLen: %lu, pPinTries: %p", hSession, pPuk,
+               ulPukLen, pNewPin, ulNewPinLen, pPinTries);
+
+  CNK_ENSURE_INITIALIZED();
+  CNK_ENSURE_NONNULL(pPuk, pNewPin);
+
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (!(session->flags & CKF_RW_SESSION))
+    CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
+
+  return cnk_unblock_piv_pin_with_session(session->slotId, session, pPuk, ulPukLen, pNewPin, ulNewPinLen, pPinTries);
 }

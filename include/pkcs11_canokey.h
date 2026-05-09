@@ -41,6 +41,11 @@ CK_DEFINE_FUNCTION(CK_RV, C_CNK_ConfigLogging)(int level, FILE *file, CK_BBOOL u
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_Login)(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin,
                                        CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
 
+// Extension API to unblock the PIV PIN using the PUK and set a new PIN
+// pPinTries: pointer to an integer to receive the number of remaining PUK tries (NULL for not needed)
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_UnblockPIN)(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULONG ulPukLen,
+                                            CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewPinLen, CK_BYTE_PTR pPinTries);
+
 // Extension API to convert object ID to PIV tag
 // obj_id: must be a valid object ID
 // piv_tag: non-NULL pointer to the PIV tag

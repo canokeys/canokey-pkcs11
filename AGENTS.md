@@ -179,6 +179,13 @@ Write-path notes:
 - Windows minidriver `CardQueryFreeSpace` should report unknown free space for
   now. There is no PIV APDU for real object-store capacity, and adding one would
   require extending the CanoKey PIV applet.
+- `C_SetPIN` maps to the standard PIV Change Reference Data APDU
+  (`00 24 00 80 10 old-pin new-pin`). PUK unblock is exposed as the CanoKey
+  extension `C_CNK_UnblockPIN()` and maps to Reset Retry Counter
+  (`00 2C 00 80 10 puk new-pin`). CanoKey core's PIV applet implements these
+  APDUs with the same fixed 8-byte, `0xFF`-padded fields.
+- `CKF_RNG` is intentionally not advertised because CanoKey PIV does not expose
+  a random-generation APDU through this module.
 
 RSA signing note:
 
@@ -255,8 +262,13 @@ PIV object IDs map to slots as:
 
 ## Known Gaps
 
-- Verify, random generation, wrap/unwrap, object delete/set-attribute, init/set
-  PIN, and slot events are mostly stubs returning `CKR_FUNCTION_NOT_SUPPORTED`.
+- Verify, random generation, wrap/unwrap, object delete/set-attribute, init PIN,
+  and slot events are mostly stubs returning `CKR_FUNCTION_NOT_SUPPORTED`.
+- `C_GetObjectSize` is implemented as an approximate PKCS#11 object size based
+  on readable attributes. `C_SetAttributeValue` validates object handles but
+  treats PIV token attributes as read-only. `C_CopyObject` is intentionally
+  unsupported because PIV token objects do not have stable copy semantics in
+  this module.
 - `C_DestroyObject` is intentionally not wired up yet. CanoKey PIV supports
   PUT DATA (`00 DB`) for certificate writes and a special `53 00` certificate
   delete case, but there is no standard PIV APDU that deletes both certificates

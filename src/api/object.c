@@ -819,7 +819,7 @@ CK_RV C_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTR
                pTemplate, ulCount, phNewObject);
   CNK_ENSURE_INITIALIZED();
 
-  CNK_RET_NOT_IMPLEMENTED;
+  CNK_RET_UNSUPPORTED;
 }
 
 CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
@@ -835,9 +835,78 @@ CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
 
 CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ULONG_PTR pulSize) {
   CNK_LOG_FUNC(": hSession: %lu, hObject: %lu, pulSize: %p", hSession, hObject, pulSize);
-  CNK_ENSURE_INITIALIZED();
+  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pulSize);
 
-  CNK_RET_NOT_IMPLEMENTED;
+  CK_OBJECT_CLASS objClass;
+  extractObjectInfo(hObject, NULL, &objClass, NULL);
+
+  CK_ATTRIBUTE sizeAttrs[] = {
+      {CKA_CLASS, NULL_PTR, 0}, {CKA_TOKEN, NULL_PTR, 0}, {CKA_PRIVATE, NULL_PTR, 0},
+      {CKA_ID, NULL_PTR, 0},    {CKA_LABEL, NULL_PTR, 0}, {CKA_KEY_TYPE, NULL_PTR, 0},
+  };
+
+  switch (objClass) {
+  case CKO_CERTIFICATE:
+    sizeAttrs[5].type = CKA_CERTIFICATE_TYPE;
+    break;
+  case CKO_PUBLIC_KEY:
+  case CKO_PRIVATE_KEY:
+  case OBJECT_CLASS_SECRET_KEY_HANDLE:
+    break;
+  default:
+    CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid object class");
+  }
+
+  CK_RV rv = C_GetAttributeValue(hSession, hObject, sizeAttrs, sizeof(sizeAttrs) / sizeof(sizeAttrs[0]));
+  if (rv != CKR_OK)
+    CNK_RETURN(rv, "failed to query object size attributes");
+
+  CK_ULONG size = 0;
+  for (CK_ULONG i = 0; i < sizeof(sizeAttrs) / sizeof(sizeAttrs[0]); i++) {
+    if (sizeAttrs[i].ulValueLen == CK_UNAVAILABLE_INFORMATION)
+      continue;
+    size += sizeof(CK_ATTRIBUTE) + sizeAttrs[i].ulValueLen;
+  }
+
+  if (objClass == CKO_PUBLIC_KEY) {
+    CK_ULONG baseSize = size;
+    CK_ATTRIBUTE publicAttrs[] = {
+        {CKA_MODULUS, NULL_PTR, 0},   {CKA_PUBLIC_EXPONENT, NULL_PTR, 0}, {CKA_EC_POINT, NULL_PTR, 0},
+        {CKA_EC_PARAMS, NULL_PTR, 0}, {CKA_MODULUS_BITS, NULL_PTR, 0},
+    };
+    rv = C_GetAttributeValue(hSession, hObject, publicAttrs, sizeof(publicAttrs) / sizeof(publicAttrs[0]));
+    if (rv != CKR_OK && rv != CKR_ATTRIBUTE_TYPE_INVALID && rv != CKR_ATTRIBUTE_VALUE_INVALID)
+      CNK_RETURN(rv, "failed to query public object size attributes");
+    for (CK_ULONG i = 0; i < sizeof(publicAttrs) / sizeof(publicAttrs[0]); i++) {
+      if (publicAttrs[i].ulValueLen != CK_UNAVAILABLE_INFORMATION)
+        size += sizeof(CK_ATTRIBUTE) + publicAttrs[i].ulValueLen;
+    }
+    if (size == baseSize)
+      CNK_RETURN(rv, "failed to find any public object size attributes");
+  } else if (objClass == CKO_CERTIFICATE) {
+    CK_ATTRIBUTE certValue = {CKA_VALUE, NULL_PTR, 0};
+    rv = C_GetAttributeValue(hSession, hObject, &certValue, 1);
+    if (rv != CKR_OK)
+      CNK_RETURN(rv, "failed to query certificate value size");
+    size += sizeof(CK_ATTRIBUTE) + certValue.ulValueLen;
+  } else if (objClass == OBJECT_CLASS_SECRET_KEY_HANDLE) {
+    CK_ATTRIBUTE secretAttrs[] = {
+        {CKA_VALUE_LEN, NULL_PTR, 0}, {CKA_SENSITIVE, NULL_PTR, 0}, {CKA_EXTRACTABLE, NULL_PTR, 0},
+        {CKA_ENCRYPT, NULL_PTR, 0},   {CKA_DECRYPT, NULL_PTR, 0},   {CKA_SIGN, NULL_PTR, 0},
+        {CKA_VERIFY, NULL_PTR, 0},    {CKA_WRAP, NULL_PTR, 0},      {CKA_UNWRAP, NULL_PTR, 0},
+        {CKA_DERIVE, NULL_PTR, 0},
+    };
+    rv = C_GetAttributeValue(hSession, hObject, secretAttrs, sizeof(secretAttrs) / sizeof(secretAttrs[0]));
+    if (rv != CKR_OK)
+      CNK_RETURN(rv, "failed to query secret object size attributes");
+    for (CK_ULONG i = 0; i < sizeof(secretAttrs) / sizeof(secretAttrs[0]); i++) {
+      if (secretAttrs[i].ulValueLen != CK_UNAVAILABLE_INFORMATION)
+        size += sizeof(CK_ATTRIBUTE) + secretAttrs[i].ulValueLen;
+    }
+  }
+
+  *pulSize = size;
+  CNK_RET_OK;
 }
 
 CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
@@ -1040,8 +1109,17 @@ CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
                           CK_ULONG ulCount) {
   CNK_LOG_FUNC(": hSession: %lu, hObject: %lu, pTemplate: %p, ulCount: %lu", hSession, hObject, pTemplate, ulCount);
   CNK_ENSURE_INITIALIZED();
+  if (ulCount > 0)
+    CNK_ENSURE_NONNULL(pTemplate);
 
-  CNK_RET_NOT_IMPLEMENTED;
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  CNK_ENSURE_OK(CNK_ValidateObject(hObject, session, 0, NULL));
+
+  if (ulCount == 0)
+    CNK_RET_OK;
+
+  CNK_RETURN(CKR_ATTRIBUTE_READ_ONLY, "PIV object attributes are read-only");
 }
 
 CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
@@ -1395,8 +1473,32 @@ static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algori
     break;
   }
 
+  case CKA_VERIFY_RECOVER: {
+    CK_BBOOL value = CK_FALSE;
+    rv = setSingleAttributeValue(attribute, &value, sizeof(value));
+    break;
+  }
+
   case CKA_ENCRYPT: {
     // Public-key encryption is not implemented by this module.
+    CK_BBOOL value = CK_FALSE;
+    rv = setSingleAttributeValue(attribute, &value, sizeof(value));
+    break;
+  }
+
+  case CKA_WRAP: {
+    CK_BBOOL value = CK_FALSE;
+    rv = setSingleAttributeValue(attribute, &value, sizeof(value));
+    break;
+  }
+
+  case CKA_DERIVE: {
+    CK_BBOOL value = CK_FALSE;
+    rv = setSingleAttributeValue(attribute, &value, sizeof(value));
+    break;
+  }
+
+  case CKA_LOCAL: {
     CK_BBOOL value = CK_FALSE;
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
@@ -1554,6 +1656,12 @@ static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algor
     break;
   }
 
+  case CKA_SIGN_RECOVER: {
+    CK_BBOOL value = CK_FALSE;
+    rv = setSingleAttributeValue(attribute, &value, sizeof(value));
+    break;
+  }
+
   case CKA_DECRYPT: {
     // Only RSA private keys can decrypt
     CK_BBOOL value = (key_type == CKK_RSA) ? CK_TRUE : CK_FALSE;
@@ -1563,6 +1671,18 @@ static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algor
 
   case CKA_ENCRYPT: {
     // Private keys cannot encrypt
+    CK_BBOOL value = CK_FALSE;
+    rv = setSingleAttributeValue(attribute, &value, sizeof(value));
+    break;
+  }
+
+  case CKA_UNWRAP: {
+    CK_BBOOL value = CK_FALSE;
+    rv = setSingleAttributeValue(attribute, &value, sizeof(value));
+    break;
+  }
+
+  case CKA_ALWAYS_AUTHENTICATE: {
     CK_BBOOL value = CK_FALSE;
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
@@ -1578,6 +1698,18 @@ static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algor
 
   case CKA_EXTRACTABLE: {
     // Private keys on PIV are never extractable
+    CK_BBOOL value = CK_FALSE;
+    rv = setSingleAttributeValue(attribute, &value, sizeof(value));
+    break;
+  }
+
+  case CKA_NEVER_EXTRACTABLE: {
+    CK_BBOOL value = CK_TRUE;
+    rv = setSingleAttributeValue(attribute, &value, sizeof(value));
+    break;
+  }
+
+  case CKA_LOCAL: {
     CK_BBOOL value = CK_FALSE;
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
