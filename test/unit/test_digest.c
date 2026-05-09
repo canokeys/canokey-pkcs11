@@ -9,6 +9,7 @@
 #include "internal/logging.h"
 #include "pkcs11.h"
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
