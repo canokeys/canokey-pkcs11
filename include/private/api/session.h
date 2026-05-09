@@ -15,8 +15,35 @@ typedef enum {
   SESSION_STATE_RW_SO
 } SessionState;
 
-// Maximum number of objects that can be found (6 PIV slots x cert/public/private)
-#define MAX_FIND_OBJECTS 18
+// Maximum number of session-only secret keys, currently produced by C_DeriveKey.
+#define MAX_SESSION_SECRET_KEYS 8
+
+// Maximum number of objects that can be found (6 PIV slots x cert/public/private + session secrets)
+#define MAX_FIND_OBJECTS (18 + MAX_SESSION_SECRET_KEYS)
+
+// Session secret object IDs are kept outside the PIV object ID range.
+#define CNK_SESSION_SECRET_KEY_FIRST_ID 0x80
+
+typedef struct {
+  CK_BBOOL active;
+  CK_BYTE id;
+  CK_KEY_TYPE keyType;
+  CK_BYTE value[128];
+  CK_ULONG valueLen;
+  CK_BBOOL extractable;
+  CK_BBOOL sensitive;
+  CK_BBOOL token;
+  CK_BBOOL private;
+  CK_BBOOL encrypt;
+  CK_BBOOL decrypt;
+  CK_BBOOL sign;
+  CK_BBOOL verify;
+  CK_BBOOL wrap;
+  CK_BBOOL unwrap;
+  CK_BBOOL derive;
+  CK_BYTE label[64];
+  CK_ULONG labelLen;
+} CNK_PKCS11_SECRET_KEY_OBJECT;
 
 typedef struct {
   CK_OBJECT_HANDLE hKey;
@@ -68,6 +95,8 @@ typedef struct CNK_PKCS11_SESSION {
   CNK_PKCS11_SIGNING_CONTEXT signingContext;
   CNK_PKCS11_DECRYPTING_CONTEXT decryptingContext;
   CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
+  CNK_PKCS11_SECRET_KEY_OBJECT secretKeys[MAX_SESSION_SECRET_KEYS];
+  CK_BYTE nextSecretKeyId;
 } CNK_PKCS11_SESSION;
 
 // Initialize the session manager

@@ -783,7 +783,7 @@ CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
 }
 
 static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType,
-                                              CK_BYTE pivSlot, CK_BYTE_PTR pData, CK_ULONG cbDataLen,
+                                              CK_BYTE pivSlot, CK_BYTE inputTag, CK_BYTE_PTR pData, CK_ULONG cbDataLen,
                                               CK_BYTE_PTR pOutput, CK_ULONG_PTR pcbOutput, const char *operationName) {
   SCARDHANDLE hCard = 0;
   CK_RV rv = CKR_OK;
@@ -824,8 +824,8 @@ static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESS
   tlv_data[tlv_len++] = 0x82;
   tlv_data[tlv_len++] = 0x00;
 
-  // Add the Challenge tag (0x81) with the raw input data
-  tlv_data[tlv_len++] = 0x81;
+  // Add the operation input tag with the raw input data.
+  tlv_data[tlv_len++] = inputTag;
 
   // Encode the length of the input data
   if (cbDataLen > 255) {
@@ -1015,8 +1015,15 @@ static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESS
 CK_RV cnk_piv_decrypt(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pEncryptedData,
                       CK_ULONG cbEncryptedData, CK_BYTE_PTR pRawData, CK_ULONG_PTR pcbRawData) {
   return cnk_piv_general_authenticate_raw(slotId, pSession, pSession->decryptingContext.algorithmType,
-                                          pSession->decryptingContext.pivSlot, pEncryptedData, cbEncryptedData,
+                                          pSession->decryptingContext.pivSlot, 0x81, pEncryptedData, cbEncryptedData,
                                           pRawData, pcbRawData, "decrypt");
+}
+
+CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
+                   CK_BYTE_PTR pPublicData, CK_ULONG cbPublicData, CK_BYTE_PTR pSharedSecret,
+                   CK_ULONG_PTR pcbSharedSecret) {
+  return cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, 0x85, pPublicData, cbPublicData,
+                                          pSharedSecret, pcbSharedSecret, "ECDH");
 }
 
 // Sign data using PIV key

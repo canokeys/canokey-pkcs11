@@ -5,6 +5,7 @@
 #include "internal/macros.h"
 #include "internal/util.h"
 
+#include <mbedtls/platform_util.h>
 #include <string.h>
 
 // Session table and related variables
@@ -61,6 +62,10 @@ static void free_session(CNK_PKCS11_SESSION *session) {
 
   ck_free(session->signingContext.mechanism.pParameter);
   ck_free(session->decryptingContext.mechanism.pParameter);
+  for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
+    if (session->secretKeys[i].active)
+      mbedtls_platform_zeroize(session->secretKeys[i].value, sizeof(session->secretKeys[i].value));
+  }
   cnk_mutex_destroy(&session->lock);
   ck_free(session);
 }
@@ -223,6 +228,7 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
   // Initialize PIN fields
   memset(session->pin, 0xFF, sizeof(session->pin));
   session->cbPin = 0;
+  session->nextSecretKeyId = CNK_SESSION_SECRET_KEY_FIRST_ID;
 
   // Initialize the session mutex
   rv = cnk_mutex_create(&session->lock);

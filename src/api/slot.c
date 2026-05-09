@@ -230,6 +230,7 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
       CKM_ECDSA_SHA3_256,        // ECDSA with SHA3-256
       CKM_ECDSA_SHA3_384,        // ECDSA with SHA3-384
       CKM_ECDSA_SHA3_512,        // ECDSA with SHA3-512
+      CKM_ECDH1_DERIVE,          // ECDH key agreement
       CKM_SHA_1,
       CKM_SHA224,
       CKM_SHA256,
@@ -329,6 +330,12 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   case CKM_ECDSA_SHA3_384:
   case CKM_ECDSA_SHA3_512:
     pInfo->flags = CKF_HW | CKF_SIGN | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_NAMEDCURVE;
+    pInfo->ulMinKeySize = 256;
+    pInfo->ulMaxKeySize = 384;
+    break;
+
+  case CKM_ECDH1_DERIVE:
+    pInfo->flags = CKF_HW | CKF_DERIVE | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_UNCOMPRESS;
     pInfo->ulMinKeySize = 256;
     pInfo->ulMaxKeySize = 384;
     break;

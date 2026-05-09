@@ -33,6 +33,8 @@
 #define OBJECT_SLOT_SHIFT 16
 #define OBJECT_CLASS_SHIFT 8
 
+#define OBJECT_CLASS_SECRET_KEY_HANDLE ((CK_OBJECT_CLASS)CKO_SECRET_KEY)
+
 // PIV slot to tag mapping
 typedef struct {
   CK_BYTE objId;
@@ -167,6 +169,15 @@ static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algori
 static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithmType);
 
 /**
+ * @brief Handle session secret-key attributes
+ *
+ * @param attribute The attribute to handle
+ * @param secret The session secret-key object
+ * @return CK_RV CKR_OK on success, error code otherwise
+ */
+static CK_RV handleSecretKeyAttribute(CK_ATTRIBUTE_PTR attribute, const CNK_PKCS11_SECRET_KEY_OBJECT *secret);
+
+/**
  * @brief Check if an object matches a template
  *
  * @param hSession Session handle
@@ -182,7 +193,44 @@ static CK_OBJECT_HANDLE makeObjectHandle(CK_SLOT_ID slotId, CK_OBJECT_CLASS obje
   return (slotId << OBJECT_SLOT_SHIFT) | (objectClass << OBJECT_CLASS_SHIFT) | objectId;
 }
 
-static CK_RV checkObjectExists(CK_SLOT_ID slotId, CK_OBJECT_CLASS objectClass, CK_BYTE objectId, CK_BBOOL *exists) {
+CK_OBJECT_HANDLE CNK_MakeObjectHandle(CK_SLOT_ID slotId, CK_OBJECT_CLASS objectClass, CK_BYTE objectId) {
+  return makeObjectHandle(slotId, objectClass, objectId);
+}
+
+static CNK_PKCS11_SECRET_KEY_OBJECT *findSessionSecretKey(CNK_PKCS11_SESSION *session, CK_BYTE objId) {
+  if (session == NULL)
+    return NULL;
+
+  for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
+    if (session->secretKeys[i].active && session->secretKeys[i].id == objId)
+      return &session->secretKeys[i];
+  }
+
+  return NULL;
+}
+
+static CK_BBOOL isSessionSecretHandle(CNK_PKCS11_SESSION *session, CK_OBJECT_HANDLE hObject,
+                                      CNK_PKCS11_SECRET_KEY_OBJECT **secret) {
+  CK_SLOT_ID slotId;
+  CK_OBJECT_CLASS objClass;
+  CK_BYTE objId;
+
+  extractObjectInfo(hObject, &slotId, &objClass, &objId);
+  if (slotId != session->slotId || objClass != OBJECT_CLASS_SECRET_KEY_HANDLE)
+    return CK_FALSE;
+
+  CNK_PKCS11_SECRET_KEY_OBJECT *found = findSessionSecretKey(session, objId);
+  if (found == NULL)
+    return CK_FALSE;
+
+  if (secret != NULL)
+    *secret = found;
+  return CK_TRUE;
+}
+
+static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS objectClass, CK_BYTE objectId,
+                                  CK_BBOOL *exists) {
+  CK_SLOT_ID slotId = session->slotId;
   CK_BYTE pivTag;
   CK_RV rv;
 
@@ -234,14 +282,14 @@ static CK_RV checkObjectExists(CK_SLOT_ID slotId, CK_OBJECT_CLASS objectClass, C
   }
 }
 
-static CK_RV appendMatchingObjects(CNK_PKCS11_SESSION *session, CK_SESSION_HANDLE hSession, CK_OBJECT_CLASS objectClass,
-                                   CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
+static CK_RV appendMatchingPivObjects(CNK_PKCS11_SESSION *session, CK_SESSION_HANDLE hSession,
+                                      CK_OBJECT_CLASS objectClass, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
   CK_BYTE firstId = session->findIdSpecified ? session->findObjectId : 1;
   CK_BYTE lastId = session->findIdSpecified ? session->findObjectId : 6;
 
   for (CK_BYTE id = firstId; id <= lastId; id++) {
     CK_BBOOL exists;
-    CK_RV rv = checkObjectExists(session->slotId, objectClass, id, &exists);
+    CK_RV rv = checkPivObjectExists(session, objectClass, id, &exists);
     if (rv != CKR_OK) {
       return rv;
     }
@@ -254,6 +302,28 @@ static CK_RV appendMatchingObjects(CNK_PKCS11_SESSION *session, CK_SESSION_HANDL
       if (session->findObjectsCount >= MAX_FIND_OBJECTS) {
         return CKR_HOST_MEMORY;
       }
+      session->findObjects[session->findObjectsCount++] = hObject;
+    }
+  }
+
+  return CKR_OK;
+}
+
+static CK_RV appendMatchingSecretObjects(CNK_PKCS11_SESSION *session, CK_SESSION_HANDLE hSession,
+                                         CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
+  for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
+    if (!session->secretKeys[i].active)
+      continue;
+
+    CK_BYTE id = session->secretKeys[i].id;
+    if (session->findIdSpecified && session->findObjectId != id)
+      continue;
+
+    CK_OBJECT_HANDLE hObject = makeObjectHandle(session->slotId, CKO_SECRET_KEY, id);
+    if (ulCount == 0 || matchTemplate(hSession, hObject, pTemplate, ulCount)) {
+      if (session->findObjectsCount >= MAX_FIND_OBJECTS)
+        return CKR_HOST_MEMORY;
+
       session->findObjects[session->findObjectsCount++] = hObject;
     }
   }
@@ -305,7 +375,10 @@ CK_RV CNK_ValidateObject(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, 
   // Extract object information from the handle
   CK_SLOT_ID slot_id;
   CK_OBJECT_CLASS obj_class;
-  extractObjectInfo(hObject, &slot_id, &obj_class, objId);
+  CK_BYTE localObjId;
+  extractObjectInfo(hObject, &slot_id, &obj_class, &localObjId);
+  if (objId != NULL)
+    *objId = localObjId;
 
   // Verify the slot ID matches the session's slot ID
   if (slot_id != session->slotId) {
@@ -317,6 +390,12 @@ CK_RV CNK_ValidateObject(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, 
   if (expectedClass != 0 && obj_class != expectedClass) {
     CNK_ERROR("Object class mismatch: expected=0x%08lX, actual=0x%08lX", expectedClass, obj_class);
     return CKR_KEY_TYPE_INCONSISTENT;
+  }
+
+  if (obj_class == OBJECT_CLASS_SECRET_KEY_HANDLE) {
+    if (findSessionSecretKey(session, localObjId) == NULL)
+      return CKR_OBJECT_HANDLE_INVALID;
+    return CKR_OK;
   }
 
   return CKR_OK;
@@ -366,6 +445,45 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   // Validate session
   CNK_PKCS11_SESSION *session;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+
+  CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
+  if (isSessionSecretHandle(session, hObject, &secret)) {
+    CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
+    CK_RV rvReturn = CKR_OK;
+
+    for (CK_ULONG i = 0; i < ulCount; i++) {
+      CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
+
+      switch (pTemplate[i].type) {
+      case CKA_CLASS:
+        rv = setSingleAttributeValue(&pTemplate[i], &secretClass, sizeof(secretClass));
+        break;
+      case CKA_TOKEN:
+        rv = setSingleAttributeValue(&pTemplate[i], &secret->token, sizeof(secret->token));
+        break;
+      case CKA_PRIVATE:
+        rv = setSingleAttributeValue(&pTemplate[i], &secret->private, sizeof(secret->private));
+        break;
+      case CKA_ID:
+        rv = setSingleAttributeValue(&pTemplate[i], &secret->id, sizeof(secret->id));
+        break;
+      case CKA_LABEL:
+        rv = setSingleAttributeValue(&pTemplate[i], secret->label, secret->labelLen);
+        break;
+      default:
+        rv = handleSecretKeyAttribute(&pTemplate[i], secret);
+        break;
+      }
+
+      if (rv != CKR_OK) {
+        pTemplate[i].ulValueLen = CK_UNAVAILABLE_INFORMATION;
+        if (rvReturn == CKR_OK)
+          rvReturn = rv;
+      }
+    }
+
+    CNK_RETURN(rvReturn, "Finished secret-key attributes");
+  }
 
   // Extract and validate object information
   CK_OBJECT_CLASS objClass;
@@ -556,26 +674,41 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
 
   // Check if the specified class is supported
   if (session->findClassSpecified && session->findObjectClass != CKO_CERTIFICATE &&
-      session->findObjectClass != CKO_PUBLIC_KEY && session->findObjectClass != CKO_PRIVATE_KEY) {
+      session->findObjectClass != CKO_PUBLIC_KEY && session->findObjectClass != CKO_PRIVATE_KEY &&
+      session->findObjectClass != CKO_SECRET_KEY) {
     cnk_mutex_unlock(&session->lock);
     CNK_RET_OK; // Return OK but with no results
   }
 
-  if (session->findIdSpecified && (session->findObjectId < 1 || session->findObjectId > 6)) {
+  if (session->findIdSpecified && session->findObjectId < 1) {
     cnk_mutex_unlock(&session->lock);
     CNK_RET_OK; // Return OK but with no results
   }
 
   if (session->findClassSpecified) {
-    rv = appendMatchingObjects(session, hSession, session->findObjectClass, pTemplate, ulCount);
+    if (session->findObjectClass == CKO_SECRET_KEY) {
+      rv = appendMatchingSecretObjects(session, hSession, pTemplate, ulCount);
+    } else {
+      if (session->findIdSpecified && session->findObjectId > 6) {
+        rv = CKR_OK;
+      } else {
+        rv = appendMatchingPivObjects(session, hSession, session->findObjectClass, pTemplate, ulCount);
+      }
+    }
   } else {
     static const CK_OBJECT_CLASS searchableClasses[] = {CKO_CERTIFICATE, CKO_PUBLIC_KEY, CKO_PRIVATE_KEY};
     for (CK_ULONG i = 0; i < sizeof(searchableClasses) / sizeof(searchableClasses[0]); i++) {
-      rv = appendMatchingObjects(session, hSession, searchableClasses[i], pTemplate, ulCount);
+      if (session->findIdSpecified && session->findObjectId > 6) {
+        rv = CKR_OK;
+      } else {
+        rv = appendMatchingPivObjects(session, hSession, searchableClasses[i], pTemplate, ulCount);
+      }
       if (rv != CKR_OK) {
         break;
       }
     }
+    if (rv == CKR_OK)
+      rv = appendMatchingSecretObjects(session, hSession, pTemplate, ulCount);
   }
 
   if (rv != CKR_OK) {
@@ -944,6 +1077,53 @@ static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algori
   }
 
   return rv;
+}
+
+static CK_RV handleSecretKeyAttribute(CK_ATTRIBUTE_PTR attribute, const CNK_PKCS11_SECRET_KEY_OBJECT *secret) {
+  CNK_LOG_FUNC(" attribute = %d", attribute->type);
+
+  switch (attribute->type) {
+  case CKA_KEY_TYPE:
+    return setSingleAttributeValue(attribute, &secret->keyType, sizeof(secret->keyType));
+
+  case CKA_VALUE:
+    if (secret->sensitive)
+      return CKR_ATTRIBUTE_SENSITIVE;
+    return setSingleAttributeValue(attribute, secret->value, secret->valueLen);
+
+  case CKA_VALUE_LEN:
+    return setSingleAttributeValue(attribute, &secret->valueLen, sizeof(secret->valueLen));
+
+  case CKA_SENSITIVE:
+    return setSingleAttributeValue(attribute, &secret->sensitive, sizeof(secret->sensitive));
+
+  case CKA_EXTRACTABLE:
+    return setSingleAttributeValue(attribute, &secret->extractable, sizeof(secret->extractable));
+
+  case CKA_ENCRYPT:
+    return setSingleAttributeValue(attribute, &secret->encrypt, sizeof(secret->encrypt));
+
+  case CKA_DECRYPT:
+    return setSingleAttributeValue(attribute, &secret->decrypt, sizeof(secret->decrypt));
+
+  case CKA_SIGN:
+    return setSingleAttributeValue(attribute, &secret->sign, sizeof(secret->sign));
+
+  case CKA_VERIFY:
+    return setSingleAttributeValue(attribute, &secret->verify, sizeof(secret->verify));
+
+  case CKA_WRAP:
+    return setSingleAttributeValue(attribute, &secret->wrap, sizeof(secret->wrap));
+
+  case CKA_UNWRAP:
+    return setSingleAttributeValue(attribute, &secret->unwrap, sizeof(secret->unwrap));
+
+  case CKA_DERIVE:
+    return setSingleAttributeValue(attribute, &secret->derive, sizeof(secret->derive));
+
+  default:
+    return CKR_ATTRIBUTE_TYPE_INVALID;
+  }
 }
 
 // Handle private key specific attributes

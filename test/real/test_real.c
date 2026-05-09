@@ -502,6 +502,7 @@ void test_certificate_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID 
 void test_decryption(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_rsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_ecdsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
+void test_ecdh_derivation(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_management_challenge(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 
 // Verification function declarations
@@ -1009,6 +1010,112 @@ cleanup:
   mbedtls_mpi_free(&r);
   mbedtls_mpi_free(&s);
   mbedtls_ecp_point_free(&Q);
+  mbedtls_ecp_group_free(&grp);
+  return rv;
+}
+
+static CK_RV load_ec_group_from_params(CK_BYTE_PTR ec_params, CK_ULONG ec_params_len, mbedtls_ecp_group *grp,
+                                       CK_ULONG_PTR pCoordinateLen) {
+  mbedtls_ecp_group_id grp_id = MBEDTLS_ECP_DP_NONE;
+
+  if (ec_params_len == 10 && memcmp(ec_params, "\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x07", 10) == 0) {
+    grp_id = MBEDTLS_ECP_DP_SECP256R1;
+    *pCoordinateLen = 32;
+  } else if (ec_params_len == 7 && memcmp(ec_params, "\x06\x05\x2b\x81\x04\x00\x22", 7) == 0) {
+    grp_id = MBEDTLS_ECP_DP_SECP384R1;
+    *pCoordinateLen = 48;
+  } else if (ec_params_len == 7 && memcmp(ec_params, "\x06\x05\x2b\x81\x04\x00\x0a", 7) == 0) {
+    grp_id = MBEDTLS_ECP_DP_SECP256K1;
+    *pCoordinateLen = 32;
+  } else {
+    return CKR_CURVE_NOT_SUPPORTED;
+  }
+
+  int ret = mbedtls_ecp_group_load(grp, grp_id);
+  if (ret != 0) {
+    printf("    Failed to load ECP group for ECDH: -0x%04x\n", (unsigned int)-ret);
+    return CKR_GENERAL_ERROR;
+  }
+
+  return CKR_OK;
+}
+
+static CK_RV ec_point_value(CK_BYTE_PTR ec_point, CK_ULONG ec_point_len, CK_BYTE_PTR point, CK_ULONG_PTR pPointLen) {
+  if (ec_point == NULL || point == NULL || pPointLen == NULL)
+    return CKR_ARGUMENTS_BAD;
+
+  if (ec_point_len == 0 || ec_point[0] != 0x04)
+    return CKR_ATTRIBUTE_VALUE_INVALID;
+
+  const CK_BYTE *p = ec_point;
+  CK_ULONG pointLen = ec_point_len;
+  if (ec_point_len >= 3 && ec_point[1] == ec_point_len - 2 && ec_point[2] == 0x04) {
+    p += 2;
+    pointLen -= 2;
+  }
+
+  if (*pPointLen < pointLen) {
+    *pPointLen = pointLen;
+    return CKR_BUFFER_TOO_SMALL;
+  }
+
+  memcpy(point, p, pointLen);
+  *pPointLen = pointLen;
+  return CKR_OK;
+}
+
+static CK_RV compute_ecdh_expected_secret(CK_BYTE_PTR ec_params, CK_ULONG ec_params_len, CK_BYTE_PTR cardPoint,
+                                          CK_ULONG cardPointLen, mbedtls_mpi *ephemeralPrivate, CK_BYTE_PTR secret,
+                                          CK_ULONG_PTR pSecretLen) {
+  CK_RV rv;
+  int ret;
+  CK_ULONG coordinateLen = 0;
+  mbedtls_ecp_group grp;
+  mbedtls_ecp_point cardQ;
+  mbedtls_ecp_point shared;
+
+  mbedtls_ecp_group_init(&grp);
+  mbedtls_ecp_point_init(&cardQ);
+  mbedtls_ecp_point_init(&shared);
+
+  rv = load_ec_group_from_params(ec_params, ec_params_len, &grp, &coordinateLen);
+  if (rv != CKR_OK)
+    goto cleanup;
+
+  ret = mbedtls_ecp_point_read_binary(&grp, &cardQ, cardPoint, cardPointLen);
+  if (ret != 0) {
+    printf("    Failed to read card ECDH public point: -0x%04x\n", (unsigned int)-ret);
+    rv = CKR_GENERAL_ERROR;
+    goto cleanup;
+  }
+
+  unsigned int rngState = 0x31415926u;
+  ret = mbedtls_ecp_mul(&grp, &shared, ephemeralPrivate, &cardQ, cnk_test_rng, &rngState);
+  if (ret != 0) {
+    printf("    Software ECDH multiply failed: -0x%04x\n", (unsigned int)-ret);
+    rv = CKR_GENERAL_ERROR;
+    goto cleanup;
+  }
+
+  if (*pSecretLen < coordinateLen) {
+    *pSecretLen = coordinateLen;
+    rv = CKR_BUFFER_TOO_SMALL;
+    goto cleanup;
+  }
+
+  ret = mbedtls_mpi_write_binary(&shared.X, secret, coordinateLen);
+  if (ret != 0) {
+    printf("    Failed to write software ECDH X coordinate: -0x%04x\n", (unsigned int)-ret);
+    rv = CKR_GENERAL_ERROR;
+    goto cleanup;
+  }
+
+  *pSecretLen = coordinateLen;
+  rv = CKR_OK;
+
+cleanup:
+  mbedtls_ecp_point_free(&shared);
+  mbedtls_ecp_point_free(&cardQ);
   mbedtls_ecp_group_free(&grp);
   return rv;
 }
@@ -2316,6 +2423,201 @@ void test_ecdsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
   pFunctionList->C_CloseSession(signSession);
 }
 
+void test_ecdh_derivation(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
+  CK_RV rv;
+  CK_ULONG mechCount = 0;
+  int hasEcdh = 0;
+
+  rv = pFunctionList->C_GetMechanismList(slotID, NULL, &mechCount);
+  if (rv == CKR_OK && mechCount > 0) {
+    CK_MECHANISM_TYPE_PTR mechList = (CK_MECHANISM_TYPE_PTR)malloc(mechCount * sizeof(CK_MECHANISM_TYPE));
+    if (mechList != NULL) {
+      rv = pFunctionList->C_GetMechanismList(slotID, mechList, &mechCount);
+      if (rv == CKR_OK) {
+        for (CK_ULONG i = 0; i < mechCount; i++) {
+          if (mechList[i] == CKM_ECDH1_DERIVE) {
+            hasEcdh = 1;
+            break;
+          }
+        }
+      }
+      free(mechList);
+    }
+  }
+
+  if (!hasEcdh) {
+    printf("    ECDH derive mechanism not available, skipping.\n");
+    return;
+  }
+
+  printf("    Running ECDH derivation tests...\n");
+
+  CK_SESSION_HANDLE deriveSession;
+  rv = pFunctionList->C_OpenSession(slotID, CKF_SERIAL_SESSION, NULL, NULL, &deriveSession);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Error opening ECDH derive session", rv);
+    return;
+  }
+
+  rv = perform_login(pFunctionList, deriveSession);
+  if (rv != CKR_OK) {
+    pFunctionList->C_CloseSession(deriveSession);
+    return;
+  }
+
+  CK_BYTE keyId = 2;
+  CK_KEY_TYPE ecKeyType = CKK_EC;
+  CK_OBJECT_HANDLE hEcPrivateKey;
+  rv = find_object(pFunctionList, deriveSession, CKO_PRIVATE_KEY, &ecKeyType, &keyId, sizeof(keyId), &hEcPrivateKey);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Could not find 9C EC private key for ECDH", rv);
+    goto cleanup_session;
+  }
+
+  CK_BBOOL deriveAttr = CK_FALSE;
+  CK_ATTRIBUTE deriveTemplate = {CKA_DERIVE, &deriveAttr, sizeof(deriveAttr)};
+  rv = pFunctionList->C_GetAttributeValue(deriveSession, hEcPrivateKey, &deriveTemplate, 1);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Could not read EC private key CKA_DERIVE", rv);
+    goto cleanup_session;
+  }
+  if (!deriveAttr) {
+    record_real_test_failure("EC private key does not advertise CKA_DERIVE", CKR_GENERAL_ERROR);
+    goto cleanup_session;
+  }
+
+  CK_OBJECT_HANDLE hEcPublicKey;
+  rv = find_object(pFunctionList, deriveSession, CKO_PUBLIC_KEY, &ecKeyType, &keyId, sizeof(keyId), &hEcPublicKey);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Could not find 9C EC public key for ECDH", rv);
+    goto cleanup_session;
+  }
+
+  CK_BYTE ecParams[32];
+  CK_BYTE ecPointAttr[256];
+  CK_ATTRIBUTE publicAttrs[] = {
+      {CKA_EC_PARAMS, ecParams, sizeof(ecParams)},
+      {CKA_EC_POINT, ecPointAttr, sizeof(ecPointAttr)},
+  };
+  rv = pFunctionList->C_GetAttributeValue(deriveSession, hEcPublicKey, publicAttrs, 2);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Could not read 9C EC public key attributes", rv);
+    goto cleanup_session;
+  }
+
+  CK_ULONG ecParamsLen = publicAttrs[0].ulValueLen;
+  CK_ULONG ecPointAttrLen = publicAttrs[1].ulValueLen;
+  CK_BYTE cardPoint[133];
+  CK_ULONG cardPointLen = sizeof(cardPoint);
+  rv = ec_point_value(ecPointAttr, ecPointAttrLen, cardPoint, &cardPointLen);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Could not unwrap 9C EC point", rv);
+    goto cleanup_session;
+  }
+
+  mbedtls_ecp_group grp;
+  mbedtls_mpi ephemeralPrivate;
+  mbedtls_ecp_point ephemeralPublic;
+  CK_ULONG coordinateLen = 0;
+  mbedtls_ecp_group_init(&grp);
+  mbedtls_mpi_init(&ephemeralPrivate);
+  mbedtls_ecp_point_init(&ephemeralPublic);
+
+  rv = load_ec_group_from_params(ecParams, ecParamsLen, &grp, &coordinateLen);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Could not load EC group for ECDH", rv);
+    goto cleanup_ecp;
+  }
+
+  unsigned int rngState = 0x5eedecdu;
+  int ret = mbedtls_ecp_gen_keypair(&grp, &ephemeralPrivate, &ephemeralPublic, cnk_test_rng, &rngState);
+  if (ret != 0) {
+    printf("    Failed to generate software ECDH keypair: -0x%04x\n", (unsigned int)-ret);
+    record_real_test_failure("Software ECDH keypair generation failed", CKR_GENERAL_ERROR);
+    goto cleanup_ecp;
+  }
+
+  CK_BYTE peerPublicData[133];
+  size_t peerPublicDataLen = 0;
+  ret = mbedtls_ecp_point_write_binary(&grp, &ephemeralPublic, MBEDTLS_ECP_PF_UNCOMPRESSED, &peerPublicDataLen,
+                                       peerPublicData, sizeof(peerPublicData));
+  if (ret != 0) {
+    printf("    Failed to encode software ECDH public key: -0x%04x\n", (unsigned int)-ret);
+    record_real_test_failure("Software ECDH public key encoding failed", CKR_GENERAL_ERROR);
+    goto cleanup_ecp;
+  }
+
+  CK_BYTE expectedSecret[64];
+  CK_ULONG expectedSecretLen = sizeof(expectedSecret);
+  rv = compute_ecdh_expected_secret(ecParams, ecParamsLen, cardPoint, cardPointLen, &ephemeralPrivate, expectedSecret,
+                                    &expectedSecretLen);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Software ECDH expected secret computation failed", rv);
+    goto cleanup_ecp;
+  }
+
+  CK_ECDH1_DERIVE_PARAMS deriveParams = {CKD_NULL, 0, NULL, (CK_ULONG)peerPublicDataLen, peerPublicData};
+  CK_MECHANISM mechanism = {CKM_ECDH1_DERIVE, &deriveParams, sizeof(deriveParams)};
+  CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
+  CK_KEY_TYPE secretType = CKK_GENERIC_SECRET;
+  CK_BBOOL token = CK_FALSE;
+  CK_BBOOL sensitive = CK_FALSE;
+  CK_BBOOL extractable = CK_TRUE;
+  CK_ULONG valueLen = expectedSecretLen;
+  CK_ATTRIBUTE secretTemplate[] = {
+      {CKA_CLASS, &secretClass, sizeof(secretClass)},
+      {CKA_KEY_TYPE, &secretType, sizeof(secretType)},
+      {CKA_TOKEN, &token, sizeof(token)},
+      {CKA_SENSITIVE, &sensitive, sizeof(sensitive)},
+      {CKA_EXTRACTABLE, &extractable, sizeof(extractable)},
+      {CKA_VALUE_LEN, &valueLen, sizeof(valueLen)},
+  };
+
+  CK_OBJECT_HANDLE hDerivedKey = 0;
+  rv = pFunctionList->C_DeriveKey(deriveSession, &mechanism, hEcPrivateKey, secretTemplate,
+                                  sizeof(secretTemplate) / sizeof(secretTemplate[0]), &hDerivedKey);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Hardware ECDH C_DeriveKey failed", rv);
+    goto cleanup_ecp;
+  }
+
+  CK_OBJECT_CLASS derivedClass = 0;
+  CK_KEY_TYPE derivedType = 0;
+  CK_ULONG derivedValueLen = 0;
+  CK_BBOOL derivedToken = CK_TRUE;
+  CK_BYTE derivedSecret[64];
+  CK_ATTRIBUTE derivedAttrs[] = {
+      {CKA_CLASS, &derivedClass, sizeof(derivedClass)},  {CKA_KEY_TYPE, &derivedType, sizeof(derivedType)},
+      {CKA_TOKEN, &derivedToken, sizeof(derivedToken)},  {CKA_VALUE_LEN, &derivedValueLen, sizeof(derivedValueLen)},
+      {CKA_VALUE, derivedSecret, sizeof(derivedSecret)},
+  };
+
+  rv = pFunctionList->C_GetAttributeValue(deriveSession, hDerivedKey, derivedAttrs, 5);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Could not read derived ECDH secret attributes", rv);
+    goto cleanup_ecp;
+  }
+
+  if (derivedClass != CKO_SECRET_KEY || derivedType != CKK_GENERIC_SECRET || derivedToken != CK_FALSE ||
+      derivedValueLen != expectedSecretLen || derivedAttrs[4].ulValueLen != expectedSecretLen ||
+      memcmp(derivedSecret, expectedSecret, expectedSecretLen) != 0) {
+    record_real_test_failure("Derived ECDH secret does not match software result", CKR_GENERAL_ERROR);
+  } else {
+    printf("    ECDH derived secret matches software result (%lu bytes)\n", expectedSecretLen);
+  }
+
+cleanup_ecp:
+  mbedtls_ecp_point_free(&ephemeralPublic);
+  mbedtls_mpi_free(&ephemeralPrivate);
+  mbedtls_ecp_group_free(&grp);
+
+cleanup_session:
+  perform_logout(pFunctionList, deriveSession);
+  rv = pFunctionList->C_CloseSession(deriveSession);
+  if (rv != CKR_OK)
+    record_real_test_failure("Error closing ECDH derive session", rv);
+}
+
 void test_management_challenge(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotId) {
   CK_SESSION_HANDLE hSession;
   CK_RV rv = pFunctionList->C_OpenSession(slotId, CKF_SERIAL_SESSION, NULL, NULL, &hSession);
@@ -2430,6 +2732,9 @@ int main(int argc, char *argv[]) {
 
       // Test ECDSA signing
       test_ecdsa_signing(pFunctionList, pSlotList[i]);
+
+      // Test ECDH key derivation
+      test_ecdh_derivation(pFunctionList, pSlotList[i]);
 
       // Test auth challenge
       test_management_challenge(pFunctionList, pSlotList[i]);

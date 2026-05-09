@@ -1,9 +1,16 @@
+#include "api/object.h"
+#include "api/session.h"
 #include "backend/pcsc.h"
 #include "internal/logging.h"
+#include "internal/macros.h"
 #include "internal/util.h"
 #include "pkcs11.h"
 
+#include <mbedtls/platform_util.h>
 #include <string.h>
+
+#define CNK_MAX_ECDH_PUBLIC_DATA 133
+#define CNK_MAX_ECDH_SECRET_LEN 66
 
 CK_RV C_DigestEncryptUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart, CK_ULONG ulPartLen,
                             CK_BYTE_PTR pEncryptedPart, CK_ULONG_PTR pulEncryptedPartLen) {
@@ -71,7 +78,252 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
                   CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulAttributeCount, CK_OBJECT_HANDLE_PTR phKey) {
   CNK_LOG_FUNC(": hSession: %lu, pMechanism: %p, hBaseKey: %lu, pTemplate: %p, ulAttributeCount: %lu, phKey: %p",
                hSession, pMechanism, hBaseKey, pTemplate, ulAttributeCount, phKey);
-  CNK_RET_UNIMPL;
+
+  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pMechanism);
+  CNK_ENSURE_NONNULL(phKey);
+  if (ulAttributeCount > 0)
+    CNK_ENSURE_NONNULL(pTemplate);
+
+  if (pMechanism->mechanism != CKM_ECDH1_DERIVE)
+    CNK_RETURN(CKR_MECHANISM_INVALID, "unsupported derive mechanism");
+
+  if (pMechanism->pParameter == NULL || pMechanism->ulParameterLen != sizeof(CK_ECDH1_DERIVE_PARAMS))
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad ECDH parameters");
+
+  const CK_ECDH1_DERIVE_PARAMS *params = (const CK_ECDH1_DERIVE_PARAMS *)pMechanism->pParameter;
+  if (params->kdf != CKD_NULL)
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "only CKD_NULL is supported");
+  if (params->ulSharedDataLen > 0 || params->pSharedData != NULL)
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "shared data is not supported with CKD_NULL");
+  if (params->pPublicData == NULL || params->ulPublicDataLen == 0 || params->ulPublicDataLen > CNK_MAX_ECDH_PUBLIC_DATA)
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad peer public key data");
+
+  CNK_PKCS11_SESSION *session;
+  CK_BYTE objId;
+  CK_BYTE pivTag;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  CNK_ENSURE_OK(CNK_ValidateObject(hBaseKey, session, CKO_PRIVATE_KEY, &objId));
+  CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &pivTag));
+
+  CK_BYTE algorithmType;
+  CK_BYTE abPublicKey[512];
+  CK_ULONG cbPublicKey = sizeof(abPublicKey);
+  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey));
+
+  CK_ULONG expectedSecretLen = 0;
+  switch (algorithmType) {
+  case PIV_ALG_ECC_256:
+  case PIV_ALG_SECP256K1:
+    expectedSecretLen = 32;
+    break;
+  case PIV_ALG_ECC_384:
+    expectedSecretLen = 48;
+    break;
+  default:
+    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "base key is not a supported EC key");
+  }
+
+  if (params->ulPublicDataLen != 1 + expectedSecretLen * 2 || params->pPublicData[0] != 0x04)
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "peer public key must be an uncompressed EC point");
+
+  CK_OBJECT_CLASS objectClass = CKO_SECRET_KEY;
+  CK_KEY_TYPE keyType = CKK_GENERIC_SECRET;
+  CK_ULONG requestedValueLen = expectedSecretLen;
+  CK_BBOOL valueLenSpecified = CK_FALSE;
+  CK_BBOOL token = CK_FALSE;
+  CK_BBOOL private = CK_TRUE;
+  CK_BBOOL sensitive = CK_FALSE;
+  CK_BBOOL extractable = CK_TRUE;
+  CK_BBOOL encrypt = CK_FALSE;
+  CK_BBOOL decrypt = CK_FALSE;
+  CK_BBOOL sign = CK_FALSE;
+  CK_BBOOL verify = CK_FALSE;
+  CK_BBOOL wrap = CK_FALSE;
+  CK_BBOOL unwrap = CK_FALSE;
+  CK_BBOOL derive = CK_FALSE;
+  const CK_BYTE *label = NULL;
+  CK_ULONG labelLen = 0;
+
+  for (CK_ULONG i = 0; i < ulAttributeCount; i++) {
+    CK_ATTRIBUTE_PTR attr = &pTemplate[i];
+    if (attr->pValue == NULL) {
+      if (attr->type == CKA_LABEL && attr->ulValueLen == 0) {
+        label = NULL;
+        labelLen = 0;
+        continue;
+      }
+      CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "template attribute value is NULL");
+    }
+
+    switch (attr->type) {
+    case CKA_CLASS:
+      if (attr->ulValueLen != sizeof(CK_OBJECT_CLASS))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_CLASS size");
+      objectClass = *(CK_OBJECT_CLASS *)attr->pValue;
+      break;
+    case CKA_KEY_TYPE:
+      if (attr->ulValueLen != sizeof(CK_KEY_TYPE))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_KEY_TYPE size");
+      keyType = *(CK_KEY_TYPE *)attr->pValue;
+      break;
+    case CKA_VALUE_LEN:
+      if (attr->ulValueLen != sizeof(CK_ULONG))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_VALUE_LEN size");
+      requestedValueLen = *(CK_ULONG *)attr->pValue;
+      valueLenSpecified = CK_TRUE;
+      break;
+    case CKA_TOKEN:
+      if (attr->ulValueLen != sizeof(CK_BBOOL))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_TOKEN size");
+      token = *(CK_BBOOL *)attr->pValue;
+      break;
+    case CKA_PRIVATE:
+      if (attr->ulValueLen != sizeof(CK_BBOOL))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_PRIVATE size");
+      private = *(CK_BBOOL *)attr->pValue;
+      break;
+    case CKA_SENSITIVE:
+      if (attr->ulValueLen != sizeof(CK_BBOOL))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_SENSITIVE size");
+      sensitive = *(CK_BBOOL *)attr->pValue;
+      break;
+    case CKA_EXTRACTABLE:
+      if (attr->ulValueLen != sizeof(CK_BBOOL))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_EXTRACTABLE size");
+      extractable = *(CK_BBOOL *)attr->pValue;
+      break;
+    case CKA_ENCRYPT:
+      if (attr->ulValueLen != sizeof(CK_BBOOL))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_ENCRYPT size");
+      encrypt = *(CK_BBOOL *)attr->pValue;
+      break;
+    case CKA_DECRYPT:
+      if (attr->ulValueLen != sizeof(CK_BBOOL))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_DECRYPT size");
+      decrypt = *(CK_BBOOL *)attr->pValue;
+      break;
+    case CKA_SIGN:
+      if (attr->ulValueLen != sizeof(CK_BBOOL))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_SIGN size");
+      sign = *(CK_BBOOL *)attr->pValue;
+      break;
+    case CKA_VERIFY:
+      if (attr->ulValueLen != sizeof(CK_BBOOL))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_VERIFY size");
+      verify = *(CK_BBOOL *)attr->pValue;
+      break;
+    case CKA_WRAP:
+      if (attr->ulValueLen != sizeof(CK_BBOOL))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_WRAP size");
+      wrap = *(CK_BBOOL *)attr->pValue;
+      break;
+    case CKA_UNWRAP:
+      if (attr->ulValueLen != sizeof(CK_BBOOL))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_UNWRAP size");
+      unwrap = *(CK_BBOOL *)attr->pValue;
+      break;
+    case CKA_DERIVE:
+      if (attr->ulValueLen != sizeof(CK_BBOOL))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_DERIVE size");
+      derive = *(CK_BBOOL *)attr->pValue;
+      break;
+    case CKA_LABEL:
+      label = (const CK_BYTE *)attr->pValue;
+      labelLen = attr->ulValueLen;
+      break;
+    default:
+      CNK_RETURN(CKR_ATTRIBUTE_TYPE_INVALID, "unsupported derived key template attribute");
+    }
+  }
+
+  if (objectClass != CKO_SECRET_KEY)
+    CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "derived key must be CKO_SECRET_KEY");
+  if (keyType != CKK_GENERIC_SECRET && keyType != CKK_AES)
+    CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "only generic secret and AES derived keys are supported");
+  if (token)
+    CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "token derived keys are not supported");
+  if (requestedValueLen == 0 || requestedValueLen > expectedSecretLen || requestedValueLen > CNK_MAX_ECDH_SECRET_LEN)
+    CNK_RETURN(CKR_KEY_SIZE_RANGE, "bad derived key length");
+  if (keyType == CKK_AES && requestedValueLen != 16 && requestedValueLen != 24 && requestedValueLen != 32)
+    CNK_RETURN(CKR_KEY_SIZE_RANGE, "bad AES derived key length");
+
+  CK_ULONG secretIndex = MAX_SESSION_SECRET_KEYS;
+  for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
+    if (!session->secretKeys[i].active) {
+      secretIndex = i;
+      break;
+    }
+  }
+  if (secretIndex == MAX_SESSION_SECRET_KEYS)
+    CNK_RETURN(CKR_HOST_MEMORY, "too many session secret keys");
+
+  CK_BYTE sharedSecret[CNK_MAX_ECDH_SECRET_LEN] = {0};
+  CK_ULONG sharedSecretLen = sizeof(sharedSecret);
+  CK_RV rv = cnk_piv_ecdh(session->slotId, session, algorithmType, pivTag, params->pPublicData, params->ulPublicDataLen,
+                          sharedSecret, &sharedSecretLen);
+  if (rv != CKR_OK)
+    CNK_RETURN(rv, "PIV ECDH failed");
+  if (sharedSecretLen < requestedValueLen) {
+    mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
+    CNK_RETURN(CKR_DEVICE_ERROR, "ECDH secret shorter than requested key");
+  }
+
+  CNK_PKCS11_SECRET_KEY_OBJECT *secret = &session->secretKeys[secretIndex];
+  mbedtls_platform_zeroize(secret->value, sizeof(secret->value));
+  memset(secret, 0, sizeof(*secret));
+
+  CK_BYTE newId = session->nextSecretKeyId;
+  for (CK_ULONG attempts = 0; attempts < MAX_SESSION_SECRET_KEYS + 1; attempts++) {
+    CK_BBOOL used = CK_FALSE;
+    for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
+      if (session->secretKeys[i].active && session->secretKeys[i].id == newId) {
+        used = CK_TRUE;
+        break;
+      }
+    }
+    if (!used)
+      break;
+    newId++;
+    if (newId < CNK_SESSION_SECRET_KEY_FIRST_ID)
+      newId = CNK_SESSION_SECRET_KEY_FIRST_ID;
+  }
+
+  secret->active = CK_TRUE;
+  secret->id = newId;
+  secret->keyType = keyType;
+  secret->valueLen = requestedValueLen;
+  secret->extractable = extractable;
+  secret->sensitive = sensitive;
+  secret->token = CK_FALSE;
+  secret->private = private;
+  secret->encrypt = encrypt;
+  secret->decrypt = decrypt;
+  secret->sign = sign;
+  secret->verify = verify;
+  secret->wrap = wrap;
+  secret->unwrap = unwrap;
+  secret->derive = derive;
+
+  memcpy(secret->value, sharedSecret, requestedValueLen);
+  if (label != NULL && labelLen > 0) {
+    secret->labelLen = labelLen > sizeof(secret->label) ? sizeof(secret->label) : labelLen;
+    memcpy(secret->label, label, secret->labelLen);
+  } else {
+    const char defaultLabel[] = "PIV ECDH Shared Secret";
+    secret->labelLen = sizeof(defaultLabel) - 1;
+    memcpy(secret->label, defaultLabel, secret->labelLen);
+  }
+
+  mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
+
+  session->nextSecretKeyId = newId + 1;
+  if (session->nextSecretKeyId < CNK_SESSION_SECRET_KEY_FIRST_ID)
+    session->nextSecretKeyId = CNK_SESSION_SECRET_KEY_FIRST_ID;
+
+  *phKey = CNK_MakeObjectHandle(session->slotId, CKO_SECRET_KEY, secret->id);
+  CNK_DEBUG("Derived ECDH secret key handle %lu (%lu bytes%s)", *phKey, secret->valueLen,
+            valueLenSpecified ? ", requested length" : "");
+  CNK_RET_OK;
 }
 
 CK_RV C_SeedRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSeed, CK_ULONG ulSeedLen) {
