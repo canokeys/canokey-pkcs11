@@ -55,6 +55,16 @@ static CK_LONG find_free_slot(void) {
   return -1; // No free slot found
 }
 
+static void free_session(CNK_PKCS11_SESSION *session) {
+  if (session == NULL)
+    return;
+
+  ck_free(session->signingContext.mechanism.pParameter);
+  ck_free(session->decryptingContext.mechanism.pParameter);
+  cnk_mutex_destroy(&session->lock);
+  ck_free(session);
+}
+
 // Initialize the session manager
 CK_RV cnk_session_manager_init(void) {
   CNK_LOG_FUNC();
@@ -89,9 +99,7 @@ void cnk_session_manager_cleanup(void) {
     // Free all session structures
     for (CK_LONG i = 0; i < session_table_size; i++) {
       if (session_table[i] != NULL) {
-        // Destroy the session mutex
-        cnk_mutex_destroy(&session_table[i]->lock);
-        ck_free(session_table[i]);
+        free_session(session_table[i]);
         session_table[i] = NULL;
       }
     }
@@ -269,8 +277,7 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
 
   // No need to disconnect card as we don't maintain the handle
 
-  // Free the session
-  ck_free(session_table[index]);
+  free_session(session_table[index]);
   session_table[index] = NULL;
   session_count--;
 
@@ -291,8 +298,7 @@ CK_RV C_CloseAllSessions(CK_SLOT_ID slotID) {
     if (session_table[i] != NULL && session_table[i]->slotId == slotID) {
       // No need to disconnect card as we don't maintain the handle
 
-      // Free the session
-      ck_free(session_table[i]);
+      free_session(session_table[i]);
       session_table[i] = NULL;
       session_count--;
     }

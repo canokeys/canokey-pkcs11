@@ -126,4 +126,9 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorith
 CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pData, CK_ULONG cbDataLen,
                    CK_BYTE_PTR pSignature, CK_ULONG_PTR pcbSignature);
 
+// Decrypt data using a PIV RSA key
+// This function returns the raw RSA private operation result from GENERAL AUTHENTICATE
+CK_RV cnk_piv_decrypt(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pEncryptedData,
+                      CK_ULONG cbEncryptedData, CK_BYTE_PTR pRawData, CK_ULONG_PTR pcbRawData);
+
 #endif /* CNK_BACKEND_PCSC_H */

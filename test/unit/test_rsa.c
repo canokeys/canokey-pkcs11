@@ -90,6 +90,69 @@ static CK_RV mgf1(const unsigned char *seed, size_t seed_len, unsigned char *mas
   return CKR_OK;
 }
 
+static CK_RV make_oaep_block_for_test(CK_BYTE *encoded, CK_ULONG encoded_len, const CK_BYTE *message,
+                                      CK_ULONG message_len, const CK_BYTE *label, CK_ULONG label_len,
+                                      mbedtls_md_type_t md_type, mbedtls_md_type_t mgf_md_type) {
+  const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(md_type);
+  if (md_info == NULL)
+    return CKR_MECHANISM_INVALID;
+
+  CK_ULONG hash_len = mbedtls_md_get_size(md_info);
+  if (encoded_len < 2 * hash_len + 2 || message_len > encoded_len - 2 * hash_len - 2)
+    return CKR_DATA_LEN_RANGE;
+
+  CK_ULONG db_len = encoded_len - hash_len - 1;
+  CK_BYTE *seed = ck_malloc(hash_len);
+  CK_BYTE *db = ck_malloc(db_len);
+  CK_BYTE *seed_mask = ck_malloc(hash_len);
+  CK_BYTE *db_mask = ck_malloc(db_len);
+  if (seed == NULL || db == NULL || seed_mask == NULL || db_mask == NULL) {
+    ck_free(seed);
+    ck_free(db);
+    ck_free(seed_mask);
+    ck_free(db_mask);
+    return CKR_HOST_MEMORY;
+  }
+
+  for (CK_ULONG i = 0; i < hash_len; i++)
+    seed[i] = (CK_BYTE)(0xA0 + i);
+
+  if (mbedtls_md(md_info, label, label_len, db) != 0) {
+    ck_free(seed);
+    ck_free(db);
+    ck_free(seed_mask);
+    ck_free(db_mask);
+    return CKR_FUNCTION_FAILED;
+  }
+
+  CK_ULONG ps_len = db_len - message_len - hash_len - 1;
+  memset(db + hash_len, 0x00, ps_len);
+  db[hash_len + ps_len] = 0x01;
+  memcpy(db + hash_len + ps_len + 1, message, message_len);
+
+  CK_RV rv = mgf1(seed, hash_len, db_mask, db_len, mgf_md_type);
+  if (rv != CKR_OK)
+    goto cleanup;
+
+  encoded[0] = 0x00;
+  for (CK_ULONG i = 0; i < db_len; i++)
+    encoded[1 + hash_len + i] = db[i] ^ db_mask[i];
+
+  rv = mgf1(encoded + 1 + hash_len, db_len, seed_mask, hash_len, mgf_md_type);
+  if (rv != CKR_OK)
+    goto cleanup;
+
+  for (CK_ULONG i = 0; i < hash_len; i++)
+    encoded[1 + i] = seed[i] ^ seed_mask[i];
+
+cleanup:
+  ck_free(seed);
+  ck_free(db);
+  ck_free(seed_mask);
+  ck_free(db_mask);
+  return rv;
+}
+
 // Unmasks the maskedDB using mgf1, checks that DB has the structure (PS || 0x01 || salt),
 // reconstructs M' = (8 zero bytes || mHash || salt), computes H', and compares H' with H.
 static CK_RV verify_pss_encoding(CK_BYTE_PTR encoded, CK_ULONG encoded_len, CK_BYTE_PTR message, CK_ULONG message_len,
@@ -119,18 +182,18 @@ static CK_RV verify_pss_encoding(CK_BYTE_PTR encoded, CK_ULONG encoded_len, CK_B
   const CK_ULONG modBits = mbedtls_mpi_bitlen(&modulus_mpi);
   mbedtls_mpi_free(&modulus_mpi);
 
-  const CK_ULONG emBits = modBits - 1; /* RFC 8017 Â§9.1.1 */
+  const CK_ULONG emBits = modBits - 1; /* RFC 8017 section 9.1.1 */
   const CK_ULONG expected_emLen = (emBits + 7) / 8;
   if (encoded_len != expected_emLen)
-    return CKR_VENDOR_DEFINED; /* EM é•¿åº¦ä¸ç¬¦ */
+    return CKR_VENDOR_DEFINED; /* EM length mismatch */
 
   /* ---------- 4. Split EM ---------- */
   CK_ULONG dbLen = encoded_len - hash_len - 1;
   if (dbLen < salt_len + 1)
     return CKR_FUNCTION_FAILED;
 
-  CK_BYTE *maskedDB = encoded;  /* [0 .. dbLenâ€?]   */
-  CK_BYTE *H = encoded + dbLen; /* [dbLen .. dbLen+hash_lenâ€?] */
+  CK_BYTE *maskedDB = encoded;  /* [0 .. dbLen) */
+  CK_BYTE *H = encoded + dbLen; /* [dbLen .. dbLen+hash_len) */
 
   /* ---------- 5. dbMask and decode ---------- */
   unsigned char *mask = ck_malloc(dbLen);
@@ -153,7 +216,7 @@ static CK_RV verify_pss_encoding(CK_BYTE_PTR encoded, CK_ULONG encoded_len, CK_B
   ck_free(mask);
 
   /* ---------- 6. Clear leftmost bits ---------- */
-  const unsigned leftBits = (unsigned)(8 * encoded_len - emBits); /* 1â€? æˆ?0 */
+  const unsigned leftBits = (unsigned)(8 * encoded_len - emBits); /* 1 or 0 */
   if (leftBits)
     DB[0] &= 0xFFu >> leftBits;
 
@@ -194,7 +257,7 @@ static CK_RV verify_pss_encoding(CK_BYTE_PTR encoded, CK_ULONG encoded_len, CK_B
     return CKR_HOST_MEMORY;
   }
 
-  memset(M_prime, 0, 8); /* 0x00Ã—8            */
+  memset(M_prime, 0, 8); /* eight zero bytes */
   memcpy(M_prime + 8, mHash, hash_len);
   memcpy(M_prime + 8 + hash_len, extracted_salt, salt_len);
 
@@ -527,6 +590,87 @@ static void test_pkcs1_v1_5_pad_buffer_too_small_case(void **state) {
 
   // Assert
   assert_int_equal(rv, CKR_BUFFER_TOO_SMALL);
+}
+
+static void test_pkcs1_v1_5_unpad_success(void **state) {
+  (void)state;
+
+  CK_BYTE encoded[] = {
+      0x00, 0x02, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x00, 'h', 'e', 'l', 'l', 'o',
+  };
+  CK_BYTE output[8] = {0};
+  CK_ULONG output_len = sizeof(output);
+
+  CK_RV rv = pkcs1_v1_5_unpad(encoded, sizeof(encoded), output, &output_len);
+  assert_int_equal(rv, CKR_OK);
+  assert_int_equal(output_len, 5);
+  assert_memory_equal(output, "hello", 5);
+}
+
+static void test_pkcs1_v1_5_unpad_buffer_too_small(void **state) {
+  (void)state;
+
+  CK_BYTE encoded[] = {
+      0x00, 0x02, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x00, 'h', 'e', 'l', 'l', 'o',
+  };
+  CK_BYTE output[4] = {0};
+  CK_ULONG output_len = sizeof(output);
+
+  CK_RV rv = pkcs1_v1_5_unpad(encoded, sizeof(encoded), output, &output_len);
+  assert_int_equal(rv, CKR_BUFFER_TOO_SMALL);
+  assert_int_equal(output_len, 5);
+}
+
+static void test_pkcs1_v1_5_unpad_rejects_bad_block(void **state) {
+  (void)state;
+
+  CK_BYTE encoded[] = {
+      0x00, 0x01, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x00, 'h', 'e', 'l', 'l', 'o',
+  };
+  CK_BYTE output[8] = {0};
+  CK_ULONG output_len = sizeof(output);
+
+  CK_RV rv = pkcs1_v1_5_unpad(encoded, sizeof(encoded), output, &output_len);
+  assert_int_equal(rv, CKR_ENCRYPTED_DATA_INVALID);
+}
+
+static void test_oaep_unpad_sha256_success(void **state) {
+  (void)state;
+
+  CK_BYTE encoded[128] = {0};
+  const CK_BYTE message[] = "oaep plaintext";
+  const CK_BYTE label[] = "label";
+
+  CK_RV rv = make_oaep_block_for_test(encoded, sizeof(encoded), message, sizeof(message) - 1, label, sizeof(label) - 1,
+                                      MBEDTLS_MD_SHA256, MBEDTLS_MD_SHA256);
+  assert_int_equal(rv, CKR_OK);
+
+  CK_BYTE output[32] = {0};
+  CK_ULONG output_len = sizeof(output);
+  rv = oaep_unpad(encoded, sizeof(encoded), output, &output_len, MBEDTLS_MD_SHA256, MBEDTLS_MD_SHA256, (CK_BYTE *)label,
+                  sizeof(label) - 1);
+  assert_int_equal(rv, CKR_OK);
+  assert_int_equal(output_len, sizeof(message) - 1);
+  assert_memory_equal(output, message, sizeof(message) - 1);
+}
+
+static void test_oaep_unpad_rejects_bad_label(void **state) {
+  (void)state;
+
+  CK_BYTE encoded[128] = {0};
+  const CK_BYTE message[] = "oaep plaintext";
+  const CK_BYTE label[] = "label";
+  const CK_BYTE bad_label[] = "other label";
+
+  CK_RV rv = make_oaep_block_for_test(encoded, sizeof(encoded), message, sizeof(message) - 1, label, sizeof(label) - 1,
+                                      MBEDTLS_MD_SHA256, MBEDTLS_MD_SHA256);
+  assert_int_equal(rv, CKR_OK);
+
+  CK_BYTE output[32] = {0};
+  CK_ULONG output_len = sizeof(output);
+  rv = oaep_unpad(encoded, sizeof(encoded), output, &output_len, MBEDTLS_MD_SHA256, MBEDTLS_MD_SHA256,
+                  (CK_BYTE *)bad_label, sizeof(bad_label) - 1);
+  assert_int_equal(rv, CKR_ENCRYPTED_DATA_INVALID);
 }
 
 // Test PSS encoding with SHA-1
@@ -920,6 +1064,11 @@ int main(void) {
       cmocka_unit_test(test_pkcs1_v1_5_pad_sha3_384),
       cmocka_unit_test(test_pkcs1_v1_5_pad_sha3_512),
       cmocka_unit_test(test_pkcs1_v1_5_pad_buffer_too_small_case),
+      cmocka_unit_test(test_pkcs1_v1_5_unpad_success),
+      cmocka_unit_test(test_pkcs1_v1_5_unpad_buffer_too_small),
+      cmocka_unit_test(test_pkcs1_v1_5_unpad_rejects_bad_block),
+      cmocka_unit_test(test_oaep_unpad_sha256_success),
+      cmocka_unit_test(test_oaep_unpad_rejects_bad_label),
 
       // PSS encoding tests
       cmocka_unit_test(test_pss_encode_sha1),

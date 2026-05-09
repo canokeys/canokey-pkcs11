@@ -782,6 +782,243 @@ CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
   return CKR_OK;
 }
 
+static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType,
+                                              CK_BYTE pivSlot, CK_BYTE_PTR pData, CK_ULONG cbDataLen,
+                                              CK_BYTE_PTR pOutput, CK_ULONG_PTR pcbOutput, const char *operationName) {
+  SCARDHANDLE hCard = 0;
+  CK_RV rv = CKR_OK;
+
+  CNK_ENSURE_NONNULL(pOutput, pcbOutput);
+
+  if (cbDataLen > 0)
+    CNK_ENSURE_NONNULL(pData);
+
+  // Check if input data is too large (max 512 bytes for RSA 4096)
+  if (cbDataLen > 512)
+    CNK_RETURN(CKR_DATA_LEN_RANGE, "Input data too large (max 512 bytes)");
+
+  // Verify PIN before private-key operations
+  if (pSession->cbPin == 0)
+    CNK_RETURN(CKR_PIN_INCORRECT, "PIN verification required before GENERAL AUTHENTICATE");
+
+  // Use the extended version to keep the card connection open
+  rv = cnk_verify_piv_pin_with_session_ex(slotId, pSession, pSession->pin, pSession->cbPin, NULL, &hCard);
+  if (rv != CKR_OK) {
+    CNK_ERROR("Failed to verify PIN");
+    if (hCard != 0)
+      cnk_disconnect_card(hCard);
+    return rv;
+  }
+
+  // Now construct the PIV TLV structure for GENERAL AUTHENTICATE
+  // Buffer for TLV data structure (tag + length + value)
+  CK_BYTE tlv_data[1024]; // Increased buffer size for larger input data
+  CK_ULONG tlv_len = 0;
+
+  // Start with the outer Dynamic Authentication Template (tag 0x7C)
+  tlv_data[tlv_len++] = 0x7C;
+  // We'll fill in the length later once we know the total length
+  CK_ULONG len_pos = tlv_len++;
+
+  // Add the Response tag (0x82) with zero length
+  tlv_data[tlv_len++] = 0x82;
+  tlv_data[tlv_len++] = 0x00;
+
+  // Add the Challenge tag (0x81) with the raw input data
+  tlv_data[tlv_len++] = 0x81;
+
+  // Encode the length of the input data
+  if (cbDataLen > 255) {
+    // Use two-byte length encoding for lengths > 255
+    tlv_data[tlv_len++] = 0x82;                               // Two-byte length marker
+    tlv_data[tlv_len++] = (CK_BYTE)((cbDataLen >> 8) & 0xFF); // Length high byte
+    tlv_data[tlv_len++] = (CK_BYTE)(cbDataLen & 0xFF);        // Length low byte
+  } else {
+    // Use one-byte length encoding for lengths <= 255
+    tlv_data[tlv_len++] = (CK_BYTE)cbDataLen;
+  }
+
+  // Copy the raw input data
+  if (cbDataLen > 0) {
+    memcpy(tlv_data + tlv_len, pData, cbDataLen);
+    tlv_len += cbDataLen;
+  }
+
+  // Now fill in the length of the outer template
+  // The length needs to be updated based on the total length of the contents
+  if (tlv_len - len_pos - 1 > 0xFF) {
+    // Need to shift everything to make room for 3-byte length
+    memmove(tlv_data + len_pos + 3, tlv_data + len_pos + 1, tlv_len - len_pos - 1);
+
+    // Store the original calculated length before modification
+    CK_ULONG content_len = tlv_len - len_pos - 1;
+
+    // Update positions sequentially to avoid undefined behavior
+    tlv_data[len_pos] = 0x82; // Two-byte length marker
+    len_pos++;
+
+    tlv_data[len_pos] = (CK_BYTE)((content_len >> 8) & 0xFF); // Length high byte
+    len_pos++;
+
+    tlv_data[len_pos] = (CK_BYTE)(content_len & 0xFF); // Length low byte
+
+    tlv_len += 2; // Adjust total length for the extra length bytes
+  } else {
+    tlv_data[len_pos] = (CK_BYTE)(tlv_len - len_pos - 1);
+  }
+
+  // Build the GENERAL AUTHENTICATE APDU
+  // CanoKey rejects extended GENERAL AUTHENTICATE APDUs for RSA-sized data, so
+  // large templates are sent with short APDU command chaining.
+  CK_BYTE abAuthApdu[1100];
+  CK_ULONG cbAuthApdu = 0;
+
+  CK_BYTE response[1024];              // Increased buffer size for larger responses
+  DWORD cbResponse = sizeof(response); // Use DWORD for PC/SC API compatibility
+  LONG pcsc_rv = SCARD_S_SUCCESS;
+
+  if (tlv_len <= 255) {
+    // APDU header
+    abAuthApdu[cbAuthApdu++] = 0x00;                    // CLA
+    abAuthApdu[cbAuthApdu++] = 0x87;                    // INS - GENERAL AUTHENTICATE
+    abAuthApdu[cbAuthApdu++] = algorithmType;           // P1 - Algorithm
+    abAuthApdu[cbAuthApdu++] = pivSlot;                 // P2 - Key reference (PIV slot)
+    abAuthApdu[cbAuthApdu++] = (CK_BYTE)tlv_len;        // Lc
+    memcpy(abAuthApdu + cbAuthApdu, tlv_data, tlv_len); // Data
+    cbAuthApdu += tlv_len;
+    abAuthApdu[cbAuthApdu++] = 0x00; // Le (request max available)
+
+    CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command for %s", operationName);
+    pcsc_rv = cnk_transceive_apdu(hCard, abAuthApdu, cbAuthApdu, response, &cbResponse, CK_TRUE);
+  } else {
+    CK_ULONG offset = 0;
+    CK_ULONG remaining = tlv_len;
+
+    while (remaining > 0) {
+      CK_ULONG chunk_len = remaining > 0xFF ? 0xFF : remaining;
+      CK_BBOOL has_more_chunks = remaining > chunk_len;
+      cbAuthApdu = 0;
+
+      // Set the ISO command-chaining bit while more chunks follow.
+      abAuthApdu[cbAuthApdu++] = has_more_chunks ? 0x10 : 0x00;      // CLA
+      abAuthApdu[cbAuthApdu++] = 0x87;                               // INS - GENERAL AUTHENTICATE
+      abAuthApdu[cbAuthApdu++] = algorithmType;                      // P1 - Algorithm
+      abAuthApdu[cbAuthApdu++] = pivSlot;                            // P2 - Key reference (PIV slot)
+      abAuthApdu[cbAuthApdu++] = (CK_BYTE)chunk_len;                 // Lc
+      memcpy(abAuthApdu + cbAuthApdu, tlv_data + offset, chunk_len); // Data chunk
+      cbAuthApdu += chunk_len;
+
+      if (!has_more_chunks)
+        abAuthApdu[cbAuthApdu++] = 0x00; // Le (request max available)
+
+      cbResponse = sizeof(response);
+      CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command chunk for %s: offset=%lu, length=%lu, more=%d", operationName,
+                offset, chunk_len, has_more_chunks);
+      pcsc_rv = cnk_transceive_apdu(hCard, abAuthApdu, cbAuthApdu, response, &cbResponse,
+                                    has_more_chunks ? CK_FALSE : CK_TRUE);
+      if (pcsc_rv != SCARD_S_SUCCESS)
+        break;
+
+      if (cbResponse < 2) {
+        CNK_ERROR("GENERAL AUTHENTICATE chunk response too short");
+        pcsc_rv = SCARD_E_UNEXPECTED;
+        break;
+      }
+
+      if (has_more_chunks) {
+        CK_BYTE sw1 = response[cbResponse - 2];
+        CK_BYTE sw2 = response[cbResponse - 1];
+        if (sw1 != 0x90 || sw2 != 0x00) {
+          CNK_ERROR("GENERAL AUTHENTICATE chunk returned error status: %02X%02X", sw1, sw2);
+          cnk_disconnect_card(hCard);
+          CNK_RETURN(CKR_DEVICE_ERROR, "Failed to send GENERAL AUTHENTICATE command chunk");
+        }
+      }
+
+      offset += chunk_len;
+      remaining -= chunk_len;
+    }
+  }
+
+  if (pcsc_rv != SCARD_S_SUCCESS) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to send GENERAL AUTHENTICATE command");
+  }
+
+  if (cbResponse < 2) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "GENERAL AUTHENTICATE response too short");
+  }
+
+  CK_BYTE sw1 = response[cbResponse - 2];
+  CK_BYTE sw2 = response[cbResponse - 1];
+  if (sw1 != 0x90 || sw2 != 0x00) {
+    CNK_ERROR("GENERAL AUTHENTICATE returned error status: %02X%02X", sw1, sw2);
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "GENERAL AUTHENTICATE failed");
+  }
+
+  // Remove the SW from the response
+  cbResponse -= 2;
+
+  // Parse the response: 7C len1 82 len2 <raw result>
+  if (cbResponse < 4) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: too short");
+  }
+  if (response[0] != 0x7C) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: missing 7C tag");
+  }
+
+  CK_ULONG offset = 1;
+  CK_LONG fail = 0;
+  CK_ULONG lengthSize = 0;
+  CK_ULONG outerLength = tlvGetLengthSafe(response + offset, cbResponse - offset, &fail, &lengthSize);
+  if (fail || offset + lengthSize + outerLength > cbResponse) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: bad outer length");
+  }
+  offset += lengthSize;
+
+  if (offset >= cbResponse || response[offset] != 0x82) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: missing 82 tag");
+  }
+  offset++;
+
+  fail = 0;
+  lengthSize = 0;
+  CK_ULONG outputLength = tlvGetLengthSafe(response + offset, cbResponse - offset, &fail, &lengthSize);
+  if (fail || offset + lengthSize + outputLength > cbResponse) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: bad output length");
+  }
+  offset += lengthSize;
+
+  CNK_DEBUG("Raw GENERAL AUTHENTICATE output length for %s: %lu, buffer size: %lu", operationName, outputLength,
+            *pcbOutput);
+
+  if (outputLength > *pcbOutput) {
+    cnk_disconnect_card(hCard);
+    *pcbOutput = outputLength;
+    CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Output buffer too small for GENERAL AUTHENTICATE response");
+  }
+
+  memcpy(pOutput, response + offset, outputLength);
+  *pcbOutput = outputLength;
+
+  cnk_disconnect_card(hCard);
+  return CKR_OK;
+}
+
+CK_RV cnk_piv_decrypt(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pEncryptedData,
+                      CK_ULONG cbEncryptedData, CK_BYTE_PTR pRawData, CK_ULONG_PTR pcbRawData) {
+  return cnk_piv_general_authenticate_raw(slotId, pSession, pSession->decryptingContext.algorithmType,
+                                          pSession->decryptingContext.pivSlot, pEncryptedData, cbEncryptedData,
+                                          pRawData, pcbRawData, "decrypt");
+}
+
 // Sign data using PIV key
 // This function signs raw data using the PIV GENERAL AUTHENTICATE command
 CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pData, CK_ULONG cbDataLen,
@@ -1349,10 +1586,10 @@ CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *ses
   return cnk_verify_piv_pin_with_session_ex(slotID, session, pPin, ulPinLen, pPinTries, NULL);
 }
 
-/* Verify the PIV management key by 3‑DES‑encrypting the card’s challenge
+/* Verify the PIV management key by 3DES-encrypting the card's challenge
  * and sending the resulting host cryptogram back to the card.
  *
- * pKey  �?24‑byte raw management key.
+ * pKey: 24-byte raw management key.
  */
 CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey) {
   SCARDHANDLE hCard;

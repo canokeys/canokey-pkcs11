@@ -499,6 +499,7 @@ void test_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID s
 void test_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_ecdsa_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_certificate_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
+void test_decryption(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_rsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_ecdsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_management_challenge(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
@@ -510,6 +511,202 @@ static CK_RV cnk_verify_rsa_signature(CK_BYTE_PTR modulus, CK_ULONG modulus_len,
 static CK_RV cnk_verify_ecdsa_signature(CK_BYTE_PTR ec_params, CK_ULONG ec_params_len, CK_BYTE_PTR ec_point,
                                         CK_ULONG ec_point_len, CK_BYTE_PTR data, CK_ULONG data_len,
                                         CK_BYTE_PTR signature, CK_ULONG signature_len, mbedtls_md_type_t md_type);
+
+static int g_real_test_failures = 0;
+
+static void record_real_test_failure(const char *message, CK_RV rv) {
+  printf("    TEST FAILURE: %s", message);
+  if (rv != CKR_OK)
+    printf(": 0x%lx", rv);
+  printf("\n");
+  g_real_test_failures++;
+}
+
+static int cnk_test_rng(void *p_rng, unsigned char *output, size_t output_size) {
+  unsigned int *state = (unsigned int *)p_rng;
+  if (state == NULL)
+    return -1;
+
+  for (size_t i = 0; i < output_size; i++) {
+    *state = *state * 1664525u + 1013904223u;
+    output[i] = (unsigned char)((*state >> 16) & 0xffu);
+    if (output[i] == 0)
+      output[i] = 0xa5;
+  }
+
+  return 0;
+}
+
+static CK_RV find_object(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSession, CK_OBJECT_CLASS objectClass,
+                         CK_KEY_TYPE *pKeyType, CK_BYTE_PTR pKeyId, CK_ULONG cbKeyId, CK_OBJECT_HANDLE_PTR phObject) {
+  CK_ATTRIBUTE findTemplate[3];
+  CK_ULONG findTemplateCount = 0;
+
+  findTemplate[findTemplateCount++] = (CK_ATTRIBUTE){CKA_CLASS, &objectClass, sizeof(objectClass)};
+  if (pKeyType != NULL)
+    findTemplate[findTemplateCount++] = (CK_ATTRIBUTE){CKA_KEY_TYPE, pKeyType, sizeof(*pKeyType)};
+  if (pKeyId != NULL)
+    findTemplate[findTemplateCount++] = (CK_ATTRIBUTE){CKA_ID, pKeyId, cbKeyId};
+
+  CK_RV rv = pFunctionList->C_FindObjectsInit(hSession, findTemplate, findTemplateCount);
+  if (rv != CKR_OK)
+    return rv;
+
+  CK_ULONG objectCount = 0;
+  rv = pFunctionList->C_FindObjects(hSession, phObject, 1, &objectCount);
+
+  CK_RV finalRv = pFunctionList->C_FindObjectsFinal(hSession);
+  if (rv == CKR_OK && finalRv != CKR_OK)
+    rv = finalRv;
+  if (rv == CKR_OK && objectCount == 0)
+    rv = CKR_OBJECT_HANDLE_INVALID;
+
+  return rv;
+}
+
+static CK_RV load_rsa_public_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSession, CK_BYTE_PTR pKeyId,
+                                 CK_ULONG cbKeyId, CK_BYTE_PTR modulus, CK_ULONG_PTR pModulusLen, CK_BYTE_PTR exponent,
+                                 CK_ULONG_PTR pExponentLen) {
+  CK_KEY_TYPE keyType = CKK_RSA;
+  CK_OBJECT_HANDLE hPublicKey;
+  CK_RV rv = find_object(pFunctionList, hSession, CKO_PUBLIC_KEY, &keyType, pKeyId, cbKeyId, &hPublicKey);
+  if (rv != CKR_OK)
+    return rv;
+
+  CK_ATTRIBUTE attrs[] = {
+      {CKA_MODULUS, modulus, *pModulusLen},
+      {CKA_PUBLIC_EXPONENT, exponent, *pExponentLen},
+  };
+
+  rv = pFunctionList->C_GetAttributeValue(hSession, hPublicKey, attrs, 2);
+  if (rv != CKR_OK)
+    return rv;
+
+  *pModulusLen = attrs[0].ulValueLen;
+  *pExponentLen = attrs[1].ulValueLen;
+  return CKR_OK;
+}
+
+static CK_RV make_rsa_public_context(mbedtls_rsa_context *rsa, CK_BYTE_PTR modulus, CK_ULONG modulusLen,
+                                     CK_BYTE_PTR exponent, CK_ULONG exponentLen) {
+  mbedtls_rsa_init(rsa);
+
+  int ret = mbedtls_mpi_read_binary(&rsa->N, modulus, modulusLen);
+  if (ret != 0) {
+    printf("    Error loading modulus: -0x%04x\n", (unsigned int)-ret);
+    mbedtls_rsa_free(rsa);
+    return CKR_GENERAL_ERROR;
+  }
+
+  ret = mbedtls_mpi_read_binary(&rsa->E, exponent, exponentLen);
+  if (ret != 0) {
+    printf("    Error loading exponent: -0x%04x\n", (unsigned int)-ret);
+    mbedtls_rsa_free(rsa);
+    return CKR_GENERAL_ERROR;
+  }
+
+  rsa->len = mbedtls_mpi_size(&rsa->N);
+  if (mbedtls_rsa_check_pubkey(rsa) != 0) {
+    printf("    Invalid RSA public key\n");
+    mbedtls_rsa_free(rsa);
+    return CKR_GENERAL_ERROR;
+  }
+
+  return CKR_OK;
+}
+
+static CK_RV encrypt_rsa_pkcs1_v15(CK_BYTE_PTR modulus, CK_ULONG modulusLen, CK_BYTE_PTR exponent, CK_ULONG exponentLen,
+                                   CK_BYTE_PTR plaintext, CK_ULONG plaintextLen, CK_BYTE_PTR ciphertext,
+                                   CK_ULONG_PTR pCiphertextLen) {
+  CK_RV rv;
+  int ret;
+  unsigned int rngState = 0x13579bdfu;
+  mbedtls_rsa_context rsa;
+
+  rv = make_rsa_public_context(&rsa, modulus, modulusLen, exponent, exponentLen);
+  if (rv != CKR_OK)
+    return rv;
+
+  if (*pCiphertextLen < mbedtls_rsa_get_len(&rsa)) {
+    *pCiphertextLen = (CK_ULONG)mbedtls_rsa_get_len(&rsa);
+    mbedtls_rsa_free(&rsa);
+    return CKR_BUFFER_TOO_SMALL;
+  }
+
+  ret = mbedtls_rsa_set_padding(&rsa, MBEDTLS_RSA_PKCS_V15, MBEDTLS_MD_NONE);
+  if (ret == 0)
+    ret = mbedtls_rsa_pkcs1_encrypt(&rsa, cnk_test_rng, &rngState, plaintextLen, plaintext, ciphertext);
+
+  if (ret != 0) {
+    printf("    RSA PKCS#1 v1.5 encryption failed: -0x%04x\n", (unsigned int)-ret);
+    rv = CKR_GENERAL_ERROR;
+  } else {
+    *pCiphertextLen = (CK_ULONG)mbedtls_rsa_get_len(&rsa);
+    rv = CKR_OK;
+  }
+
+  mbedtls_rsa_free(&rsa);
+  return rv;
+}
+
+static CK_RV encrypt_rsa_oaep_sha256(CK_BYTE_PTR modulus, CK_ULONG modulusLen, CK_BYTE_PTR exponent,
+                                     CK_ULONG exponentLen, CK_BYTE_PTR plaintext, CK_ULONG plaintextLen,
+                                     CK_BYTE_PTR ciphertext, CK_ULONG_PTR pCiphertextLen) {
+  CK_RV rv;
+  int ret;
+  unsigned int rngState = 0x2468ace0u;
+  mbedtls_rsa_context rsa;
+
+  rv = make_rsa_public_context(&rsa, modulus, modulusLen, exponent, exponentLen);
+  if (rv != CKR_OK)
+    return rv;
+
+  if (*pCiphertextLen < mbedtls_rsa_get_len(&rsa)) {
+    *pCiphertextLen = (CK_ULONG)mbedtls_rsa_get_len(&rsa);
+    mbedtls_rsa_free(&rsa);
+    return CKR_BUFFER_TOO_SMALL;
+  }
+
+  ret = mbedtls_rsa_set_padding(&rsa, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA256);
+  if (ret == 0)
+    ret = mbedtls_rsa_rsaes_oaep_encrypt(&rsa, cnk_test_rng, &rngState, NULL, 0, plaintextLen, plaintext, ciphertext);
+
+  if (ret != 0) {
+    printf("    RSA OAEP-SHA256 encryption failed: -0x%04x\n", (unsigned int)-ret);
+    rv = CKR_GENERAL_ERROR;
+  } else {
+    *pCiphertextLen = (CK_ULONG)mbedtls_rsa_get_len(&rsa);
+    rv = CKR_OK;
+  }
+
+  mbedtls_rsa_free(&rsa);
+  return rv;
+}
+
+static CK_RV decrypt_with_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey,
+                              CK_MECHANISM_PTR pMechanism, CK_BYTE_PTR ciphertext, CK_ULONG ciphertextLen,
+                              CK_BYTE_PTR plaintext, CK_ULONG_PTR pPlaintextLen) {
+  CK_RV rv = pFunctionList->C_DecryptInit(hSession, pMechanism, hKey);
+  if (rv != CKR_OK)
+    return rv;
+
+  CK_ULONG queryLen = 0;
+  rv = pFunctionList->C_Decrypt(hSession, ciphertext, ciphertextLen, NULL, &queryLen);
+  if (rv != CKR_OK && rv != CKR_BUFFER_TOO_SMALL)
+    return rv;
+
+  if (*pPlaintextLen < queryLen) {
+    *pPlaintextLen = queryLen;
+    return CKR_BUFFER_TOO_SMALL;
+  }
+
+  *pPlaintextLen = queryLen;
+  rv = pFunctionList->C_DecryptInit(hSession, pMechanism, hKey);
+  if (rv != CKR_OK)
+    return rv;
+
+  return pFunctionList->C_Decrypt(hSession, ciphertext, ciphertextLen, plaintext, pPlaintextLen);
+}
 
 void test_ecdsa_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
   CK_SESSION_HANDLE pubSession;
@@ -1047,6 +1244,168 @@ static CK_RV cnk_verify_rsa_signature(CK_BYTE_PTR modulus, CK_ULONG modulus_len,
 cleanup:
   mbedtls_rsa_free(&rsa);
   return rv;
+}
+
+void test_decryption(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
+  CK_RV rv;
+  CK_SESSION_HANDLE decryptSession;
+
+  printf("    Running hardware decrypt tests...\n");
+
+  rv = pFunctionList->C_OpenSession(slotID, CKF_SERIAL_SESSION, NULL, NULL, &decryptSession);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Error opening session for decrypt tests", rv);
+    return;
+  }
+
+  rv = perform_login(pFunctionList, decryptSession);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Error logging in for decrypt tests", rv);
+    pFunctionList->C_CloseSession(decryptSession);
+    return;
+  }
+
+  CK_KEY_TYPE rsaKeyType = CKK_RSA;
+  CK_OBJECT_HANDLE hRsaPrivateKey;
+  rv = find_object(pFunctionList, decryptSession, CKO_PRIVATE_KEY, &rsaKeyType, NULL, 0, &hRsaPrivateKey);
+  if (rv != CKR_OK) {
+    record_real_test_failure("No RSA private key found for decrypt tests", rv);
+    perform_logout(pFunctionList, decryptSession);
+    pFunctionList->C_CloseSession(decryptSession);
+    return;
+  }
+
+  CK_BYTE keyId[32];
+  CK_ATTRIBUTE idAttr = {CKA_ID, keyId, sizeof(keyId)};
+  rv = pFunctionList->C_GetAttributeValue(decryptSession, hRsaPrivateKey, &idAttr, 1);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Error getting RSA private key ID", rv);
+    perform_logout(pFunctionList, decryptSession);
+    pFunctionList->C_CloseSession(decryptSession);
+    return;
+  }
+
+  CK_BYTE modulus[512];
+  CK_BYTE exponent[8];
+  CK_ULONG modulusLen = sizeof(modulus);
+  CK_ULONG exponentLen = sizeof(exponent);
+  rv = load_rsa_public_key(pFunctionList, decryptSession, keyId, idAttr.ulValueLen, modulus, &modulusLen, exponent,
+                           &exponentLen);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Error loading RSA public key for decrypt tests", rv);
+    perform_logout(pFunctionList, decryptSession);
+    pFunctionList->C_CloseSession(decryptSession);
+    return;
+  }
+
+  printf("    RSA decrypt key modulus length: %lu bytes\n", modulusLen);
+
+  CK_BYTE pkcsPlaintext[512];
+  if (modulusLen <= 11) {
+    record_real_test_failure("RSA key is too small for PKCS#1 v1.5 decrypt test", CKR_GENERAL_ERROR);
+    perform_logout(pFunctionList, decryptSession);
+    pFunctionList->C_CloseSession(decryptSession);
+    return;
+  }
+  CK_ULONG pkcsPlaintextLen = modulusLen - 11;
+  if (pkcsPlaintextLen > sizeof(pkcsPlaintext)) {
+    record_real_test_failure("RSA key is too large for decrypt test buffer", CKR_GENERAL_ERROR);
+    perform_logout(pFunctionList, decryptSession);
+    pFunctionList->C_CloseSession(decryptSession);
+    return;
+  }
+  for (CK_ULONG i = 0; i < pkcsPlaintextLen; i++)
+    pkcsPlaintext[i] = (CK_BYTE)('A' + (i % 26));
+
+  CK_BYTE ciphertext[512];
+  CK_ULONG ciphertextLen = sizeof(ciphertext);
+  rv = encrypt_rsa_pkcs1_v15(modulus, modulusLen, exponent, exponentLen, pkcsPlaintext, pkcsPlaintextLen, ciphertext,
+                             &ciphertextLen);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Software RSA PKCS#1 v1.5 encryption failed", rv);
+  } else {
+    CK_MECHANISM mechanism = {CKM_RSA_PKCS, NULL, 0};
+    CK_BYTE decrypted[512];
+    CK_ULONG decryptedLen = sizeof(decrypted);
+
+    rv = decrypt_with_key(pFunctionList, decryptSession, hRsaPrivateKey, &mechanism, ciphertext, ciphertextLen,
+                          decrypted, &decryptedLen);
+    if (rv != CKR_OK) {
+      record_real_test_failure("Hardware RSA PKCS#1 v1.5 decrypt failed", rv);
+    } else if (decryptedLen != pkcsPlaintextLen || memcmp(decrypted, pkcsPlaintext, pkcsPlaintextLen) != 0) {
+      record_real_test_failure("Hardware RSA PKCS#1 v1.5 decrypt output mismatch", CKR_GENERAL_ERROR);
+    } else {
+      printf("    RSA PKCS#1 v1.5 long plaintext decrypt successful (%lu bytes)\n", decryptedLen);
+    }
+  }
+
+  CK_BYTE oaepPlaintext[512];
+  if (modulusLen <= (2 * 32) + 2) {
+    record_real_test_failure("RSA key is too small for OAEP-SHA256 decrypt test", CKR_GENERAL_ERROR);
+    perform_logout(pFunctionList, decryptSession);
+    pFunctionList->C_CloseSession(decryptSession);
+    return;
+  }
+  CK_ULONG oaepPlaintextLen = modulusLen - (2 * 32) - 2;
+  if (oaepPlaintextLen > sizeof(oaepPlaintext)) {
+    record_real_test_failure("RSA key is too large for OAEP decrypt test buffer", CKR_GENERAL_ERROR);
+    perform_logout(pFunctionList, decryptSession);
+    pFunctionList->C_CloseSession(decryptSession);
+    return;
+  }
+  for (CK_ULONG i = 0; i < oaepPlaintextLen; i++)
+    oaepPlaintext[i] = (CK_BYTE)(0xffu - (i & 0xffu));
+
+  ciphertextLen = sizeof(ciphertext);
+  rv = encrypt_rsa_oaep_sha256(modulus, modulusLen, exponent, exponentLen, oaepPlaintext, oaepPlaintextLen, ciphertext,
+                               &ciphertextLen);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Software RSA OAEP-SHA256 encryption failed", rv);
+  } else {
+    CK_RSA_PKCS_OAEP_PARAMS oaepParams = {CKM_SHA256, CKG_MGF1_SHA256, CKZ_DATA_SPECIFIED, NULL, 0};
+    CK_MECHANISM mechanism = {CKM_RSA_PKCS_OAEP, &oaepParams, sizeof(oaepParams)};
+    CK_BYTE decrypted[512];
+    CK_ULONG decryptedLen = sizeof(decrypted);
+
+    rv = decrypt_with_key(pFunctionList, decryptSession, hRsaPrivateKey, &mechanism, ciphertext, ciphertextLen,
+                          decrypted, &decryptedLen);
+    if (rv != CKR_OK) {
+      record_real_test_failure("Hardware RSA OAEP-SHA256 decrypt failed", rv);
+    } else if (decryptedLen != oaepPlaintextLen || memcmp(decrypted, oaepPlaintext, oaepPlaintextLen) != 0) {
+      record_real_test_failure("Hardware RSA OAEP-SHA256 decrypt output mismatch", CKR_GENERAL_ERROR);
+    } else {
+      printf("    RSA OAEP-SHA256 long plaintext decrypt successful (%lu bytes)\n", decryptedLen);
+    }
+  }
+
+  CK_KEY_TYPE ecKeyType = CKK_EC;
+  CK_OBJECT_HANDLE hEcPrivateKey;
+  rv = find_object(pFunctionList, decryptSession, CKO_PRIVATE_KEY, &ecKeyType, NULL, 0, &hEcPrivateKey);
+  if (rv == CKR_OK) {
+    CK_BBOOL decrypt = CK_TRUE;
+    CK_ATTRIBUTE decryptAttr = {CKA_DECRYPT, &decrypt, sizeof(decrypt)};
+    rv = pFunctionList->C_GetAttributeValue(decryptSession, hEcPrivateKey, &decryptAttr, 1);
+    if (rv != CKR_OK) {
+      record_real_test_failure("Error getting EC private key decrypt attribute", rv);
+    } else if (decrypt != CK_FALSE) {
+      record_real_test_failure("EC private key unexpectedly advertises CKA_DECRYPT", CKR_GENERAL_ERROR);
+    } else {
+      CK_MECHANISM mechanism = {CKM_RSA_PKCS, NULL, 0};
+      rv = pFunctionList->C_DecryptInit(decryptSession, &mechanism, hEcPrivateKey);
+      if (rv == CKR_KEY_TYPE_INCONSISTENT || rv == CKR_KEY_FUNCTION_NOT_PERMITTED) {
+        printf("    EC private key correctly rejects decrypt initialization\n");
+      } else {
+        record_real_test_failure("EC private key decrypt initialization returned unexpected result", rv);
+      }
+    }
+  } else {
+    printf("    No EC private key found, skipping EC decrypt negative test.\n");
+  }
+
+  perform_logout(pFunctionList, decryptSession);
+  rv = pFunctionList->C_CloseSession(decryptSession);
+  if (rv != CKR_OK)
+    record_real_test_failure("Error closing decrypt test session", rv);
 }
 
 // Test RSA signing operations
@@ -2063,6 +2422,9 @@ int main(int argc, char *argv[]) {
       // Test certificate operations
       test_certificate_operations(pFunctionList, pSlotList[i]);
 
+      // Test hardware decrypt
+      test_decryption(pFunctionList, pSlotList[i]);
+
       // Test RSA signing
       test_rsa_signing(pFunctionList, pSlotList[i]);
 
@@ -2099,6 +2461,11 @@ int main(int argc, char *argv[]) {
   // Close the library
   cnk_close_library(library);
   printf("Library unloaded\n");
+
+  if (g_real_test_failures != 0) {
+    printf("Real hardware test failures: %d\n", g_real_test_failures);
+    return 1;
+  }
 
   return 0;
 }

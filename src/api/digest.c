@@ -1,5 +1,6 @@
 #include "api/session.h"
 #include "backend/pcsc.h"
+#include "internal/crypto.h"
 #include "internal/logging.h"
 #include "internal/macros.h"
 #include "internal/util.h"
@@ -8,24 +9,15 @@
 #include <string.h>
 
 static size_t get_md_size(CK_MECHANISM_TYPE mechanism) {
-  switch (mechanism) {
-  case CKM_SHA_1:
-    return 20;
-  case CKM_SHA224:
-  case CKM_SHA3_224:
-    return 28;
-  case CKM_SHA256:
-  case CKM_SHA3_256:
-    return 32;
-  case CKM_SHA384:
-  case CKM_SHA3_384:
-    return 48;
-  case CKM_SHA512:
-  case CKM_SHA3_512:
-    return 64;
-  default:
+  mbedtls_md_type_t md_type;
+  if (cnk_hash_mech_to_md(mechanism, &md_type) != CKR_OK)
     return 0;
-  }
+
+  const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(md_type);
+  if (md_info == NULL)
+    return 0;
+
+  return mbedtls_md_get_size(md_info);
 }
 
 CK_RV C_DigestInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism) {
@@ -37,37 +29,7 @@ CK_RV C_DigestInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism) {
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   mbedtls_md_type_t md_type;
-  switch (pMechanism->mechanism) {
-  case CKM_SHA_1:
-    md_type = MBEDTLS_MD_SHA1;
-    break;
-  case CKM_SHA224:
-    md_type = MBEDTLS_MD_SHA224;
-    break;
-  case CKM_SHA256:
-    md_type = MBEDTLS_MD_SHA256;
-    break;
-  case CKM_SHA384:
-    md_type = MBEDTLS_MD_SHA384;
-    break;
-  case CKM_SHA512:
-    md_type = MBEDTLS_MD_SHA512;
-    break;
-  case CKM_SHA3_224:
-    md_type = MBEDTLS_MD_SHA3_224;
-    break;
-  case CKM_SHA3_256:
-    md_type = MBEDTLS_MD_SHA3_256;
-    break;
-  case CKM_SHA3_384:
-    md_type = MBEDTLS_MD_SHA3_384;
-    break;
-  case CKM_SHA3_512:
-    md_type = MBEDTLS_MD_SHA3_512;
-    break;
-  default:
-    CNK_RETURN(CKR_MECHANISM_INVALID, "unsupported mechanism");
-  }
+  CNK_ENSURE_OK(cnk_hash_mech_to_md(pMechanism->mechanism, &md_type));
 
   const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(md_type);
   if (!md_info)

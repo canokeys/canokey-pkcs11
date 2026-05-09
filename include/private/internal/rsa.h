@@ -11,4 +11,9 @@ CK_RV pkcs1_v1_5_pad(CK_BYTE_PTR pbInput, CK_ULONG cbInput, CK_BYTE_PTR pbOutput
 CK_RV pss_encode(CK_BYTE_PTR pbHash, CK_ULONG cbHash, CK_BYTE_PTR pbModulus, CK_ULONG cbModulus, CK_ULONG cbSalt,
                  mbedtls_md_type_t mdType, CK_BYTE_PTR pbOutput);
 
+CK_RV pkcs1_v1_5_unpad(CK_BYTE_PTR pbInput, CK_ULONG cbInput, CK_BYTE_PTR pbOutput, CK_ULONG_PTR pcbOutput);
+
+CK_RV oaep_unpad(CK_BYTE_PTR pbInput, CK_ULONG cbInput, CK_BYTE_PTR pbOutput, CK_ULONG_PTR pcbOutput,
+                 mbedtls_md_type_t mdType, mbedtls_md_type_t mgfMdType, CK_BYTE_PTR pLabel, CK_ULONG cbLabel);
+
 #endif // CNK_INTERNAL_RSA_H

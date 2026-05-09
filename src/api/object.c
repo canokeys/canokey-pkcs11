@@ -847,15 +847,15 @@ static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE algori
     break;
 
   case CKA_VERIFY: {
-    // Public keys can be used for verification
-    CK_BBOOL value = CK_TRUE;
+    // Public-key verification is not implemented by this module.
+    CK_BBOOL value = CK_FALSE;
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
 
   case CKA_ENCRYPT: {
-    // Only RSA public keys can encrypt
-    CK_BBOOL value = (keyType == CKK_RSA) ? CK_TRUE : CK_FALSE;
+    // Public-key encryption is not implemented by this module.
+    CK_BBOOL value = CK_FALSE;
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }

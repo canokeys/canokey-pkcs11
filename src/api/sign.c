@@ -1,6 +1,7 @@
 #include "api/object.h"
 #include "api/session.h"
 #include "backend/pcsc.h"
+#include "internal/crypto.h"
 #include "internal/logging.h"
 #include "internal/macros.h"
 #include "internal/rsa.h"
@@ -77,47 +78,12 @@ static CK_RV validateRsaPssParams(const CK_MECHANISM *m) {
 
   const CK_RSA_PKCS_PSS_PARAMS *p = (const CK_RSA_PKCS_PSS_PARAMS *)m->pParameter;
 
-  // Validate parameters based on mechanism
-  switch (m->mechanism) {
-  case CKM_SHA1_RSA_PKCS_PSS:
-    if (p->hashAlg != CKM_SHA_1 || p->mgf != CKG_MGF1_SHA1)
+  if (m->mechanism != CKM_RSA_PKCS_PSS) {
+    CK_MECHANISM_TYPE expectedHashAlg;
+    CK_RSA_PKCS_MGF_TYPE expectedMgf;
+    CNK_ENSURE_OK(cnk_rsa_pkcs_pss_mech_to_hash_mgf(m->mechanism, &expectedHashAlg, &expectedMgf));
+    if (p->hashAlg != expectedHashAlg || p->mgf != expectedMgf)
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS param: hashAlg or mgf");
-    break;
-  case CKM_SHA224_RSA_PKCS_PSS:
-    if (p->hashAlg != CKM_SHA224 || p->mgf != CKG_MGF1_SHA224)
-      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS param: hashAlg or mgf");
-    break;
-  case CKM_SHA256_RSA_PKCS_PSS:
-    if (p->hashAlg != CKM_SHA256 || p->mgf != CKG_MGF1_SHA256)
-      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS param: hashAlg or mgf");
-    break;
-  case CKM_SHA384_RSA_PKCS_PSS:
-    if (p->hashAlg != CKM_SHA384 || p->mgf != CKG_MGF1_SHA384)
-      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS param: hashAlg or mgf");
-    break;
-  case CKM_SHA512_RSA_PKCS_PSS:
-    if (p->hashAlg != CKM_SHA512 || p->mgf != CKG_MGF1_SHA512)
-      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS param: hashAlg or mgf");
-    break;
-  case CKM_SHA3_224_RSA_PKCS_PSS:
-    if (p->hashAlg != CKM_SHA3_224 || p->mgf != CKG_MGF1_SHA3_224)
-      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS param: hashAlg or mgf");
-    break;
-  case CKM_SHA3_256_RSA_PKCS_PSS:
-    if (p->hashAlg != CKM_SHA3_256 || p->mgf != CKG_MGF1_SHA3_256)
-      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS param: hashAlg or mgf");
-    break;
-  case CKM_SHA3_384_RSA_PKCS_PSS:
-    if (p->hashAlg != CKM_SHA3_384 || p->mgf != CKG_MGF1_SHA3_384)
-      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS param: hashAlg or mgf");
-    break;
-  case CKM_SHA3_512_RSA_PKCS_PSS:
-    if (p->hashAlg != CKM_SHA3_512 || p->mgf != CKG_MGF1_SHA3_512)
-      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS param: hashAlg or mgf");
-    break;
-  default:
-    // CKM_RSA_PKCS_PSS: hashAlg and mgf are not used
-    break;
   }
 
   return CKR_OK;
@@ -187,55 +153,7 @@ static CK_RV validateEcMech(CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) 
 
 CK_RV initDigestingContext(CNK_PKCS11_SESSION *session, CK_MECHANISM_TYPE mechanism) {
   mbedtls_md_type_t mdType;
-  switch (mechanism) {
-  case CKM_SHA1_RSA_PKCS:
-  case CKM_SHA1_RSA_PKCS_PSS:
-  case CKM_ECDSA_SHA1:
-    mdType = MBEDTLS_MD_SHA1;
-    break;
-  case CKM_SHA224_RSA_PKCS:
-  case CKM_SHA224_RSA_PKCS_PSS:
-  case CKM_ECDSA_SHA224:
-    mdType = MBEDTLS_MD_SHA224;
-    break;
-  case CKM_SHA256_RSA_PKCS:
-  case CKM_SHA256_RSA_PKCS_PSS:
-  case CKM_ECDSA_SHA256:
-    mdType = MBEDTLS_MD_SHA256;
-    break;
-  case CKM_SHA384_RSA_PKCS:
-  case CKM_SHA384_RSA_PKCS_PSS:
-  case CKM_ECDSA_SHA384:
-    mdType = MBEDTLS_MD_SHA384;
-    break;
-  case CKM_SHA512_RSA_PKCS:
-  case CKM_SHA512_RSA_PKCS_PSS:
-  case CKM_ECDSA_SHA512:
-    mdType = MBEDTLS_MD_SHA512;
-    break;
-  case CKM_SHA3_224_RSA_PKCS:
-  case CKM_SHA3_224_RSA_PKCS_PSS:
-  case CKM_ECDSA_SHA3_224:
-    mdType = MBEDTLS_MD_SHA3_224;
-    break;
-  case CKM_SHA3_256_RSA_PKCS:
-  case CKM_SHA3_256_RSA_PKCS_PSS:
-  case CKM_ECDSA_SHA3_256:
-    mdType = MBEDTLS_MD_SHA3_256;
-    break;
-  case CKM_SHA3_384_RSA_PKCS:
-  case CKM_SHA3_384_RSA_PKCS_PSS:
-  case CKM_ECDSA_SHA3_384:
-    mdType = MBEDTLS_MD_SHA3_384;
-    break;
-  case CKM_SHA3_512_RSA_PKCS:
-  case CKM_SHA3_512_RSA_PKCS_PSS:
-  case CKM_ECDSA_SHA3_512:
-    mdType = MBEDTLS_MD_SHA3_512;
-    break;
-  default:
-    CNK_RETURN(CKR_MECHANISM_INVALID, "unsupported mechanism");
-  }
+  CNK_ENSURE_OK(cnk_sign_mech_to_md(mechanism, &mdType));
 
   const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(mdType);
   if (!md_info)

@@ -28,6 +28,14 @@ typedef struct {
 } CNK_PKCS11_SIGNING_CONTEXT;
 
 typedef struct {
+  CK_OBJECT_HANDLE hKey;
+  CK_MECHANISM mechanism;
+  CK_BYTE pivSlot;
+  CK_BYTE algorithmType;
+  CK_ULONG cbModulus;
+} CNK_PKCS11_DECRYPTING_CONTEXT;
+
+typedef struct {
   CK_MECHANISM_TYPE mechanismType;
   mbedtls_md_type_t type;
   mbedtls_md_context_t context;
@@ -58,6 +66,7 @@ typedef struct CNK_PKCS11_SESSION {
 
   // Cryptographic operation fields
   CNK_PKCS11_SIGNING_CONTEXT signingContext;
+  CNK_PKCS11_DECRYPTING_CONTEXT decryptingContext;
   CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
 } CNK_PKCS11_SESSION;
 
