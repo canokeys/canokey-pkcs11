@@ -127,7 +127,8 @@ Observed APDU behavior for the inserted key:
 Local compatibility fixes made during probing:
 
 - Empty `C_FindObjectsInit` templates now enumerate certificate, public-key, and private-key classes instead of ending the find operation immediately.
-- `MAX_FIND_OBJECTS` is 18 to fit 6 PIV slots x 3 object classes.
+- `MAX_FIND_OBJECTS` must fit 6 PIV slots x 3 key/certificate classes, fixed
+  PIV data-object candidates, and session-only secret keys.
 - `cnk_get_metadata()` maps `6A82` and `6A88` to `CKR_DATA_INVALID` so object enumeration skips missing PIV keys.
 
 ## Current Dev Hardware PIV State
@@ -198,6 +199,17 @@ Write-path notes:
 - Runtime private-key operations must honor stored PIN policy. PIN-never keys
   can use GENERAL AUTHENTICATE without `CKU_USER`; PIN-once and PIN-always keys
   require a cached user PIN and must verify it before the operation.
+- PIV data objects should be exposed as `CKO_DATA` token objects. Enumeration
+  uses a fixed table of known PIV data-object candidates and returns only
+  objects that `GET DATA` reports as present. The current candidate table covers
+  CHUID, cardholder fingerprints, security object, card capability container,
+  cardholder facial image, printed information, key history, and discovery
+  object. `CKA_OBJECT_ID` uses ASN.1 object-identifier content octets, matching
+  OpenSC's `pkcs11-tool --application-id` encoding. Logged-in sessions retry
+  PIV data reads with the cached user PIN so PIN-protected data can be
+  discovered when present. `C_CreateObject(CKO_DATA)` is the write/overwrite
+  path and maps to PIV `PUT DATA`; `C_SetAttributeValue` remains read-only, so
+  token PIV objects report `CKA_MODIFIABLE = CK_FALSE`.
 - `CKA_CNK_VENDOR_BASE` uses ASCII `CNK` (`0x43 0x4E 0x4B`) in the high bytes
   of the vendor-defined attribute range and reserves the low byte for CanoKey
   attribute IDs.

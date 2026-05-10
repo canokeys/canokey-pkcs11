@@ -99,3 +99,13 @@ be read back from public or private PIV key objects with
 Private-key operations honor the stored PIN policy. Keys with PIN policy never
 can sign, decrypt, or derive without `CKU_USER` login; keys with PIN policy once
 or always require a logged-in user PIN before the operation.
+
+Standard PIV data objects are exposed as `CKO_DATA` token objects when the card
+reports that they exist. Enumeration probes a fixed table of common PIV data
+objects, including CHUID, card capability container, discovery object,
+fingerprints, facial image, printed information, security object, and key
+history. A logged-in user session reuses the cached PIN while probing, so
+PIN-protected data objects can be found when present. `C_CreateObject(CKO_DATA)`
+writes or overwrites a PIV data object through `PUT DATA` in an SO session.
+`C_SetAttributeValue` remains read-only for PIV token objects, so
+`CKA_MODIFIABLE` is reported as false.

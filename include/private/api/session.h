@@ -18,8 +18,10 @@ typedef enum {
 // Maximum number of session-only secret keys, currently produced by C_DeriveKey.
 #define MAX_SESSION_SECRET_KEYS 8
 
-// Maximum number of objects that can be found (6 PIV slots x cert/public/private + session secrets)
-#define MAX_FIND_OBJECTS (18 + MAX_SESSION_SECRET_KEYS)
+// Maximum number of objects that can be found (6 PIV slots x cert/public/private, 16 PIV data objects,
+// plus session secrets)
+#define MAX_PIV_DATA_OBJECTS 16
+#define MAX_FIND_OBJECTS (18 + MAX_PIV_DATA_OBJECTS + MAX_SESSION_SECRET_KEYS)
 
 // Session secret object IDs are kept outside the PIV object ID range.
 #define CNK_SESSION_SECRET_KEY_FIRST_ID 0x80

@@ -29,6 +29,9 @@
 // Maximum size for PIV asymmetric key import data.
 #define MAX_PIV_IMPORT_KEY_SIZE 1400
 
+// Maximum size for generic PIV data objects exposed as CKO_DATA.
+#define MAX_PIV_DATA_OBJECT_SIZE 4096
+
 // Object handle bit field masks
 #define OBJECT_SLOT_MASK 0xFFFF0000
 #define OBJECT_CLASS_MASK 0x0000FF00
@@ -47,6 +50,18 @@ typedef struct {
   CK_BYTE certTag;
 } PivSlotMapping;
 
+typedef struct {
+  CK_BYTE objId;
+  const CK_BYTE *dataTag;
+  CK_ULONG dataTagLen;
+  const char *label;
+  const char *application;
+  const CK_BYTE *objectId;
+  CK_ULONG objectIdLen;
+  CK_BBOOL privateObject;
+  CK_BBOOL writable;
+} PivDataObjectMapping;
+
 static const PivSlotMapping PIV_SLOT_MAPPING[] = {
     {PIV_SLOT_9A, 0x9A, PIV_OBJECT_TAG_CERT_9A}, {PIV_SLOT_9C, 0x9C, PIV_OBJECT_TAG_CERT_9C},
     {PIV_SLOT_9D, 0x9D, PIV_OBJECT_TAG_CERT_9D}, {PIV_SLOT_9E, 0x9E, PIV_OBJECT_TAG_CERT_9E},
@@ -55,6 +70,47 @@ static const PivSlotMapping PIV_SLOT_MAPPING[] = {
 
 // Size of the PIV slot mapping array
 #define PIV_SLOT_MAPPING_SIZE (sizeof(PIV_SLOT_MAPPING) / sizeof(PIV_SLOT_MAPPING[0]))
+
+// CKA_OBJECT_ID is stored as ASN.1 object-identifier content octets, matching
+// the encoding OpenSC's pkcs11-tool uses for --application-id.
+static const CK_BYTE TAG_CHUID[] = {0x5F, 0xC1, 0x02};
+static const CK_BYTE TAG_CARDHOLDER_FINGERPRINTS[] = {0x5F, 0xC1, 0x03};
+static const CK_BYTE TAG_SECURITY_OBJECT[] = {0x5F, 0xC1, 0x06};
+static const CK_BYTE TAG_CARD_CAPABILITY_CONTAINER[] = {0x5F, 0xC1, 0x07};
+static const CK_BYTE TAG_CARDHOLDER_FACIAL_IMAGE[] = {0x5F, 0xC1, 0x08};
+static const CK_BYTE TAG_PRINTED_INFORMATION[] = {0x5F, 0xC1, 0x09};
+static const CK_BYTE TAG_KEY_HISTORY[] = {0x5F, 0xC1, 0x0C};
+static const CK_BYTE TAG_DISCOVERY[] = {0x7E};
+
+static const CK_BYTE OID_CHUID[] = {0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x07, 0x02, 0x30, 0x00};
+static const CK_BYTE OID_CARDHOLDER_FINGERPRINTS[] = {0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x07, 0x02, 0x60, 0x10};
+static const CK_BYTE OID_SECURITY_OBJECT[] = {0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x07, 0x02, 0x81, 0x10, 0x00};
+static const CK_BYTE OID_CARD_CAPABILITY_CONTAINER[] = {0x60, 0x86, 0x48, 0x01, 0x65, 0x03,
+                                                        0x07, 0x01, 0x81, 0x5B, 0x00};
+static const CK_BYTE OID_CARDHOLDER_FACIAL_IMAGE[] = {0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x07, 0x02, 0x60, 0x30};
+static const CK_BYTE OID_PRINTED_INFORMATION[] = {0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x07, 0x02, 0x30, 0x01};
+static const CK_BYTE OID_KEY_HISTORY[] = {0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x07, 0x02, 0x60, 0x60};
+static const CK_BYTE OID_DISCOVERY[] = {0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x07, 0x02, 0x60, 0x50};
+
+static const PivDataObjectMapping PIV_DATA_OBJECT_MAPPING[] = {
+    {0x21, TAG_CHUID, sizeof(TAG_CHUID), "PIV CHUID", "PIV", OID_CHUID, sizeof(OID_CHUID), CK_FALSE, CK_TRUE},
+    {0x22, TAG_CARDHOLDER_FINGERPRINTS, sizeof(TAG_CARDHOLDER_FINGERPRINTS), "PIV Cardholder Fingerprints", "PIV",
+     OID_CARDHOLDER_FINGERPRINTS, sizeof(OID_CARDHOLDER_FINGERPRINTS), CK_TRUE, CK_TRUE},
+    {0x23, TAG_SECURITY_OBJECT, sizeof(TAG_SECURITY_OBJECT), "PIV Security Object", "PIV", OID_SECURITY_OBJECT,
+     sizeof(OID_SECURITY_OBJECT), CK_FALSE, CK_TRUE},
+    {0x24, TAG_CARD_CAPABILITY_CONTAINER, sizeof(TAG_CARD_CAPABILITY_CONTAINER), "PIV Card Capability Container", "PIV",
+     OID_CARD_CAPABILITY_CONTAINER, sizeof(OID_CARD_CAPABILITY_CONTAINER), CK_FALSE, CK_TRUE},
+    {0x25, TAG_CARDHOLDER_FACIAL_IMAGE, sizeof(TAG_CARDHOLDER_FACIAL_IMAGE), "PIV Cardholder Facial Image", "PIV",
+     OID_CARDHOLDER_FACIAL_IMAGE, sizeof(OID_CARDHOLDER_FACIAL_IMAGE), CK_TRUE, CK_TRUE},
+    {0x26, TAG_PRINTED_INFORMATION, sizeof(TAG_PRINTED_INFORMATION), "PIV Printed Information", "PIV",
+     OID_PRINTED_INFORMATION, sizeof(OID_PRINTED_INFORMATION), CK_TRUE, CK_TRUE},
+    {0x27, TAG_KEY_HISTORY, sizeof(TAG_KEY_HISTORY), "PIV Key History Object", "PIV", OID_KEY_HISTORY,
+     sizeof(OID_KEY_HISTORY), CK_FALSE, CK_TRUE},
+    {0x28, TAG_DISCOVERY, sizeof(TAG_DISCOVERY), "PIV Discovery Object", "PIV", OID_DISCOVERY, sizeof(OID_DISCOVERY),
+     CK_FALSE, CK_TRUE},
+};
+
+#define PIV_DATA_OBJECT_MAPPING_SIZE (sizeof(PIV_DATA_OBJECT_MAPPING) / sizeof(PIV_DATA_OBJECT_MAPPING[0]))
 
 /**
  * @brief Set a single attribute value with bounds checking
@@ -205,6 +261,9 @@ static CK_KEY_TYPE algoType2KeyType(CK_BYTE algorithmType) {
  */
 static CK_RV handleCertificateAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE_PTR data, CK_ULONG data_len);
 
+static CK_RV handleDataAttribute(CK_ATTRIBUTE_PTR attribute, const PivDataObjectMapping *mapping, CK_BYTE_PTR data,
+                                 CK_ULONG data_len);
+
 /**
  * @brief Handle public key attributes
  *
@@ -332,6 +391,48 @@ static CK_RV attrGetObjectClass(CK_ATTRIBUTE_PTR attr, CK_OBJECT_CLASS *value) {
   CNK_RET_OK;
 }
 
+static const PivDataObjectMapping *findPivDataObjectById(CK_BYTE objId) {
+  for (CK_ULONG i = 0; i < PIV_DATA_OBJECT_MAPPING_SIZE; i++) {
+    if (PIV_DATA_OBJECT_MAPPING[i].objId == objId)
+      return &PIV_DATA_OBJECT_MAPPING[i];
+  }
+
+  return NULL;
+}
+
+static CK_RV getTemplateDataObject(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, const PivDataObjectMapping **mapping) {
+  CK_ATTRIBUTE_PTR attr;
+  CK_BYTE dataTag;
+  CNK_ENSURE_NONNULL(mapping);
+
+  CNK_ENSURE_OK(getOptionalAttr(pTemplate, ulCount, CKA_ID, &attr));
+  if (attr != NULL) {
+    CNK_ENSURE_OK(attrGetByte(attr, &dataTag));
+    *mapping = findPivDataObjectById(dataTag);
+    if (*mapping == NULL)
+      CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "unsupported PIV data object ID");
+  }
+
+  CNK_ENSURE_OK(getOptionalAttr(pTemplate, ulCount, CKA_OBJECT_ID, &attr));
+  if (attr != NULL) {
+    for (CK_ULONG i = 0; i < PIV_DATA_OBJECT_MAPPING_SIZE; i++) {
+      if (PIV_DATA_OBJECT_MAPPING[i].objectIdLen == attr->ulValueLen &&
+          memcmp(PIV_DATA_OBJECT_MAPPING[i].objectId, attr->pValue, attr->ulValueLen) == 0) {
+        if (*mapping != NULL && *mapping != &PIV_DATA_OBJECT_MAPPING[i])
+          CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "PIV data object ID and OID do not match");
+        *mapping = &PIV_DATA_OBJECT_MAPPING[i];
+        CNK_RET_OK;
+      }
+    }
+    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "unsupported PIV data object OID");
+  }
+
+  if (*mapping != NULL)
+    CNK_RET_OK;
+
+  CNK_RETURN(CKR_TEMPLATE_INCOMPLETE, "missing PIV data object identifier");
+}
+
 static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS objectClass, CK_BYTE objectId,
                                   CK_BBOOL *exists) {
   CK_SLOT_ID slotId = session->slotId;
@@ -342,20 +443,12 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
   CNK_ENSURE_NONNULL(exists);
   *exists = CK_FALSE;
 
-  if (objectId < 1 || objectId > 6) {
-    return CKR_OK;
-  }
-
-  rv = C_CNK_ObjIdToPivTag(objectId, &pivTag);
-  if (rv == CKR_OBJECT_HANDLE_INVALID) {
-    return CKR_OK;
-  }
-  if (rv != CKR_OK) {
-    return rv;
-  }
-
   switch (objectClass) {
   case CKO_CERTIFICATE:
+    if (objectId < 1 || objectId > 6) {
+      return CKR_OK;
+    }
+
     rv = CNK_ObjectIdToCertificateTag(objectId, &certTag);
     if (rv == CKR_OBJECT_HANDLE_INVALID) {
       return CKR_OK;
@@ -376,6 +469,18 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
 
   case CKO_PUBLIC_KEY:
   case CKO_PRIVATE_KEY: {
+    if (objectId < 1 || objectId > 6) {
+      return CKR_OK;
+    }
+
+    rv = C_CNK_ObjIdToPivTag(objectId, &pivTag);
+    if (rv == CKR_OBJECT_HANDLE_INVALID) {
+      return CKR_OK;
+    }
+    if (rv != CKR_OK) {
+      return rv;
+    }
+
     CK_BYTE algorithmType = 0;
     CK_BYTE publicKey[MAX_PUBLIC_KEY_SIZE];
     CK_ULONG publicKeyLen = sizeof(publicKey);
@@ -390,15 +495,44 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
     return rv;
   }
 
+  case CKO_DATA: {
+    const PivDataObjectMapping *mapping = findPivDataObjectById(objectId);
+    if (mapping == NULL) {
+      return CKR_OK;
+    }
+
+    rv = cnk_get_piv_data_by_tag_with_session(slotId, session, mapping->dataTag, mapping->dataTagLen, NULL, NULL,
+                                              CK_FALSE);
+    if (rv == CKR_OK) {
+      *exists = CK_TRUE;
+      return CKR_OK;
+    }
+    if (rv == CKR_DATA_INVALID) {
+      return CKR_OK;
+    }
+    if (rv == CKR_USER_NOT_LOGGED_IN) {
+      return CKR_OK;
+    }
+    return rv;
+  }
+
   default:
     return CKR_OK;
   }
 }
 
-static CK_RV getTemplateObjectId(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_BYTE *objId) {
+static CK_RV getTemplateObjectId(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_OBJECT_CLASS objectClass,
+                                 CK_BYTE *objId) {
   CK_ATTRIBUTE_PTR attr;
   CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_ID, &attr));
   CNK_ENSURE_OK(attrGetByte(attr, objId));
+
+  if (objectClass == CKO_DATA) {
+    if (findPivDataObjectById(*objId) == NULL)
+      CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "unsupported PIV data object ID");
+    CNK_RET_OK;
+  }
+
   if (*objId < 1 || *objId > 6)
     CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "unsupported PIV object ID");
 
@@ -581,7 +715,7 @@ static CK_RV buildRsaImportData(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK
 
   CNK_ENSURE_OK(rsaComponentSizeToAlgorithm(pAttr->ulValueLen, algorithmType));
   CK_BYTE objId;
-  CNK_ENSURE_OK(getTemplateObjectId(pTemplate, ulCount, &objId));
+  CNK_ENSURE_OK(getTemplateObjectId(pTemplate, ulCount, CKO_PRIVATE_KEY, &objId));
   CNK_ENSURE_OK(
       CNK_GetPivPolicies(pTemplate, ulCount, CNK_DefaultPinPolicyForPivObjectId(objId), &pinPolicy, &touchPolicy));
 
@@ -627,7 +761,7 @@ static CK_RV buildEcImportData(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_
   }
 
   CK_BYTE objId;
-  CNK_ENSURE_OK(getTemplateObjectId(pTemplate, ulCount, &objId));
+  CNK_ENSURE_OK(getTemplateObjectId(pTemplate, ulCount, CKO_PRIVATE_KEY, &objId));
   CNK_ENSURE_OK(
       CNK_GetPivPolicies(pTemplate, ulCount, CNK_DefaultPinPolicyForPivObjectId(objId), &pinPolicy, &touchPolicy));
   CNK_ENSURE_OK(appendImportTlv(output, outputLen, &offset, 0x06, valueAttr));
@@ -658,6 +792,34 @@ static CK_RV appendMatchingPivObjects(CNK_PKCS11_SESSION *session, CK_SESSION_HA
       if (session->findObjectsCount >= MAX_FIND_OBJECTS) {
         return CKR_HOST_MEMORY;
       }
+      session->findObjects[session->findObjectsCount++] = hObject;
+    }
+  }
+
+  return CKR_OK;
+}
+
+static CK_RV appendMatchingPivDataObjects(CNK_PKCS11_SESSION *session, CK_SESSION_HANDLE hSession,
+                                          CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
+  for (CK_ULONG i = 0; i < PIV_DATA_OBJECT_MAPPING_SIZE; i++) {
+    const PivDataObjectMapping *mapping = &PIV_DATA_OBJECT_MAPPING[i];
+    CK_BBOOL exists;
+    CK_RV rv;
+
+    if (session->findIdSpecified && session->findObjectId != mapping->objId)
+      continue;
+
+    rv = checkPivObjectExists(session, CKO_DATA, mapping->objId, &exists);
+    if (rv != CKR_OK)
+      return rv;
+    if (!exists)
+      continue;
+
+    CK_OBJECT_HANDLE hObject = makeObjectHandle(session->slotId, CKO_DATA, mapping->objId);
+    if (ulCount == 0 || matchTemplate(hSession, hObject, pTemplate, ulCount)) {
+      if (session->findObjectsCount >= MAX_FIND_OBJECTS)
+        return CKR_HOST_MEMORY;
+
       session->findObjects[session->findObjectsCount++] = hObject;
     }
   }
@@ -814,6 +976,21 @@ CK_RV CNK_ValidateObject(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, 
     return CKR_OK;
   }
 
+  switch (obj_class) {
+  case CKO_CERTIFICATE:
+  case CKO_PUBLIC_KEY:
+  case CKO_PRIVATE_KEY:
+    if (localObjId < 1 || localObjId > 6)
+      return CKR_OBJECT_HANDLE_INVALID;
+    break;
+  case CKO_DATA:
+    if (findPivDataObjectById(localObjId) == NULL)
+      return CKR_OBJECT_HANDLE_INVALID;
+    break;
+  default:
+    return CKR_OBJECT_HANDLE_INVALID;
+  }
+
   return CKR_OK;
 }
 
@@ -836,9 +1013,33 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
   CK_OBJECT_CLASS objectClass;
   CK_BYTE objId;
   CNK_ENSURE_OK(getTemplateObjectClass(pTemplate, ulCount, &objectClass));
-  CNK_ENSURE_OK(getTemplateObjectId(pTemplate, ulCount, &objId));
+  if (objectClass == CKO_DATA) {
+    const PivDataObjectMapping *mapping;
+    CNK_ENSURE_OK(getTemplateDataObject(pTemplate, ulCount, &mapping));
+    objId = mapping->objId;
+  } else {
+    CNK_ENSURE_OK(getTemplateObjectId(pTemplate, ulCount, objectClass, &objId));
+  }
 
   switch (objectClass) {
+  case CKO_DATA: {
+    const PivDataObjectMapping *mapping = findPivDataObjectById(objId);
+    CK_ATTRIBUTE_PTR valueAttr;
+
+    CNK_ENSURE_NONNULL(mapping);
+    if (!mapping->writable)
+      CNK_RETURN(CKR_ACTION_PROHIBITED, "PIV data object is not writable");
+    CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_VALUE, &valueAttr));
+    if (valueAttr->pValue == NULL || valueAttr->ulValueLen == 0 || valueAttr->ulValueLen > MAX_PIV_DATA_OBJECT_SIZE)
+      CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad PIV data object value");
+
+    CNK_ENSURE_OK(cnk_put_piv_data_by_tag(session->slotId, session, mapping->dataTag, mapping->dataTagLen,
+                                          valueAttr->pValue, valueAttr->ulValueLen));
+
+    *phObject = makeObjectHandle(session->slotId, CKO_DATA, objId);
+    CNK_RET_OK;
+  }
+
   case CKO_CERTIFICATE: {
     CK_ATTRIBUTE_PTR valueAttr;
     CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_VALUE, &valueAttr));
@@ -929,6 +1130,9 @@ CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_U
   case CKO_CERTIFICATE:
     sizeAttrs[5].type = CKA_CERTIFICATE_TYPE;
     break;
+  case CKO_DATA:
+    sizeAttrs[5].type = CKA_APPLICATION;
+    break;
   case CKO_PUBLIC_KEY:
   case CKO_PRIVATE_KEY:
   case OBJECT_CLASS_SECRET_KEY_HANDLE:
@@ -986,6 +1190,18 @@ CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_U
     if (rv != CKR_OK)
       CNK_RETURN(rv, "failed to query certificate value size");
     size += sizeof(CK_ATTRIBUTE) + certValue.ulValueLen;
+  } else if (objClass == CKO_DATA) {
+    CK_ATTRIBUTE dataAttrs[] = {
+        {CKA_OBJECT_ID, NULL_PTR, 0},
+        {CKA_VALUE, NULL_PTR, 0},
+    };
+    rv = C_GetAttributeValue(hSession, hObject, dataAttrs, sizeof(dataAttrs) / sizeof(dataAttrs[0]));
+    if (rv != CKR_OK)
+      CNK_RETURN(rv, "failed to query data object size");
+    for (CK_ULONG i = 0; i < sizeof(dataAttrs) / sizeof(dataAttrs[0]); i++) {
+      if (dataAttrs[i].ulValueLen != CK_UNAVAILABLE_INFORMATION)
+        size += sizeof(CK_ATTRIBUTE) + dataAttrs[i].ulValueLen;
+    }
   } else if (objClass == OBJECT_CLASS_SECRET_KEY_HANDLE) {
     CK_ATTRIBUTE secretAttrs[] = {
         {CKA_VALUE_LEN, NULL_PTR, 0}, {CKA_SENSITIVE, NULL_PTR, 0}, {CKA_EXTRACTABLE, NULL_PTR, 0},
@@ -1070,7 +1286,14 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
   // Map object ID to PIV tag
   CK_BYTE bPivSlot;
-  CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &bPivSlot));
+  const PivDataObjectMapping *dataMapping = NULL;
+  if (objClass == CKO_DATA) {
+    dataMapping = findPivDataObjectById(objId);
+    CNK_ENSURE_NONNULL(dataMapping);
+    bPivSlot = dataMapping->dataTag[dataMapping->dataTagLen - 1];
+  } else {
+    CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &bPivSlot));
+  }
 
   // Fetch the PIV data for this object
   CK_BYTE data[4096];
@@ -1082,6 +1305,14 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
 
   switch (objClass) {
+  case CKO_DATA:
+    CNK_ENSURE_OK(cnk_get_piv_data_by_tag_with_session(session->slotId, session, dataMapping->dataTag,
+                                                       dataMapping->dataTagLen, data, &cbData, CK_TRUE));
+    if (cbData == 0) {
+      CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "No data found for PIV data object");
+    }
+    break;
+
   case CKO_PUBLIC_KEY:
   case CKO_PRIVATE_KEY: {
     CK_RV rvMeta = cnk_get_metadata(session->slotId, bPivSlot, &bAlgorithmType, abPublicKey, &cbPublicKey, &bPinPolicy,
@@ -1126,7 +1357,8 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       break;
 
     case CKA_PRIVATE:
-      bbool = (objClass == CKO_PRIVATE_KEY) ? CK_TRUE : CK_FALSE;
+      bbool =
+          (objClass == CKO_PRIVATE_KEY || (objClass == CKO_DATA && dataMapping->privateObject)) ? CK_TRUE : CK_FALSE;
       rv = setSingleAttributeValue(&pTemplate[i], &bbool, sizeof(bbool));
       break;
 
@@ -1157,9 +1389,19 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
         break;
       }
 
-      snprintf(label, sizeof(label), "PIV %s %02X", type_str, bPivSlot);
-      CK_ULONG label_len = (CK_ULONG)strlen(label);
-      rv = setSingleAttributeValue(&pTemplate[i], label, label_len);
+      if (objClass == CKO_DATA) {
+        rv = setSingleAttributeValue(&pTemplate[i], dataMapping->label, (CK_ULONG)strlen(dataMapping->label));
+      } else {
+        snprintf(label, sizeof(label), "PIV %s %02X", type_str, bPivSlot);
+        CK_ULONG label_len = (CK_ULONG)strlen(label);
+        rv = setSingleAttributeValue(&pTemplate[i], label, label_len);
+      }
+      break;
+    }
+
+    case CKA_MODIFIABLE: {
+      bbool = CK_FALSE;
+      rv = setSingleAttributeValue(&pTemplate[i], &bbool, sizeof(bbool));
       break;
     }
 
@@ -1176,6 +1418,10 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
     // Object class specific attributes
     switch (objClass) {
+    case CKO_DATA:
+      rv = handleDataAttribute(&pTemplate[i], dataMapping, data, cbData);
+      break;
+
     case CKO_CERTIFICATE:
       rv = handleCertificateAttribute(&pTemplate[i], data, cbData);
       break;
@@ -1272,14 +1518,9 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
   }
 
   // Check if the specified class is supported
-  if (session->findClassSpecified && session->findObjectClass != CKO_CERTIFICATE &&
-      session->findObjectClass != CKO_PUBLIC_KEY && session->findObjectClass != CKO_PRIVATE_KEY &&
-      session->findObjectClass != CKO_SECRET_KEY) {
-    cnk_mutex_unlock(&session->lock);
-    CNK_RET_OK; // Return OK but with no results
-  }
-
-  if (session->findIdSpecified && session->findObjectId < 1) {
+  if (session->findClassSpecified && session->findObjectClass != CKO_DATA &&
+      session->findObjectClass != CKO_CERTIFICATE && session->findObjectClass != CKO_PUBLIC_KEY &&
+      session->findObjectClass != CKO_PRIVATE_KEY && session->findObjectClass != CKO_SECRET_KEY) {
     cnk_mutex_unlock(&session->lock);
     CNK_RET_OK; // Return OK but with no results
   }
@@ -1287,17 +1528,21 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
   if (session->findClassSpecified) {
     if (session->findObjectClass == CKO_SECRET_KEY) {
       rv = appendMatchingSecretObjects(session, hSession, pTemplate, ulCount);
+    } else if (session->findObjectClass == CKO_DATA) {
+      rv = appendMatchingPivDataObjects(session, hSession, pTemplate, ulCount);
     } else {
-      if (session->findIdSpecified && session->findObjectId > 6) {
+      if (session->findIdSpecified && (session->findObjectId < 1 || session->findObjectId > 6)) {
         rv = CKR_OK;
       } else {
         rv = appendMatchingPivObjects(session, hSession, session->findObjectClass, pTemplate, ulCount);
       }
     }
   } else {
-    static const CK_OBJECT_CLASS searchableClasses[] = {CKO_CERTIFICATE, CKO_PUBLIC_KEY, CKO_PRIVATE_KEY};
+    static const CK_OBJECT_CLASS searchableClasses[] = {CKO_DATA, CKO_CERTIFICATE, CKO_PUBLIC_KEY, CKO_PRIVATE_KEY};
     for (CK_ULONG i = 0; i < sizeof(searchableClasses) / sizeof(searchableClasses[0]); i++) {
-      if (session->findIdSpecified && session->findObjectId > 6) {
+      if (searchableClasses[i] == CKO_DATA) {
+        rv = appendMatchingPivDataObjects(session, hSession, pTemplate, ulCount);
+      } else if (session->findIdSpecified && (session->findObjectId < 1 || session->findObjectId > 6)) {
         rv = CKR_OK;
       } else {
         rv = appendMatchingPivObjects(session, hSession, searchableClasses[i], pTemplate, ulCount);
@@ -1389,6 +1634,9 @@ CK_RV C_FindObjectsFinal(CK_SESSION_HANDLE hSession) {
 
 static CK_BBOOL matchTemplate(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTRIBUTE_PTR pTemplate,
                               CK_ULONG ulCount) {
+  if (ulCount == 0)
+    CNK_RETURN(CK_TRUE, "Empty template matches");
+
   // Copy the template
   CK_ATTRIBUTE_PTR attrs = (CK_ATTRIBUTE_PTR)ck_malloc(sizeof(CK_ATTRIBUTE) * ulCount);
   if (attrs == NULL)
@@ -1397,8 +1645,10 @@ static CK_BBOOL matchTemplate(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
   for (CK_ULONG i = 0; i < ulCount; i++) {
     attrs[i].type = pTemplate[i].type;
     attrs[i].ulValueLen = pTemplate[i].ulValueLen;
-    attrs[i].pValue = ck_malloc(pTemplate[i].ulValueLen);
-    if (attrs[i].pValue == NULL) {
+    attrs[i].pValue = NULL;
+    if (pTemplate[i].ulValueLen > 0)
+      attrs[i].pValue = ck_malloc(pTemplate[i].ulValueLen);
+    if (pTemplate[i].ulValueLen > 0 && attrs[i].pValue == NULL) {
       for (CK_ULONG j = 0; j < i; j++) {
         ck_free(attrs[j].pValue);
       }
@@ -1425,7 +1675,7 @@ static CK_BBOOL matchTemplate(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
       matched = CK_FALSE;
       break;
     }
-    if (memcmp(attrs[i].pValue, pTemplate[i].pValue, attrs[i].ulValueLen) != 0) {
+    if (attrs[i].ulValueLen > 0 && memcmp(attrs[i].pValue, pTemplate[i].pValue, attrs[i].ulValueLen) != 0) {
       matched = CK_FALSE;
       break;
     }
@@ -1522,6 +1772,22 @@ static CK_RV handleCertificateAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE_PTR 
   }
 
   CNK_RETURN(rv, "-");
+}
+
+static CK_RV handleDataAttribute(CK_ATTRIBUTE_PTR attribute, const PivDataObjectMapping *mapping, CK_BYTE_PTR data,
+                                 CK_ULONG dataLen) {
+  CNK_ENSURE_NONNULL(mapping);
+
+  switch (attribute->type) {
+  case CKA_APPLICATION:
+    return setSingleAttributeValue(attribute, mapping->application, (CK_ULONG)strlen(mapping->application));
+  case CKA_OBJECT_ID:
+    return setSingleAttributeValue(attribute, mapping->objectId, mapping->objectIdLen);
+  case CKA_VALUE:
+    return setSingleAttributeValue(attribute, data, dataLen);
+  default:
+    return CKR_ATTRIBUTE_TYPE_INVALID;
+  }
 }
 
 // Handle public key specific attributes

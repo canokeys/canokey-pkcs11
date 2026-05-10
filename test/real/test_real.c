@@ -531,6 +531,7 @@ void test_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID s
 void test_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_ecdsa_public_key_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_certificate_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
+void test_piv_data_objects(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_decryption(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_pin_never_private_key_operation(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
 void test_rsa_signing(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID);
@@ -1232,6 +1233,80 @@ void test_certificate_operations(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID 
 
   // Close the session
   pFunctionList->C_CloseSession(certSession);
+}
+
+void test_piv_data_objects(CK_FUNCTION_LIST_PTR pFunctionList, CK_SLOT_ID slotID) {
+  CK_SESSION_HANDLE dataSession;
+  CK_RV rv = pFunctionList->C_OpenSession(slotID, CKF_SERIAL_SESSION, NULL, NULL, &dataSession);
+  if (rv != CKR_OK) {
+    record_real_test_failure("Error opening session for PIV data tests", rv);
+    return;
+  }
+
+  CK_OBJECT_CLASS dataClass = CKO_DATA;
+  CK_ATTRIBUTE findTemplate[] = {{CKA_CLASS, &dataClass, sizeof(dataClass)}};
+  rv = pFunctionList->C_FindObjectsInit(dataSession, findTemplate, sizeof(findTemplate) / sizeof(findTemplate[0]));
+  if (rv != CKR_OK) {
+    record_real_test_failure("Error initializing PIV data object search", rv);
+    pFunctionList->C_CloseSession(dataSession);
+    return;
+  }
+
+  printf("    PIV data objects present:\n");
+  CK_ULONG total = 0;
+  for (;;) {
+    CK_OBJECT_HANDLE hObject;
+    CK_ULONG objectCount = 0;
+    rv = pFunctionList->C_FindObjects(dataSession, &hObject, 1, &objectCount);
+    if (rv != CKR_OK) {
+      record_real_test_failure("Error enumerating PIV data objects", rv);
+      break;
+    }
+    if (objectCount == 0)
+      break;
+
+    total++;
+    CK_BYTE id = 0;
+    char label[96] = {0};
+    CK_BYTE objectId[32];
+    CK_ATTRIBUTE attrs[] = {
+        {CKA_ID, &id, sizeof(id)},
+        {CKA_LABEL, label, sizeof(label) - 1},
+        {CKA_OBJECT_ID, objectId, sizeof(objectId)},
+    };
+    rv = pFunctionList->C_GetAttributeValue(dataSession, hObject, attrs, sizeof(attrs) / sizeof(attrs[0]));
+    if (rv != CKR_OK) {
+      record_real_test_failure("Error reading PIV data object attributes", rv);
+      continue;
+    }
+    if (attrs[1].ulValueLen < sizeof(label))
+      label[attrs[1].ulValueLen] = '\0';
+    else
+      label[sizeof(label) - 1] = '\0';
+
+    CK_ATTRIBUTE valueAttr = {CKA_VALUE, NULL, 0};
+    rv = pFunctionList->C_GetAttributeValue(dataSession, hObject, &valueAttr, 1);
+    if (rv != CKR_OK) {
+      record_real_test_failure("Error querying PIV data object value length", rv);
+      continue;
+    }
+
+    printf("      id=0x%02x label=\"%s\" value_len=%lu oid=", id, label, valueAttr.ulValueLen);
+    for (CK_ULONG i = 0; i < attrs[2].ulValueLen; i++)
+      printf("%02x", objectId[i]);
+    printf("\n");
+  }
+
+  if (total == 0)
+    printf("      none\n");
+
+  CK_RV finalRv = pFunctionList->C_FindObjectsFinal(dataSession);
+  if (finalRv != CKR_OK)
+    record_real_test_failure("Error finalizing PIV data object search", finalRv);
+
+  rv = pFunctionList->C_CloseSession(dataSession);
+  if (rv != CKR_OK)
+    record_real_test_failure("Error closing PIV data object session", rv);
 }
 
 // Verify ECDSA signature using mbedtls
@@ -3401,6 +3476,9 @@ int main(int argc, char *argv[]) {
 
       // Test certificate operations
       test_certificate_operations(pFunctionList, pSlotList[i]);
+
+      // Test standard PIV data object enumeration
+      test_piv_data_objects(pFunctionList, pSlotList[i]);
 
       // Test hardware decrypt
       test_decryption(pFunctionList, pSlotList[i]);

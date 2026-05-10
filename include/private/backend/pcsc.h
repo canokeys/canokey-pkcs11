@@ -126,13 +126,26 @@ CK_BBOOL cnk_is_initialized(void);
 // Get the number of available slots
 CK_ULONG cnk_get_slot_count(void);
 
-// Get PIV data from the CanoKey device
-// If fetch_data is CK_FALSE, only checks for existence and sets data_len to 1 if found, 0 if not
+// Get PIV data from the CanoKey device. If fetch_data is CK_FALSE, only checks
+// existence and reports it through the return value.
 CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data);
+
+// Get a PIV data object by its full BER-TLV tag, for example 5F C1 02 or 7E.
+CK_RV cnk_get_piv_data_by_tag(CK_SLOT_ID slotID, const CK_BYTE *tag, CK_ULONG tag_len, CK_BYTE_PTR data,
+                              CK_ULONG_PTR data_len, CK_BBOOL fetch_data);
+
+// Get a PIV data object by its full BER-TLV tag, verifying the cached user PIN first when available.
+CK_RV cnk_get_piv_data_by_tag_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag,
+                                           CK_ULONG tag_len, CK_BYTE_PTR data, CK_ULONG_PTR data_len,
+                                           CK_BBOOL fetch_data);
 
 // Write a PIV data object. The tag is the one-byte 0x5FC1xx object tag.
 CK_RV cnk_put_piv_data(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE tag, CK_BYTE_PTR data,
                        CK_ULONG data_len);
+
+// Write a PIV data object by its full BER-TLV tag.
+CK_RV cnk_put_piv_data_by_tag(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag, CK_ULONG tag_len,
+                              CK_BYTE_PTR data, CK_ULONG data_len);
 
 // Get metadata for a PIV key or object
 // This function retrieves metadata from a PIV key or object using the PIV metadata APDU command
