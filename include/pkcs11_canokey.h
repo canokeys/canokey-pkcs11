@@ -41,6 +41,10 @@ typedef CNK_MANAGED_MODE_INIT_ARGS *CNK_MANAGED_MODE_INIT_ARGS_PTR;
 #define CNK_PIV_TOUCH_POLICY_ALWAYS 0x02
 #define CNK_PIV_TOUCH_POLICY_CACHED 0x03
 
+// PIV secret reference values for C_CNK_SetPIN().
+#define CNK_PIV_PIN_TYPE_PIN 0x80
+#define CNK_PIV_PIN_TYPE_PUK 0x81
+
 // Extension API to enable managed mode (must be called before `C_Initialize`)
 // pInitArgs: non-NULL pointer to CNK_MANAGED_MODE_INIT_ARGS
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_EnableManagedMode)(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs);
@@ -56,6 +60,13 @@ CK_DEFINE_FUNCTION(CK_RV, C_CNK_ConfigLogging)(int level, FILE *file, CK_BBOOL u
 // See C_Login for other arguments
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_Login)(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin,
                                        CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
+
+// Extension API to change the PIV PIN or PUK and get remaining tries.
+// pinType: CNK_PIV_PIN_TYPE_PIN or CNK_PIV_PIN_TYPE_PUK
+// pPinTries: pointer to receive remaining tries for the selected secret (NULL for not needed)
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_SetPIN)(CK_SESSION_HANDLE hSession, CK_BYTE pinType, CK_UTF8CHAR_PTR pOldPin,
+                                        CK_ULONG ulOldLen, CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewLen,
+                                        CK_BYTE_PTR pPinTries);
 
 // Extension API to unblock the PIV PIN using the PUK and set a new PIN
 // pPinTries: pointer to an integer to receive the number of remaining PUK tries (NULL for not needed)

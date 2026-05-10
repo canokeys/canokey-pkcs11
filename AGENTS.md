@@ -181,11 +181,15 @@ Write-path notes:
 - Windows minidriver `CardQueryFreeSpace` should report unknown free space for
   now. There is no PIV APDU for real object-store capacity, and adding one would
   require extending the CanoKey PIV applet.
-- `C_SetPIN` maps to the standard PIV Change Reference Data APDU
-  (`00 24 00 80 10 old-pin new-pin`). PUK unblock is exposed as the CanoKey
-  extension `C_CNK_UnblockPIN()` and maps to Reset Retry Counter
-  (`00 2C 00 80 10 puk new-pin`). CanoKey core's PIV applet implements these
-  APDUs with the same fixed 8-byte, `0xFF`-padded fields.
+- `C_CNK_SetPIN()` maps to the standard PIV Change Reference Data APDU. Pass
+  `CNK_PIV_PIN_TYPE_PIN` (`0x80`) to change the PIN or
+  `CNK_PIV_PIN_TYPE_PUK` (`0x81`) to change the PUK; the optional tries output
+  reports remaining retries for the selected secret when the card returns a
+  retry status. Standard `C_SetPIN` forwards to the PIN form without a tries
+  output. PUK unblock is exposed as the CanoKey extension `C_CNK_UnblockPIN()`
+  and maps to Reset Retry Counter (`00 2C 00 80 10 puk new-pin`). CanoKey
+  core's PIV applet implements these APDUs with the same fixed 8-byte,
+  `0xFF`-padded fields.
 - `CKF_RNG` is intentionally not advertised because CanoKey PIV does not expose
   a random-generation APDU through this module.
 - `CKA_CNK_PIV_PIN_POLICY` and `CKA_CNK_PIV_TOUCH_POLICY` are public

@@ -5,6 +5,7 @@
 #include "internal/mutex.h"
 #include "internal/util.h"
 #include "pkcs11.h"
+#include "pkcs11_canokey.h"
 
 #include <string.h>
 
@@ -376,13 +377,5 @@ CK_RV C_SetPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pOldPin, CK_ULONG ulO
                CK_ULONG ulNewLen) {
   CNK_LOG_FUNC(": hSession: %lu, pOldPin: %p, ulOldLen: %lu, pNewPin: %p, ulNewLen: %lu", hSession, pOldPin, ulOldLen,
                pNewPin, ulNewLen);
-  CNK_ENSURE_INITIALIZED();
-  CNK_ENSURE_NONNULL(pOldPin, pNewPin);
-
-  CNK_PKCS11_SESSION *session;
-  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  if (!(session->flags & CKF_RW_SESSION))
-    CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
-
-  return cnk_change_piv_pin_with_session(session->slotId, session, pOldPin, ulOldLen, pNewPin, ulNewLen, NULL);
+  return C_CNK_SetPIN(hSession, CNK_PIV_PIN_TYPE_PIN, pOldPin, ulOldLen, pNewPin, ulNewLen, NULL);
 }

@@ -48,6 +48,24 @@ CK_RV C_CNK_ConfigLogging(int level, FILE *file, CK_BBOOL unsafe_log_apdu) {
   return cnk_config_logging(level, file, unsafe_log_apdu);
 }
 
+CK_RV C_CNK_SetPIN(CK_SESSION_HANDLE hSession, CK_BYTE pinType, CK_UTF8CHAR_PTR pOldPin, CK_ULONG ulOldLen,
+                   CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewLen, CK_BYTE_PTR pPinTries) {
+  CNK_LOG_FUNC(": hSession: %lu, pinType: 0x%02x, pOldPin: %p, ulOldLen: %lu, pNewPin: %p, ulNewLen: %lu, "
+               "pPinTries: %p",
+               hSession, pinType, pOldPin, ulOldLen, pNewPin, ulNewLen, pPinTries);
+
+  CNK_ENSURE_INITIALIZED();
+  CNK_ENSURE_NONNULL(pOldPin, pNewPin);
+
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (!(session->flags & CKF_RW_SESSION))
+    CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
+
+  return cnk_change_piv_secret_with_session(session->slotId, session, pinType, pOldPin, ulOldLen, pNewPin, ulNewLen,
+                                            pPinTries);
+}
+
 CK_RV C_CNK_UnblockPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULONG ulPukLen, CK_UTF8CHAR_PTR pNewPin,
                        CK_ULONG ulNewPinLen, CK_BYTE_PTR pPinTries) {
   CNK_LOG_FUNC(": hSession: %lu, pPuk: %p, ulPukLen: %lu, pNewPin: %p, ulNewPinLen: %lu, pPinTries: %p", hSession, pPuk,

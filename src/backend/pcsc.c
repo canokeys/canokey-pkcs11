@@ -12,7 +12,6 @@
 
 #define CNK_PIV_MAX_PUBLIC_KEY_RESPONSE 527
 
-#define PIV_REFERENCE_PIN 0x80
 #define PIV_PADDED_PIN_LEN 8
 
 // Global variables for reader management
@@ -88,6 +87,13 @@ static CK_BBOOL contains_canokey(const char *str) { return str && ck_strcasestr(
 static CK_RV validate_piv_pin_len(CK_ULONG pinLen) {
   if (pinLen < 1 || pinLen > PIV_PADDED_PIN_LEN)
     CNK_RETURN(CKR_PIN_LEN_RANGE, "Invalid PIN length");
+
+  CNK_RET_OK;
+}
+
+static CK_RV validate_piv_secret_reference(CK_BYTE pinReference) {
+  if (pinReference != CNK_PIV_PIN_TYPE_PIN && pinReference != CNK_PIV_PIN_TYPE_PUK)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "Invalid PIV PIN reference");
 
   CNK_RET_OK;
 }
@@ -568,7 +574,7 @@ CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPin
   }
 
   // Prepare the VERIFY command: 00 20 00 80 08 [PIN padded with 0xFF]
-  CK_BYTE verify_apdu[5 + PIV_PADDED_PIN_LEN] = {0x00, 0x20, 0x00, PIV_REFERENCE_PIN, PIV_PADDED_PIN_LEN};
+  CK_BYTE verify_apdu[5 + PIV_PADDED_PIN_LEN] = {0x00, 0x20, 0x00, CNK_PIV_PIN_TYPE_PIN, PIV_PADDED_PIN_LEN};
   CNK_ENSURE_OK(pad_piv_pin(pPin, ulPinLen, verify_apdu + 5));
 
   // Prepare response buffer
@@ -607,7 +613,7 @@ CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard) {
   }
 
   // Prepare the LOGOUT command: 00 20 FF 80 00
-  CK_BYTE logout_apdu[] = {0x00, 0x20, 0xFF, 0x80, 0x00};
+  CK_BYTE logout_apdu[] = {0x00, 0x20, 0xFF, CNK_PIV_PIN_TYPE_PIN, 0x00};
 
   // Prepare response buffer
   CK_BYTE response[258];
@@ -633,12 +639,13 @@ CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard) {
   CNK_RETURN(CKR_DEVICE_ERROR, "Failed to logout PIV PIN");
 }
 
-static CK_RV cnk_update_piv_pin(SCARDHANDLE hCard, CK_BYTE ins, CK_UTF8CHAR_PTR pCurrentSecret,
+static CK_RV cnk_update_piv_pin(SCARDHANDLE hCard, CK_BYTE ins, CK_BYTE pinReference, CK_UTF8CHAR_PTR pCurrentSecret,
                                 CK_ULONG ulCurrentSecretLen, CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewPinLen,
                                 CK_BYTE_PTR pPinTries, const char *operationName) {
   if (hCard == 0 || pCurrentSecret == NULL || pNewPin == NULL)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "Invalid arguments");
 
+  CNK_ENSURE_OK(validate_piv_secret_reference(pinReference));
   CNK_ENSURE_OK(validate_piv_pin_len(ulCurrentSecretLen));
   CNK_ENSURE_OK(validate_piv_pin_len(ulNewPinLen));
 
@@ -646,7 +653,7 @@ static CK_RV cnk_update_piv_pin(SCARDHANDLE hCard, CK_BYTE ins, CK_UTF8CHAR_PTR 
   if (rv != CKR_OK)
     CNK_RETURN(rv, "Failed to select PIV application");
 
-  CK_BYTE apdu[5 + PIV_PADDED_PIN_LEN * 2] = {0x00, ins, 0x00, PIV_REFERENCE_PIN, (CK_BYTE)(PIV_PADDED_PIN_LEN * 2)};
+  CK_BYTE apdu[5 + PIV_PADDED_PIN_LEN * 2] = {0x00, ins, 0x00, pinReference, (CK_BYTE)(PIV_PADDED_PIN_LEN * 2)};
   CNK_ENSURE_OK(pad_piv_pin(pCurrentSecret, ulCurrentSecretLen, apdu + 5));
   CNK_ENSURE_OK(pad_piv_pin(pNewPin, ulNewPinLen, apdu + 5 + PIV_PADDED_PIN_LEN));
 
@@ -666,6 +673,7 @@ static CK_RV cnk_update_piv_pin(SCARDHANDLE hCard, CK_BYTE ins, CK_UTF8CHAR_PTR 
 
 typedef struct {
   CNK_PKCS11_SESSION *session;
+  CK_BYTE pin_reference;
   CK_UTF8CHAR_PTR old_pin;
   CK_ULONG old_pin_len;
   CK_UTF8CHAR_PTR new_pin;
@@ -675,25 +683,29 @@ typedef struct {
 
 static CK_RV change_pin_card_operation(SCARDHANDLE hCard, void *context) {
   ChangePinContext *ctx = (ChangePinContext *)context;
-  CK_RV rv = cnk_update_piv_pin(hCard, 0x24, ctx->old_pin, ctx->old_pin_len, ctx->new_pin, ctx->new_pin_len,
-                                ctx->pin_tries, "PIV PIN change failed");
-  if (rv == CKR_OK && ctx->session->cbPin > 0 && ctx->session->cbPin == ctx->old_pin_len &&
-      memcmp(ctx->session->pin, ctx->old_pin, ctx->old_pin_len) == 0) {
+  const char *operationName =
+      ctx->pin_reference == CNK_PIV_PIN_TYPE_PUK ? "PIV PUK change failed" : "PIV PIN change failed";
+  CK_RV rv = cnk_update_piv_pin(hCard, 0x24, ctx->pin_reference, ctx->old_pin, ctx->old_pin_len, ctx->new_pin,
+                                ctx->new_pin_len, ctx->pin_tries, operationName);
+  if (rv == CKR_OK && ctx->pin_reference == CNK_PIV_PIN_TYPE_PIN && ctx->session->cbPin > 0 &&
+      ctx->session->cbPin == ctx->old_pin_len && memcmp(ctx->session->pin, ctx->old_pin, ctx->old_pin_len) == 0) {
     cache_piv_pin(ctx->session, ctx->new_pin, ctx->new_pin_len);
   }
   return rv;
 }
 
-CK_RV cnk_change_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pOldPin,
-                                      CK_ULONG ulOldPinLen, CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewPinLen,
-                                      CK_BYTE_PTR pPinTries) {
+CK_RV cnk_change_piv_secret_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pinReference,
+                                         CK_UTF8CHAR_PTR pOldPin, CK_ULONG ulOldPinLen, CK_UTF8CHAR_PTR pNewPin,
+                                         CK_ULONG ulNewPinLen, CK_BYTE_PTR pPinTries) {
   if (session == NULL || pOldPin == NULL || pNewPin == NULL)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "Invalid arguments");
 
+  CNK_ENSURE_OK(validate_piv_secret_reference(pinReference));
   CNK_ENSURE_OK(validate_piv_pin_len(ulOldPinLen));
   CNK_ENSURE_OK(validate_piv_pin_len(ulNewPinLen));
 
   ChangePinContext ctx = {.session = session,
+                          .pin_reference = pinReference,
                           .old_pin = pOldPin,
                           .old_pin_len = ulOldPinLen,
                           .new_pin = pNewPin,
@@ -713,8 +725,8 @@ typedef struct {
 
 static CK_RV unblock_pin_card_operation(SCARDHANDLE hCard, void *context) {
   UnblockPinContext *ctx = (UnblockPinContext *)context;
-  CK_RV rv = cnk_update_piv_pin(hCard, 0x2C, ctx->puk, ctx->puk_len, ctx->new_pin, ctx->new_pin_len, ctx->pin_tries,
-                                "PIV PIN unblock failed");
+  CK_RV rv = cnk_update_piv_pin(hCard, 0x2C, CNK_PIV_PIN_TYPE_PIN, ctx->puk, ctx->puk_len, ctx->new_pin,
+                                ctx->new_pin_len, ctx->pin_tries, "PIV PIN unblock failed");
   if (rv == CKR_OK) {
     cache_piv_pin(ctx->session, ctx->new_pin, ctx->new_pin_len);
     ctx->session->state = (ctx->session->flags & CKF_RW_SESSION) ? SESSION_STATE_RW_USER : SESSION_STATE_RO_USER;

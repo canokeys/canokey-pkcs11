@@ -100,6 +100,13 @@ Private-key operations honor the stored PIN policy. Keys with PIN policy never
 can sign, decrypt, or derive without `CKU_USER` login; keys with PIN policy once
 or always require a logged-in user PIN before the operation.
 
+`C_CNK_Login()` mirrors `C_Login()` and optionally returns the remaining PIN
+tries. `C_CNK_SetPIN()` changes either the PIV PIN
+(`CNK_PIV_PIN_TYPE_PIN`) or PUK (`CNK_PIV_PIN_TYPE_PUK`) and can return the
+remaining retries for the selected secret. Standard `C_SetPIN()` forwards to
+`C_CNK_SetPIN(..., CNK_PIV_PIN_TYPE_PIN, ..., NULL)`. `C_CNK_UnblockPIN()`
+uses the PUK to reset the PIV PIN and can return the remaining PUK tries.
+
 Standard PIV data objects are exposed as `CKO_DATA` token objects when the card
 reports that they exist. Enumeration probes a fixed table of common PIV data
 objects, including CHUID, card capability container, discovery object,
