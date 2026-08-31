@@ -38,6 +38,44 @@ static void makeKeyTemplates(CK_BYTE *id, CK_KEY_TYPE *keyType, CK_ULONG *parame
   privateTemplate[6] = (CK_ATTRIBUTE){CKA_PARAMETER_SET, parameterSet, sizeof(*parameterSet)};
 }
 
+static int exercisePqcPrivateOperations(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE session,
+                                        CK_OBJECT_HANDLE mldsaPrivate, CK_OBJECT_HANDLE mlkemPublic,
+                                        CK_OBJECT_HANDLE mlkemPrivate) {
+  CK_MECHANISM mechanism = {CKM_ML_DSA, NULL, 0};
+  CK_BYTE message[] = "CanoKey PKCS11 3.2 ML-DSA streaming test";
+  CK_BYTE signature[3309];
+  CK_ULONG signatureLen = sizeof(signature);
+  CHECK(functions->C_SignInit(session, &mechanism, mldsaPrivate));
+  CHECK(functions->C_SignUpdate(session, message, 13));
+  CHECK(functions->C_SignUpdate(session, message + 13, sizeof(message) - 1 - 13));
+  CHECK(functions->C_SignFinal(session, signature, &signatureLen));
+  if (signatureLen != sizeof(signature))
+    return 1;
+
+  CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
+  CK_KEY_TYPE secretType = CKK_GENERIC_SECRET;
+  CK_BBOOL extractable = CK_TRUE;
+  CK_ATTRIBUTE secretTemplate[] = {{CKA_CLASS, &secretClass, sizeof(secretClass)},
+                                   {CKA_KEY_TYPE, &secretType, sizeof(secretType)},
+                                   {CKA_EXTRACTABLE, &extractable, sizeof(extractable)}};
+  CK_BYTE ciphertext[1088];
+  CK_ULONG ciphertextLen = sizeof(ciphertext);
+  CK_OBJECT_HANDLE encapsulatedSecret, decapsulatedSecret;
+  mechanism.mechanism = CKM_ML_KEM;
+  CHECK(functions->C_EncapsulateKey(session, &mechanism, mlkemPublic, secretTemplate, 3, ciphertext, &ciphertextLen,
+                                    &encapsulatedSecret));
+  CHECK(functions->C_DecapsulateKey(session, &mechanism, mlkemPrivate, secretTemplate, 3, ciphertext, ciphertextLen,
+                                    &decapsulatedSecret));
+  CK_BYTE secretA[32], secretB[32];
+  CK_ATTRIBUTE secretAValue = {CKA_VALUE, secretA, sizeof(secretA)};
+  CK_ATTRIBUTE secretBValue = {CKA_VALUE, secretB, sizeof(secretB)};
+  CHECK(functions->C_GetAttributeValue(session, encapsulatedSecret, &secretAValue, 1));
+  CHECK(functions->C_GetAttributeValue(session, decapsulatedSecret, &secretBValue, 1));
+  if (secretAValue.ulValueLen != 32 || secretBValue.ulValueLen != 32 || memcmp(secretA, secretB, 32) != 0)
+    return 1;
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc != 2) {
     fprintf(stderr, "usage: test_pqc <pkcs11-library>\n");
@@ -92,40 +130,63 @@ int main(int argc, char **argv) {
   CHECK(functions->C_Logout(session));
   CHECK(functions->C_Login(session, CKU_USER, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin)));
 
-  CK_BYTE message[] = "CanoKey PKCS11 3.2 ML-DSA streaming test";
-  CK_BYTE signature[3309];
-  CK_ULONG signatureLen = sizeof(signature);
-  mechanism.mechanism = CKM_ML_DSA;
-  CHECK(functions->C_SignInit(session, &mechanism, mldsaPrivate));
-  CHECK(functions->C_SignUpdate(session, message, 13));
-  CHECK(functions->C_SignUpdate(session, message + 13, sizeof(message) - 1 - 13));
-  CHECK(functions->C_SignFinal(session, signature, &signatureLen));
-  if (signatureLen != sizeof(signature))
+  if (exercisePqcPrivateOperations(functions, session, mldsaPrivate, mlkemPublic, mlkemPrivate) != 0)
     return 1;
 
-  CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
-  CK_KEY_TYPE secretType = CKK_GENERIC_SECRET;
-  CK_BBOOL extractable = CK_TRUE;
-  CK_ATTRIBUTE secretTemplate[] = {{CKA_CLASS, &secretClass, sizeof(secretClass)},
-                                   {CKA_KEY_TYPE, &secretType, sizeof(secretType)},
-                                   {CKA_EXTRACTABLE, &extractable, sizeof(extractable)}};
-  CK_BYTE ciphertext[1088];
-  CK_ULONG ciphertextLen = sizeof(ciphertext);
-  CK_OBJECT_HANDLE encapsulatedSecret, decapsulatedSecret;
-  mechanism.mechanism = CKM_ML_KEM;
-  CHECK(functions->C_EncapsulateKey(session, &mechanism, mlkemPublic, secretTemplate, 3, ciphertext, &ciphertextLen,
-                                    &encapsulatedSecret));
-  CHECK(functions->C_DecapsulateKey(session, &mechanism, mlkemPrivate, secretTemplate, 3, ciphertext, ciphertextLen,
-                                    &decapsulatedSecret));
-  CK_BYTE secretA[32], secretB[32];
-  CK_ATTRIBUTE secretAValue = {CKA_VALUE, secretA, sizeof(secretA)};
-  CK_ATTRIBUTE secretBValue = {CKA_VALUE, secretB, sizeof(secretB)};
-  CHECK(functions->C_GetAttributeValue(session, encapsulatedSecret, &secretAValue, 1));
-  CHECK(functions->C_GetAttributeValue(session, decapsulatedSecret, &secretBValue, 1));
-  if (secretAValue.ulValueLen != 32 || secretBValue.ulValueLen != 32 || memcmp(secretA, secretB, 32) != 0)
+  CHECK(functions->C_CloseSession(session));
+  CHECK(functions->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session));
+  CHECK(functions->C_Login(session, CKU_SO, managementKey, sizeof(managementKey)));
+
+  CK_OBJECT_CLASS privateClass = CKO_PRIVATE_KEY;
+  CK_BBOOL trueValue = CK_TRUE;
+  CK_BYTE mldsaSeed[32], mlkemSeed[64];
+  for (CK_ULONG i = 0; i < sizeof(mldsaSeed); i++)
+    mldsaSeed[i] = (CK_BYTE)(0x20 + i);
+  for (CK_ULONG i = 0; i < sizeof(mlkemSeed); i++)
+    mlkemSeed[i] = (CK_BYTE)(0x60 + i);
+
+  id = 23;
+  keyType = CKK_ML_DSA;
+  parameterSet = CKP_ML_DSA_65;
+  CK_ATTRIBUTE mldsaImportTemplate[] = {
+      {CKA_CLASS, &privateClass, sizeof(privateClass)},
+      {CKA_TOKEN, &trueValue, sizeof(trueValue)},
+      {CKA_PRIVATE, &trueValue, sizeof(trueValue)},
+      {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
+      {CKA_ID, &id, sizeof(id)},
+      {CKA_SIGN, &trueValue, sizeof(trueValue)},
+      {CKA_PARAMETER_SET, &parameterSet, sizeof(parameterSet)},
+      {CKA_SEED, mldsaSeed, sizeof(mldsaSeed)},
+  };
+  CHECK(functions->C_CreateObject(session, mldsaImportTemplate,
+                                  sizeof(mldsaImportTemplate) / sizeof(mldsaImportTemplate[0]), &mldsaPrivate));
+
+  id = 24;
+  keyType = CKK_ML_KEM;
+  parameterSet = CKP_ML_KEM_768;
+  CK_ATTRIBUTE mlkemImportTemplate[] = {
+      {CKA_CLASS, &privateClass, sizeof(privateClass)},
+      {CKA_TOKEN, &trueValue, sizeof(trueValue)},
+      {CKA_PRIVATE, &trueValue, sizeof(trueValue)},
+      {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
+      {CKA_ID, &id, sizeof(id)},
+      {CKA_DECAPSULATE, &trueValue, sizeof(trueValue)},
+      {CKA_PARAMETER_SET, &parameterSet, sizeof(parameterSet)},
+      {CKA_SEED, mlkemSeed, sizeof(mlkemSeed)},
+  };
+  CHECK(functions->C_CreateObject(session, mlkemImportTemplate,
+                                  sizeof(mlkemImportTemplate) / sizeof(mlkemImportTemplate[0]), &mlkemPrivate));
+
+  CK_ATTRIBUTE seedQuery = {CKA_SEED, NULL, 0};
+  if (functions->C_GetAttributeValue(session, mldsaPrivate, &seedQuery, 1) != CKR_ATTRIBUTE_SENSITIVE)
     return 1;
 
-  printf("PKCS#11 3.2 ML-DSA-65 and ML-KEM-768 hardware test passed\n");
+  CHECK(functions->C_Logout(session));
+  CHECK(functions->C_Login(session, CKU_USER, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin)));
+  if (exercisePqcPrivateOperations(functions, session, mldsaPrivate, mlkemPublic, mlkemPrivate) != 0)
+    return 1;
+
+  printf("PKCS#11 3.2 ML-DSA-65 and ML-KEM-768 generation/import hardware test passed\n");
   CHECK(functions->C_CloseSession(session));
   CHECK(functions->C_Finalize(NULL));
   return 0;

@@ -798,6 +798,57 @@ static CK_RV buildEcImportData(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_
   CNK_RET_OK;
 }
 
+static CK_RV buildPqcImportData(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
+                                CK_KEY_TYPE keyType, CK_BYTE *output, CK_ULONG outputLen, CK_ULONG_PTR written,
+                                CK_BYTE *algorithmType) {
+  CK_ATTRIBUTE_PTR parameterSetAttr;
+  CK_ATTRIBUTE_PTR seedAttr;
+  CK_BYTE componentTag;
+  CK_ULONG expectedSeedLen;
+  CK_ULONG expectedParameterSet;
+  CK_BYTE pinPolicy;
+  CK_BYTE touchPolicy;
+  CK_ULONG offset = 0;
+
+  CNK_ENSURE_NONNULL(session, output, written, algorithmType);
+  CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_PARAMETER_SET, &parameterSetAttr));
+  CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_SEED, &seedAttr));
+  if (parameterSetAttr->pValue == NULL || parameterSetAttr->ulValueLen != sizeof(CK_ULONG) ||
+      seedAttr->pValue == NULL) {
+    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad PQC private-key template");
+  }
+
+  if (keyType == CKK_ML_DSA) {
+    expectedParameterSet = CKP_ML_DSA_65;
+    expectedSeedLen = 32;
+    componentTag = 0x09;
+    *algorithmType = session->mldsa65Algorithm;
+  } else if (keyType == CKK_ML_KEM) {
+    expectedParameterSet = CKP_ML_KEM_768;
+    expectedSeedLen = 64;
+    componentTag = 0x0A;
+    *algorithmType = session->mlkem768Algorithm;
+  } else {
+    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "unsupported PQC private key type");
+  }
+
+  if (*(CK_ULONG *)parameterSetAttr->pValue != expectedParameterSet)
+    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "unsupported PQC parameter set");
+  if (seedAttr->ulValueLen != expectedSeedLen)
+    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad PQC seed length");
+
+  CK_BYTE objId;
+  CNK_ENSURE_OK(getTemplateObjectId(pTemplate, ulCount, CKO_PRIVATE_KEY, &objId));
+  CNK_ENSURE_OK(
+      CNK_GetPivPolicies(pTemplate, ulCount, CNK_DefaultPinPolicyForPivObjectId(objId), &pinPolicy, &touchPolicy));
+  CNK_ENSURE_OK(appendImportTlv(output, outputLen, &offset, componentTag, seedAttr));
+  CNK_ENSURE_OK(appendTlv(output, outputLen, &offset, 0xAA, &pinPolicy, sizeof(pinPolicy)));
+  CNK_ENSURE_OK(appendTlv(output, outputLen, &offset, 0xAB, &touchPolicy, sizeof(touchPolicy)));
+
+  *written = offset;
+  CNK_RET_OK;
+}
+
 static CK_RV appendMatchingPivObjects(CNK_PKCS11_SESSION *session, CK_SESSION_HANDLE hSession,
                                       CK_OBJECT_CLASS objectClass, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                                       const CNK_PIV_METADATA_DIRECTORY_ENTRY *directory, CK_ULONG directoryCount) {
@@ -1118,6 +1169,11 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
     case CKK_EC:
       CNK_ENSURE_OK(
           buildEcImportData(pTemplate, ulCount, importData, sizeof(importData), &importDataLen, &algorithmType));
+      break;
+    case CKK_ML_DSA:
+    case CKK_ML_KEM:
+      CNK_ENSURE_OK(buildPqcImportData(session, pTemplate, ulCount, keyType, importData, sizeof(importData),
+                                       &importDataLen, &algorithmType));
       break;
     default:
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "unsupported private key type for C_CreateObject");
@@ -2190,6 +2246,14 @@ static CK_RV handlePrivateKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
+
+  case CKA_SEED:
+    rv = (key_type == CKK_ML_DSA || key_type == CKK_ML_KEM) ? CKR_ATTRIBUTE_SENSITIVE : CKR_ATTRIBUTE_TYPE_INVALID;
+    break;
+
+  case CKA_VALUE:
+    rv = CKR_ATTRIBUTE_SENSITIVE;
+    break;
 
   case CKA_NEVER_EXTRACTABLE: {
     CK_BBOOL value = CK_TRUE;

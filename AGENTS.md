@@ -175,6 +175,10 @@ Write-path notes:
   RSA CRT attributes (`CKA_PRIME_1`, `CKA_PRIME_2`, `CKA_EXPONENT_1`,
   `CKA_EXPONENT_2`, `CKA_COEFFICIENT`) or an EC private scalar in
   `CKA_VALUE` with matching `CKA_EC_PARAMS`.
+- PKCS#11 3.2 PQC import accepts seed-based private-key templates. ML-DSA-65
+  uses a 32-byte `CKA_SEED`; ML-KEM-768 uses a 64-byte `CKA_SEED` (`d || z`).
+  Both require the matching `CKA_PARAMETER_SET`. Expanded-only `CKA_VALUE`
+  import is unsupported because CanoKey persists the compact seed.
 - Object deletion is not implemented. CanoKey has PUT DATA and a special empty
   certificate delete encoding, but there is no standard PIV APDU that deletes
   both the certificate and private key with PKCS#11-style object semantics.

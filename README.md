@@ -25,7 +25,7 @@ brew install cmake cmocka ninja-build # macOS only
 
 ```bash
 CC=clang cmake -B build -DCMAKE_BUILD_TYPE=Debug -G Ninja -DENABLE_TESTING=ON . # Linux / macOS
-cmake -B build -DCMAKE_BUILD_TYPE=Debug -G "Visual Studio 17 2022" -T ClangCL -A x64 # Windows
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -G Ninja -DCMAKE_C_COMPILER=clang-cl # Windows developer prompt
 cmake --build build -v
 ```
 
@@ -138,6 +138,9 @@ The PKCS#11 3.2 interface currently supports:
   decapsulation with `CKM_ML_KEM_KEY_PAIR_GEN`, `CKM_ML_KEM`,
   `C_EncapsulateKey`, and `C_DecapsulateKey`. Shared secrets are returned as
   session `CKO_SECRET_KEY` objects.
+- Seed-based private-key import through `C_CreateObject`: ML-DSA-65 accepts a
+  32-byte `CKA_SEED`, and ML-KEM-768 accepts the 64-byte FIPS 203 `d || z`
+  seed. The matching `CKA_PARAMETER_SET` is required.
 
 Only `CKP_ML_DSA_65` and `CKP_ML_KEM_768` are accepted. Encapsulation uses the
 same pinned `mlkem-native` implementation as CanoKey firmware.
