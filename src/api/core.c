@@ -11,8 +11,16 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <psa/crypto.h>
+#include <psa/crypto_extra.h>
+
 // Forward declaration of the function list
 static CK_FUNCTION_LIST ck_function_list;
+static CK_FUNCTION_LIST_3_2 ck_function_list_3_2;
+static CK_UTF8CHAR ck_interface_name[] = "PKCS 11";
+static CK_INTERFACE ck_interface_3_2 = {ck_interface_name, &ck_function_list_3_2, 0};
+static atomic_flag ck_function_list_3_2_lock = ATOMIC_FLAG_INIT;
+static atomic_bool ck_function_list_3_2_initialized = false;
 
 // Global variables
 static atomic_int g_ref_count = 0;
@@ -34,6 +42,9 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
     }
     CNK_RETURN(CKR_CRYPTOKI_ALREADY_INITIALIZED, "already initialized");
   }
+
+  if (psa_crypto_init() != PSA_SUCCESS)
+    CNK_RETURN(CKR_FUNCTION_FAILED, "cannot initialize TF-PSA-Crypto");
 
   // Process the initialization arguments
   CK_RV mutex_rv;
@@ -136,6 +147,8 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   // Clean up session manager
   cnk_session_manager_cleanup();
 
+  mbedtls_psa_crypto_free();
+
   // Clean up mutex system
   cnk_mutex_system_cleanup();
 
@@ -161,9 +174,8 @@ CK_RV C_GetInfo(CK_INFO_PTR pInfo) {
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pInfo);
 
   // Fill in the CK_INFO structure
-  // Cryptoki version (PKCS#11 v2.40)
-  pInfo->cryptokiVersion.major = 2;
-  pInfo->cryptokiVersion.minor = 40;
+  pInfo->cryptokiVersion.major = 3;
+  pInfo->cryptokiVersion.minor = 2;
 
   // Manufacturer ID (padded with spaces)
   memset(pInfo->manufacturerID, ' ', sizeof(pInfo->manufacturerID));
@@ -200,6 +212,57 @@ CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList) {
   *ppFunctionList = &ck_function_list;
 
   CNK_RET_OK;
+}
+
+static void initializeFunctionList32(void) {
+  if (atomic_load(&ck_function_list_3_2_initialized))
+    return;
+  while (atomic_flag_test_and_set(&ck_function_list_3_2_lock)) {
+  }
+  if (atomic_load(&ck_function_list_3_2_initialized)) {
+    atomic_flag_clear(&ck_function_list_3_2_lock);
+    return;
+  }
+  memset(&ck_function_list_3_2, 0, sizeof(ck_function_list_3_2));
+  memcpy(&ck_function_list_3_2, &ck_function_list, sizeof(ck_function_list));
+  ck_function_list_3_2.version.major = 3;
+  ck_function_list_3_2.version.minor = 2;
+  ck_function_list_3_2.C_GetInterfaceList = C_GetInterfaceList;
+  ck_function_list_3_2.C_GetInterface = C_GetInterface;
+  ck_function_list_3_2.C_EncapsulateKey = C_EncapsulateKey;
+  ck_function_list_3_2.C_DecapsulateKey = C_DecapsulateKey;
+  atomic_store(&ck_function_list_3_2_initialized, true);
+  atomic_flag_clear(&ck_function_list_3_2_lock);
+}
+
+CK_RV C_GetInterfaceList(CK_INTERFACE_PTR interfaces, CK_ULONG_PTR count) {
+  CNK_ENSURE_NONNULL(count);
+  initializeFunctionList32();
+  if (interfaces == NULL) {
+    *count = 1;
+    return CKR_OK;
+  }
+  if (*count < 1) {
+    *count = 1;
+    return CKR_BUFFER_TOO_SMALL;
+  }
+  interfaces[0] = ck_interface_3_2;
+  *count = 1;
+  return CKR_OK;
+}
+
+CK_RV C_GetInterface(CK_UTF8CHAR_PTR interfaceName, CK_VERSION_PTR version, CK_INTERFACE_PTR_PTR ppInterface,
+                     CK_FLAGS flags) {
+  CNK_ENSURE_NONNULL(ppInterface);
+  if (flags != 0)
+    return CKR_ARGUMENTS_BAD;
+  if (interfaceName != NULL && strcmp((const char *)interfaceName, (const char *)ck_interface_name) != 0)
+    return CKR_ARGUMENTS_BAD;
+  if (version != NULL && (version->major != 3 || version->minor != 2))
+    return CKR_ARGUMENTS_BAD;
+  initializeFunctionList32();
+  *ppInterface = &ck_interface_3_2;
+  return CKR_OK;
 }
 
 CK_RV C_GetFunctionStatus(CK_SESSION_HANDLE hSession) {

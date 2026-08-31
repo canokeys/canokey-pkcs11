@@ -13,6 +13,8 @@
 
 #include "internal/mutex.h"
 
+#include <string.h>
+
 // Forward declaration for session struct
 typedef struct CNK_PKCS11_SESSION CNK_PKCS11_SESSION;
 
@@ -42,6 +44,7 @@ extern CNK_FREE_FUNC g_cnk_free_func;
 #define PIV_SLOT_9E 4
 #define PIV_SLOT_82 5
 #define PIV_SLOT_83 6
+#define PIV_SLOT_COUNT 24
 
 // Algorithm types for PIV
 #define PIV_ALG_RSA_2048 0x07
@@ -53,6 +56,34 @@ extern CNK_FREE_FUNC g_cnk_free_func;
 #define PIV_ALG_X25519 0xE1
 #define PIV_ALG_SECP256K1 0x53
 #define PIV_ALG_SM2 0x54
+#define PIV_ALG_MLDSA65 0xE2
+#define PIV_ALG_MLKEM768 0xE3
+
+#define CNK_PIV_METADATA_DIRECTORY_FLAG_KEY 0x01
+#define CNK_PIV_METADATA_DIRECTORY_FLAG_CERT 0x02
+#define CNK_PIV_METADATA_DIRECTORY_MAX_ENTRIES 24
+
+typedef struct {
+  CK_BYTE pivSlot;
+  CK_BYTE flags;
+  CK_BYTE algorithmType;
+  CK_BYTE origin;
+  CK_BYTE pinPolicy;
+  CK_BYTE touchPolicy;
+} CNK_PIV_METADATA_DIRECTORY_ENTRY;
+
+typedef struct {
+  CK_BYTE enabled;
+  CK_BYTE ed25519;
+  CK_BYTE rsa3072;
+  CK_BYTE rsa4096;
+  CK_BYTE x25519;
+  CK_BYTE secp256k1;
+  CK_BYTE secp521r1;
+  CK_BYTE sm2;
+  CK_BYTE mldsa65;
+  CK_BYTE mlkem768;
+} CNK_PIV_ALGORITHM_EXTENSION_CONFIG;
 
 // PIV object tags mapped by GET DATA / PUT DATA.
 #define PIV_OBJECT_TAG_CERT_9A 0x05
@@ -64,7 +95,15 @@ extern CNK_FREE_FUNC g_cnk_free_func;
 
 // Helper functions for memory allocation
 static __attribute__((unused)) void *ck_malloc(size_t size) { return g_cnk_malloc_func(size); }
-static __attribute__((unused)) void *ck_calloc(size_t num, size_t size) { return g_cnk_malloc_func(num * size); }
+static __attribute__((unused)) void *ck_calloc(size_t num, size_t size) {
+  if (size != 0 && num > (size_t)-1 / size)
+    return NULL;
+  size_t total = num * size;
+  void *ptr = g_cnk_malloc_func(total);
+  if (ptr != NULL)
+    memset(ptr, 0, total);
+  return ptr;
+}
 static __attribute__((unused)) void ck_free(void *ptr) { g_cnk_free_func(ptr); }
 
 // Initialize PC/SC backend
@@ -152,6 +191,13 @@ CK_RV cnk_put_piv_data_by_tag(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, co
 CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType, CK_BYTE_PTR pbPublicKey,
                        CK_ULONG_PTR pulPublicKeyLen, CK_BYTE_PTR pbPinPolicy, CK_BYTE_PTR pbTouchPolicy);
 
+// Read the firmware 5.7+ PIV metadata directory. Older firmware returns
+// CKR_FUNCTION_NOT_SUPPORTED so callers can fall back to per-slot probes.
+CK_RV cnk_get_piv_metadata_directory(CK_SLOT_ID slotID, CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
+                                     CK_ULONG_PTR entryCount);
+
+CK_RV cnk_get_piv_algorithm_extension(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config);
+
 // Generate a PIV asymmetric key pair.
 CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
                                CK_BYTE pinPolicy, CK_BYTE touchPolicy, CK_BYTE_PTR pbPublicKey,
@@ -176,5 +222,9 @@ CK_RV cnk_piv_decrypt(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_P
 CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
                    CK_BYTE pinPolicy, CK_BYTE_PTR pPublicData, CK_ULONG cbPublicData, CK_BYTE_PTR pSharedSecret,
                    CK_ULONG_PTR pcbSharedSecret);
+
+CK_RV cnk_piv_mlkem_decapsulate(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
+                                CK_BYTE pinPolicy, CK_BYTE_PTR pCiphertext, CK_ULONG cbCiphertext,
+                                CK_BYTE_PTR pSharedSecret, CK_ULONG_PTR pcbSharedSecret);
 
 #endif /* CNK_BACKEND_PCSC_H */

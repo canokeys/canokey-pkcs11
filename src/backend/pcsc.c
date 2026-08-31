@@ -1,5 +1,6 @@
 #include "backend/pcsc.h"
 #include "api/session.h"
+#include "internal/crypto.h"
 #include "internal/des.h"
 #include "internal/logging.h"
 #include "internal/mutex.h"
@@ -10,9 +11,17 @@
 #include <stdio.h>
 #include <string.h>
 
-#define CNK_PIV_MAX_PUBLIC_KEY_RESPONSE 527
+#define CNK_PIV_MAX_PUBLIC_KEY_RESPONSE 4096
+#define CNK_PIV_MAX_GENERAL_AUTH_INPUT 65520
+#define CNK_PIV_MAX_GENERAL_AUTH_RESPONSE 4096
+#define CNK_PIV_MAX_DATA_OBJECT_SIZE 8192
 
 #define PIV_PADDED_PIN_LEN 8
+#define PIV_ALG_TDEA 0x03
+#define PIV_ALG_AES_192 0x0A
+#define PIV_MANAGEMENT_KEY_SLOT 0x9B
+#define PIV_MANAGEMENT_KEY_LEN 24
+#define PIV_MAX_MANAGEMENT_CHALLENGE_LEN 16
 
 // Global variables for reader management
 ReaderInfo *g_cnk_readers = NULL; // Array of reader info structs
@@ -757,7 +766,7 @@ static CK_RV cnk_get_piv_data_on_card(SCARDHANDLE hCard, const CK_BYTE *tag, CK_
   CNK_ENSURE_NONNULL(tag);
   if (tag_len == 0 || tag_len > 4)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "bad PIV data object tag");
-  if (data != NULL && data_len == NULL)
+  if (fetch_data && data_len == NULL)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "data_len is NULL");
 
   CK_BYTE apdu[14] = {0x00, 0xCB, 0x3F, 0xFF, 0x00, 0x5C};
@@ -766,7 +775,7 @@ static CK_RV cnk_get_piv_data_on_card(SCARDHANDLE hCard, const CK_BYTE *tag, CK_
   memcpy(apdu + 7, tag, tag_len);
   apdu[7 + tag_len] = 0x00;
 
-  CK_BYTE response[4096];
+  CK_BYTE response[CNK_PIV_MAX_DATA_OBJECT_SIZE];
   DWORD response_len = sizeof(response);
   LONG pcsc_rv = cnk_transceive_apdu(hCard, apdu, 8 + tag_len, response, &response_len, fetch_data);
   if (pcsc_rv != SCARD_S_SUCCESS) {
@@ -787,13 +796,17 @@ static CK_RV cnk_get_piv_data_on_card(SCARDHANDLE hCard, const CK_BYTE *tag, CK_
     CNK_RETURN(CKR_DEVICE_ERROR, "Failed to execute GET DATA command");
   }
 
-  // Copy the response data (excluding status bytes) to the output buffer
-  if (data != NULL) {
-    if (*data_len < response_len - 2) {
-      CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Output buffer too small");
+  // Report and optionally copy the response data, excluding status bytes.
+  if (fetch_data) {
+    CK_ULONG required = response_len - 2;
+    CK_ULONG available = *data_len;
+    *data_len = required;
+    if (data != NULL) {
+      if (available < required) {
+        CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Output buffer too small");
+      }
+      memcpy(data, response, required);
     }
-    memcpy(data, response, response_len - 2);
-    *data_len = response_len - 2;
   }
 
   CNK_RET_OK;
@@ -880,39 +893,106 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR data, CK_ULON
   return cnk_get_piv_data_by_tag(slotID, object_tag, sizeof(object_tag), data, data_len, fetch_data);
 }
 
+static CK_RV getManagementKeyAlgorithmOnCard(SCARDHANDLE hCard, CK_BYTE *algorithm) {
+  CNK_ENSURE_NONNULL(algorithm);
+
+  CK_BYTE metadataApdu[] = {0x00, 0xF7, 0x00, PIV_MANAGEMENT_KEY_SLOT, 0x00};
+  CK_BYTE response[258];
+  DWORD responseLen = sizeof(response);
+  LONG pcscRv = cnk_transceive_apdu(hCard, metadataApdu, sizeof(metadataApdu), response, &responseLen, CK_TRUE);
+  if (pcscRv != SCARD_S_SUCCESS || responseLen < 2)
+    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to read management key metadata");
+
+  CK_BYTE sw1 = response[responseLen - 2];
+  CK_BYTE sw2 = response[responseLen - 1];
+  if (sw1 != 0x90 || sw2 != 0x00) {
+    // Firmware predating GET METADATA used a 3DES management key.
+    if ((sw1 == 0x6A && (sw2 == 0x81 || sw2 == 0x88)) || sw1 == 0x6D) {
+      *algorithm = PIV_ALG_TDEA;
+      CNK_RET_OK;
+    }
+    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to read management key metadata");
+  }
+
+  CK_ULONG dataLen = responseLen - 2;
+  for (CK_ULONG offset = 0; offset + 2 <= dataLen;) {
+    CK_BYTE tag = response[offset++];
+    CK_BYTE length = response[offset++];
+    if (offset + length > dataLen)
+      CNK_RETURN(CKR_DEVICE_ERROR, "Malformed management key metadata");
+    if (tag == 0x01) {
+      if (length != 1)
+        CNK_RETURN(CKR_DEVICE_ERROR, "Malformed management key algorithm metadata");
+      *algorithm = response[offset];
+      if (*algorithm != PIV_ALG_TDEA && *algorithm != PIV_ALG_AES_192)
+        CNK_RETURN(CKR_MECHANISM_INVALID, "Unsupported management key algorithm");
+      CNK_RET_OK;
+    }
+    offset += length;
+  }
+
+  CNK_RETURN(CKR_DEVICE_ERROR, "Management key algorithm metadata is missing");
+}
+
+static CK_RV authenticateManagementKeyOnCard(SCARDHANDLE hCard, const CK_BYTE key[PIV_MANAGEMENT_KEY_LEN]) {
+  CK_BYTE algorithm;
+  CNK_ENSURE_OK(getManagementKeyAlgorithmOnCard(hCard, &algorithm));
+
+  CK_ULONG challengeLen = algorithm == PIV_ALG_AES_192 ? 16 : 8;
+  CK_BYTE capdu[9 + PIV_MAX_MANAGEMENT_CHALLENGE_LEN];
+  CK_BYTE rapdu[4 + PIV_MAX_MANAGEMENT_CHALLENGE_LEN + 2];
+  CK_BYTE hostCryptogram[PIV_MAX_MANAGEMENT_CHALLENGE_LEN];
+  DWORD rapduLen = sizeof(rapdu);
+
+  memcpy(capdu, (CK_BYTE[]){0x00, 0x87, algorithm, PIV_MANAGEMENT_KEY_SLOT, 0x04, 0x7C, 0x02, 0x81, 0x00}, 9);
+  LONG pcscRv = cnk_transceive_apdu(hCard, capdu, 9, rapdu, &rapduLen, CK_TRUE);
+  if (pcscRv != SCARD_S_SUCCESS || rapduLen != 4 + challengeLen + 2 || rapdu[0] != 0x7C ||
+      rapdu[1] != 2 + challengeLen || rapdu[2] != 0x81 || rapdu[3] != challengeLen || rapdu[rapduLen - 2] != 0x90 ||
+      rapdu[rapduLen - 1] != 0x00) {
+    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to get management key challenge");
+  }
+
+  CK_RV rv = algorithm == PIV_ALG_AES_192 ? cnk_aes192_encrypt_block(key, rapdu + 4, hostCryptogram)
+                                          : cnk_des3_encrypt_block(key, rapdu + 4, hostCryptogram);
+  if (rv != CKR_OK) {
+    mbedtls_platform_zeroize(hostCryptogram, sizeof(hostCryptogram));
+    return rv;
+  }
+
+  capdu[0] = 0x00;
+  capdu[1] = 0x87;
+  capdu[2] = algorithm;
+  capdu[3] = PIV_MANAGEMENT_KEY_SLOT;
+  capdu[4] = (CK_BYTE)(4 + challengeLen);
+  capdu[5] = 0x7C;
+  capdu[6] = (CK_BYTE)(2 + challengeLen);
+  capdu[7] = 0x82;
+  capdu[8] = (CK_BYTE)challengeLen;
+  memcpy(capdu + 9, hostCryptogram, challengeLen);
+  mbedtls_platform_zeroize(hostCryptogram, sizeof(hostCryptogram));
+
+  rapduLen = sizeof(rapdu);
+  pcscRv = cnk_transceive_apdu(hCard, capdu, 9 + challengeLen, rapdu, &rapduLen, CK_TRUE);
+  mbedtls_platform_zeroize(capdu, sizeof(capdu));
+  if (pcscRv != SCARD_S_SUCCESS || rapduLen != 2 || rapdu[0] != 0x90 || rapdu[1] != 0x00)
+    CNK_RETURN(CKR_PIN_INCORRECT, "Management key authentication failed");
+
+  CNK_RET_OK;
+}
+
 static CK_RV authenticateAdminForWrite(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, SCARDHANDLE *hCard) {
   CNK_ENSURE_NONNULL(session, hCard);
 
-  if (session->cbManagementKey != 24)
+  if (session->cbManagementKey != PIV_MANAGEMENT_KEY_LEN)
     CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "CKU_SO login is required");
 
   CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotID, hCard));
   CNK_ENSURE_OK(cnk_select_piv_application(*hCard));
 
-  CK_BYTE capdu[32], rapdu[16], hostCryptogram[8];
-  DWORD cbRapdu = sizeof(rapdu);
-  LONG rvTransceive;
-
-  memcpy(capdu, (CK_BYTE[]){0x00, 0x87, 0x03, 0x9B, 0x04, 0x7C, 0x02, 0x81, 0x00}, 9);
-  rvTransceive = cnk_transceive_apdu(*hCard, capdu, 9, rapdu, &cbRapdu, CK_TRUE);
-  if (rvTransceive != SCARD_S_SUCCESS || cbRapdu != 14 || rapdu[cbRapdu - 2] != 0x90 || rapdu[cbRapdu - 1] != 0x00) {
-    cnk_disconnect_card(*hCard);
-    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to get management key challenge");
-  }
-
-  CK_RV rv = cnk_des3_encrypt_block(session->managementKey, rapdu + 4, hostCryptogram);
+  CK_RV rv = authenticateManagementKeyOnCard(*hCard, session->managementKey);
   if (rv != CKR_OK) {
     cnk_disconnect_card(*hCard);
-    CNK_RETURN(rv, "Failed to encrypt management key challenge");
-  }
-
-  memcpy(capdu, (CK_BYTE[]){0x00, 0x87, 0x03, 0x9B, 0x0C, 0x7C, 0x0A, 0x82, 0x08}, 9);
-  memcpy(capdu + 9, hostCryptogram, sizeof(hostCryptogram));
-  cbRapdu = sizeof(rapdu);
-  rvTransceive = cnk_transceive_apdu(*hCard, capdu, 17, rapdu, &cbRapdu, CK_TRUE);
-  if (rvTransceive != SCARD_S_SUCCESS || cbRapdu != 2 || rapdu[cbRapdu - 2] != 0x90 || rapdu[cbRapdu - 1] != 0x00) {
-    cnk_disconnect_card(*hCard);
-    CNK_RETURN(CKR_PIN_INCORRECT, "Management key authentication failed");
+    return rv;
   }
 
   CNK_RET_OK;
@@ -928,7 +1008,7 @@ CK_RV cnk_put_piv_data_by_tag(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, co
   if (data_len > 0)
     CNK_ENSURE_NONNULL(data);
 
-  CK_BYTE object_data[2 + 4 + 4096];
+  CK_BYTE object_data[2 + 4 + CNK_PIV_MAX_DATA_OBJECT_SIZE];
   if (data_len > sizeof(object_data) - 2 - tag_len)
     CNK_RETURN(CKR_DATA_LEN_RANGE, "PIV data object too large");
 
@@ -1133,9 +1213,8 @@ static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESS
   if (cbDataLen > 0)
     CNK_ENSURE_NONNULL(pData);
 
-  // Check if input data is too large (max 512 bytes for RSA 4096)
-  if (cbDataLen > 512)
-    CNK_RETURN(CKR_DATA_LEN_RANGE, "Input data too large (max 512 bytes)");
+  if (cbDataLen > CNK_PIV_MAX_GENERAL_AUTH_INPUT)
+    CNK_RETURN(CKR_DATA_LEN_RANGE, "GENERAL AUTHENTICATE input exceeds firmware limit");
 
   rv = connectForPrivateKeyOperation(slotId, pSession, pinPolicy, &hCard, operationName);
   if (rv != CKR_OK)
@@ -1143,7 +1222,7 @@ static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESS
 
   // Now construct the PIV TLV structure for GENERAL AUTHENTICATE
   // Buffer for TLV data structure (tag + length + value)
-  CK_BYTE tlv_data[1024]; // Increased buffer size for larger input data
+  CK_BYTE tlv_data[CNK_PIV_MAX_GENERAL_AUTH_INPUT + 16];
   CK_ULONG tlv_len = 0;
 
   // Start with the outer Dynamic Authentication Template (tag 0x7C)
@@ -1201,10 +1280,10 @@ static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESS
   // Build the GENERAL AUTHENTICATE APDU
   // CanoKey rejects extended GENERAL AUTHENTICATE APDUs for RSA-sized data, so
   // large templates are sent with short APDU command chaining.
-  CK_BYTE abAuthApdu[1100];
+  CK_BYTE abAuthApdu[262];
   CK_ULONG cbAuthApdu = 0;
 
-  CK_BYTE response[1024];              // Increased buffer size for larger responses
+  CK_BYTE response[CNK_PIV_MAX_GENERAL_AUTH_RESPONSE];
   DWORD cbResponse = sizeof(response); // Use DWORD for PC/SC API compatibility
   LONG pcsc_rv = SCARD_S_SUCCESS;
 
@@ -1357,10 +1436,22 @@ CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algo
                                           cbPublicData, pSharedSecret, pcbSharedSecret, "ECDH");
 }
 
+CK_RV cnk_piv_mlkem_decapsulate(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
+                                CK_BYTE pinPolicy, CK_BYTE_PTR pCiphertext, CK_ULONG cbCiphertext,
+                                CK_BYTE_PTR pSharedSecret, CK_ULONG_PTR pcbSharedSecret) {
+  return cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, pinPolicy, 0x81, pCiphertext,
+                                          cbCiphertext, pSharedSecret, pcbSharedSecret, "ML-KEM decapsulate");
+}
+
 // Sign data using PIV key
 // This function signs raw data using the PIV GENERAL AUTHENTICATE command
 CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pData, CK_ULONG cbDataLen,
                    CK_BYTE_PTR pSignature, CK_ULONG_PTR pcbSignature) {
+  if (pSession->signingContext.algorithmType == pSession->mldsa65Algorithm)
+    return cnk_piv_general_authenticate_raw(slotId, pSession, pSession->signingContext.algorithmType,
+                                            pSession->signingContext.pivSlot, pSession->signingContext.pinPolicy, 0x81,
+                                            pData, cbDataLen, pSignature, pcbSignature, "ML-DSA sign");
+
   SCARDHANDLE hCard;
 
   // Check if we're just getting the signature length
@@ -1727,8 +1818,7 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorith
   // Command: 00 F7 00 XX 00 where XX is the PIV tag
   CK_BYTE metadata_apdu[] = {0x00, 0xF7, 0x00, pivTag, 0x00};
 
-  // Buffer to hold the complete response (up to 1024 bytes)
-  CK_BYTE response[1024];
+  CK_BYTE response[CNK_PIV_MAX_PUBLIC_KEY_RESPONSE];
   DWORD response_len = sizeof(response);
 
   // Send the metadata command
@@ -1847,6 +1937,109 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorith
 
   // Disconnect from the card when done
   cnk_disconnect_card(hCard);
+  return CKR_OK;
+}
+
+CK_RV cnk_get_piv_metadata_directory(CK_SLOT_ID slotID, CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
+                                     CK_ULONG_PTR entryCount) {
+  CNK_ENSURE_NONNULL(entryCount);
+  if (entries == NULL && *entryCount != 0)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "entries is NULL");
+
+  SCARDHANDLE hCard = 0;
+  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
+  if (rv != CKR_OK)
+    return rv;
+
+  rv = cnk_select_piv_application(hCard);
+  if (rv != CKR_OK)
+    goto cleanup;
+
+  CK_BYTE versionApdu[] = {0x00, 0xFD, 0x00, 0x00, 0x00};
+  CK_BYTE versionResponse[8];
+  DWORD versionResponseLen = sizeof(versionResponse);
+  LONG pcscRv =
+      cnk_transceive_apdu(hCard, versionApdu, sizeof(versionApdu), versionResponse, &versionResponseLen, CK_FALSE);
+  if (pcscRv != SCARD_S_SUCCESS || versionResponseLen < 2) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+  if (versionResponse[versionResponseLen - 2] != 0x90 || versionResponse[versionResponseLen - 1] != 0x00 ||
+      versionResponseLen != 5 || versionResponse[0] < 5 || (versionResponse[0] == 5 && versionResponse[1] < 7)) {
+    rv = CKR_FUNCTION_NOT_SUPPORTED;
+    goto cleanup;
+  }
+
+  CK_BYTE directoryApdu[] = {0x00, 0xF7, 0x01, 0x00, 0x00};
+  CK_BYTE response[5 + CNK_PIV_METADATA_DIRECTORY_MAX_ENTRIES * 6 + 2];
+  DWORD responseLen = sizeof(response);
+  pcscRv = cnk_transceive_apdu(hCard, directoryApdu, sizeof(directoryApdu), response, &responseLen, CK_TRUE);
+  if (pcscRv != SCARD_S_SUCCESS || responseLen < 2) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+
+  CK_BYTE sw1 = response[responseLen - 2];
+  CK_BYTE sw2 = response[responseLen - 1];
+  if (sw1 != 0x90 || sw2 != 0x00) {
+    rv = (sw1 == 0x6D || (sw1 == 0x6A && (sw2 == 0x81 || sw2 == 0x86))) ? CKR_FUNCTION_NOT_SUPPORTED : CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+
+  CK_ULONG dataLen = responseLen - 2;
+  if (dataLen < 5 || response[0] != 0x01 || response[1] != 0x01 || response[2] != 0x01 || response[3] != 0x02 ||
+      response[4] != dataLen - 5 || response[4] % 6 != 0) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+
+  CK_ULONG required = response[4] / 6;
+  CK_ULONG capacity = *entryCount;
+  *entryCount = required;
+  if (entries == NULL) {
+    rv = CKR_OK;
+    goto cleanup;
+  }
+  if (capacity < required) {
+    rv = CKR_BUFFER_TOO_SMALL;
+    goto cleanup;
+  }
+
+  for (CK_ULONG i = 0; i < required; i++) {
+    const CK_BYTE *encoded = response + 5 + i * 6;
+    entries[i].pivSlot = encoded[0];
+    entries[i].flags = encoded[1];
+    entries[i].algorithmType = encoded[2];
+    entries[i].origin = encoded[3];
+    entries[i].pinPolicy = encoded[4];
+    entries[i].touchPolicy = encoded[5];
+  }
+  rv = CKR_OK;
+
+cleanup:
+  cnk_disconnect_card(hCard);
+  return rv;
+}
+
+CK_RV cnk_get_piv_algorithm_extension(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config) {
+  CNK_ENSURE_NONNULL(config);
+  SCARDHANDLE hCard = 0;
+  CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotID, &hCard));
+  CK_RV rv = cnk_select_piv_application(hCard);
+  if (rv != CKR_OK) {
+    cnk_disconnect_card(hCard);
+    return rv;
+  }
+
+  CK_BYTE apdu[] = {0x00, 0xEE, 0x01, 0x00, 0x00};
+  CK_BYTE response[sizeof(*config) + 2];
+  DWORD responseLen = sizeof(response);
+  LONG pcscRv = cnk_transceive_apdu(hCard, apdu, sizeof(apdu), response, &responseLen, CK_FALSE);
+  cnk_disconnect_card(hCard);
+  if (pcscRv != SCARD_S_SUCCESS || responseLen != sizeof(response) || response[responseLen - 2] != 0x90 ||
+      response[responseLen - 1] != 0x00)
+    return CKR_FUNCTION_NOT_SUPPORTED;
+  memcpy(config, response, sizeof(*config));
   return CKR_OK;
 }
 
@@ -1992,17 +2185,14 @@ CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *ses
   return cnk_verify_piv_pin_with_session_ex(slotID, session, pPin, ulPinLen, pPinTries, NULL);
 }
 
-/* Verify the PIV management key by 3DES-encrypting the card's challenge
- * and sending the resulting host cryptogram back to the card.
+/* Verify the PIV management key using the algorithm reported by slot 9B
+ * metadata and send the resulting host cryptogram back to the card.
  *
  * pKey: 24-byte raw management key.
  */
 CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey) {
   SCARDHANDLE hCard;
-  CK_BYTE capdu[32], rapdu[16], hostCryptogram[8];
-  DWORD cbRapdu = sizeof(rapdu);
   CK_RV rv;
-  LONG rvTransceive;
 
   // Connect to the card
   CNK_ENSURE_OK(cnk_connect_and_select_canokey(session->slotId, &hCard));
@@ -2012,55 +2202,7 @@ CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey) {
   if (rv != CKR_OK)
     goto cleanup;
 
-  // Prepare the APDU for getting challenge
-  // Command: 00 87 03 9B 04 7C 02 81 00
-  memcpy(capdu, (CK_BYTE[]){0x00, 0x87, 0x03, 0x9B, 0x04, 0x7C, 0x02, 0x81, 0x00}, 9);
-
-  // Send the GET CHALLENGE command
-  rvTransceive = cnk_transceive_apdu(hCard, capdu, 9, rapdu, &cbRapdu, CK_TRUE);
-  if (rvTransceive != SCARD_S_SUCCESS) {
-    CNK_ERROR("Failed to get challenge, pc/sc error: %ld", rvTransceive);
-    rv = CKR_DEVICE_ERROR;
-    goto cleanup;
-  }
-
-  // Check if the command was successful
-  if (cbRapdu != 14 || rapdu[cbRapdu - 2] != 0x90 || rapdu[cbRapdu - 1] != 0x00) {
-    CNK_ERROR("Failed to get challenge, SW not OK");
-    rv = CKR_DEVICE_ERROR;
-    goto cleanup;
-  }
-
-  // Encrypt the challenge using the management key
-  rv = cnk_des3_encrypt_block(pKey, rapdu + 4, hostCryptogram);
-  if (rv != CKR_OK) {
-    CNK_ERROR("cnk_des3_encrypt_block() failed: 0x%lx", rv);
-    goto cleanup;
-  }
-
-  // Send the host cryptogram to the card
-  // Prepare the APDU for authentication
-  // Command: 00 87 03 9B 0C 7C 0A 82 08 <host_cryptogram>
-  memcpy(capdu, (CK_BYTE[]){0x00, 0x87, 0x03, 0x9B, 0x0C, 0x7C, 0x0A, 0x82, 0x08}, 9);
-  memcpy(capdu + 9, hostCryptogram, sizeof(hostCryptogram));
-
-  // Check if the command was successful
-  rvTransceive = cnk_transceive_apdu(hCard, capdu, 17, rapdu, &cbRapdu, CK_TRUE);
-  if (rvTransceive != SCARD_S_SUCCESS) {
-    CNK_ERROR("Failed to authenticate, pc/sc error: %ld", rvTransceive);
-    rv = CKR_DEVICE_ERROR;
-    goto cleanup;
-  }
-
-  // Check if the command was successful
-  if (cbRapdu != 2 || rapdu[cbRapdu - 2] != 0x90 || rapdu[cbRapdu - 1] != 0x00) {
-    CNK_ERROR("Failed to authenticate, SW not OK");
-    rv = CKR_DEVICE_ERROR;
-    goto cleanup;
-  }
-
-  // Authentication successful
-  rv = CKR_OK;
+  rv = authenticateManagementKeyOnCard(hCard, pKey);
 
 cleanup:
   cnk_disconnect_card(hCard);

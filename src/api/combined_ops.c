@@ -179,7 +179,7 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
-  if (session->state != SESSION_STATE_RW_SO)
+  if (session->cbManagementKey != sizeof(session->managementKey))
     CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "CKU_SO login is required");
 
   CK_OBJECT_CLASS publicClass;
@@ -193,7 +193,7 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 
   if (publicClass != CKO_PUBLIC_KEY || privateClass != CKO_PRIVATE_KEY)
     CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "bad key pair object classes");
-  if (publicId != privateId || publicId < 1 || publicId > 6)
+  if (publicId != privateId || publicId < 1 || publicId > PIV_SLOT_COUNT)
     CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "bad or mismatched PIV key ID");
 
   CK_BYTE algorithmType;
@@ -223,6 +223,25 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
     break;
   }
 
+  case CKM_ML_DSA_KEY_PAIR_GEN:
+  case CKM_ML_KEM_KEY_PAIR_GEN: {
+    CK_ATTRIBUTE_PTR parameterSetAttr;
+    CNK_ENSURE_OK(getTemplateAttr(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_PARAMETER_SET, &parameterSetAttr));
+    if (parameterSetAttr->pValue == NULL || parameterSetAttr->ulValueLen != sizeof(CK_ULONG))
+      CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_PARAMETER_SET");
+    CK_ULONG parameterSet = *(CK_ULONG *)parameterSetAttr->pValue;
+    if (pMechanism->mechanism == CKM_ML_DSA_KEY_PAIR_GEN) {
+      if (parameterSet != CKP_ML_DSA_65)
+        CNK_RETURN(CKR_KEY_SIZE_RANGE, "only ML-DSA-65 is supported");
+      algorithmType = session->mldsa65Algorithm;
+    } else {
+      if (parameterSet != CKP_ML_KEM_768)
+        CNK_RETURN(CKR_KEY_SIZE_RANGE, "only ML-KEM-768 is supported");
+      algorithmType = session->mlkem768Algorithm;
+    }
+    break;
+  }
+
   default:
     CNK_RETURN(CKR_MECHANISM_INVALID, "unsupported key pair generation mechanism");
   }
@@ -234,7 +253,7 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   CNK_ENSURE_OK(CNK_GetPivPolicies(pPrivateKeyTemplate, ulPrivateKeyAttributeCount,
                                    CNK_DefaultPinPolicyForPivObjectId(privateId), &pinPolicy, &touchPolicy));
 
-  CK_BYTE publicKey[512];
+  CK_BYTE publicKey[2048];
   CK_ULONG publicKeyLen = sizeof(publicKey);
   CNK_ENSURE_OK(cnk_piv_generate_keypair(session->slotId, session, algorithmType, pivTag, pinPolicy, touchPolicy,
                                          publicKey, &publicKeyLen));

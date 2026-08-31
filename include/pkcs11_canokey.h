@@ -61,6 +61,18 @@ CK_DEFINE_FUNCTION(CK_RV, C_CNK_ConfigLogging)(int level, FILE *file, CK_BBOOL u
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_Login)(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin,
                                        CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
 
+// Verify and cache a PIN-protected PIV management key while preserving the
+// existing CKU_USER login. This extension is intended for managed callers that
+// recovered the key from a PIN-protected PIV data object.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_LoginProtectedManagementKey)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pKey,
+                                                             CK_ULONG ulKeyLen);
+
+// Read one PIV data object by its full BER-TLV tag. A NULL output buffer
+// queries the required length. PIN-protected objects require a cached CKU_USER
+// login and are read through that session.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_GetPivData)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pTag, CK_ULONG ulTagLen,
+                                            CK_BYTE_PTR pValue, CK_ULONG_PTR pulValueLen);
+
 // Extension API to change the PIV PIN or PUK and get remaining tries.
 // pinType: CNK_PIV_PIN_TYPE_PIN or CNK_PIV_PIN_TYPE_PUK
 // pPinTries: pointer to receive remaining tries for the selected secret (NULL for not needed)

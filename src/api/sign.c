@@ -187,6 +187,42 @@ static void resetSigningContext(CNK_PKCS11_SESSION *session) {
   session->signingContext.mechanism.ulParameterLen = 0;
   ck_free(session->signingContext.mechanism.pParameter);
   session->signingContext.mechanism.pParameter = NULL;
+  if (session->signingContext.message != NULL) {
+    mbedtls_platform_zeroize(session->signingContext.message, session->signingContext.messageCapacity);
+    ck_free(session->signingContext.message);
+  }
+  session->signingContext.message = NULL;
+  session->signingContext.messageLen = 0;
+  session->signingContext.messageCapacity = 0;
+}
+
+static CK_RV appendSigningMessage(CNK_PKCS11_SESSION *session, const CK_BYTE *part, CK_ULONG partLen) {
+  if (partLen == 0)
+    return CKR_OK;
+  CNK_ENSURE_NONNULL(part);
+  if (partLen > 65520 - session->signingContext.messageLen)
+    CNK_RETURN(CKR_DATA_LEN_RANGE, "ML-DSA message exceeds firmware limit");
+
+  CK_ULONG required = session->signingContext.messageLen + partLen;
+  if (required > session->signingContext.messageCapacity) {
+    CK_ULONG capacity = session->signingContext.messageCapacity == 0 ? 1024 : session->signingContext.messageCapacity;
+    while (capacity < required)
+      capacity = capacity > 32760 ? 65520 : capacity * 2;
+    CK_BYTE_PTR replacement = ck_malloc(capacity);
+    if (replacement == NULL)
+      CNK_RETURN(CKR_HOST_MEMORY, "failed to grow ML-DSA message buffer");
+    if (session->signingContext.messageLen > 0)
+      memcpy(replacement, session->signingContext.message, session->signingContext.messageLen);
+    if (session->signingContext.message != NULL) {
+      mbedtls_platform_zeroize(session->signingContext.message, session->signingContext.messageCapacity);
+      ck_free(session->signingContext.message);
+    }
+    session->signingContext.message = replacement;
+    session->signingContext.messageCapacity = capacity;
+  }
+  memcpy(session->signingContext.message + session->signingContext.messageLen, part, partLen);
+  session->signingContext.messageLen += partLen;
+  return CKR_OK;
 }
 
 /**
@@ -207,7 +243,9 @@ static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData
   CK_BYTE_PTR pbSignRawData = NULL_PTR;
   CK_ULONG cbSignRawData;
 
-  if (isMechRSA(pSession->signingContext.mechanism.mechanism)) {
+  if (pSession->signingContext.mechanism.mechanism == CKM_ML_DSA) {
+    return cnk_piv_sign(pSession->slotId, pSession, pInputData, cbInputData, pSignature, pulSignatureLen);
+  } else if (isMechRSA(pSession->signingContext.mechanism.mechanism)) {
     pbSignRawData = ck_malloc(pSession->signingContext.cbSignature);
     if (!pbSignRawData)
       CNK_RETURN(CKR_HOST_MEMORY, "failed to allocate RSA sign buffer");
@@ -286,14 +324,20 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   // Get metadata
   CK_BYTE algorithmType;
   CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objId);
-  CK_BYTE abPublicKey[512];
+  CK_BYTE abPublicKey[2048];
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
 
-  if (!CNK_PivPrivateKeyCanSign(algorithmType))
+  if (!CNK_PivPrivateKeyCanSign(algorithmType) && algorithmType != session->mldsa65Algorithm)
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for signing");
 
-  if (isMechRSA(pMechanism->mechanism)) {
+  if (pMechanism->mechanism == CKM_ML_DSA) {
+    if (algorithmType != session->mldsa65Algorithm)
+      CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not ML-DSA-65");
+    if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
+      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "ML-DSA context is not supported by PIV");
+    session->signingContext.cbSignature = 3309;
+  } else if (isMechRSA(pMechanism->mechanism)) {
     CNK_ENSURE_OK(validateRsaMech(session, pMechanism, algorithmType, abPublicKey, cbPublicKey));
   } else if (isMechEC(pMechanism->mechanism)) {
     CNK_ENSURE_OK(validateEcMech(session, algorithmType));
@@ -384,8 +428,11 @@ CK_RV C_SignUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart, CK_ULONG ulPar
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   if (session->signingContext.hKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called");
-  if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism))
+  if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism) &&
+      session->signingContext.mechanism.mechanism != CKM_ML_DSA)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "single-part mechanism");
+  if (session->signingContext.mechanism.mechanism == CKM_ML_DSA)
+    return appendSigningMessage(session, pPart, ulPartLen);
   if (session->digestingContext.mechanismType == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called");
 
@@ -417,8 +464,19 @@ CK_RV C_SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG_P
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   if (session->signingContext.hKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called");
-  if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism))
+  if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism) &&
+      session->signingContext.mechanism.mechanism != CKM_ML_DSA)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "single-part mechanism");
+  if (session->signingContext.mechanism.mechanism == CKM_ML_DSA) {
+    if (pSignature == NULL) {
+      *pulSignatureLen = session->signingContext.cbSignature;
+      return CKR_OK;
+    }
+    CK_RV signRv = prepareAndSign(session, session->signingContext.message, session->signingContext.messageLen,
+                                  pSignature, pulSignatureLen);
+    resetSigningContext(session);
+    return signRv;
+  }
   if (session->digestingContext.mechanismType == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called");
 

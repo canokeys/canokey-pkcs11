@@ -2,7 +2,10 @@
 
 This a PKCS#11 module that allows applications to leverage the PIV applet on CanoKeys.
 
-This module is based on version 2.40 of the PKCS#11 (Cryptoki) specifications. The complete specifications are available at [oasis-open.org](https://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/os/pkcs11-base-v2.40-os.html).
+This module implements the PKCS#11 3.2 interface while retaining the legacy
+2.40 function list for existing applications. The complete 3.2 specification
+is available at
+[oasis-open.org](https://docs.oasis-open.org/pkcs11/pkcs11-base/v3.2/pkcs11-base-v3.2.html).
 
 It uses PCSCLite on Linux, PCSC Framework on macOS, and native PC/SC APIs (`winscard`) on Windows.
 
@@ -116,3 +119,25 @@ PIN-protected data objects can be found when present. `C_CreateObject(CKO_DATA)`
 writes or overwrites a PIV data object through `PUT DATA` in an SO session.
 `C_SetAttributeValue` remains read-only for PIV token objects, so
 `CKA_MODIFIABLE` is reported as false.
+
+## Post-Quantum Keys
+
+Firmware 5.7 or newer exposes a versioned PIV metadata directory and runtime
+algorithm-extension IDs. The module uses those facilities to discover keys in
+all 24 PIV key slots (`9A`, `9C`, `9D`, `9E`, and `82` through `95`) without
+probing every slot individually. Older firmware falls back to the per-slot
+metadata path and does not advertise post-quantum mechanisms.
+
+The PKCS#11 3.2 interface currently supports:
+
+- ML-DSA-65 key generation and signing with `CKM_ML_DSA_KEY_PAIR_GEN` and
+  `CKM_ML_DSA`. Both single-part and `C_SignUpdate`/`C_SignFinal` input are
+  supported. PIV currently signs with an empty ML-DSA context, so additional
+  signing contexts are rejected.
+- ML-KEM-768 key generation, host-side encapsulation, and on-card
+  decapsulation with `CKM_ML_KEM_KEY_PAIR_GEN`, `CKM_ML_KEM`,
+  `C_EncapsulateKey`, and `C_DecapsulateKey`. Shared secrets are returned as
+  session `CKO_SECRET_KEY` objects.
+
+Only `CKP_ML_DSA_65` and `CKP_ML_KEM_768` are accepted. Encapsulation uses the
+same pinned `mlkem-native` implementation as CanoKey firmware.

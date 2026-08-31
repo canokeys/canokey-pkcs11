@@ -48,6 +48,20 @@ CK_RV C_CNK_ConfigLogging(int level, FILE *file, CK_BBOOL unsafe_log_apdu) {
   return cnk_config_logging(level, file, unsafe_log_apdu);
 }
 
+CK_RV C_CNK_GetPivData(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pTag, CK_ULONG ulTagLen, CK_BYTE_PTR pValue,
+                       CK_ULONG_PTR pulValueLen) {
+  CNK_LOG_FUNC(": hSession: %lu, pTag: %p, ulTagLen: %lu, pValue: %p, pulValueLen: %p", hSession, pTag, ulTagLen,
+               pValue, pulValueLen);
+  CNK_ENSURE_INITIALIZED();
+  CNK_ENSURE_NONNULL(pTag, pulValueLen);
+  if (ulTagLen == 0 || ulTagLen > 4)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "Invalid PIV data-object tag");
+
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  return cnk_get_piv_data_by_tag_with_session(session->slotId, session, pTag, ulTagLen, pValue, pulValueLen, CK_TRUE);
+}
+
 CK_RV C_CNK_SetPIN(CK_SESSION_HANDLE hSession, CK_BYTE pinType, CK_UTF8CHAR_PTR pOldPin, CK_ULONG ulOldLen,
                    CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewLen, CK_BYTE_PTR pPinTries) {
   CNK_LOG_FUNC(": hSession: %lu, pinType: 0x%02x, pOldPin: %p, ulOldLen: %lu, pNewPin: %p, ulNewLen: %lu, "

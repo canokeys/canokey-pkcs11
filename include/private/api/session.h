@@ -18,10 +18,10 @@ typedef enum {
 // Maximum number of session-only secret keys, currently produced by C_DeriveKey.
 #define MAX_SESSION_SECRET_KEYS 8
 
-// Maximum number of objects that can be found (6 PIV slots x cert/public/private, 16 PIV data objects,
+// Maximum number of objects that can be found (24 PIV slots x cert/public/private, 16 PIV data objects,
 // plus session secrets)
 #define MAX_PIV_DATA_OBJECTS 16
-#define MAX_FIND_OBJECTS (18 + MAX_PIV_DATA_OBJECTS + MAX_SESSION_SECRET_KEYS)
+#define MAX_FIND_OBJECTS (72 + MAX_PIV_DATA_OBJECTS + MAX_SESSION_SECRET_KEYS)
 
 // Session secret object IDs are kept outside the PIV object ID range.
 #define CNK_SESSION_SECRET_KEY_FIRST_ID 0x80
@@ -55,6 +55,9 @@ typedef struct {
   CK_BYTE pinPolicy;
   CK_BYTE abModulus[512];
   CK_ULONG cbSignature;
+  CK_BYTE_PTR message;
+  CK_ULONG messageLen;
+  CK_ULONG messageCapacity;
 } CNK_PKCS11_SIGNING_CONTEXT;
 
 typedef struct {
@@ -85,6 +88,8 @@ typedef struct CNK_PKCS11_SESSION {
   CK_ULONG cbPin;            // Length of the cached PIV PIN
   CK_BYTE managementKey[24]; // Cached PIV management key after CKU_SO login
   CK_ULONG cbManagementKey;  // Length of the cached PIV management key
+  CK_BYTE mldsa65Algorithm;  // Runtime PIV algorithm-extension ID
+  CK_BYTE mlkem768Algorithm; // Runtime PIV algorithm-extension ID
   CNK_PKCS11_MUTEX lock;     // Session lock using abstract mutex
 
   // Object finding fields

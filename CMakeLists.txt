@@ -37,6 +37,7 @@ endif()
 # Include project directory
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include/private)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/mlkem)
 
 option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)

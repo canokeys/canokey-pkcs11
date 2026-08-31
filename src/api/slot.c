@@ -242,9 +242,17 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
       CKM_SHA3_256,
       CKM_SHA3_384,
       CKM_SHA3_512,
+      CKM_ML_DSA_KEY_PAIR_GEN,
+      CKM_ML_DSA,
+      CKM_ML_KEM_KEY_PAIR_GEN,
+      CKM_ML_KEM,
   };
 
-  const CK_ULONG num_mechanisms = sizeof(supported_mechanisms) / sizeof(supported_mechanisms[0]);
+  CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig;
+  CK_BBOOL pqcSupported = cnk_get_piv_algorithm_extension(slotID, &algorithmConfig) == CKR_OK &&
+                          algorithmConfig.enabled && algorithmConfig.mldsa65 != 0 && algorithmConfig.mlkem768 != 0;
+  const CK_ULONG allMechanisms = sizeof(supported_mechanisms) / sizeof(supported_mechanisms[0]);
+  const CK_ULONG num_mechanisms = pqcSupported ? allMechanisms : allMechanisms - 4;
 
   // If pMechanismList is NULL, just return the number of mechanisms
   if (pMechanismList == NULL) {
@@ -340,6 +348,30 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
     pInfo->flags = CKF_HW | CKF_DERIVE | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_UNCOMPRESS;
     pInfo->ulMinKeySize = 256;
     pInfo->ulMaxKeySize = 384;
+    break;
+
+  case CKM_ML_DSA_KEY_PAIR_GEN:
+    pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR;
+    pInfo->ulMinKeySize = CKP_ML_DSA_65;
+    pInfo->ulMaxKeySize = CKP_ML_DSA_65;
+    break;
+
+  case CKM_ML_DSA:
+    pInfo->flags = CKF_HW | CKF_SIGN;
+    pInfo->ulMinKeySize = CKP_ML_DSA_65;
+    pInfo->ulMaxKeySize = CKP_ML_DSA_65;
+    break;
+
+  case CKM_ML_KEM_KEY_PAIR_GEN:
+    pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR;
+    pInfo->ulMinKeySize = CKP_ML_KEM_768;
+    pInfo->ulMaxKeySize = CKP_ML_KEM_768;
+    break;
+
+  case CKM_ML_KEM:
+    pInfo->flags = CKF_HW | CKF_ENCAPSULATE | CKF_DECAPSULATE;
+    pInfo->ulMinKeySize = CKP_ML_KEM_768;
+    pInfo->ulMaxKeySize = CKP_ML_KEM_768;
     break;
 
   case CKM_SHA_1:

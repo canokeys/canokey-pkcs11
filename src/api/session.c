@@ -61,6 +61,10 @@ static void free_session(CNK_PKCS11_SESSION *session) {
     return;
 
   ck_free(session->signingContext.mechanism.pParameter);
+  if (session->signingContext.message != NULL) {
+    mbedtls_platform_zeroize(session->signingContext.message, session->signingContext.messageCapacity);
+    ck_free(session->signingContext.message);
+  }
   ck_free(session->decryptingContext.mechanism.pParameter);
   if (session->cbManagementKey > 0)
     mbedtls_platform_zeroize(session->managementKey, sizeof(session->managementKey));
@@ -232,6 +236,13 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
   session->cbPin = 0;
   mbedtls_platform_zeroize(session->managementKey, sizeof(session->managementKey));
   session->cbManagementKey = 0;
+  session->mldsa65Algorithm = PIV_ALG_MLDSA65;
+  session->mlkem768Algorithm = PIV_ALG_MLKEM768;
+  CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig;
+  if (cnk_get_piv_algorithm_extension(slotID, &algorithmConfig) == CKR_OK && algorithmConfig.enabled) {
+    session->mldsa65Algorithm = algorithmConfig.mldsa65;
+    session->mlkem768Algorithm = algorithmConfig.mlkem768;
+  }
   session->nextSecretKeyId = CNK_SESSION_SECRET_KEY_FIRST_ID;
 
   // Initialize the session mutex
@@ -437,6 +448,29 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
 CK_RV C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
   // just forward to our custom C_CNK_Login function without pPinTries
   return C_CNK_Login(hSession, userType, pPin, ulPinLen, NULL);
+}
+
+CK_RV C_CNK_LoginProtectedManagementKey(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pKey, CK_ULONG ulKeyLen) {
+  CNK_LOG_FUNC(": hSession: %lu, pKey: %p, ulKeyLen: %lu", hSession, pKey, ulKeyLen);
+  CNK_ENSURE_INITIALIZED();
+  CNK_ENSURE_NONNULL(pKey);
+
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (session->cbPin == 0)
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "User PIN login is required");
+  if (session->cbManagementKey > 0)
+    CNK_RETURN(CKR_USER_ALREADY_LOGGED_IN, "Protected management key is already cached");
+  if (ulKeyLen != sizeof(session->managementKey))
+    CNK_RETURN(CKR_PIN_LEN_RANGE, "Invalid management key length");
+
+  CK_RV rv = cnkVerifyManagementKey(session, pKey);
+  if (rv != CKR_OK)
+    CNK_RETURN(rv, "Management key verification failed");
+
+  memcpy(session->managementKey, pKey, ulKeyLen);
+  session->cbManagementKey = ulKeyLen;
+  CNK_RET_OK;
 }
 
 CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
