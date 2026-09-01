@@ -174,8 +174,11 @@ ID 03 -> slot 9D -> EC P-256 key
 ID 04 -> slot 9E -> RSA-2048 key
 ID 05 -> slot 82 -> EC P-256 key
 ID 06 -> slot 83 -> EC P-384 key
-ID 17 -> slot 94 -> ML-DSA-65 key
-ID 18 -> slot 95 -> ML-KEM-768 key
+ID 07 -> slot 84 -> EC P-521 key
+ID 08 -> slot 85 -> Ed25519 key
+ID 09 -> slot 86 -> X25519 key
+ID 23 -> slot 94 -> ML-DSA-65 key
+ID 24 -> slot 95 -> ML-KEM-768 key
 ```
 
 Certificates are independent PIV data objects and may not exist for every key
@@ -404,3 +407,8 @@ PIV object IDs map to slots as:
   `C_CreateObject(CKO_PRIVATE_KEY)` against ID 06 / slot 83. These tests
   intentionally separate SO-authenticated write sessions from USER-authenticated
   signing sessions.
+- `test_pqc.exe` is an explicitly destructive full-matrix hardware test. It
+  overwrites IDs 08/09 with Ed25519/X25519 generation and import vectors and
+  IDs 23/24 with ML-DSA-65/ML-KEM-768 vectors. Windows CI artifacts include
+  this executable so it can be run against the downloaded DLL without a local
+  build.
