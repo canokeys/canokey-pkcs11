@@ -2164,6 +2164,82 @@ CK_RV cnk_get_piv_algorithm_extension(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTEN
   return CKR_OK;
 }
 
+static CK_RV pivRandomSupportedOnCard(SCARDHANDLE hCard, CK_BBOOL *supported) {
+  CNK_ENSURE_NONNULL(supported);
+  *supported = CK_FALSE;
+
+  CK_BYTE versionApdu[] = {0x00, 0xFD, 0x00, 0x00, 0x00};
+  CK_BYTE response[5];
+  DWORD responseLen = sizeof(response);
+  LONG pcscRv = cnk_transceive_apdu(hCard, versionApdu, sizeof(versionApdu), response, &responseLen, CK_FALSE);
+  if (pcscRv != SCARD_S_SUCCESS || responseLen < 2)
+    return CKR_DEVICE_ERROR;
+
+  CK_BYTE sw1 = response[responseLen - 2];
+  CK_BYTE sw2 = response[responseLen - 1];
+  if (sw1 != 0x90 || sw2 != 0x00)
+    return CKR_OK;
+  if (responseLen != sizeof(response))
+    return CKR_DEVICE_ERROR;
+
+  // PIV version 6.0 introduced CanoKey's unauthenticated 00 84 command.
+  *supported = response[0] >= 6 ? CK_TRUE : CK_FALSE;
+  return CKR_OK;
+}
+
+CK_RV cnk_piv_random_supported(CK_SLOT_ID slotID, CK_BBOOL *supported) {
+  CNK_ENSURE_NONNULL(supported);
+  SCARDHANDLE hCard = 0;
+  CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotID, &hCard));
+
+  CK_RV rv = cnk_select_piv_application(hCard);
+  if (rv == CKR_OK)
+    rv = pivRandomSupportedOnCard(hCard, supported);
+  cnk_disconnect_card(hCard);
+  return rv;
+}
+
+CK_RV cnk_piv_generate_random(CK_SLOT_ID slotID, CK_BYTE_PTR output, CK_ULONG outputLen) {
+  if (output == NULL && outputLen > 0)
+    return CKR_ARGUMENTS_BAD;
+
+  SCARDHANDLE hCard = 0;
+  CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotID, &hCard));
+  CK_RV rv = cnk_select_piv_application(hCard);
+  CK_BBOOL supported = CK_FALSE;
+  if (rv == CKR_OK)
+    rv = pivRandomSupportedOnCard(hCard, &supported);
+  if (rv != CKR_OK || !supported) {
+    cnk_disconnect_card(hCard);
+    return rv == CKR_OK ? CKR_RANDOM_NO_RNG : rv;
+  }
+
+  CK_ULONG offset = 0;
+  while (offset < outputLen) {
+    CK_ULONG chunkLen = outputLen - offset;
+    if (chunkLen > 256)
+      chunkLen = 256;
+
+    // In a short case-2 APDU, Le=0 encodes the full 256-byte response.
+    CK_BYTE apdu[] = {0x00, 0x84, 0x00, 0x00, chunkLen == 256 ? 0 : (CK_BYTE)chunkLen};
+    CK_BYTE response[258];
+    DWORD responseLen = sizeof(response);
+    LONG pcscRv = cnk_transceive_apdu(hCard, apdu, sizeof(apdu), response, &responseLen, CK_FALSE);
+    if (pcscRv != SCARD_S_SUCCESS || responseLen != chunkLen + 2 || response[responseLen - 2] != 0x90 ||
+        response[responseLen - 1] != 0x00) {
+      rv = CKR_DEVICE_ERROR;
+      break;
+    }
+    memcpy(output + offset, response, chunkLen);
+    offset += chunkLen;
+  }
+
+  cnk_disconnect_card(hCard);
+  if (rv != CKR_OK && outputLen > 0)
+    mbedtls_platform_zeroize(output, outputLen);
+  return rv;
+}
+
 CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
                                CK_BYTE pinPolicy, CK_BYTE touchPolicy, CK_BYTE_PTR pbPublicKey,
                                CK_ULONG_PTR pcbPublicKey) {

@@ -202,6 +202,11 @@ CK_RV cnk_get_piv_metadata_directory(CK_SLOT_ID slotID, CNK_PIV_METADATA_DIRECTO
 
 CK_RV cnk_get_piv_algorithm_extension(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config);
 
+// Firmware 6.0+ exposes an unauthenticated PIV GET CHALLENGE command backed by
+// the token RNG. Older firmware reports supported = CK_FALSE.
+CK_RV cnk_piv_random_supported(CK_SLOT_ID slotID, CK_BBOOL *supported);
+CK_RV cnk_piv_generate_random(CK_SLOT_ID slotID, CK_BYTE_PTR output, CK_ULONG outputLen);
+
 // Generate a PIV asymmetric key pair.
 CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
                                CK_BYTE pinPolicy, CK_BYTE touchPolicy, CK_BYTE_PTR pbPublicKey,

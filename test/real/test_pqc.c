@@ -223,6 +223,31 @@ static int testSessionSecretLifecycle(CK_FUNCTION_LIST_3_2_PTR functions, CK_SES
   return 0;
 }
 
+static int testTokenRandom(CK_FUNCTION_LIST_3_2_PTR functions, CK_SLOT_ID slot, CK_SESSION_HANDLE session) {
+  CK_TOKEN_INFO tokenInfo;
+  CHECK(functions->C_GetTokenInfo(slot, &tokenInfo));
+  if ((tokenInfo.flags & CKF_RNG) == 0)
+    return 1;
+
+  if (functions->C_GenerateRandom(session, NULL, 1) != CKR_ARGUMENTS_BAD)
+    return 1;
+  CHECK(functions->C_GenerateRandom(session, NULL, 0));
+
+  CK_BYTE first[602], second[600];
+  memset(first, 0, sizeof(first));
+  first[600] = 0xA5;
+  first[601] = 0x5A;
+  CHECK(functions->C_GenerateRandom(session, first, 600));
+  CHECK(functions->C_GenerateRandom(session, second, sizeof(second)));
+  if (first[600] != 0xA5 || first[601] != 0x5A || memcmp(first, second, sizeof(second)) == 0)
+    return 1;
+
+  CK_BYTE seed = 0x42;
+  if (functions->C_SeedRandom(session, &seed, sizeof(seed)) != CKR_RANDOM_SEED_NOT_SUPPORTED)
+    return 1;
+  return 0;
+}
+
 static CK_RV findKeyPair(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE session, CK_KEY_TYPE keyType,
                          CK_ATTRIBUTE_TYPE usage, CK_OBJECT_HANDLE_PTR publicKey, CK_OBJECT_HANDLE_PTR privateKey) {
   CK_OBJECT_CLASS privateClass = CKO_PRIVATE_KEY;
@@ -441,6 +466,8 @@ static int testFunctionListAndSessions(CK_FUNCTION_LIST_3_2_PTR functions, CK_SL
   CK_SESSION_HANDLE sessions[16];
   for (CK_ULONG i = 0; i < 16; i++)
     CHECK(functions->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &sessions[i]));
+  if (testTokenRandom(functions, slot, sessions[0]) != 0)
+    return 1;
 
   CK_MECHANISM digestMechanism = {CKM_SHA256, NULL, 0};
   CHECK(functions->C_DigestInit(sessions[0], &digestMechanism));

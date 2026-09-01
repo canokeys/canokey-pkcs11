@@ -682,10 +682,28 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
 
 CK_RV C_SeedRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSeed, CK_ULONG ulSeedLen) {
   CNK_LOG_FUNC(": hSession: %lu, pSeed: %p, ulSeedLen: %lu", hSession, pSeed, ulSeedLen);
-  CNK_RET_UNSUPPORTED;
+  CNK_ENSURE_INITIALIZED();
+  if (pSeed == NULL && ulSeedLen > 0)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "pSeed is NULL but ulSeedLen > 0");
+
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  CK_BBOOL supported = CK_FALSE;
+  CNK_ENSURE_OK(cnk_piv_random_supported(session->slotId, &supported));
+  if (!supported)
+    return CKR_RANDOM_NO_RNG;
+
+  // The token RNG is self-seeded and firmware exposes no entropy-injection APDU.
+  return CKR_RANDOM_SEED_NOT_SUPPORTED;
 }
 
 CK_RV C_GenerateRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pRandomData, CK_ULONG ulRandomLen) {
   CNK_LOG_FUNC(": hSession: %lu, pRandomData: %p, ulRandomLen: %lu", hSession, pRandomData, ulRandomLen);
-  CNK_RET_UNSUPPORTED;
+  CNK_ENSURE_INITIALIZED();
+  if (pRandomData == NULL && ulRandomLen > 0)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "pRandomData is NULL but ulRandomLen > 0");
+
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  return cnk_piv_generate_random(session->slotId, pRandomData, ulRandomLen);
 }

@@ -152,6 +152,12 @@ the host for `CKM_RSA_X_509`, `CKM_RSA_PKCS`, and `CKM_RSA_PKCS_OAEP`;
 encryption is single-part. Mixed host/card mechanisms omit `CKF_HW` because not
 every advertised operation is performed by the token.
 
+Firmware PIV version 6.0 or newer exposes the token RNG through the
+unauthenticated `00 84` command. `C_GenerateRandom` advertises `CKF_RNG` only
+for those tokens and splits arbitrary output lengths into requests of at most
+256 bytes. The firmware RNG is self-seeded and has no entropy-injection APDU,
+so `C_SeedRandom` returns `CKR_RANDOM_SEED_NOT_SUPPORTED`.
+
 ## Post-Quantum Keys
 
 Firmware 5.7 or newer exposes a versioned PIV metadata directory and runtime

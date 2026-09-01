@@ -145,8 +145,10 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   }
   memcpy(pInfo->serialNumber, serial_str, serial_len);
 
-  // CanoKey PIV does not currently expose a random-generation APDU through this module.
   pInfo->flags = CKF_LOGIN_REQUIRED | CKF_USER_PIN_INITIALIZED | CKF_TOKEN_INITIALIZED;
+  CK_BBOOL randomSupported = CK_FALSE;
+  if (cnk_piv_random_supported(slotID, &randomSupported) == CKR_OK && randomSupported)
+    pInfo->flags |= CKF_RNG;
 
   // Set session counts
   pInfo->ulMaxSessionCount = CK_EFFECTIVELY_INFINITE;

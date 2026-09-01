@@ -166,6 +166,9 @@ Certificates are independent PIV data objects and may not exist for every key
 listed above. Re-enumerate metadata before relying on this table because
 destructive tests intentionally overwrite selected slots.
 
+The current firmware reports platform revision `gcdc54046`, canokey-core
+revision `3d602057`, and PIV application version `6.0.0`.
+
 OpenSC's own module is useful as an external comparison point:
 
 ```text
@@ -227,8 +230,10 @@ Write-path notes:
   (`5FC109`), verifies it, and clears all temporary data before returning.
   Keep ADMIN DATA and PRINTED parsing inside this extension so managed callers
   never receive the raw management key.
-- `CKF_RNG` is intentionally not advertised because CanoKey PIV does not expose
-  a random-generation APDU through this module.
+- PIV version 6.0+ exposes unauthenticated token randomness through `00 84`.
+  Advertise `CKF_RNG` only after that version check. `C_GenerateRandom` chunks
+  requests at 256 bytes; `C_SeedRandom` returns
+  `CKR_RANDOM_SEED_NOT_SUPPORTED` because firmware has no seed-injection APDU.
 - `CKA_CNK_PIV_PIN_POLICY` and `CKA_CNK_PIV_TOUCH_POLICY` are public
   vendor-defined `CK_BYTE` attributes in `include/pkcs11_canokey.h`. They can
   be supplied on private-key templates for `C_GenerateKeyPair` and
@@ -340,10 +345,11 @@ PIV object IDs map to slots as:
 
 ## Known Gaps
 
-- `C_GenerateRandom`, wrap/unwrap, multipart encrypt/decrypt, PIV token-object
-  delete/set-attribute, and init PIN remain unsupported or return the
-  corresponding object-policy error. `C_GenerateKey` does use host randomness
-  for session-only AES and generic-secret keys.
+- Wrap/unwrap, multipart encrypt/decrypt, PIV token-object delete/set-attribute,
+  and init PIN remain unsupported or return the corresponding object-policy
+  error. `C_GenerateKey` uses host randomness for session-only AES and
+  generic-secret keys, while `C_GenerateRandom` uses the firmware 6.0+ token
+  RNG.
 - `C_GetObjectSize` is implemented as an approximate PKCS#11 object size based
   on readable attributes. `C_SetAttributeValue` validates object handles but
   treats PIV token attributes as read-only. `C_CopyObject` supports session
