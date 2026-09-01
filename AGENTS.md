@@ -59,6 +59,10 @@ TF-PSA-Crypto migration.
 
 ## Development Hygiene
 
+- English is the project language. Write source comments, documentation,
+  diagnostic text, commit messages, and pull-request content in English.
+  Other languages are allowed only in explicitly identified localization
+  resources.
 - Before committing C source or header changes, run `clang-format` on the
   touched `.c` and `.h` files only. Do not run `clang-format` on CMake files.
 - Add succinct comments for non-obvious invariants and boundaries: sensitive
