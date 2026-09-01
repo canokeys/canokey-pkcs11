@@ -1,4 +1,5 @@
 #include "pkcs11.h"
+#include "pkcs11_canokey.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -256,7 +257,6 @@ static CK_RV findKeyPair(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE s
                          CK_ATTRIBUTE_TYPE usage, CK_OBJECT_HANDLE_PTR publicKey, CK_OBJECT_HANDLE_PTR privateKey) {
   CK_OBJECT_CLASS privateClass = CKO_PRIVATE_KEY;
   CK_BBOOL trueValue = CK_TRUE;
-  CK_BYTE pinPolicy = keyType == CKK_EC_MONTGOMERY ? CNK_PIV_PIN_POLICY_ALWAYS : CNK_PIV_PIN_POLICY_ONCE;
   CK_ATTRIBUTE privateTemplate[] = {
       {CKA_CLASS, &privateClass, sizeof(privateClass)},
       {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
@@ -571,6 +571,7 @@ static int generate25519KeyPair(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_H
   CK_OBJECT_CLASS publicClass = CKO_PUBLIC_KEY;
   CK_OBJECT_CLASS privateClass = CKO_PRIVATE_KEY;
   CK_BBOOL trueValue = CK_TRUE;
+  CK_BYTE pinPolicy = keyType == CKK_EC_MONTGOMERY ? CNK_PIV_PIN_POLICY_ALWAYS : CNK_PIV_PIN_POLICY_ONCE;
   CK_ATTRIBUTE publicTemplate[] = {
       {CKA_CLASS, &publicClass, sizeof(publicClass)},      {CKA_TOKEN, &trueValue, sizeof(trueValue)},
       {CKA_KEY_TYPE, &keyType, sizeof(keyType)},           {CKA_ID, &id, sizeof(id)},
