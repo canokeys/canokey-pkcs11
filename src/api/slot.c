@@ -252,6 +252,8 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
       CKM_SHA3_256,
       CKM_SHA3_384,
       CKM_SHA3_512,
+      CKM_GENERIC_SECRET_KEY_GEN,
+      CKM_AES_KEY_GEN,
       CKM_ML_DSA_KEY_PAIR_GEN,
       CKM_ML_DSA,
       CKM_ML_KEM_KEY_PAIR_GEN,
@@ -363,6 +365,18 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
     pInfo->flags = CKF_HW | CKF_DERIVE | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_UNCOMPRESS;
     pInfo->ulMinKeySize = 256;
     pInfo->ulMaxKeySize = 384;
+    break;
+
+  case CKM_GENERIC_SECRET_KEY_GEN:
+    pInfo->flags = CKF_GENERATE;
+    pInfo->ulMinKeySize = 8;
+    pInfo->ulMaxKeySize = 1024;
+    break;
+
+  case CKM_AES_KEY_GEN:
+    pInfo->flags = CKF_GENERATE;
+    pInfo->ulMinKeySize = 128;
+    pInfo->ulMaxKeySize = 256;
     break;
 
   case CKM_ML_DSA_KEY_PAIR_GEN:

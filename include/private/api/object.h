@@ -24,6 +24,12 @@ CK_RV CNK_ValidateObject(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, 
  */
 CK_OBJECT_HANDLE CNK_MakeObjectHandle(CK_SLOT_ID slot_id, CK_OBJECT_CLASS object_class, CK_BYTE object_id);
 
+CK_RV CNK_GetSessionSecretKey(CNK_PKCS11_SESSION *session, CK_OBJECT_HANDLE object,
+                              CNK_PKCS11_SECRET_KEY_OBJECT **secret);
+
+CK_RV CNK_CreateSessionSecretKey(CNK_PKCS11_SESSION *session, const CNK_PKCS11_SECRET_KEY_OBJECT *prototype,
+                                 CK_OBJECT_HANDLE_PTR object);
+
 /**
  * Maps a PIV object ID to its PIV key reference.
  *

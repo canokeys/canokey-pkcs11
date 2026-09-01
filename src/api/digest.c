@@ -1,3 +1,4 @@
+#include "api/object.h"
 #include "api/session.h"
 #include "backend/pcsc.h"
 #include "internal/crypto.h"
@@ -105,7 +106,23 @@ CK_RV C_DigestUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart, CK_ULONG ulP
 
 CK_RV C_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey) {
   CNK_LOG_FUNC(": hSession: %lu, hKey: %lu", hSession, hKey);
-  CNK_RET_NOT_IMPLEMENTED;
+  CNK_ENSURE_INITIALIZED();
+
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (session->digestingContext.mechanismType == 0)
+    CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_DigestInit not called");
+
+  CNK_PKCS11_SECRET_KEY_OBJECT *secret;
+  CNK_ENSURE_OK(CNK_GetSessionSecretKey(session, hKey, &secret));
+  if (secret->sensitive)
+    CNK_RETURN(CKR_KEY_INDIGESTIBLE, "Sensitive session key cannot be digested");
+  if (secret->private && !cnk_token_pin_is_cached(session))
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "Private session key requires USER login");
+
+  if (mbedtls_md_update(&session->digestingContext.context, secret->value, secret->valueLen) != 0)
+    CNK_RETURN(CKR_FUNCTION_FAILED, "md update failed");
+  CNK_RET_OK;
 }
 
 CK_RV C_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest, CK_ULONG_PTR pulDigestLen) {

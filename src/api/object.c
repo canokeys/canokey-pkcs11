@@ -372,6 +372,130 @@ static CK_BBOOL isSessionSecretHandle(CNK_PKCS11_SESSION *session, CK_OBJECT_HAN
   return CK_TRUE;
 }
 
+CK_RV CNK_GetSessionSecretKey(CNK_PKCS11_SESSION *session, CK_OBJECT_HANDLE object,
+                              CNK_PKCS11_SECRET_KEY_OBJECT **secret) {
+  CNK_ENSURE_NONNULL(session, secret);
+  if (!isSessionSecretHandle(session, object, secret))
+    CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid session secret-key handle");
+  CNK_RET_OK;
+}
+
+CK_RV CNK_CreateSessionSecretKey(CNK_PKCS11_SESSION *session, const CNK_PKCS11_SECRET_KEY_OBJECT *prototype,
+                                 CK_OBJECT_HANDLE_PTR object) {
+  CNK_ENSURE_NONNULL(session, prototype, object);
+  if (prototype->token || prototype->valueLen == 0 || prototype->valueLen > sizeof(prototype->value) ||
+      prototype->labelLen > sizeof(prototype->label))
+    CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "Invalid session secret-key prototype");
+  if (prototype->keyType != CKK_GENERIC_SECRET && prototype->keyType != CKK_AES)
+    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "Unsupported session secret-key type");
+
+  CK_ULONG index = MAX_SESSION_SECRET_KEYS;
+  for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
+    if (!session->secretKeys[i].active) {
+      index = i;
+      break;
+    }
+  }
+  if (index == MAX_SESSION_SECRET_KEYS)
+    CNK_RETURN(CKR_HOST_MEMORY, "Too many session secret keys");
+
+  CK_BYTE newId = session->nextSecretKeyId;
+  for (CK_ULONG attempts = 0; attempts <= MAX_SESSION_SECRET_KEYS; attempts++) {
+    CK_BBOOL used = CK_FALSE;
+    for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
+      if (session->secretKeys[i].active && session->secretKeys[i].id == newId) {
+        used = CK_TRUE;
+        break;
+      }
+    }
+    if (!used)
+      break;
+    newId++;
+    if (newId < CNK_SESSION_SECRET_KEY_FIRST_ID)
+      newId = CNK_SESSION_SECRET_KEY_FIRST_ID;
+  }
+
+  CNK_PKCS11_SECRET_KEY_OBJECT *secret = &session->secretKeys[index];
+  mbedtls_platform_zeroize(secret, sizeof(*secret));
+  memcpy(secret, prototype, sizeof(*secret));
+  secret->active = CK_TRUE;
+  secret->id = newId;
+  secret->token = CK_FALSE;
+
+  session->nextSecretKeyId = newId + 1;
+  if (session->nextSecretKeyId < CNK_SESSION_SECRET_KEY_FIRST_ID)
+    session->nextSecretKeyId = CNK_SESSION_SECRET_KEY_FIRST_ID;
+
+  *object = makeObjectHandle(session->slotId, CKO_SECRET_KEY, newId);
+  CNK_RET_OK;
+}
+
+static CK_RV applyMutableSecretAttributes(CNK_PKCS11_SECRET_KEY_OBJECT *secret, CK_ATTRIBUTE_PTR attributes,
+                                          CK_ULONG attributeCount) {
+  CNK_ENSURE_NONNULL(secret);
+  if (attributeCount > 0)
+    CNK_ENSURE_NONNULL(attributes);
+
+  for (CK_ULONG i = 0; i < attributeCount; i++) {
+    CK_ATTRIBUTE_PTR attribute = &attributes[i];
+    CK_BBOOL *target = NULL;
+    switch (attribute->type) {
+    case CKA_LABEL:
+      if ((attribute->pValue == NULL && attribute->ulValueLen != 0) || attribute->ulValueLen > sizeof(secret->label))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "Invalid session secret-key label");
+      mbedtls_platform_zeroize(secret->label, sizeof(secret->label));
+      if (attribute->ulValueLen > 0)
+        memcpy(secret->label, attribute->pValue, attribute->ulValueLen);
+      secret->labelLen = attribute->ulValueLen;
+      continue;
+    case CKA_ENCRYPT:
+      target = &secret->encrypt;
+      break;
+    case CKA_DECRYPT:
+      target = &secret->decrypt;
+      break;
+    case CKA_SIGN:
+      target = &secret->sign;
+      break;
+    case CKA_VERIFY:
+      target = &secret->verify;
+      break;
+    case CKA_WRAP:
+      target = &secret->wrap;
+      break;
+    case CKA_UNWRAP:
+      target = &secret->unwrap;
+      break;
+    case CKA_DERIVE:
+      target = &secret->derive;
+      break;
+    case CKA_CLASS:
+    case CKA_TOKEN:
+    case CKA_PRIVATE:
+    case CKA_ID:
+    case CKA_KEY_TYPE:
+    case CKA_VALUE:
+    case CKA_VALUE_LEN:
+    case CKA_SENSITIVE:
+    case CKA_EXTRACTABLE:
+    case CKA_LOCAL:
+    case CKA_KEY_GEN_MECHANISM:
+    case CKA_MODIFIABLE:
+    case CKA_COPYABLE:
+    case CKA_DESTROYABLE:
+      CNK_RETURN(CKR_ATTRIBUTE_READ_ONLY, "Session secret-key attribute is read-only");
+    default:
+      CNK_RETURN(CKR_ATTRIBUTE_TYPE_INVALID, "Unsupported session secret-key attribute");
+    }
+
+    if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(CK_BBOOL))
+      CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "Invalid boolean session secret-key attribute");
+    *target = *(CK_BBOOL *)attribute->pValue;
+  }
+
+  CNK_RET_OK;
+}
+
 static CK_RV getAttr(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type, CK_ATTRIBUTE_PTR *attr) {
   CNK_ENSURE_NONNULL(attr);
   *attr = NULL;
@@ -1197,19 +1321,46 @@ CK_RV C_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTR
   CNK_LOG_FUNC(": hSession: %lu, hObject: %lu, pTemplate: %p, ulCount: %lu, phNewObject: %p", hSession, hObject,
                pTemplate, ulCount, phNewObject);
   CNK_ENSURE_INITIALIZED();
+  CNK_ENSURE_NONNULL(phNewObject);
+  if (ulCount > 0)
+    CNK_ENSURE_NONNULL(pTemplate);
 
-  CNK_RET_UNSUPPORTED;
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  CNK_PKCS11_SECRET_KEY_OBJECT *source;
+  CK_RV rv = CNK_GetSessionSecretKey(session, hObject, &source);
+  if (rv != CKR_OK) {
+    CNK_ENSURE_OK(CNK_ValidateObject(hObject, session, 0, NULL));
+    CNK_RETURN(CKR_ACTION_PROHIBITED, "PIV token objects are not copyable");
+  }
+  if (!source->copyable)
+    CNK_RETURN(CKR_ACTION_PROHIBITED, "Session secret key is not copyable");
+
+  CNK_PKCS11_SECRET_KEY_OBJECT copy = *source;
+  rv = applyMutableSecretAttributes(&copy, pTemplate, ulCount);
+  if (rv == CKR_OK)
+    rv = CNK_CreateSessionSecretKey(session, &copy, phNewObject);
+  mbedtls_platform_zeroize(&copy, sizeof(copy));
+  return rv;
 }
 
 CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
   CNK_LOG_FUNC(": hSession: %lu, hObject: %lu", hSession, hObject);
   CNK_ENSURE_INITIALIZED();
 
-  // CanoKey PIV has PUT DATA and key import/generation APDUs, but this module
-  // intentionally does not expose object deletion yet. Key deletion has no
-  // standard PIV APDU, and certificate deletion would use the CanoKey/Yubico
-  // special case of PUT DATA with an empty certificate object.
-  CNK_RET_NOT_IMPLEMENTED;
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
+  if (isSessionSecretHandle(session, hObject, &secret)) {
+    if (!secret->destroyable)
+      CNK_RETURN(CKR_ACTION_PROHIBITED, "Session secret key is not destroyable");
+    mbedtls_platform_zeroize(secret, sizeof(*secret));
+    CNK_RET_OK;
+  }
+
+  CNK_ENSURE_OK(CNK_ValidateObject(hObject, session, 0, NULL));
+  // PIV token objects have no general PKCS#11 deletion semantics.
+  CNK_RETURN(CKR_ACTION_PROHIBITED, "PIV token objects are not destroyable");
 }
 
 CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ULONG_PTR pulSize) {
@@ -1358,6 +1509,15 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       case CKA_LABEL:
         rv = setSingleAttributeValue(&pTemplate[i], secret->label, secret->labelLen);
         break;
+      case CKA_MODIFIABLE:
+        rv = setSingleAttributeValue(&pTemplate[i], &secret->modifiable, sizeof(secret->modifiable));
+        break;
+      case CKA_COPYABLE:
+        rv = setSingleAttributeValue(&pTemplate[i], &secret->copyable, sizeof(secret->copyable));
+        break;
+      case CKA_DESTROYABLE:
+        rv = setSingleAttributeValue(&pTemplate[i], &secret->destroyable, sizeof(secret->destroyable));
+        break;
       default:
         rv = handleSecretKeyAttribute(&pTemplate[i], secret);
         break;
@@ -1503,6 +1663,13 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       break;
     }
 
+    case CKA_COPYABLE:
+    case CKA_DESTROYABLE: {
+      bbool = CK_FALSE;
+      rv = setSingleAttributeValue(&pTemplate[i], &bbool, sizeof(bbool));
+      break;
+    }
+
     default:
       // Not a common attribute, handle based on object class
       break;
@@ -1570,8 +1737,22 @@ CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
   CNK_PKCS11_SESSION *session;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_ENSURE_OK(CNK_ValidateObject(hObject, session, 0, NULL));
 
+  CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
+  if (isSessionSecretHandle(session, hObject, &secret)) {
+    if (ulCount == 0)
+      CNK_RET_OK;
+    if (!secret->modifiable)
+      CNK_RETURN(CKR_ACTION_PROHIBITED, "Session secret key is not modifiable");
+    CNK_PKCS11_SECRET_KEY_OBJECT updated = *secret;
+    CK_RV rv = applyMutableSecretAttributes(&updated, pTemplate, ulCount);
+    if (rv == CKR_OK)
+      memcpy(secret, &updated, sizeof(*secret));
+    mbedtls_platform_zeroize(&updated, sizeof(updated));
+    return rv;
+  }
+
+  CNK_ENSURE_OK(CNK_ValidateObject(hObject, session, 0, NULL));
   if (ulCount == 0)
     CNK_RET_OK;
 
@@ -2158,6 +2339,12 @@ static CK_RV handleSecretKeyAttribute(CK_ATTRIBUTE_PTR attribute, const CNK_PKCS
 
   case CKA_DERIVE:
     return setSingleAttributeValue(attribute, &secret->derive, sizeof(secret->derive));
+
+  case CKA_LOCAL:
+    return setSingleAttributeValue(attribute, &secret->local, sizeof(secret->local));
+
+  case CKA_KEY_GEN_MECHANISM:
+    return setSingleAttributeValue(attribute, &secret->keyGenMechanism, sizeof(secret->keyGenMechanism));
 
   default:
     return CKR_ATTRIBUTE_TYPE_INVALID;

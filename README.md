@@ -139,6 +139,12 @@ writes or overwrites a PIV data object through `PUT DATA` in an SO session.
 `C_SetAttributeValue` remains read-only for PIV token objects, so
 `CKA_MODIFIABLE` is reported as false.
 
+ECDH, ML-KEM, `CKM_GENERIC_SECRET_KEY_GEN`, and `CKM_AES_KEY_GEN` create
+session-only secret-key objects. These objects can be copied, securely
+destroyed, digested when non-sensitive, and updated through a restricted set of
+label and usage attributes. PIV token objects remain non-copyable,
+non-destroyable, and read-only.
+
 ## Post-Quantum Keys
 
 Firmware 5.7 or newer exposes a versioned PIV metadata directory and runtime

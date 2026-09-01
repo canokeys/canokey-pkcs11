@@ -101,6 +101,105 @@ static int exercisePqcPrivateOperations(CK_FUNCTION_LIST_3_2_PTR functions, CK_S
   return 0;
 }
 
+static int testSessionSecretLifecycle(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE session) {
+  CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
+  CK_KEY_TYPE genericType = CKK_GENERIC_SECRET;
+  CK_ULONG valueLen = 32;
+  CK_BBOOL falseValue = CK_FALSE;
+  CK_BBOOL trueValue = CK_TRUE;
+  CK_BYTE label[] = "lifecycle-secret";
+  CK_ATTRIBUTE generateTemplate[] = {
+      {CKA_CLASS, &secretClass, sizeof(secretClass)},   {CKA_KEY_TYPE, &genericType, sizeof(genericType)},
+      {CKA_VALUE_LEN, &valueLen, sizeof(valueLen)},     {CKA_TOKEN, &falseValue, sizeof(falseValue)},
+      {CKA_PRIVATE, &trueValue, sizeof(trueValue)},     {CKA_SENSITIVE, &falseValue, sizeof(falseValue)},
+      {CKA_EXTRACTABLE, &trueValue, sizeof(trueValue)}, {CKA_LABEL, label, sizeof(label) - 1},
+  };
+  CK_MECHANISM mechanism = {CKM_GENERIC_SECRET_KEY_GEN, NULL, 0};
+  CK_OBJECT_HANDLE generated;
+  CHECK(functions->C_GenerateKey(session, &mechanism, generateTemplate,
+                                 sizeof(generateTemplate) / sizeof(generateTemplate[0]), &generated));
+
+  CK_BYTE value[32];
+  CK_BBOOL local = CK_FALSE, modifiable = CK_FALSE, copyable = CK_FALSE, destroyable = CK_FALSE;
+  CK_MECHANISM_TYPE generatedBy = 0;
+  CK_ATTRIBUTE generatedAttributes[] = {
+      {CKA_VALUE, value, sizeof(value)},
+      {CKA_LOCAL, &local, sizeof(local)},
+      {CKA_KEY_GEN_MECHANISM, &generatedBy, sizeof(generatedBy)},
+      {CKA_MODIFIABLE, &modifiable, sizeof(modifiable)},
+      {CKA_COPYABLE, &copyable, sizeof(copyable)},
+      {CKA_DESTROYABLE, &destroyable, sizeof(destroyable)},
+  };
+  CHECK(functions->C_GetAttributeValue(session, generated, generatedAttributes,
+                                       sizeof(generatedAttributes) / sizeof(generatedAttributes[0])));
+  if (generatedAttributes[0].ulValueLen != sizeof(value) || !local || !modifiable || !copyable || !destroyable ||
+      generatedBy != CKM_GENERIC_SECRET_KEY_GEN)
+    return 1;
+
+  CK_BYTE copyLabel[] = "copy";
+  CK_ATTRIBUTE copyTemplate = {CKA_LABEL, copyLabel, sizeof(copyLabel) - 1};
+  CK_OBJECT_HANDLE copy;
+  CHECK(functions->C_CopyObject(session, generated, &copyTemplate, 1, &copy));
+
+  CK_BYTE rejectedLabel[] = "must-not-stick";
+  CK_BYTE rejectedValue = 0;
+  CK_ATTRIBUTE rejectedUpdate[] = {
+      {CKA_LABEL, rejectedLabel, sizeof(rejectedLabel) - 1},
+      {CKA_VALUE, &rejectedValue, sizeof(rejectedValue)},
+  };
+  if (functions->C_SetAttributeValue(session, copy, rejectedUpdate, 2) != CKR_ATTRIBUTE_READ_ONLY)
+    return 1;
+  CK_BYTE readLabel[32];
+  CK_ATTRIBUTE readLabelAttribute = {CKA_LABEL, readLabel, sizeof(readLabel)};
+  CHECK(functions->C_GetAttributeValue(session, copy, &readLabelAttribute, 1));
+  if (readLabelAttribute.ulValueLen != sizeof(copyLabel) - 1 ||
+      memcmp(readLabel, copyLabel, sizeof(copyLabel) - 1) != 0)
+    return 1;
+
+  CK_BYTE updatedLabel[] = "updated-copy";
+  CK_ATTRIBUTE validUpdate[] = {
+      {CKA_LABEL, updatedLabel, sizeof(updatedLabel) - 1},
+      {CKA_VERIFY, &trueValue, sizeof(trueValue)},
+  };
+  CHECK(functions->C_SetAttributeValue(session, copy, validUpdate, 2));
+
+  CK_BYTE digestFromKey[32], digestFromValue[32];
+  CK_ULONG digestLen = sizeof(digestFromKey);
+  mechanism.mechanism = CKM_SHA256;
+  CHECK(functions->C_DigestInit(session, &mechanism));
+  CHECK(functions->C_DigestKey(session, generated));
+  CHECK(functions->C_DigestFinal(session, digestFromKey, &digestLen));
+  digestLen = sizeof(digestFromValue);
+  CHECK(functions->C_DigestInit(session, &mechanism));
+  CHECK(functions->C_Digest(session, value, sizeof(value), digestFromValue, &digestLen));
+  if (memcmp(digestFromKey, digestFromValue, sizeof(digestFromKey)) != 0)
+    return 1;
+
+  CK_KEY_TYPE aesType = CKK_AES;
+  CK_ATTRIBUTE sensitiveTemplate[] = {
+      {CKA_CLASS, &secretClass, sizeof(secretClass)}, {CKA_KEY_TYPE, &aesType, sizeof(aesType)},
+      {CKA_VALUE_LEN, &valueLen, sizeof(valueLen)},   {CKA_TOKEN, &falseValue, sizeof(falseValue)},
+      {CKA_PRIVATE, &trueValue, sizeof(trueValue)},   {CKA_SENSITIVE, &trueValue, sizeof(trueValue)},
+  };
+  mechanism.mechanism = CKM_AES_KEY_GEN;
+  CK_OBJECT_HANDLE sensitive;
+  CHECK(functions->C_GenerateKey(session, &mechanism, sensitiveTemplate,
+                                 sizeof(sensitiveTemplate) / sizeof(sensitiveTemplate[0]), &sensitive));
+  mechanism.mechanism = CKM_SHA256;
+  CHECK(functions->C_DigestInit(session, &mechanism));
+  if (functions->C_DigestKey(session, sensitive) != CKR_KEY_INDIGESTIBLE)
+    return 1;
+  CHECK(functions->C_SessionCancel(session, CKF_DIGEST));
+
+  CHECK(functions->C_DestroyObject(session, generated));
+  CHECK(functions->C_DestroyObject(session, copy));
+  CHECK(functions->C_DestroyObject(session, sensitive));
+  CK_ATTRIBUTE destroyedAttribute = {CKA_KEY_TYPE, &genericType, sizeof(genericType)};
+  if (functions->C_GetAttributeValue(session, generated, &destroyedAttribute, 1) != CKR_OBJECT_HANDLE_INVALID)
+    return 1;
+  return 0;
+}
+
 static int testFunctionListAndSessions(CK_FUNCTION_LIST_3_2_PTR functions, CK_SLOT_ID slot, const char *pin) {
 #define CK_PKCS11_FUNCTION_INFO(name)                                                                                  \
   if (functions->name == NULL) {                                                                                       \
@@ -170,6 +269,8 @@ static int testFunctionListAndSessions(CK_FUNCTION_LIST_3_2_PTR functions, CK_SL
   CK_SESSION_INFO info;
   CHECK(functions->C_GetSessionInfo(sessions[1], &info));
   if (info.state != CKS_RW_USER_FUNCTIONS)
+    return 1;
+  if (testSessionSecretLifecycle(functions, sessions[0]) != 0)
     return 1;
 
   CK_SESSION_HANDLE readOnlySession;

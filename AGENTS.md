@@ -245,6 +245,10 @@ Write-path notes:
   `CNK_PIV_PIN_POLICY_ALWAYS` = 0x03, `CNK_PIV_TOUCH_POLICY_NEVER` = 0x01,
   `CNK_PIV_TOUCH_POLICY_ALWAYS` = 0x02, and
   `CNK_PIV_TOUCH_POLICY_CACHED` = 0x03.
+- ECDH, ML-KEM, and host key generation share the session secret-key allocator.
+  Session secret keys support copy, secure destroy, restricted label/usage
+  updates, and `C_DigestKey` for non-sensitive values. PIV token objects remain
+  non-copyable, non-destroyable, and read-only.
 
 RSA signing note:
 
@@ -321,8 +325,9 @@ PIV object IDs map to slots as:
 
 ## Known Gaps
 
-- Verify, random generation, wrap/unwrap, object delete/set-attribute, and init
-  PIN are mostly stubs returning `CKR_FUNCTION_NOT_SUPPORTED`.
+- Verify, random generation, wrap/unwrap, token-object delete/set-attribute,
+  and init PIN are mostly stubs returning `CKR_FUNCTION_NOT_SUPPORTED` or the
+  corresponding object-policy error.
 - `C_GetObjectSize` is implemented as an approximate PKCS#11 object size based
   on readable attributes. `C_SetAttributeValue` validates object handles but
   treats PIV token attributes as read-only. `C_CopyObject` is intentionally

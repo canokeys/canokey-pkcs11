@@ -62,6 +62,11 @@ typedef struct {
   CK_BBOOL wrap;
   CK_BBOOL unwrap;
   CK_BBOOL derive;
+  CK_BBOOL local;
+  CK_BBOOL modifiable;
+  CK_BBOOL copyable;
+  CK_BBOOL destroyable;
+  CK_MECHANISM_TYPE keyGenMechanism;
   CK_BYTE label[64];
   CK_ULONG labelLen;
 } CNK_PKCS11_SECRET_KEY_OBJECT;

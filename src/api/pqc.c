@@ -96,60 +96,40 @@ static CK_RV createSharedSecret(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR at
     return CKR_TEMPLATE_INCONSISTENT;
   if (valueLen != CNK_MLKEM768_SHARED_SECRET_BYTES)
     return CKR_KEY_SIZE_RANGE;
+  if (labelLen > sizeof(session->secretKeys[0].label))
+    return CKR_ATTRIBUTE_VALUE_INVALID;
 
-  CK_ULONG index = MAX_SESSION_SECRET_KEYS;
-  for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
-    if (!session->secretKeys[i].active) {
-      index = i;
-      break;
-    }
-  }
-  if (index == MAX_SESSION_SECRET_KEYS)
-    return CKR_HOST_MEMORY;
-
-  CK_BYTE newId = session->nextSecretKeyId;
-  for (;;) {
-    CK_BBOOL used = CK_FALSE;
-    for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++)
-      if (session->secretKeys[i].active && session->secretKeys[i].id == newId)
-        used = CK_TRUE;
-    if (!used)
-      break;
-    if (++newId < CNK_SESSION_SECRET_KEY_FIRST_ID)
-      newId = CNK_SESSION_SECRET_KEY_FIRST_ID;
-  }
-
-  CNK_PKCS11_SECRET_KEY_OBJECT *secret = &session->secretKeys[index];
-  memset(secret, 0, sizeof(*secret));
-  secret->active = CK_TRUE;
-  secret->id = newId;
-  secret->keyType = keyType;
-  secret->valueLen = valueLen;
-  secret->extractable = extractable;
-  secret->sensitive = sensitive;
-  secret->private = privateObject;
-  secret->encrypt = encrypt;
-  secret->decrypt = decrypt;
-  secret->sign = sign;
-  secret->verify = verify;
-  secret->wrap = wrap;
-  secret->unwrap = unwrap;
-  secret->derive = derive;
-  memcpy(secret->value, value, valueLen);
+  CNK_PKCS11_SECRET_KEY_OBJECT prototype = {0};
+  prototype.keyType = keyType;
+  prototype.valueLen = valueLen;
+  prototype.extractable = extractable;
+  prototype.sensitive = sensitive;
+  prototype.private = privateObject;
+  prototype.encrypt = encrypt;
+  prototype.decrypt = decrypt;
+  prototype.sign = sign;
+  prototype.verify = verify;
+  prototype.wrap = wrap;
+  prototype.unwrap = unwrap;
+  prototype.derive = derive;
+  prototype.local = CK_TRUE;
+  prototype.modifiable = CK_TRUE;
+  prototype.copyable = CK_TRUE;
+  prototype.destroyable = CK_TRUE;
+  prototype.keyGenMechanism = CKM_ML_KEM;
+  memcpy(prototype.value, value, valueLen);
   if (label != NULL && labelLen > 0) {
-    secret->labelLen = labelLen > sizeof(secret->label) ? sizeof(secret->label) : labelLen;
-    memcpy(secret->label, label, secret->labelLen);
+    prototype.labelLen = labelLen;
+    memcpy(prototype.label, label, labelLen);
   } else {
     static const char defaultLabel[] = "ML-KEM Shared Secret";
-    secret->labelLen = sizeof(defaultLabel) - 1;
-    memcpy(secret->label, defaultLabel, secret->labelLen);
+    prototype.labelLen = sizeof(defaultLabel) - 1;
+    memcpy(prototype.label, defaultLabel, prototype.labelLen);
   }
 
-  session->nextSecretKeyId = newId + 1;
-  if (session->nextSecretKeyId < CNK_SESSION_SECRET_KEY_FIRST_ID)
-    session->nextSecretKeyId = CNK_SESSION_SECRET_KEY_FIRST_ID;
-  *key = CNK_MakeObjectHandle(session->slotId, CKO_SECRET_KEY, newId);
-  return CKR_OK;
+  CK_RV rv = CNK_CreateSessionSecretKey(session, &prototype, key);
+  mbedtls_platform_zeroize(&prototype, sizeof(prototype));
+  return rv;
 }
 
 CK_RV C_EncapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, CK_OBJECT_HANDLE publicKey,

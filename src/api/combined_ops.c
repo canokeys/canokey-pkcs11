@@ -10,6 +10,7 @@
 
 #include <mbedtls/md.h>
 #include <mbedtls/platform_util.h>
+#include <psa/crypto.h>
 #include <string.h>
 
 #define CNK_MAX_ECDH_PUBLIC_DATA 133
@@ -48,6 +49,14 @@ static CK_RV getTemplateObjectClass(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount
   if (attr->pValue == NULL || attr->ulValueLen != sizeof(CK_OBJECT_CLASS))
     CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_CLASS template attribute");
   *value = *(CK_OBJECT_CLASS *)attr->pValue;
+  CNK_RET_OK;
+}
+
+static CK_RV readTemplateBool(CK_ATTRIBUTE_PTR attribute, CK_BBOOL *value) {
+  CNK_ENSURE_NONNULL(attribute, value);
+  if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(CK_BBOOL))
+    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad boolean template attribute");
+  *value = *(CK_BBOOL *)attribute->pValue;
   CNK_RET_OK;
 }
 
@@ -157,7 +166,139 @@ CK_RV C_GenerateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
                     CK_ULONG ulCount, CK_OBJECT_HANDLE_PTR phKey) {
   CNK_LOG_FUNC(": hSession: %lu, pMechanism: %p, pTemplate: %p, ulCount: %lu, phKey: %p", hSession, pMechanism,
                pTemplate, ulCount, phKey);
-  CNK_RET_NOT_IMPLEMENTED;
+  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pMechanism);
+  CNK_ENSURE_NONNULL(phKey);
+  if (ulCount > 0)
+    CNK_ENSURE_NONNULL(pTemplate);
+  if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "key generation mechanism takes no parameters");
+
+  CK_KEY_TYPE expectedKeyType;
+  switch (pMechanism->mechanism) {
+  case CKM_GENERIC_SECRET_KEY_GEN:
+    expectedKeyType = CKK_GENERIC_SECRET;
+    break;
+  case CKM_AES_KEY_GEN:
+    expectedKeyType = CKK_AES;
+    break;
+  default:
+    CNK_RETURN(CKR_MECHANISM_INVALID, "unsupported secret-key generation mechanism");
+  }
+
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  CNK_PKCS11_SECRET_KEY_OBJECT prototype = {0};
+  prototype.keyType = expectedKeyType;
+  prototype.private = CK_TRUE;
+  prototype.extractable = CK_TRUE;
+  prototype.local = CK_TRUE;
+  prototype.modifiable = CK_TRUE;
+  prototype.copyable = CK_TRUE;
+  prototype.destroyable = CK_TRUE;
+  prototype.keyGenMechanism = pMechanism->mechanism;
+
+  CK_BBOOL valueLenSpecified = CK_FALSE;
+  CK_BBOOL labelSpecified = CK_FALSE;
+  for (CK_ULONG i = 0; i < ulCount; i++) {
+    CK_ATTRIBUTE_PTR attribute = &pTemplate[i];
+    switch (attribute->type) {
+    case CKA_CLASS:
+      if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(CK_OBJECT_CLASS) ||
+          *(CK_OBJECT_CLASS *)attribute->pValue != CKO_SECRET_KEY)
+        CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "generated object must be CKO_SECRET_KEY");
+      break;
+    case CKA_KEY_TYPE:
+      if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(CK_KEY_TYPE) ||
+          *(CK_KEY_TYPE *)attribute->pValue != expectedKeyType)
+        CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "generated key type does not match mechanism");
+      break;
+    case CKA_VALUE_LEN:
+      if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(CK_ULONG))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_VALUE_LEN");
+      prototype.valueLen = *(CK_ULONG *)attribute->pValue;
+      valueLenSpecified = CK_TRUE;
+      break;
+    case CKA_TOKEN:
+      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.token));
+      break;
+    case CKA_PRIVATE:
+      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.private));
+      break;
+    case CKA_SENSITIVE:
+      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.sensitive));
+      break;
+    case CKA_EXTRACTABLE:
+      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.extractable));
+      break;
+    case CKA_ENCRYPT:
+      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.encrypt));
+      break;
+    case CKA_DECRYPT:
+      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.decrypt));
+      break;
+    case CKA_SIGN:
+      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.sign));
+      break;
+    case CKA_VERIFY:
+      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.verify));
+      break;
+    case CKA_WRAP:
+      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.wrap));
+      break;
+    case CKA_UNWRAP:
+      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.unwrap));
+      break;
+    case CKA_DERIVE:
+      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.derive));
+      break;
+    case CKA_MODIFIABLE:
+      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.modifiable));
+      break;
+    case CKA_COPYABLE:
+      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.copyable));
+      break;
+    case CKA_DESTROYABLE:
+      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.destroyable));
+      break;
+    case CKA_LABEL:
+      if ((attribute->pValue == NULL && attribute->ulValueLen != 0) || attribute->ulValueLen > sizeof(prototype.label))
+        CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad generated-key label");
+      if (attribute->ulValueLen > 0)
+        memcpy(prototype.label, attribute->pValue, attribute->ulValueLen);
+      prototype.labelLen = attribute->ulValueLen;
+      labelSpecified = CK_TRUE;
+      break;
+    default:
+      CNK_RETURN(CKR_ATTRIBUTE_TYPE_INVALID, "unsupported generated-key template attribute");
+    }
+  }
+
+  if (!valueLenSpecified)
+    CNK_RETURN(CKR_TEMPLATE_INCOMPLETE, "CKA_VALUE_LEN is required");
+  if (prototype.token)
+    CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "token secret-key generation is not supported");
+  if (prototype.valueLen == 0 || prototype.valueLen > sizeof(prototype.value))
+    CNK_RETURN(CKR_KEY_SIZE_RANGE, "generated key length is out of range");
+  if (expectedKeyType == CKK_AES && prototype.valueLen != 16 && prototype.valueLen != 24 && prototype.valueLen != 32)
+    CNK_RETURN(CKR_KEY_SIZE_RANGE, "AES key length must be 16, 24, or 32 bytes");
+  if (prototype.private && !cnk_token_pin_is_cached(session))
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "private session key requires USER login");
+
+  if (!labelSpecified) {
+    const char *defaultLabel = expectedKeyType == CKK_AES ? "Generated AES Key" : "Generated Generic Secret";
+    prototype.labelLen = (CK_ULONG)strlen(defaultLabel);
+    memcpy(prototype.label, defaultLabel, prototype.labelLen);
+  }
+
+  psa_status_t status = psa_generate_random(prototype.value, prototype.valueLen);
+  if (status != PSA_SUCCESS) {
+    mbedtls_platform_zeroize(&prototype, sizeof(prototype));
+    CNK_RETURN(CKR_RANDOM_NO_RNG, "host random generation failed");
+  }
+
+  CK_RV rv = CNK_CreateSessionSecretKey(session, &prototype, phKey);
+  mbedtls_platform_zeroize(&prototype, sizeof(prototype));
+  return rv;
 }
 
 CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_ATTRIBUTE_PTR pPublicKeyTemplate,
@@ -461,16 +602,8 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
     CNK_RETURN(CKR_KEY_SIZE_RANGE, "bad derived key length");
   if (keyType == CKK_AES && requestedValueLen != 16 && requestedValueLen != 24 && requestedValueLen != 32)
     CNK_RETURN(CKR_KEY_SIZE_RANGE, "bad AES derived key length");
-
-  CK_ULONG secretIndex = MAX_SESSION_SECRET_KEYS;
-  for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
-    if (!session->secretKeys[i].active) {
-      secretIndex = i;
-      break;
-    }
-  }
-  if (secretIndex == MAX_SESSION_SECRET_KEYS)
-    CNK_RETURN(CKR_HOST_MEMORY, "too many session secret keys");
+  if (labelLen > sizeof(session->secretKeys[0].label))
+    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "derived key label is too long");
 
   CK_BYTE sharedSecret[CNK_MAX_ECDH_SECRET_LEN] = {0};
   CK_ULONG sharedSecretLen = sizeof(sharedSecret);
@@ -500,61 +633,42 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
     }
   }
 
-  CNK_PKCS11_SECRET_KEY_OBJECT *secret = &session->secretKeys[secretIndex];
-  mbedtls_platform_zeroize(secret->value, sizeof(secret->value));
-  memset(secret, 0, sizeof(*secret));
-
-  CK_BYTE newId = session->nextSecretKeyId;
-  for (CK_ULONG attempts = 0; attempts < MAX_SESSION_SECRET_KEYS + 1; attempts++) {
-    CK_BBOOL used = CK_FALSE;
-    for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
-      if (session->secretKeys[i].active && session->secretKeys[i].id == newId) {
-        used = CK_TRUE;
-        break;
-      }
-    }
-    if (!used)
-      break;
-    newId++;
-    if (newId < CNK_SESSION_SECRET_KEY_FIRST_ID)
-      newId = CNK_SESSION_SECRET_KEY_FIRST_ID;
-  }
-
-  secret->active = CK_TRUE;
-  secret->id = newId;
-  secret->keyType = keyType;
-  secret->valueLen = requestedValueLen;
-  secret->extractable = extractable;
-  secret->sensitive = sensitive;
-  secret->token = CK_FALSE;
-  secret->private = private;
-  secret->encrypt = encrypt;
-  secret->decrypt = decrypt;
-  secret->sign = sign;
-  secret->verify = verify;
-  secret->wrap = wrap;
-  secret->unwrap = unwrap;
-  secret->derive = derive;
-
-  memcpy(secret->value, derivedSecret, requestedValueLen);
+  CNK_PKCS11_SECRET_KEY_OBJECT prototype = {0};
+  prototype.keyType = keyType;
+  prototype.valueLen = requestedValueLen;
+  prototype.extractable = extractable;
+  prototype.sensitive = sensitive;
+  prototype.private = private;
+  prototype.encrypt = encrypt;
+  prototype.decrypt = decrypt;
+  prototype.sign = sign;
+  prototype.verify = verify;
+  prototype.wrap = wrap;
+  prototype.unwrap = unwrap;
+  prototype.derive = derive;
+  prototype.local = CK_TRUE;
+  prototype.modifiable = CK_TRUE;
+  prototype.copyable = CK_TRUE;
+  prototype.destroyable = CK_TRUE;
+  prototype.keyGenMechanism = CKM_ECDH1_DERIVE;
+  memcpy(prototype.value, derivedSecret, requestedValueLen);
   if (label != NULL && labelLen > 0) {
-    secret->labelLen = labelLen > sizeof(secret->label) ? sizeof(secret->label) : labelLen;
-    memcpy(secret->label, label, secret->labelLen);
+    prototype.labelLen = labelLen;
+    memcpy(prototype.label, label, labelLen);
   } else {
     const char defaultLabel[] = "PIV ECDH Shared Secret";
-    secret->labelLen = sizeof(defaultLabel) - 1;
-    memcpy(secret->label, defaultLabel, secret->labelLen);
+    prototype.labelLen = sizeof(defaultLabel) - 1;
+    memcpy(prototype.label, defaultLabel, prototype.labelLen);
   }
+
+  rv = CNK_CreateSessionSecretKey(session, &prototype, phKey);
 
   mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
   mbedtls_platform_zeroize(derivedSecret, sizeof(derivedSecret));
-
-  session->nextSecretKeyId = newId + 1;
-  if (session->nextSecretKeyId < CNK_SESSION_SECRET_KEY_FIRST_ID)
-    session->nextSecretKeyId = CNK_SESSION_SECRET_KEY_FIRST_ID;
-
-  *phKey = CNK_MakeObjectHandle(session->slotId, CKO_SECRET_KEY, secret->id);
-  CNK_DEBUG("Derived ECDH secret key handle %lu (%lu bytes%s)", *phKey, secret->valueLen,
+  mbedtls_platform_zeroize(&prototype, sizeof(prototype));
+  if (rv != CKR_OK)
+    return rv;
+  CNK_DEBUG("Derived ECDH secret key handle %lu (%lu bytes%s)", *phKey, requestedValueLen,
             valueLenSpecified ? ", requested length" : "");
   CNK_RET_OK;
 }
