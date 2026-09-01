@@ -92,3 +92,4 @@ jobs:
             build/libcanokey-pkcs11.so*
             build/libcanokey-pkcs11.dylib*
             build/**/canokey-pkcs11.dll
+            build/**/test_pqc.exe

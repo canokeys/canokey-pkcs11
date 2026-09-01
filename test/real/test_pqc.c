@@ -560,6 +560,98 @@ static int testFunctionListAndSessions(CK_FUNCTION_LIST_3_2_PTR functions, CK_SL
   return 0;
 }
 
+static int generate25519KeyPair(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE session, CK_BYTE id,
+                                CK_KEY_TYPE keyType, CK_MECHANISM_TYPE mechanismType, const CK_BYTE *ecParams,
+                                CK_ULONG ecParamsLen, CK_OBJECT_HANDLE_PTR publicKey, CK_OBJECT_HANDLE_PTR privateKey) {
+  CK_OBJECT_CLASS publicClass = CKO_PUBLIC_KEY;
+  CK_OBJECT_CLASS privateClass = CKO_PRIVATE_KEY;
+  CK_BBOOL trueValue = CK_TRUE;
+  CK_ATTRIBUTE publicTemplate[] = {
+      {CKA_CLASS, &publicClass, sizeof(publicClass)},      {CKA_TOKEN, &trueValue, sizeof(trueValue)},
+      {CKA_KEY_TYPE, &keyType, sizeof(keyType)},           {CKA_ID, &id, sizeof(id)},
+      {CKA_EC_PARAMS, (CK_VOID_PTR)ecParams, ecParamsLen},
+  };
+  CK_ATTRIBUTE privateTemplate[] = {
+      {CKA_CLASS, &privateClass, sizeof(privateClass)},
+      {CKA_TOKEN, &trueValue, sizeof(trueValue)},
+      {CKA_PRIVATE, &trueValue, sizeof(trueValue)},
+      {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
+      {CKA_ID, &id, sizeof(id)},
+      {keyType == CKK_EC_EDWARDS ? CKA_SIGN : CKA_DERIVE, &trueValue, sizeof(trueValue)},
+  };
+  CK_MECHANISM mechanism = {mechanismType, NULL, 0};
+  return functions->C_GenerateKeyPair(session, &mechanism, publicTemplate,
+                                      sizeof(publicTemplate) / sizeof(publicTemplate[0]), privateTemplate,
+                                      sizeof(privateTemplate) / sizeof(privateTemplate[0]), publicKey, privateKey);
+}
+
+static int exercise25519(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE edPublic,
+                         CK_OBJECT_HANDLE edPrivate, CK_OBJECT_HANDLE xPublic, CK_OBJECT_HANDLE xPrivate) {
+  static const CK_BYTE edParams[] = {0x06, 0x03, 0x2B, 0x65, 0x70};
+  static const CK_BYTE xParams[] = {0x06, 0x03, 0x2B, 0x65, 0x6E};
+  CK_KEY_TYPE keyType = 0;
+  CK_BYTE params[16];
+  CK_BYTE point[64];
+  CK_BBOOL capability = CK_FALSE;
+  CK_ATTRIBUTE attributes[] = {
+      {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
+      {CKA_EC_PARAMS, params, sizeof(params)},
+      {CKA_EC_POINT, point, sizeof(point)},
+      {CKA_VERIFY, &capability, sizeof(capability)},
+  };
+  CHECK(functions->C_GetAttributeValue(session, edPublic, attributes, sizeof(attributes) / sizeof(attributes[0])));
+  if (keyType != CKK_EC_EDWARDS || attributes[1].ulValueLen != sizeof(edParams) ||
+      memcmp(params, edParams, sizeof(edParams)) != 0 || attributes[2].ulValueLen != 32 || capability != CK_FALSE)
+    return 1;
+
+  CK_BYTE message[200];
+  for (CK_ULONG i = 0; i < sizeof(message); i++)
+    message[i] = (CK_BYTE)i;
+  CK_BYTE signature[64];
+  CK_ULONG signatureLen = sizeof(signature);
+  CK_MECHANISM mechanism = {CKM_EDDSA, NULL, 0};
+  CHECK(functions->C_SignInit(session, &mechanism, edPrivate));
+  CHECK(functions->C_Sign(session, message, sizeof(message), signature, &signatureLen));
+  if (signatureLen != sizeof(signature))
+    return 1;
+
+  keyType = 0;
+  capability = CK_FALSE;
+  memset(params, 0, sizeof(params));
+  memset(point, 0, sizeof(point));
+  attributes[3].type = CKA_DERIVE;
+  CHECK(functions->C_GetAttributeValue(session, xPublic, attributes, sizeof(attributes) / sizeof(attributes[0])));
+  if (keyType != CKK_EC_MONTGOMERY || attributes[1].ulValueLen != sizeof(xParams) ||
+      memcmp(params, xParams, sizeof(xParams)) != 0 || attributes[2].ulValueLen != 32 || capability != CK_TRUE)
+    return 1;
+
+  CK_BYTE basepoint[32] = {9};
+  CK_ECDH1_DERIVE_PARAMS deriveParams = {CKD_NULL, 0, NULL, sizeof(basepoint), basepoint};
+  mechanism = (CK_MECHANISM){CKM_ECDH1_DERIVE, &deriveParams, sizeof(deriveParams)};
+  CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
+  CK_KEY_TYPE secretType = CKK_GENERIC_SECRET;
+  CK_ULONG valueLen = 32;
+  CK_BBOOL falseValue = CK_FALSE;
+  CK_BBOOL trueValue = CK_TRUE;
+  CK_ATTRIBUTE secretTemplate[] = {
+      {CKA_CLASS, &secretClass, sizeof(secretClass)},   {CKA_KEY_TYPE, &secretType, sizeof(secretType)},
+      {CKA_VALUE_LEN, &valueLen, sizeof(valueLen)},     {CKA_TOKEN, &falseValue, sizeof(falseValue)},
+      {CKA_SENSITIVE, &falseValue, sizeof(falseValue)}, {CKA_EXTRACTABLE, &trueValue, sizeof(trueValue)},
+  };
+  CK_OBJECT_HANDLE secret;
+  CHECK(functions->C_DeriveKey(session, &mechanism, xPrivate, secretTemplate,
+                               sizeof(secretTemplate) / sizeof(secretTemplate[0]), &secret));
+  CK_BYTE secretValue[32];
+  CK_ATTRIBUTE valueAttribute = {CKA_VALUE, secretValue, sizeof(secretValue)};
+  CHECK(functions->C_GetAttributeValue(session, secret, &valueAttribute, 1));
+  CHECK(functions->C_DestroyObject(session, secret));
+  if (valueAttribute.ulValueLen != 32 || memcmp(secretValue, point, 32) != 0)
+    return 1;
+
+  printf("Ed25519 generation/sign and X25519 generation/derive hardware test passed\n");
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc != 2) {
     fprintf(stderr, "usage: test_pqc <pkcs11-library>\n");
@@ -629,6 +721,14 @@ int main(int argc, char **argv) {
   CK_BYTE managementKey[] = {1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8};
   CHECK(functions->C_Login(session, CKU_SO, managementKey, sizeof(managementKey)));
 
+  static const CK_BYTE edParams[] = {0x06, 0x03, 0x2B, 0x65, 0x70};
+  static const CK_BYTE xParams[] = {0x06, 0x03, 0x2B, 0x65, 0x6E};
+  CK_OBJECT_HANDLE edPublic, edPrivate, xPublic, xPrivate;
+  CHECK(generate25519KeyPair(functions, session, 8, CKK_EC_EDWARDS, CKM_EC_EDWARDS_KEY_PAIR_GEN, edParams,
+                             sizeof(edParams), &edPublic, &edPrivate));
+  CHECK(generate25519KeyPair(functions, session, 9, CKK_EC_MONTGOMERY, CKM_EC_MONTGOMERY_KEY_PAIR_GEN, xParams,
+                             sizeof(xParams), &xPublic, &xPrivate));
+
   CK_OBJECT_HANDLE mldsaPublic, mldsaPrivate, mlkemPublic, mlkemPrivate;
   CK_ATTRIBUTE publicTemplate[5], privateTemplate[8];
   CK_BYTE id = 23;
@@ -651,6 +751,9 @@ int main(int argc, char **argv) {
   CHECK(functions->C_Logout(session));
   CHECK(functions->C_Login(session, CKU_USER, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin)));
 
+  if (exercise25519(functions, session, edPublic, edPrivate, xPublic, xPrivate) != 0)
+    return 1;
+
   if (exercisePqcPrivateOperations(functions, session, mldsaPublic, mldsaPrivate, mlkemPublic, mlkemPrivate, pin,
                                    CK_TRUE) != 0)
     return 1;
@@ -665,6 +768,41 @@ int main(int argc, char **argv) {
     mldsaSeed[i] = (CK_BYTE)(0x20 + i);
   for (CK_ULONG i = 0; i < sizeof(mlkemSeed); i++)
     mlkemSeed[i] = (CK_BYTE)(0x60 + i);
+
+  CK_BYTE edPrivateValue[32], xPrivateValue[32];
+  for (CK_ULONG i = 0; i < sizeof(edPrivateValue); i++) {
+    edPrivateValue[i] = (CK_BYTE)(0x80 + i);
+    xPrivateValue[i] = (CK_BYTE)(0xC0 + i);
+  }
+  id = 8;
+  keyType = CKK_EC_EDWARDS;
+  CK_ATTRIBUTE edImportTemplate[] = {
+      {CKA_CLASS, &privateClass, sizeof(privateClass)},
+      {CKA_TOKEN, &trueValue, sizeof(trueValue)},
+      {CKA_PRIVATE, &trueValue, sizeof(trueValue)},
+      {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
+      {CKA_ID, &id, sizeof(id)},
+      {CKA_SIGN, &trueValue, sizeof(trueValue)},
+      {CKA_EC_PARAMS, (CK_VOID_PTR)edParams, sizeof(edParams)},
+      {CKA_VALUE, edPrivateValue, sizeof(edPrivateValue)},
+  };
+  CHECK(functions->C_CreateObject(session, edImportTemplate, sizeof(edImportTemplate) / sizeof(edImportTemplate[0]),
+                                  &edPrivate));
+
+  id = 9;
+  keyType = CKK_EC_MONTGOMERY;
+  CK_ATTRIBUTE xImportTemplate[] = {
+      {CKA_CLASS, &privateClass, sizeof(privateClass)},
+      {CKA_TOKEN, &trueValue, sizeof(trueValue)},
+      {CKA_PRIVATE, &trueValue, sizeof(trueValue)},
+      {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
+      {CKA_ID, &id, sizeof(id)},
+      {CKA_DERIVE, &trueValue, sizeof(trueValue)},
+      {CKA_EC_PARAMS, (CK_VOID_PTR)xParams, sizeof(xParams)},
+      {CKA_VALUE, xPrivateValue, sizeof(xPrivateValue)},
+  };
+  CHECK(functions->C_CreateObject(session, xImportTemplate, sizeof(xImportTemplate) / sizeof(xImportTemplate[0]),
+                                  &xPrivate));
 
   id = 23;
   keyType = CKK_ML_DSA;
@@ -704,6 +842,8 @@ int main(int argc, char **argv) {
 
   CHECK(functions->C_Logout(session));
   CHECK(functions->C_Login(session, CKU_USER, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin)));
+  if (exercise25519(functions, session, edPublic, edPrivate, xPublic, xPrivate) != 0)
+    return 1;
   if (exercisePqcPrivateOperations(functions, session, mldsaPublic, mldsaPrivate, mlkemPublic, mlkemPrivate, pin,
                                    CK_FALSE) != 0)
     return 1;
