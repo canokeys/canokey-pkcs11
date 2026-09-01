@@ -588,35 +588,32 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   // it; the X9.63 KDF variants expand it before constructing the session key.
   CK_BYTE sharedSecret[CNK_MAX_ECDH_SECRET_LEN] = {0};
   CK_ULONG sharedSecretLen = sizeof(sharedSecret);
+  CK_BYTE derivedSecret[sizeof(session->secretKeys[0].value)] = {0};
+  CNK_PKCS11_SECRET_KEY_OBJECT prototype = {0};
   // The CanoKey PIV X25519 extension follows RFC 7748 little-endian wire
   // encoding, matching PKCS#11. Firmware converts only its internal key form.
   CK_RV rv = cnk_piv_ecdh(session->slotId, session, algorithmType, pivTag, pinPolicy, params->pPublicData,
                           params->ulPublicDataLen, sharedSecret, &sharedSecretLen);
   if (rv != CKR_OK)
-    CNK_RETURN(rv, "PIV ECDH failed");
+    goto cleanup;
   if (params->kdf == CKD_NULL && sharedSecretLen < requestedValueLen) {
-    mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
-    CNK_RETURN(CKR_DEVICE_ERROR, "ECDH secret shorter than requested key");
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
   }
   if (params->kdf != CKD_NULL && sharedSecretLen == 0) {
-    mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
-    CNK_RETURN(CKR_DEVICE_ERROR, "ECDH secret is empty");
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
   }
 
-  CK_BYTE derivedSecret[sizeof(session->secretKeys[0].value)] = {0};
   if (params->kdf == CKD_NULL) {
     memcpy(derivedSecret, sharedSecret, requestedValueLen);
   } else {
     rv = x963Kdf(kdfMdType, sharedSecret, sharedSecretLen, params->pSharedData, params->ulSharedDataLen, derivedSecret,
                  requestedValueLen);
-    if (rv != CKR_OK) {
-      mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
-      mbedtls_platform_zeroize(derivedSecret, sizeof(derivedSecret));
-      CNK_RETURN(rv, "ECDH KDF failed");
-    }
+    if (rv != CKR_OK)
+      goto cleanup;
   }
 
-  CNK_PKCS11_SECRET_KEY_OBJECT prototype = {0};
   prototype.keyType = keyType;
   prototype.valueLen = requestedValueLen;
   prototype.extractable = extractable;
@@ -646,12 +643,13 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
 
   rv = CNK_CreateSessionSecretKey(session, &prototype, phKey);
 
+cleanup:
   // Neither the raw agreement nor the KDF output may outlive this call.
   mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
   mbedtls_platform_zeroize(derivedSecret, sizeof(derivedSecret));
   mbedtls_platform_zeroize(&prototype, sizeof(prototype));
   if (rv != CKR_OK)
-    return rv;
+    CNK_RETURN(rv, "PIV ECDH failed");
   CNK_DEBUG("Derived ECDH secret key handle %lu (%lu bytes%s)", *phKey, requestedValueLen,
             valueLenSpecified ? ", requested length" : "");
   CNK_RET_OK;

@@ -277,6 +277,9 @@ Write-path notes:
   are cleared even when that round trip fails. Logout also clears every open
   session's private operation context and context-specific PIN. `C_GetTokenInfo`
   reports the token-wide open/read-only session counters under the token lock.
+- `C_SessionCancel` only accepts `CKF_FIND_OBJECTS`, `CKF_ENCRYPT`,
+  `CKF_DECRYPT`, `CKF_DIGEST`, `CKF_SIGN`, and `CKF_VERIFY`; unsupported flags
+  return `CKR_OPERATION_CANCEL_FAILED` instead of being silently ignored.
 - Conventional `CKK_EC` objects return `CKA_EC_POINT` as a DER OCTET STRING
   containing the uncompressed point. Edwards and Montgomery objects retain raw
   RFC 8032/7748 bytes.

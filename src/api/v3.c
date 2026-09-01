@@ -13,6 +13,9 @@ CK_RV C_LoginUser(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
 
 CK_RV C_SessionCancel(CK_SESSION_HANDLE hSession, CK_FLAGS flags) {
   CNK_ENSURE_INITIALIZED();
+  const CK_FLAGS cancellable = CKF_FIND_OBJECTS | CKF_ENCRYPT | CKF_DECRYPT | CKF_DIGEST | CKF_SIGN | CKF_VERIFY;
+  if ((flags & ~cancellable) != 0)
+    return CKR_OPERATION_CANCEL_FAILED;
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   return cnk_session_cancel_operations(session, flags);

@@ -1899,7 +1899,9 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
     break;
 
   case CKA_VERIFY: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanSign(session, algorithm_type);
+    // Ed25519 currently has card-side signing only; do not advertise host
+    // verification for its public key even though the private key can sign.
+    CK_BBOOL value = keyType != CKK_EC_EDWARDS && CNK_PivPrivateKeyCanSign(session, algorithm_type);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }

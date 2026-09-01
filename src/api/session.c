@@ -785,6 +785,10 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
   } else if (userType == CKU_USER) {
     cnk_mutex_lock(&session->token->lock);
     CNK_TOKEN_LOGIN_STATE loginState = session->token->loginState;
+    if (session->token->logoutPending) {
+      cnk_mutex_unlock(&session->token->lock);
+      CNK_RETURN(CKR_OPERATION_ACTIVE, "Token logout is in progress");
+    }
     if (loginState == TOKEN_LOGIN_USER) {
       cnk_mutex_unlock(&session->token->lock);
       CNK_RETURN(CKR_USER_ALREADY_LOGGED_IN, "User already logged in");
@@ -814,6 +818,10 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
       CNK_RETURN(CKR_SESSION_READ_ONLY, "SO login requires a read-write session");
     cnk_mutex_lock(&session->token->lock);
     CNK_TOKEN_LOGIN_STATE loginState = session->token->loginState;
+    if (session->token->logoutPending) {
+      cnk_mutex_unlock(&session->token->lock);
+      CNK_RETURN(CKR_OPERATION_ACTIVE, "Token logout is in progress");
+    }
     CK_ULONG readOnlySessions = session->token->readOnlySessions;
     if (readOnlySessions > 0) {
       cnk_mutex_unlock(&session->token->lock);

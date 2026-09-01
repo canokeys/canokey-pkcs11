@@ -147,6 +147,7 @@ static void test_cancel_serializes_with_digest_update(void **state) {
   (void)state;
   CK_SESSION_HANDLE session;
   assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION, NULL, NULL, &session), CKR_OK);
+  assert_int_equal(C_SessionCancel(session, CKF_SIGN_RECOVER), CKR_OPERATION_CANCEL_FAILED);
   CK_MECHANISM mechanism = {CKM_SHA256, NULL, 0};
   assert_int_equal(C_DigestInit(session, &mechanism), CKR_OK);
 
