@@ -137,7 +137,10 @@ serial num: 1286a07b8d6ef74f
 ```
 
 `piv-tool --reader 0 --name` identifies `Personal Identity Verification Card`.
-`piv-tool --reader 0 --serial` returns a 16-byte value ending in `1286a07b8d6ef74f`, while this module reads the CanoKey private hardware serial as `FFFFFFFF`. That `FFFFFFFF` value is expected for the current development hardware and should not be treated as a bug by itself.
+`piv-tool --reader 0 --serial` historically returned a 16-byte value ending in
+`1286a07b8d6ef74f`, while an older firmware build exposed the CanoKey private
+hardware serial as `FFFFFFFF`. The current development firmware reports the
+PKCS#11 serial as `0`; always read it immediately before a destructive test.
 
 Observed APDU behavior for the inserted key:
 

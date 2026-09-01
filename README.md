@@ -138,7 +138,7 @@ an explicit acknowledgement switch plus the stable PKCS#11 slot ID and expected
 token serial. The script verifies both before mutation.
 
 ```powershell
-.\scripts\finalize-pin-managed.ps1 -SlotId 0 -ExpectedSerial 4294967295 `
+.\scripts\finalize-pin-managed.ps1 -SlotId 0 -ExpectedSerial 0 `
   -AcknowledgePermanentPukBlock
 ```
 
@@ -217,7 +217,7 @@ IDs 08, 09, 23, and 24 is intended:
 ```powershell
 $env:CNK_PIV_PIN = '<PIN>'
 $env:CNK_PIV_SLOT_ID = '0'
-$env:CNK_PIV_SERIAL = '4294967295'
+$env:CNK_PIV_SERIAL = '0'
 $env:CNK_RUN_DESTRUCTIVE_REAL_TESTS = '1'
 .\test_pqc.exe .\canokey-pkcs11.dll
 ```
