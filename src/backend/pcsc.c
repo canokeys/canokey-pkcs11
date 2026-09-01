@@ -1250,12 +1250,6 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, c
   return CKR_OK;
 }
 
-// Check if the library is initialized
-CK_BBOOL cnk_is_initialized(void) { return g_cnk_is_initialized; }
-
-// Get the number of available slots
-CK_ULONG cnk_get_slot_count(void) { return g_cnk_num_readers; }
-
 // Get serial number (4-byte big endian number)
 CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
   SCARDHANDLE hCard;

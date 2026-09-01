@@ -163,12 +163,6 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, c
 // Get serial number (4-byte big endian number)
 CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number);
 
-// Check if the library is initialized
-CK_BBOOL cnk_is_initialized(void);
-
-// Get the number of available slots
-CK_ULONG cnk_get_slot_count(void);
-
 // Get PIV data from the CanoKey device. If fetch_data is CK_FALSE, only checks
 // existence and reports it through the return value.
 CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data);

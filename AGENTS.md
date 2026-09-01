@@ -65,6 +65,8 @@ TF-PSA-Crypto migration.
   data ownership/zeroization, operation-state lifetime, two-stage output
   retries, wire encodings, endianness, and host-versus-card responsibilities.
   Do not add comments that merely restate the next line of code.
+- Update `docs/architecture.md` when moving ownership, adding an internal
+  layer, or changing the host/card responsibility boundary.
 - The VS bundled formatter is:
   `C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin\clang-format.exe`
 - Commit messages must follow Conventional Commits, include enough detail in the
@@ -319,7 +321,8 @@ Additional probes that passed:
 
 - `src/api/`: exported PKCS#11 and CanoKey extension entry points, including
   initialization, slots, sessions, objects, digesting, signing, host-side
-  verification/encryption, card-side decryption, and 3.x compatibility stubs.
+  verification/encryption, card-side decryption, centralized operation cleanup,
+  and 3.x compatibility stubs.
 - `include/private/api/`: private declarations shared by the API entry-point
   source files.
 - `src/backend/`: card/backend integrations. `pcsc.c` handles PC/SC
@@ -328,7 +331,8 @@ Additional probes that passed:
 - `include/private/backend/`: private backend-facing declarations.
 - `src/internal/`: implementation helpers that are not direct API entry points,
   including logging, mutex wrappers, RSA padding/PSS helpers, ML-DSA/ML-KEM
-  wrappers, TLV utilities, and the PIV management-key 3DES block helper.
+  wrappers, shared template validation, PIV object wire encoding, TLV utilities,
+  and the PIV management-key 3DES block helper.
 - `include/private/internal/`: private helper declarations for the internal
   implementation layer.
 

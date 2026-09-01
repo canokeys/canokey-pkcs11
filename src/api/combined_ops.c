@@ -4,6 +4,7 @@
 #include "internal/crypto.h"
 #include "internal/logging.h"
 #include "internal/macros.h"
+#include "internal/template.h"
 #include "internal/util.h"
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
@@ -15,70 +16,6 @@
 
 #define CNK_MAX_ECDH_PUBLIC_DATA 133
 #define CNK_MAX_ECDH_SECRET_LEN 66
-
-static CK_RV getTemplateAttr(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type,
-                             CK_ATTRIBUTE_PTR *attr) {
-  CNK_ENSURE_NONNULL(attr);
-  *attr = NULL;
-
-  for (CK_ULONG i = 0; i < ulCount; i++) {
-    if (pTemplate[i].type == type) {
-      *attr = &pTemplate[i];
-      CNK_RET_OK;
-    }
-  }
-
-  CNK_RETURN(CKR_TEMPLATE_INCOMPLETE, "required attribute is missing");
-}
-
-static CK_RV getTemplateByte(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type, CK_BYTE *value) {
-  CK_ATTRIBUTE_PTR attr;
-  CNK_ENSURE_NONNULL(value);
-  CNK_ENSURE_OK(getTemplateAttr(pTemplate, ulCount, type, &attr));
-  if (attr->pValue == NULL || attr->ulValueLen != sizeof(CK_BYTE))
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad byte template attribute");
-  *value = *(CK_BYTE *)attr->pValue;
-  CNK_RET_OK;
-}
-
-static CK_RV getTemplateObjectClass(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type,
-                                    CK_OBJECT_CLASS *value) {
-  CK_ATTRIBUTE_PTR attr;
-  CNK_ENSURE_NONNULL(value);
-  CNK_ENSURE_OK(getTemplateAttr(pTemplate, ulCount, type, &attr));
-  if (attr->pValue == NULL || attr->ulValueLen != sizeof(CK_OBJECT_CLASS))
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_CLASS template attribute");
-  *value = *(CK_OBJECT_CLASS *)attr->pValue;
-  CNK_RET_OK;
-}
-
-static CK_RV readTemplateBool(CK_ATTRIBUTE_PTR attribute, CK_BBOOL *value) {
-  CNK_ENSURE_NONNULL(attribute, value);
-  if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(CK_BBOOL))
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad boolean template attribute");
-  *value = *(CK_BBOOL *)attribute->pValue;
-  CNK_RET_OK;
-}
-
-static CK_RV ecParamsToAlgorithm(CK_BYTE_PTR params, CK_ULONG paramsLen, CK_BYTE *algorithmType) {
-  CNK_ENSURE_NONNULL(params, algorithmType);
-
-  static const CK_BYTE p256[] = {0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07};
-  static const CK_BYTE p384[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22};
-  static const CK_BYTE secp256k1[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x0A};
-
-  if (paramsLen == sizeof(p256) && memcmp(params, p256, sizeof(p256)) == 0) {
-    *algorithmType = PIV_ALG_ECC_256;
-  } else if (paramsLen == sizeof(p384) && memcmp(params, p384, sizeof(p384)) == 0) {
-    *algorithmType = PIV_ALG_ECC_384;
-  } else if (paramsLen == sizeof(secp256k1) && memcmp(params, secp256k1, sizeof(secp256k1)) == 0) {
-    *algorithmType = PIV_ALG_SECP256K1;
-  } else {
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "unsupported EC params");
-  }
-
-  CNK_RET_OK;
-}
 
 static CK_RV x963Kdf(mbedtls_md_type_t mdType, CK_BYTE_PTR pSharedSecret, CK_ULONG cbSharedSecret,
                      CK_BYTE_PTR pSharedData, CK_ULONG cbSharedData, CK_BYTE_PTR pOutput, CK_ULONG cbOutput) {
@@ -221,46 +158,46 @@ CK_RV C_GenerateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
       valueLenSpecified = CK_TRUE;
       break;
     case CKA_TOKEN:
-      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.token));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &prototype.token));
       break;
     case CKA_PRIVATE:
-      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.private));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &prototype.private));
       break;
     case CKA_SENSITIVE:
-      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.sensitive));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &prototype.sensitive));
       break;
     case CKA_EXTRACTABLE:
-      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.extractable));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &prototype.extractable));
       break;
     case CKA_ENCRYPT:
-      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.encrypt));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &prototype.encrypt));
       break;
     case CKA_DECRYPT:
-      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.decrypt));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &prototype.decrypt));
       break;
     case CKA_SIGN:
-      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.sign));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &prototype.sign));
       break;
     case CKA_VERIFY:
-      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.verify));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &prototype.verify));
       break;
     case CKA_WRAP:
-      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.wrap));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &prototype.wrap));
       break;
     case CKA_UNWRAP:
-      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.unwrap));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &prototype.unwrap));
       break;
     case CKA_DERIVE:
-      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.derive));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &prototype.derive));
       break;
     case CKA_MODIFIABLE:
-      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.modifiable));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &prototype.modifiable));
       break;
     case CKA_COPYABLE:
-      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.copyable));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &prototype.copyable));
       break;
     case CKA_DESTROYABLE:
-      CNK_ENSURE_OK(readTemplateBool(attribute, &prototype.destroyable));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &prototype.destroyable));
       break;
     case CKA_LABEL:
       if ((attribute->pValue == NULL && attribute->ulValueLen != 0) || attribute->ulValueLen > sizeof(prototype.label))
@@ -331,10 +268,11 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   CK_OBJECT_CLASS privateClass;
   CK_BYTE publicId;
   CK_BYTE privateId;
-  CNK_ENSURE_OK(getTemplateObjectClass(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_CLASS, &publicClass));
-  CNK_ENSURE_OK(getTemplateObjectClass(pPrivateKeyTemplate, ulPrivateKeyAttributeCount, CKA_CLASS, &privateClass));
-  CNK_ENSURE_OK(getTemplateByte(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_ID, &publicId));
-  CNK_ENSURE_OK(getTemplateByte(pPrivateKeyTemplate, ulPrivateKeyAttributeCount, CKA_ID, &privateId));
+  CNK_ENSURE_OK(cnk_template_get_object_class(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_CLASS, &publicClass));
+  CNK_ENSURE_OK(
+      cnk_template_get_object_class(pPrivateKeyTemplate, ulPrivateKeyAttributeCount, CKA_CLASS, &privateClass));
+  CNK_ENSURE_OK(cnk_template_get_byte(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_ID, &publicId));
+  CNK_ENSURE_OK(cnk_template_get_byte(pPrivateKeyTemplate, ulPrivateKeyAttributeCount, CKA_ID, &privateId));
 
   if (publicClass != CKO_PUBLIC_KEY || privateClass != CKO_PRIVATE_KEY)
     CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "bad key pair object classes");
@@ -346,7 +284,8 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   case CKM_RSA_PKCS_KEY_PAIR_GEN: {
     CK_ATTRIBUTE_PTR bitsAttr;
     CK_ULONG modulusBits;
-    CNK_ENSURE_OK(getTemplateAttr(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_MODULUS_BITS, &bitsAttr));
+    CNK_ENSURE_OK(
+        cnk_template_get_attribute(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_MODULUS_BITS, &bitsAttr));
     if (bitsAttr->pValue == NULL || bitsAttr->ulValueLen != sizeof(CK_ULONG))
       CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_MODULUS_BITS");
     modulusBits = *(CK_ULONG *)bitsAttr->pValue;
@@ -363,15 +302,18 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 
   case CKM_EC_KEY_PAIR_GEN: {
     CK_ATTRIBUTE_PTR paramsAttr;
-    CNK_ENSURE_OK(getTemplateAttr(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_EC_PARAMS, &paramsAttr));
-    CNK_ENSURE_OK(ecParamsToAlgorithm((CK_BYTE_PTR)paramsAttr->pValue, paramsAttr->ulValueLen, &algorithmType));
+    CNK_ENSURE_OK(
+        cnk_template_get_attribute(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_EC_PARAMS, &paramsAttr));
+    CNK_ENSURE_OK(
+        cnk_ec_params_to_piv_algorithm((CK_BYTE_PTR)paramsAttr->pValue, paramsAttr->ulValueLen, &algorithmType));
     break;
   }
 
   case CKM_ML_DSA_KEY_PAIR_GEN:
   case CKM_ML_KEM_KEY_PAIR_GEN: {
     CK_ATTRIBUTE_PTR parameterSetAttr;
-    CNK_ENSURE_OK(getTemplateAttr(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_PARAMETER_SET, &parameterSetAttr));
+    CNK_ENSURE_OK(cnk_template_get_attribute(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_PARAMETER_SET,
+                                             &parameterSetAttr));
     if (parameterSetAttr->pValue == NULL || parameterSetAttr->ulValueLen != sizeof(CK_ULONG))
       CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_PARAMETER_SET");
     CK_ULONG parameterSet = *(CK_ULONG *)parameterSetAttr->pValue;
@@ -394,7 +336,7 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   CK_BYTE pivTag;
   CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(privateId);
   CK_BYTE touchPolicy;
-  CNK_ENSURE_OK(CNK_ObjectIdToPivTag(publicId, &pivTag));
+  CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(publicId, &pivTag));
   CNK_ENSURE_OK(CNK_GetPivPolicies(pPrivateKeyTemplate, ulPrivateKeyAttributeCount,
                                    CNK_DefaultPinPolicyForPivObjectId(privateId), &pinPolicy, &touchPolicy));
 

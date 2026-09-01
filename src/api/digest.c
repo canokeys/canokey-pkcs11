@@ -1,4 +1,5 @@
 #include "api/object.h"
+#include "api/operation.h"
 #include "api/session.h"
 #include "backend/pcsc.h"
 #include "internal/crypto.h"
@@ -63,8 +64,7 @@ CK_RV C_Digest(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen
   if (session->digestingContext.mechanismType == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_DigestInit not called");
   if (pData == NULL && ulDataLen > 0) {
-    mbedtls_md_free(&session->digestingContext.context);
-    memset(&session->digestingContext, 0, sizeof(session->digestingContext));
+    cnk_reset_digesting_context(session);
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pData is NULL but ulDataLen > 0");
   }
 
@@ -147,13 +147,11 @@ CK_RV C_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest, CK_ULONG_PT
     CNK_RETURN(CKR_BUFFER_TOO_SMALL, "buffer too small");
   }
   if (mbedtls_md_finish(&session->digestingContext.context, pDigest) != 0) {
-    mbedtls_md_free(&session->digestingContext.context);
-    memset(&session->digestingContext, 0, sizeof(session->digestingContext));
+    cnk_reset_digesting_context(session);
     CNK_RETURN(CKR_FUNCTION_FAILED, "md finish failed");
   }
   *pulDigestLen = hash_len;
-  mbedtls_md_free(&session->digestingContext.context);
-  session->digestingContext.mechanismType = 0;
+  cnk_reset_digesting_context(session);
 
   CNK_RET_OK;
 }

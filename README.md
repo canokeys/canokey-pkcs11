@@ -2,6 +2,9 @@
 
 This a PKCS#11 module that allows applications to leverage the PIV applet on CanoKeys.
 
+See [docs/architecture.md](docs/architecture.md) for implementation layers,
+state ownership, and host/card responsibility boundaries.
+
 This module implements the PKCS#11 3.2 interface while retaining the legacy
 2.40 function list for existing applications. The complete 3.2 specification
 is available at

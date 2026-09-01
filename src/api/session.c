@@ -1,5 +1,6 @@
 #include "api/session.h"
 
+#include "api/operation.h"
 #include "backend/pcsc.h"
 #include "internal/logging.h"
 #include "internal/macros.h"
@@ -65,20 +66,11 @@ static void free_session(CNK_PKCS11_SESSION *session) {
 
   // Operation contexts can own copied parameters, buffered messages, and key
   // material independently of whether the operation reached its final call.
-  ck_free(session->signingContext.mechanism.pParameter);
-  if (session->signingContext.message != NULL) {
-    mbedtls_platform_zeroize(session->signingContext.message, session->signingContext.messageCapacity);
-    ck_free(session->signingContext.message);
-  }
-  if (session->digestingContext.mechanismType != 0)
-    mbedtls_md_free(&session->digestingContext.context);
-  ck_free(session->verifyingContext.mechanism.pParameter);
-  if (session->verifyingContext.message != NULL) {
-    mbedtls_platform_zeroize(session->verifyingContext.message, session->verifyingContext.messageCapacity);
-    ck_free(session->verifyingContext.message);
-  }
-  ck_free(session->encryptingContext.mechanism.pParameter);
-  ck_free(session->decryptingContext.mechanism.pParameter);
+  cnk_reset_signing_context(session);
+  cnk_reset_verifying_context(session);
+  cnk_reset_encrypting_context(session);
+  cnk_reset_decrypting_context(session);
+  cnk_reset_digesting_context(session);
   for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
     if (session->secretKeys[i].active)
       mbedtls_platform_zeroize(session->secretKeys[i].value, sizeof(session->secretKeys[i].value));
@@ -309,40 +301,19 @@ CK_RV cnk_session_cancel_operations(CNK_PKCS11_SESSION *session, CK_FLAGS flags)
     session->findObjectsPosition = 0;
   }
   if ((flags & CKF_DIGEST) != 0 && session->digestingContext.mechanismType != 0) {
-    mbedtls_md_free(&session->digestingContext.context);
-    memset(&session->digestingContext, 0, sizeof(session->digestingContext));
+    cnk_reset_digesting_context(session);
   }
   if ((flags & CKF_SIGN) != 0 && session->signingContext.hKey != 0) {
-    ck_free(session->signingContext.mechanism.pParameter);
-    if (session->signingContext.message != NULL) {
-      mbedtls_platform_zeroize(session->signingContext.message, session->signingContext.messageCapacity);
-      ck_free(session->signingContext.message);
-    }
-    memset(&session->signingContext, 0, sizeof(session->signingContext));
+    cnk_reset_signing_context(session);
   }
   if ((flags & CKF_VERIFY) != 0 && session->verifyingContext.hKey != 0) {
-    // Hashed Verify borrows the session digest context; raw Verify can coexist
-    // with an unrelated digest and must not cancel it.
-    CK_BBOOL ownsDigestContext = session->verifyingContext.ownsDigestContext;
-    ck_free(session->verifyingContext.mechanism.pParameter);
-    if (session->verifyingContext.message != NULL) {
-      mbedtls_platform_zeroize(session->verifyingContext.message, session->verifyingContext.messageCapacity);
-      ck_free(session->verifyingContext.message);
-    }
-    memset(&session->verifyingContext, 0, sizeof(session->verifyingContext));
-    if (ownsDigestContext) {
-      if (session->digestingContext.mechanismType != 0)
-        mbedtls_md_free(&session->digestingContext.context);
-      memset(&session->digestingContext, 0, sizeof(session->digestingContext));
-    }
+    cnk_reset_verifying_context(session);
   }
   if ((flags & CKF_ENCRYPT) != 0 && session->encryptingContext.hKey != 0) {
-    ck_free(session->encryptingContext.mechanism.pParameter);
-    memset(&session->encryptingContext, 0, sizeof(session->encryptingContext));
+    cnk_reset_encrypting_context(session);
   }
   if ((flags & CKF_DECRYPT) != 0 && session->decryptingContext.hKey != 0) {
-    ck_free(session->decryptingContext.mechanism.pParameter);
-    memset(&session->decryptingContext, 0, sizeof(session->decryptingContext));
+    cnk_reset_decrypting_context(session);
   }
 
   cnk_mutex_unlock(&session->lock);

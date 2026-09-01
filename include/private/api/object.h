@@ -30,14 +30,6 @@ CK_RV CNK_GetSessionSecretKey(CNK_PKCS11_SESSION *session, CK_OBJECT_HANDLE obje
 CK_RV CNK_CreateSessionSecretKey(CNK_PKCS11_SESSION *session, const CNK_PKCS11_SECRET_KEY_OBJECT *prototype,
                                  CK_OBJECT_HANDLE_PTR object);
 
-/**
- * Maps a PIV object ID to its PIV key reference.
- *
- * @param obj_id Internal object ID
- * @param piv_tag PIV key reference
- */
-CK_RV CNK_ObjectIdToPivTag(CK_BYTE obj_id, CK_BYTE *piv_tag);
-
 CK_RV CNK_GetPivPolicies(CK_ATTRIBUTE_PTR p_template, CK_ULONG ul_count, CK_BYTE default_pin_policy,
                          CK_BYTE *pin_policy, CK_BYTE *touch_policy);
 

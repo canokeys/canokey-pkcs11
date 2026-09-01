@@ -302,6 +302,22 @@ static int exerciseVerify(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE 
   CK_BYTE signature[512];
   CK_ULONG signatureLen = sizeof(signature);
   CK_MECHANISM mechanism = {CKM_SHA256_RSA_PKCS, NULL, 0};
+
+  CHECK(functions->C_SignInit(session, &mechanism, rsaPrivate));
+  CHECK(functions->C_SessionCancel(session, CKF_SIGN));
+  if (functions->C_SignFinal(session, signature, &signatureLen) != CKR_OPERATION_NOT_INITIALIZED)
+    return 1;
+  CK_MECHANISM digestMechanism = {CKM_SHA256, NULL, 0};
+  CHECK(functions->C_DigestInit(session, &digestMechanism));
+  CHECK(functions->C_SessionCancel(session, CKF_DIGEST));
+
+  CHECK(functions->C_VerifyInit(session, &mechanism, rsaPublic));
+  CHECK(functions->C_SessionCancel(session, CKF_VERIFY));
+  if (functions->C_VerifyFinal(session, signature, signatureLen) != CKR_OPERATION_NOT_INITIALIZED)
+    return 1;
+  CHECK(functions->C_DigestInit(session, &digestMechanism));
+  CHECK(functions->C_SessionCancel(session, CKF_DIGEST));
+
   CHECK(functions->C_SignInit(session, &mechanism, rsaPrivate));
   CHECK(functions->C_Sign(session, message, sizeof(message) - 1, signature, &signatureLen));
   CHECK(functions->C_VerifyInit(session, &mechanism, rsaPublic));
@@ -332,7 +348,6 @@ static int exerciseVerify(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE 
   CHECK(functions->C_VerifyInit(session, &mechanism, rsaPublic));
   CHECK(functions->C_Verify(session, message, sizeof(message) - 1, signature, signatureLen));
 
-  CK_MECHANISM digestMechanism = {CKM_SHA256, NULL, 0};
   CHECK(functions->C_DigestInit(session, &digestMechanism));
   CHECK(functions->C_VerifyInit(session, &mechanism, rsaPublic));
   CHECK(functions->C_Verify(session, message, sizeof(message) - 1, signature, signatureLen));

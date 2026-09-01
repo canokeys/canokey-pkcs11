@@ -4,17 +4,11 @@
 #include "internal/logging.h"
 #include "internal/macros.h"
 #include "internal/mlkem.h"
+#include "internal/template.h"
 #include "pkcs11.h"
 
 #include <mbedtls/platform_util.h>
 #include <string.h>
-
-static CK_RV readBoolAttribute(CK_ATTRIBUTE_PTR attribute, CK_BBOOL *value) {
-  if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(CK_BBOOL))
-    return CKR_ATTRIBUTE_VALUE_INVALID;
-  *value = *(CK_BBOOL *)attribute->pValue;
-  return CKR_OK;
-}
 
 static CK_RV createSharedSecret(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount,
                                 const CK_BYTE value[CNK_MLKEM768_SHARED_SECRET_BYTES], CK_OBJECT_HANDLE_PTR key) {
@@ -51,37 +45,37 @@ static CK_RV createSharedSecret(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR at
       valueLen = *(CK_ULONG *)attribute->pValue;
       break;
     case CKA_TOKEN:
-      CNK_ENSURE_OK(readBoolAttribute(attribute, &token));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &token));
       break;
     case CKA_PRIVATE:
-      CNK_ENSURE_OK(readBoolAttribute(attribute, &privateObject));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &privateObject));
       break;
     case CKA_SENSITIVE:
-      CNK_ENSURE_OK(readBoolAttribute(attribute, &sensitive));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &sensitive));
       break;
     case CKA_EXTRACTABLE:
-      CNK_ENSURE_OK(readBoolAttribute(attribute, &extractable));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &extractable));
       break;
     case CKA_ENCRYPT:
-      CNK_ENSURE_OK(readBoolAttribute(attribute, &encrypt));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &encrypt));
       break;
     case CKA_DECRYPT:
-      CNK_ENSURE_OK(readBoolAttribute(attribute, &decrypt));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &decrypt));
       break;
     case CKA_SIGN:
-      CNK_ENSURE_OK(readBoolAttribute(attribute, &sign));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &sign));
       break;
     case CKA_VERIFY:
-      CNK_ENSURE_OK(readBoolAttribute(attribute, &verify));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &verify));
       break;
     case CKA_WRAP:
-      CNK_ENSURE_OK(readBoolAttribute(attribute, &wrap));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &wrap));
       break;
     case CKA_UNWRAP:
-      CNK_ENSURE_OK(readBoolAttribute(attribute, &unwrap));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &unwrap));
       break;
     case CKA_DERIVE:
-      CNK_ENSURE_OK(readBoolAttribute(attribute, &derive));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &derive));
       break;
     case CKA_LABEL:
       if (attribute->pValue == NULL && attribute->ulValueLen != 0)
@@ -191,7 +185,7 @@ CK_RV C_DecapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
   CK_BYTE objectId, pivSlot;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   CNK_ENSURE_OK(CNK_ValidateObject(privateKey, session, CKO_PRIVATE_KEY, &objectId));
-  CNK_ENSURE_OK(CNK_ObjectIdToPivTag(objectId, &pivSlot));
+  CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objectId, &pivSlot));
   CK_BYTE algorithmType, pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objectId);
   CK_BYTE publicKey[2048];
   CK_ULONG publicKeyLen = sizeof(publicKey);

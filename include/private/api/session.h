@@ -86,6 +86,7 @@ typedef struct {
   CK_BYTE_PTR message;
   CK_ULONG messageLen;
   CK_ULONG messageCapacity;
+  CK_BBOOL ownsDigestContext;
   CK_BBOOL contextAuthenticated;
   CK_BYTE contextPin[8];
   CK_ULONG contextPinLen;

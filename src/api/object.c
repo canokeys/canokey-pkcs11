@@ -11,6 +11,8 @@
 #include "internal/logging.h"
 #include "internal/macros.h"
 #include "internal/mutex.h"
+#include "internal/piv_object.h"
+#include "internal/template.h"
 #include "internal/util.h"
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
@@ -166,57 +168,6 @@ static CK_RV setSingleAttributeValue(CK_ATTRIBUTE_PTR attribute, const void *val
   }
 
   return CKR_OK;
-}
-
-static CK_RV writeTlvLength(CK_BYTE *buffer, CK_ULONG bufferLen, CK_ULONG length, CK_ULONG_PTR written) {
-  CNK_ENSURE_NONNULL(buffer, written);
-
-  if (length < 0x80) {
-    if (bufferLen < 1)
-      CNK_RETURN(CKR_BUFFER_TOO_SMALL, "length buffer too small");
-    buffer[0] = (CK_BYTE)length;
-    *written = 1;
-  } else if (length <= 0xFF) {
-    if (bufferLen < 2)
-      CNK_RETURN(CKR_BUFFER_TOO_SMALL, "length buffer too small");
-    buffer[0] = 0x81;
-    buffer[1] = (CK_BYTE)length;
-    *written = 2;
-  } else if (length <= 0xFFFF) {
-    if (bufferLen < 3)
-      CNK_RETURN(CKR_BUFFER_TOO_SMALL, "length buffer too small");
-    buffer[0] = 0x82;
-    buffer[1] = (CK_BYTE)(length >> 8);
-    buffer[2] = (CK_BYTE)length;
-    *written = 3;
-  } else {
-    CNK_RETURN(CKR_DATA_LEN_RANGE, "TLV length too large");
-  }
-
-  CNK_RET_OK;
-}
-
-static CK_RV appendTlv(CK_BYTE *buffer, CK_ULONG bufferLen, CK_ULONG_PTR offset, CK_BYTE tag, const CK_BYTE *value,
-                       CK_ULONG valueLen) {
-  CNK_ENSURE_NONNULL(buffer, offset);
-  if (valueLen > 0)
-    CNK_ENSURE_NONNULL(value);
-
-  if (*offset >= bufferLen)
-    CNK_RETURN(CKR_BUFFER_TOO_SMALL, "TLV buffer full");
-  buffer[(*offset)++] = tag;
-
-  CK_ULONG lengthSize;
-  CNK_ENSURE_OK(writeTlvLength(buffer + *offset, bufferLen - *offset, valueLen, &lengthSize));
-  *offset += lengthSize;
-
-  if (bufferLen - *offset < valueLen)
-    CNK_RETURN(CKR_BUFFER_TOO_SMALL, "TLV value buffer too small");
-  if (valueLen > 0)
-    memcpy(buffer + *offset, value, valueLen);
-  *offset += valueLen;
-
-  CNK_RET_OK;
 }
 
 /**
@@ -504,51 +455,6 @@ static CK_RV applyMutableSecretAttributes(CNK_PKCS11_SECRET_KEY_OBJECT *secret, 
   CNK_RET_OK;
 }
 
-static CK_RV getAttr(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type, CK_ATTRIBUTE_PTR *attr) {
-  CNK_ENSURE_NONNULL(attr);
-  *attr = NULL;
-
-  for (CK_ULONG i = 0; i < ulCount; i++) {
-    if (pTemplate[i].type == type) {
-      *attr = &pTemplate[i];
-      CNK_RET_OK;
-    }
-  }
-
-  CNK_RETURN(CKR_TEMPLATE_INCOMPLETE, "required attribute is missing");
-}
-
-static CK_RV getOptionalAttr(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type,
-                             CK_ATTRIBUTE_PTR *attr) {
-  CNK_ENSURE_NONNULL(attr);
-  *attr = NULL;
-
-  for (CK_ULONG i = 0; i < ulCount; i++) {
-    if (pTemplate[i].type == type) {
-      *attr = &pTemplate[i];
-      break;
-    }
-  }
-
-  CNK_RET_OK;
-}
-
-static CK_RV attrGetByte(CK_ATTRIBUTE_PTR attr, CK_BYTE *value) {
-  CNK_ENSURE_NONNULL(attr, value);
-  if (attr->pValue == NULL || attr->ulValueLen != sizeof(CK_BYTE))
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad byte attribute");
-  *value = *(CK_BYTE *)attr->pValue;
-  CNK_RET_OK;
-}
-
-static CK_RV attrGetObjectClass(CK_ATTRIBUTE_PTR attr, CK_OBJECT_CLASS *value) {
-  CNK_ENSURE_NONNULL(attr, value);
-  if (attr->pValue == NULL || attr->ulValueLen != sizeof(CK_OBJECT_CLASS))
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_CLASS attribute");
-  *value = *(CK_OBJECT_CLASS *)attr->pValue;
-  CNK_RET_OK;
-}
-
 static const PivDataObjectMapping *findPivDataObjectById(CK_BYTE objId) {
   for (CK_ULONG i = 0; i < PIV_DATA_OBJECT_MAPPING_SIZE; i++) {
     if (PIV_DATA_OBJECT_MAPPING[i].objId == objId)
@@ -563,15 +469,15 @@ static CK_RV getTemplateDataObject(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
   CK_BYTE dataTag;
   CNK_ENSURE_NONNULL(mapping);
 
-  CNK_ENSURE_OK(getOptionalAttr(pTemplate, ulCount, CKA_ID, &attr));
+  CNK_ENSURE_OK(cnk_template_find_attribute(pTemplate, ulCount, CKA_ID, &attr));
   if (attr != NULL) {
-    CNK_ENSURE_OK(attrGetByte(attr, &dataTag));
+    CNK_ENSURE_OK(cnk_attribute_get_byte(attr, &dataTag));
     *mapping = findPivDataObjectById(dataTag);
     if (*mapping == NULL)
       CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "unsupported PIV data object ID");
   }
 
-  CNK_ENSURE_OK(getOptionalAttr(pTemplate, ulCount, CKA_OBJECT_ID, &attr));
+  CNK_ENSURE_OK(cnk_template_find_attribute(pTemplate, ulCount, CKA_OBJECT_ID, &attr));
   if (attr != NULL) {
     for (CK_ULONG i = 0; i < PIV_DATA_OBJECT_MAPPING_SIZE; i++) {
       if (PIV_DATA_OBJECT_MAPPING[i].objectIdLen == attr->ulValueLen &&
@@ -681,9 +587,7 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
 
 static CK_RV getTemplateObjectId(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_OBJECT_CLASS objectClass,
                                  CK_BYTE *objId) {
-  CK_ATTRIBUTE_PTR attr;
-  CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_ID, &attr));
-  CNK_ENSURE_OK(attrGetByte(attr, objId));
+  CNK_ENSURE_OK(cnk_template_get_byte(pTemplate, ulCount, CKA_ID, objId));
 
   if (objectClass == CKO_DATA) {
     if (findPivDataObjectById(*objId) == NULL)
@@ -694,55 +598,6 @@ static CK_RV getTemplateObjectId(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, C
   if (*objId < 1 || *objId > PIV_SLOT_COUNT)
     CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "unsupported PIV object ID");
 
-  CNK_RET_OK;
-}
-
-static CK_RV getTemplateObjectClass(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_OBJECT_CLASS *objectClass) {
-  CK_ATTRIBUTE_PTR attr;
-  CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_CLASS, &attr));
-  CNK_ENSURE_OK(attrGetObjectClass(attr, objectClass));
-  CNK_RET_OK;
-}
-
-static CK_RV getTemplateKeyType(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_KEY_TYPE *keyType) {
-  CK_ATTRIBUTE_PTR attr;
-  CNK_ENSURE_NONNULL(keyType);
-  CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_KEY_TYPE, &attr));
-  if (attr->pValue == NULL || attr->ulValueLen != sizeof(CK_KEY_TYPE))
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_KEY_TYPE attribute");
-  *keyType = *(CK_KEY_TYPE *)attr->pValue;
-  CNK_RET_OK;
-}
-
-static CK_RV getOptionalBbool(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type,
-                              CK_BBOOL defaultValue, CK_BBOOL *value) {
-  CK_ATTRIBUTE_PTR attr;
-  CK_BBOOL boolValue;
-  CNK_ENSURE_NONNULL(value);
-  CNK_ENSURE_OK(getOptionalAttr(pTemplate, ulCount, type, &attr));
-  if (attr == NULL) {
-    *value = defaultValue;
-    CNK_RET_OK;
-  }
-  if (attr->pValue == NULL || attr->ulValueLen != sizeof(CK_BBOOL))
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CK_BBOOL attribute");
-  boolValue = *(CK_BBOOL *)attr->pValue;
-  if (boolValue != CK_FALSE && boolValue != CK_TRUE)
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CK_BBOOL value");
-  *value = boolValue;
-  CNK_RET_OK;
-}
-
-static CK_RV getOptionalByte(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_ATTRIBUTE_TYPE type, CK_BYTE defaultValue,
-                             CK_BYTE *value) {
-  CK_ATTRIBUTE_PTR attr;
-  CNK_ENSURE_NONNULL(value);
-  CNK_ENSURE_OK(getOptionalAttr(pTemplate, ulCount, type, &attr));
-  if (attr == NULL) {
-    *value = defaultValue;
-    CNK_RET_OK;
-  }
-  CNK_ENSURE_OK(attrGetByte(attr, value));
   CNK_RET_OK;
 }
 
@@ -765,219 +620,15 @@ CK_RV CNK_GetPivPolicies(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_BYTE d
   CK_BBOOL alwaysAuthenticate;
   CNK_ENSURE_NONNULL(pinPolicy, touchPolicy);
   CNK_ENSURE_OK(validatePivPinPolicy(defaultPinPolicy));
-  CNK_ENSURE_OK(getOptionalBbool(pTemplate, ulCount, CKA_ALWAYS_AUTHENTICATE, CK_FALSE, &alwaysAuthenticate));
+  CNK_ENSURE_OK(
+      cnk_template_get_optional_bool(pTemplate, ulCount, CKA_ALWAYS_AUTHENTICATE, CK_FALSE, &alwaysAuthenticate));
 
   *pinPolicy = alwaysAuthenticate ? CNK_PIV_PIN_POLICY_ALWAYS : defaultPinPolicy;
-  CNK_ENSURE_OK(getOptionalByte(pTemplate, ulCount, CKA_CNK_PIV_PIN_POLICY, *pinPolicy, pinPolicy));
-  CNK_ENSURE_OK(getOptionalByte(pTemplate, ulCount, CKA_CNK_PIV_TOUCH_POLICY, CNK_PIV_TOUCH_POLICY_NEVER, touchPolicy));
+  CNK_ENSURE_OK(cnk_template_get_optional_byte(pTemplate, ulCount, CKA_CNK_PIV_PIN_POLICY, *pinPolicy, pinPolicy));
+  CNK_ENSURE_OK(cnk_template_get_optional_byte(pTemplate, ulCount, CKA_CNK_PIV_TOUCH_POLICY, CNK_PIV_TOUCH_POLICY_NEVER,
+                                               touchPolicy));
   CNK_ENSURE_OK(validatePivPinPolicy(*pinPolicy));
   CNK_ENSURE_OK(validatePivTouchPolicy(*touchPolicy));
-  CNK_RET_OK;
-}
-
-static CK_RV buildPivCertificateObject(CK_BYTE_PTR cert, CK_ULONG certLen, CK_BYTE *output, CK_ULONG outputLen,
-                                       CK_ULONG_PTR written) {
-  CNK_ENSURE_NONNULL(cert, output, written);
-
-  CK_BYTE inner[MAX_PIV_CERTIFICATE_OBJECT_SIZE];
-  CK_ULONG innerLen = 0;
-  CK_BYTE certInfo[] = {0x00};
-
-  CNK_ENSURE_OK(appendTlv(inner, sizeof(inner), &innerLen, 0x70, cert, certLen));
-  CNK_ENSURE_OK(appendTlv(inner, sizeof(inner), &innerLen, 0x71, certInfo, sizeof(certInfo)));
-  CNK_ENSURE_OK(appendTlv(inner, sizeof(inner), &innerLen, 0xFE, NULL, 0));
-
-  CK_ULONG offset = 0;
-  CNK_ENSURE_OK(appendTlv(output, outputLen, &offset, 0x53, inner, innerLen));
-  *written = offset;
-
-  CNK_RET_OK;
-}
-
-static CK_RV ecParamsToAlgorithm(CK_BYTE_PTR params, CK_ULONG paramsLen, CK_BYTE *algorithmType) {
-  CNK_ENSURE_NONNULL(params, algorithmType);
-
-  static const CK_BYTE p256[] = {0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07};
-  static const CK_BYTE p384[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22};
-  static const CK_BYTE secp256k1[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x0A};
-
-  if (paramsLen == sizeof(p256) && memcmp(params, p256, sizeof(p256)) == 0) {
-    *algorithmType = PIV_ALG_ECC_256;
-  } else if (paramsLen == sizeof(p384) && memcmp(params, p384, sizeof(p384)) == 0) {
-    *algorithmType = PIV_ALG_ECC_384;
-  } else if (paramsLen == sizeof(secp256k1) && memcmp(params, secp256k1, sizeof(secp256k1)) == 0) {
-    *algorithmType = PIV_ALG_SECP256K1;
-  } else {
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "unsupported EC params");
-  }
-
-  CNK_RET_OK;
-}
-
-static CK_RV rsaComponentSizeToAlgorithm(CK_ULONG componentLen, CK_BYTE *algorithmType) {
-  CNK_ENSURE_NONNULL(algorithmType);
-
-  switch (componentLen) {
-  case 128:
-    *algorithmType = PIV_ALG_RSA_2048;
-    break;
-  case 192:
-    *algorithmType = PIV_ALG_RSA_3072;
-    break;
-  case 256:
-    *algorithmType = PIV_ALG_RSA_4096;
-    break;
-  default:
-    CNK_RETURN(CKR_KEY_SIZE_RANGE, "unsupported RSA CRT component size");
-  }
-
-  CNK_RET_OK;
-}
-
-static CK_RV appendImportTlv(CK_BYTE *buffer, CK_ULONG bufferLen, CK_ULONG_PTR offset, CK_BYTE tag,
-                             CK_ATTRIBUTE_PTR attr) {
-  CNK_ENSURE_NONNULL(attr);
-  if (attr->pValue == NULL || attr->ulValueLen == 0 || attr->ulValueLen > 0xFFFF)
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad private-key component attribute");
-
-  CNK_ENSURE_OK(appendTlv(buffer, bufferLen, offset, tag, attr->pValue, attr->ulValueLen));
-  CNK_RET_OK;
-}
-
-static CK_RV buildRsaImportData(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_BYTE *output, CK_ULONG outputLen,
-                                CK_ULONG_PTR written, CK_BYTE *algorithmType) {
-  CK_ATTRIBUTE_PTR pAttr;
-  CK_ATTRIBUTE_PTR qAttr;
-  CK_ATTRIBUTE_PTR dpAttr;
-  CK_ATTRIBUTE_PTR dqAttr;
-  CK_ATTRIBUTE_PTR qInvAttr;
-  CK_BYTE pinPolicy;
-  CK_BYTE touchPolicy;
-  CK_ULONG offset = 0;
-
-  CNK_ENSURE_NONNULL(output, written, algorithmType);
-  CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_PRIME_1, &pAttr));
-  CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_PRIME_2, &qAttr));
-  CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_EXPONENT_1, &dpAttr));
-  CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_EXPONENT_2, &dqAttr));
-  CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_COEFFICIENT, &qInvAttr));
-
-  if (pAttr->pValue == NULL || qAttr->pValue == NULL || dpAttr->pValue == NULL || dqAttr->pValue == NULL ||
-      qInvAttr->pValue == NULL) {
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "missing RSA CRT component value");
-  }
-  if (pAttr->ulValueLen != qAttr->ulValueLen || pAttr->ulValueLen != dpAttr->ulValueLen ||
-      pAttr->ulValueLen != dqAttr->ulValueLen || pAttr->ulValueLen != qInvAttr->ulValueLen) {
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "RSA CRT component sizes do not match");
-  }
-
-  CNK_ENSURE_OK(rsaComponentSizeToAlgorithm(pAttr->ulValueLen, algorithmType));
-  CK_BYTE objId;
-  CNK_ENSURE_OK(getTemplateObjectId(pTemplate, ulCount, CKO_PRIVATE_KEY, &objId));
-  CNK_ENSURE_OK(
-      CNK_GetPivPolicies(pTemplate, ulCount, CNK_DefaultPinPolicyForPivObjectId(objId), &pinPolicy, &touchPolicy));
-
-  CNK_ENSURE_OK(appendImportTlv(output, outputLen, &offset, 0x01, pAttr));
-  CNK_ENSURE_OK(appendImportTlv(output, outputLen, &offset, 0x02, qAttr));
-  CNK_ENSURE_OK(appendImportTlv(output, outputLen, &offset, 0x03, dpAttr));
-  CNK_ENSURE_OK(appendImportTlv(output, outputLen, &offset, 0x04, dqAttr));
-  CNK_ENSURE_OK(appendImportTlv(output, outputLen, &offset, 0x05, qInvAttr));
-  CNK_ENSURE_OK(appendTlv(output, outputLen, &offset, 0xAA, &pinPolicy, sizeof(pinPolicy)));
-  CNK_ENSURE_OK(appendTlv(output, outputLen, &offset, 0xAB, &touchPolicy, sizeof(touchPolicy)));
-
-  *written = offset;
-  CNK_RET_OK;
-}
-
-static CK_RV buildEcImportData(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_BYTE *output, CK_ULONG outputLen,
-                               CK_ULONG_PTR written, CK_BYTE *algorithmType) {
-  CK_ATTRIBUTE_PTR paramsAttr;
-  CK_ATTRIBUTE_PTR valueAttr;
-  CK_BYTE pinPolicy;
-  CK_BYTE touchPolicy;
-  CK_ULONG offset = 0;
-
-  CNK_ENSURE_NONNULL(output, written, algorithmType);
-  CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_EC_PARAMS, &paramsAttr));
-  CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_VALUE, &valueAttr));
-  if (paramsAttr->pValue == NULL || valueAttr->pValue == NULL || valueAttr->ulValueLen == 0)
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad EC private-key template");
-
-  CNK_ENSURE_OK(ecParamsToAlgorithm((CK_BYTE_PTR)paramsAttr->pValue, paramsAttr->ulValueLen, algorithmType));
-  switch (*algorithmType) {
-  case PIV_ALG_ECC_256:
-  case PIV_ALG_SECP256K1:
-    if (valueAttr->ulValueLen != 32)
-      CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad P-256 private scalar size");
-    break;
-  case PIV_ALG_ECC_384:
-    if (valueAttr->ulValueLen != 48)
-      CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad P-384 private scalar size");
-    break;
-  default:
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "unsupported EC key type");
-  }
-
-  CK_BYTE objId;
-  CNK_ENSURE_OK(getTemplateObjectId(pTemplate, ulCount, CKO_PRIVATE_KEY, &objId));
-  CNK_ENSURE_OK(
-      CNK_GetPivPolicies(pTemplate, ulCount, CNK_DefaultPinPolicyForPivObjectId(objId), &pinPolicy, &touchPolicy));
-  CNK_ENSURE_OK(appendImportTlv(output, outputLen, &offset, 0x06, valueAttr));
-  CNK_ENSURE_OK(appendTlv(output, outputLen, &offset, 0xAA, &pinPolicy, sizeof(pinPolicy)));
-  CNK_ENSURE_OK(appendTlv(output, outputLen, &offset, 0xAB, &touchPolicy, sizeof(touchPolicy)));
-
-  *written = offset;
-  CNK_RET_OK;
-}
-
-static CK_RV buildPqcImportData(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
-                                CK_KEY_TYPE keyType, CK_BYTE *output, CK_ULONG outputLen, CK_ULONG_PTR written,
-                                CK_BYTE *algorithmType) {
-  CK_ATTRIBUTE_PTR parameterSetAttr;
-  CK_ATTRIBUTE_PTR seedAttr;
-  CK_BYTE componentTag;
-  CK_ULONG expectedSeedLen;
-  CK_ULONG expectedParameterSet;
-  CK_BYTE pinPolicy;
-  CK_BYTE touchPolicy;
-  CK_ULONG offset = 0;
-
-  CNK_ENSURE_NONNULL(session, output, written, algorithmType);
-  CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_PARAMETER_SET, &parameterSetAttr));
-  CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_SEED, &seedAttr));
-  if (parameterSetAttr->pValue == NULL || parameterSetAttr->ulValueLen != sizeof(CK_ULONG) ||
-      seedAttr->pValue == NULL) {
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad PQC private-key template");
-  }
-
-  if (keyType == CKK_ML_DSA) {
-    expectedParameterSet = CKP_ML_DSA_65;
-    expectedSeedLen = 32;
-    componentTag = 0x09;
-    *algorithmType = session->mldsa65Algorithm;
-  } else if (keyType == CKK_ML_KEM) {
-    expectedParameterSet = CKP_ML_KEM_768;
-    expectedSeedLen = 64;
-    componentTag = 0x0A;
-    *algorithmType = session->mlkem768Algorithm;
-  } else {
-    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "unsupported PQC private key type");
-  }
-
-  if (*(CK_ULONG *)parameterSetAttr->pValue != expectedParameterSet)
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "unsupported PQC parameter set");
-  if (seedAttr->ulValueLen != expectedSeedLen)
-    CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad PQC seed length");
-
-  CK_BYTE objId;
-  CNK_ENSURE_OK(getTemplateObjectId(pTemplate, ulCount, CKO_PRIVATE_KEY, &objId));
-  CNK_ENSURE_OK(
-      CNK_GetPivPolicies(pTemplate, ulCount, CNK_DefaultPinPolicyForPivObjectId(objId), &pinPolicy, &touchPolicy));
-  CNK_ENSURE_OK(appendImportTlv(output, outputLen, &offset, componentTag, seedAttr));
-  CNK_ENSURE_OK(appendTlv(output, outputLen, &offset, 0xAA, &pinPolicy, sizeof(pinPolicy)));
-  CNK_ENSURE_OK(appendTlv(output, outputLen, &offset, 0xAB, &touchPolicy, sizeof(touchPolicy)));
-
-  *written = offset;
   CNK_RET_OK;
 }
 
@@ -1097,8 +748,6 @@ CK_RV C_CNK_ObjIdToPivTag(CK_BYTE objId, CK_BYTE *pivTag) {
   CNK_ERROR("Invalid object ID: 0x%02X", objId);
   return CKR_OBJECT_HANDLE_INVALID;
 }
-
-CK_RV CNK_ObjectIdToPivTag(CK_BYTE objId, CK_BYTE *pivTag) { return C_CNK_ObjIdToPivTag(objId, pivTag); }
 
 CK_BYTE CNK_DefaultPinPolicyForPivObjectId(CK_BYTE objId) {
   return objId == PIV_SLOT_9E ? CNK_PIV_PIN_POLICY_NEVER : CNK_PIV_PIN_POLICY_ONCE;
@@ -1237,7 +886,7 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
 
   CK_OBJECT_CLASS objectClass;
   CK_BYTE objId;
-  CNK_ENSURE_OK(getTemplateObjectClass(pTemplate, ulCount, &objectClass));
+  CNK_ENSURE_OK(cnk_template_get_object_class(pTemplate, ulCount, CKA_CLASS, &objectClass));
   if (objectClass == CKO_DATA) {
     const PivDataObjectMapping *mapping;
     CNK_ENSURE_OK(getTemplateDataObject(pTemplate, ulCount, &mapping));
@@ -1254,7 +903,7 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
     CNK_ENSURE_NONNULL(mapping);
     if (!mapping->writable)
       CNK_RETURN(CKR_ACTION_PROHIBITED, "PIV data object is not writable");
-    CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_VALUE, &valueAttr));
+    CNK_ENSURE_OK(cnk_template_get_attribute(pTemplate, ulCount, CKA_VALUE, &valueAttr));
     if (valueAttr->pValue == NULL || valueAttr->ulValueLen == 0 || valueAttr->ulValueLen > MAX_PIV_DATA_OBJECT_SIZE)
       CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad PIV data object value");
 
@@ -1267,7 +916,7 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
 
   case CKO_CERTIFICATE: {
     CK_ATTRIBUTE_PTR valueAttr;
-    CNK_ENSURE_OK(getAttr(pTemplate, ulCount, CKA_VALUE, &valueAttr));
+    CNK_ENSURE_OK(cnk_template_get_attribute(pTemplate, ulCount, CKA_VALUE, &valueAttr));
     if (valueAttr->pValue == NULL || valueAttr->ulValueLen == 0)
       CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad certificate value");
 
@@ -1275,8 +924,8 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
     CK_BYTE certObject[MAX_PIV_CERTIFICATE_OBJECT_SIZE];
     CK_ULONG certObjectLen = 0;
     CNK_ENSURE_OK(CNK_ObjectIdToCertificateTag(objId, &certTag));
-    CNK_ENSURE_OK(buildPivCertificateObject((CK_BYTE_PTR)valueAttr->pValue, valueAttr->ulValueLen, certObject,
-                                            sizeof(certObject), &certObjectLen));
+    CNK_ENSURE_OK(cnk_build_piv_certificate_object((CK_BYTE_PTR)valueAttr->pValue, valueAttr->ulValueLen, certObject,
+                                                   sizeof(certObject), &certObjectLen));
     CNK_ENSURE_OK(cnk_put_piv_data(session->slotId, session, certTag, certObject, certObjectLen));
 
     *phObject = makeObjectHandle(session->slotId, CKO_CERTIFICATE, objId);
@@ -1290,22 +939,22 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
     CK_BYTE importData[MAX_PIV_IMPORT_KEY_SIZE];
     CK_ULONG importDataLen = 0;
 
-    CNK_ENSURE_OK(getTemplateKeyType(pTemplate, ulCount, &keyType));
-    CNK_ENSURE_OK(CNK_ObjectIdToPivTag(objId, &pivTag));
+    CNK_ENSURE_OK(cnk_template_get_key_type(pTemplate, ulCount, CKA_KEY_TYPE, &keyType));
+    CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &pivTag));
 
     switch (keyType) {
     case CKK_RSA:
-      CNK_ENSURE_OK(
-          buildRsaImportData(pTemplate, ulCount, importData, sizeof(importData), &importDataLen, &algorithmType));
+      CNK_ENSURE_OK(cnk_build_piv_rsa_import(pTemplate, ulCount, objId, importData, sizeof(importData), &importDataLen,
+                                             &algorithmType));
       break;
     case CKK_EC:
-      CNK_ENSURE_OK(
-          buildEcImportData(pTemplate, ulCount, importData, sizeof(importData), &importDataLen, &algorithmType));
+      CNK_ENSURE_OK(cnk_build_piv_ec_import(pTemplate, ulCount, objId, importData, sizeof(importData), &importDataLen,
+                                            &algorithmType));
       break;
     case CKK_ML_DSA:
     case CKK_ML_KEM:
-      CNK_ENSURE_OK(buildPqcImportData(session, pTemplate, ulCount, keyType, importData, sizeof(importData),
-                                       &importDataLen, &algorithmType));
+      CNK_ENSURE_OK(cnk_build_piv_pqc_import(session, pTemplate, ulCount, objId, keyType, importData,
+                                             sizeof(importData), &importDataLen, &algorithmType));
       break;
     default:
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "unsupported private key type for C_CreateObject");

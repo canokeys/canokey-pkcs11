@@ -1,4 +1,5 @@
 #include "api/object.h"
+#include "api/operation.h"
 #include "api/session.h"
 #include "backend/pcsc.h"
 #include "internal/crypto.h"
@@ -87,14 +88,6 @@ static CK_RV getDecryptOutputUpperBound(CNK_PKCS11_DECRYPTING_CONTEXT *context, 
   CNK_RET_OK;
 }
 
-static void resetDecryptingContext(CNK_PKCS11_SESSION *session) {
-  if (session == NULL)
-    return;
-
-  ck_free(session->decryptingContext.mechanism.pParameter);
-  memset(&session->decryptingContext, 0, sizeof(session->decryptingContext));
-}
-
 static CK_RV copyRsaCryptMechanism(CK_MECHANISM *destination, const CK_MECHANISM *mechanism) {
   destination->mechanism = mechanism->mechanism;
   destination->pParameter = NULL_PTR;
@@ -168,13 +161,6 @@ static CK_RV getRsaPublicComponents(const CK_BYTE *publicKey, CK_ULONG publicKey
   CNK_RET_OK;
 }
 
-static void resetEncryptingContext(CNK_PKCS11_SESSION *session) {
-  if (session == NULL)
-    return;
-  ck_free(session->encryptingContext.mechanism.pParameter);
-  memset(&session->encryptingContext, 0, sizeof(session->encryptingContext));
-}
-
 CK_RV C_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {
   CNK_LOG_FUNC(": hSession: %lu, pMechanism: %p, hKey: %lu", hSession, pMechanism, hKey);
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pMechanism);
@@ -193,7 +179,7 @@ CK_RV C_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   if (session->encryptingContext.hKey != 0)
     CNK_RETURN(CKR_OPERATION_ACTIVE, "encrypt operation is already active");
   CNK_ENSURE_OK(CNK_ValidateObject(hKey, session, CKO_PUBLIC_KEY, &objectId));
-  CNK_ENSURE_OK(CNK_ObjectIdToPivTag(objectId, &pivSlot));
+  CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objectId, &pivSlot));
 
   // Encryption is a host public-key operation; metadata supplies the public
   // components while the private key remains on the card for C_Decrypt.
@@ -208,14 +194,14 @@ CK_RV C_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   CK_ULONG modulusLen, exponentLen;
   CNK_ENSURE_OK(getRsaPublicComponents(publicKey, publicKeyLen, &modulus, &modulusLen, &exponent, &exponentLen));
 
-  resetEncryptingContext(session);
+  cnk_reset_encrypting_context(session);
   session->encryptingContext.hKey = hKey;
   session->encryptingContext.publicKeyLen = publicKeyLen;
   session->encryptingContext.modulusLen = modulusLen;
   memcpy(session->encryptingContext.publicKey, publicKey, publicKeyLen);
   CK_RV rv = copyRsaCryptMechanism(&session->encryptingContext.mechanism, pMechanism);
   if (rv != CKR_OK) {
-    resetEncryptingContext(session);
+    cnk_reset_encrypting_context(session);
     return rv;
   }
   CNK_RET_OK;
@@ -231,7 +217,7 @@ CK_RV C_Encrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLe
   if (session->encryptingContext.hKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_EncryptInit not called");
   if (pData == NULL && ulDataLen > 0) {
-    resetEncryptingContext(session);
+    cnk_reset_encrypting_context(session);
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pData is NULL but ulDataLen > 0");
   }
 
@@ -297,7 +283,7 @@ CK_RV C_Encrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLe
     *pulEncryptedDataLen = modulusLen;
 
 cleanup:
-  resetEncryptingContext(session);
+  cnk_reset_encrypting_context(session);
   return rv;
 }
 
@@ -360,7 +346,7 @@ CK_RV C_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   CNK_ENSURE_OK(getRsaPublicComponents(abPublicKey, cbPublicKey, &modulus, &cbModulus, &exponent, &exponentLen));
   CNK_UNUSED(modulus, exponent, exponentLen);
 
-  resetDecryptingContext(session);
+  cnk_reset_decrypting_context(session);
 
   session->decryptingContext.hKey = hKey;
   session->decryptingContext.pivSlot = pivTag;
@@ -370,7 +356,7 @@ CK_RV C_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
 
   CK_RV rv = copyRsaCryptMechanism(&session->decryptingContext.mechanism, pMechanism);
   if (rv != CKR_OK) {
-    resetDecryptingContext(session);
+    cnk_reset_decrypting_context(session);
     CNK_RETURN(rv, "copyDecryptMechanism failed");
   }
 
@@ -390,7 +376,7 @@ CK_RV C_Decrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pEncryptedData, CK_ULONG
   if (session->decryptingContext.hKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_DecryptInit not called");
   if (pEncryptedData == NULL_PTR && ulEncryptedDataLen > 0) {
-    resetDecryptingContext(session);
+    cnk_reset_decrypting_context(session);
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pEncryptedData is NULL but ulEncryptedDataLen > 0");
   }
 
@@ -409,7 +395,7 @@ CK_RV C_Decrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pEncryptedData, CK_ULONG
     CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always key requires context-specific login");
 
   if (ulEncryptedDataLen != session->decryptingContext.cbModulus) {
-    resetDecryptingContext(session);
+    cnk_reset_decrypting_context(session);
     CNK_RETURN(CKR_ENCRYPTED_DATA_LEN_RANGE, "encrypted data length does not match RSA modulus");
   }
 
@@ -456,7 +442,7 @@ cleanup:
   mbedtls_platform_zeroize(rawData, sizeof(rawData));
 
   if (rv != CKR_BUFFER_TOO_SMALL)
-    resetDecryptingContext(session);
+    cnk_reset_decrypting_context(session);
 
   CNK_RETURN(rv, "C_Decrypt finished");
 }
