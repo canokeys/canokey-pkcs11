@@ -141,9 +141,11 @@ static CK_RV getRsaPublicComponents(const CK_BYTE *publicKey, CK_ULONG publicKey
     CK_LONG fail = 0;
     CK_ULONG lengthSize = 0;
     CK_ULONG ilen = tlvGetLengthSafe(&publicKey[vpos], publicKeyLen - vpos, &fail, &lengthSize);
-    if (fail)
+    if (fail || lengthSize > publicKeyLen - vpos)
       CNK_RETURN(CKR_DEVICE_ERROR, "Bad length in public-key TLV");
     vpos += lengthSize;
+    if (ilen > publicKeyLen - vpos)
+      CNK_RETURN(CKR_DEVICE_ERROR, "Public-key TLV value exceeds response");
 
     if (itag == 0x81) {
       *modulus = publicKey + vpos;

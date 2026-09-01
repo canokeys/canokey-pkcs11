@@ -139,12 +139,16 @@ static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m,
     CK_LONG fail;
     CK_ULONG lengthSize;
     CK_ULONG ilen = tlvGetLengthSafe(&abPublicKey[vpos], cbPublicKey - vpos, &fail, &lengthSize);
-    if (fail)
+    if (fail || lengthSize > cbPublicKey - vpos)
       CNK_RETURN(CKR_DEVICE_ERROR, "Bad length in public-key TLV");
     vpos += lengthSize;
+    if (ilen > cbPublicKey - vpos)
+      CNK_RETURN(CKR_DEVICE_ERROR, "Public-key TLV value exceeds response");
 
     // RSA modulus lives in tag 0x81
     if (itag == 0x81) {
+      if (ilen > sizeof(session->signingContext.abModulus))
+        CNK_RETURN(CKR_DEVICE_ERROR, "RSA modulus exceeds operation buffer");
       memcpy(session->signingContext.abModulus, abPublicKey + vpos, ilen);
       session->signingContext.cbSignature = ilen;
       break;
@@ -576,9 +580,11 @@ static CK_RV getPublicKeyComponent(const CK_BYTE *publicKey, CK_ULONG publicKeyL
     CK_LONG fail = 0;
     CK_ULONG lengthSize = 0;
     CK_ULONG length = tlvGetLengthSafe(publicKey + offset, publicKeyLen - offset, &fail, &lengthSize);
-    if (fail)
+    if (fail || lengthSize > publicKeyLen - offset)
       CNK_RETURN(CKR_DEVICE_ERROR, "Malformed public-key TLV");
     offset += lengthSize;
+    if (length > publicKeyLen - offset)
+      CNK_RETURN(CKR_DEVICE_ERROR, "Public-key TLV value exceeds response");
     if (currentTag == tag) {
       *value = publicKey + offset;
       *valueLen = length;

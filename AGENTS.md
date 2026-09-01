@@ -45,9 +45,9 @@ python -m pip install -r cmake\tf-psa-crypto-generator-requirements.txt
 
 CI uses `actions/setup-python` and passes that exact interpreter to CMake as
 `Python3_EXECUTABLE`, so TF-PSA-Crypto's generators run with the same Python
-environment that received the `pip install`. CI pins Python 3.10 because the
-required generator packages have reliable binary wheels there. The local
-requirements file is kept narrower than TF-PSA-Crypto's upstream
+environment that received the `pip install`. CI currently uses Python 3.14;
+the generator requirements are verified on Ubuntu, Windows, and macOS. The
+local requirements file is kept narrower than TF-PSA-Crypto's upstream
 `basic.requirements.txt` to avoid unneeded typing-stub packages and old
 MarkupSafe constraints during CI builds.
 

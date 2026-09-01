@@ -181,11 +181,15 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR algorithmT
     CK_LONG fail = 0;
     CK_ULONG lengthSize = 0;
     CK_ULONG length = tlvGetLengthSafe(response + offset, dataLen - offset, &fail, &lengthSize);
-    if (fail) {
+    if (fail || lengthSize > dataLen - offset) {
       rv = CKR_DEVICE_ERROR;
       goto cleanup;
     }
     offset += lengthSize;
+    if (length > dataLen - offset) {
+      rv = CKR_DEVICE_ERROR;
+      goto cleanup;
+    }
     const CK_BYTE *value = response + offset;
 
     switch (tag) {

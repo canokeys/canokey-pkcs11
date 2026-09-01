@@ -1781,9 +1781,11 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
     CK_LONG fail;
     CK_ULONG lengthSize;
     CK_ULONG ilen = tlvGetLengthSafe(&pbPublicKey[vpos], cbPublicKey - vpos, &fail, &lengthSize);
-    if (fail)
+    if (fail || lengthSize > cbPublicKey - vpos)
       CNK_RETURN(CKR_DEVICE_ERROR, "Bad length in public-key TLV");
     vpos += lengthSize;
+    if (ilen > cbPublicKey - vpos)
+      CNK_RETURN(CKR_DEVICE_ERROR, "Public-key TLV value exceeds response");
     /* ---- RSA modulus lives in tag 0x81 ------------------------ */
     if (itag == 0x81) {
       pbModulus = pbPublicKey + vpos;
