@@ -211,6 +211,13 @@ static void test_logout_cannot_race_protected_management_login(void **state) {
   assert_int_equal(
       cnk_token_complete_protected_management_login(internal, managementKey, sizeof(managementKey), CKR_OK), CKR_OK);
   assert_true(cnk_token_management_key_is_cached(internal));
+  cnk_mutex_lock(&internal->token->lock);
+  memset(internal->token->pin, 0xFF, sizeof(internal->token->pin));
+  internal->token->cbPin = 0;
+  memset(internal->token->managementKey, 0, sizeof(internal->token->managementKey));
+  internal->token->cbManagementKey = 0;
+  internal->token->loginState = TOKEN_LOGIN_PUBLIC;
+  cnk_mutex_unlock(&internal->token->lock);
   cnk_session_release_ref(&internal);
   assert_int_equal(C_CloseSession(session), CKR_OK);
 }
