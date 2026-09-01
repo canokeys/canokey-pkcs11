@@ -200,5 +200,8 @@ CK_RV cnk_token_update_cached_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR o
                                   CK_UTF8CHAR_PTR newPin, CK_ULONG newPinLen);
 CK_BBOOL cnk_token_management_key_is_cached(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_copy_management_key(CNK_PKCS11_SESSION *session, CK_BYTE key[24]);
+CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session);
+CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session, CK_BYTE_PTR key, CK_ULONG keyLen,
+                                                    CK_RV verificationRv);
 
 #endif /* CNK_API_SESSION_H */

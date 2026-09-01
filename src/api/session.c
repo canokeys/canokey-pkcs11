@@ -311,6 +311,45 @@ CK_RV cnk_token_copy_management_key(CNK_PKCS11_SESSION *session, CK_BYTE key[24]
   return CKR_OK;
 }
 
+CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session) {
+  CNK_ENSURE_NONNULL(session, session->token);
+  cnk_mutex_lock(&session->token->lock);
+  if (session->token->loginState != TOKEN_LOGIN_USER || session->token->cbPin == 0) {
+    cnk_mutex_unlock(&session->token->lock);
+    return CKR_USER_NOT_LOGGED_IN;
+  }
+  if (session->token->cbManagementKey == sizeof(session->token->managementKey)) {
+    cnk_mutex_unlock(&session->token->lock);
+    return CKR_USER_ALREADY_LOGGED_IN;
+  }
+  if (session->token->managementLoginPending) {
+    cnk_mutex_unlock(&session->token->lock);
+    return CKR_OPERATION_ACTIVE;
+  }
+  session->token->managementLoginPending = CK_TRUE;
+  cnk_mutex_unlock(&session->token->lock);
+  return CKR_OK;
+}
+
+CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session, CK_BYTE_PTR key, CK_ULONG keyLen,
+                                                    CK_RV verificationRv) {
+  CNK_ENSURE_NONNULL(session, session->token, key);
+  if (keyLen != sizeof(session->token->managementKey))
+    return CKR_PIN_LEN_RANGE;
+  cnk_mutex_lock(&session->token->lock);
+  CK_RV rv = verificationRv;
+  if (rv == CKR_OK && session->token->managementLoginPending && session->token->loginState == TOKEN_LOGIN_USER &&
+      session->token->cbPin > 0) {
+    memcpy(session->token->managementKey, key, keyLen);
+    session->token->cbManagementKey = keyLen;
+  } else if (rv == CKR_OK) {
+    rv = CKR_USER_NOT_LOGGED_IN;
+  }
+  session->token->managementLoginPending = CK_FALSE;
+  cnk_mutex_unlock(&session->token->lock);
+  return rv;
+}
+
 CK_RV cnk_session_cancel_operations(CNK_PKCS11_SESSION *session, CK_FLAGS flags) {
   CNK_ENSURE_NONNULL(session);
   cnk_mutex_lock(&session->lock);
@@ -753,33 +792,10 @@ CK_RV C_CNK_LoginProtectedManagementKey(CK_SESSION_HANDLE hSession, CK_BYTE_PTR 
   // Reserve the token authorization transition before the card round trip.
   // Logout observes this reservation and cannot clear USER state underneath
   // verification, then leave a management key cached in PUBLIC state.
-  cnk_mutex_lock(&session->token->lock);
-  if (session->token->loginState != TOKEN_LOGIN_USER || session->token->cbPin == 0) {
-    cnk_mutex_unlock(&session->token->lock);
-    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "User PIN login is required");
-  }
-  if (session->token->cbManagementKey == sizeof(session->token->managementKey)) {
-    cnk_mutex_unlock(&session->token->lock);
-    CNK_RETURN(CKR_USER_ALREADY_LOGGED_IN, "Protected management key is already cached");
-  }
-  if (session->token->managementLoginPending) {
-    cnk_mutex_unlock(&session->token->lock);
-    CNK_RETURN(CKR_OPERATION_ACTIVE, "Protected management-key login is already in progress");
-  }
-  session->token->managementLoginPending = CK_TRUE;
-  cnk_mutex_unlock(&session->token->lock);
+  CNK_ENSURE_OK(cnk_token_begin_protected_management_login(session));
 
   CK_RV rv = cnkVerifyManagementKey(session, pKey);
-  cnk_mutex_lock(&session->token->lock);
-  if (rv == CKR_OK && session->token->managementLoginPending && session->token->loginState == TOKEN_LOGIN_USER &&
-      session->token->cbPin > 0) {
-    memcpy(session->token->managementKey, pKey, ulKeyLen);
-    session->token->cbManagementKey = ulKeyLen;
-  } else if (rv == CKR_OK) {
-    rv = CKR_USER_NOT_LOGGED_IN;
-  }
-  session->token->managementLoginPending = CK_FALSE;
-  cnk_mutex_unlock(&session->token->lock);
+  rv = cnk_token_complete_protected_management_login(session, pKey, ulKeyLen, rv);
   if (rv != CKR_OK)
     CNK_RETURN(rv, "Management key verification failed or USER state changed");
   CNK_RET_OK;

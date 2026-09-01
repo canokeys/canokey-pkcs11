@@ -10,5 +10,4 @@ add_mocked_test(rsa LINK_LIBRARIES ${CNK_PKCS_TARGET}-test ${CNK_CRYPTO_LIBRARIE
 target_compile_definitions(test_rsa PRIVATE "MBEDTLS_ALLOW_PRIVATE_ACCESS")
 add_mocked_test(digest LINK_LIBRARIES ${CNK_PKCS_TARGET}-test ${CNK_CRYPTO_LIBRARIES})
 add_mocked_test(policy LINK_LIBRARIES ${CNK_PKCS_TARGET}-test ${CNK_CRYPTO_LIBRARIES})
-add_mocked_test(session MOCKS cnk_verify_piv_pin_with_session cnkVerifyManagementKey
-  LINK_LIBRARIES ${CNK_PKCS_TARGET}-test ${CNK_CRYPTO_LIBRARIES} Threads::Threads)
+add_mocked_test(session LINK_LIBRARIES ${CNK_PKCS_TARGET}-test ${CNK_CRYPTO_LIBRARIES} Threads::Threads)
