@@ -494,6 +494,10 @@ static int testFunctionListAndSessions(CK_FUNCTION_LIST_3_2_PTR functions, CK_SL
   CK_SESSION_HANDLE sessions[16];
   for (CK_ULONG i = 0; i < 16; i++)
     CHECK(functions->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &sessions[i]));
+  CK_TOKEN_INFO tokenInfo;
+  CHECK(functions->C_GetTokenInfo(slot, &tokenInfo));
+  if (tokenInfo.ulSessionCount < 16 || tokenInfo.ulRwSessionCount < 16)
+    return 1;
   if (testTokenRandom(functions, slot, sessions[0]) != 0)
     return 1;
 
