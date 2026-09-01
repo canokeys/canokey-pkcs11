@@ -195,6 +195,10 @@ Write-path notes:
 - Every PKCS#11 3.2 function-list entry must be non-NULL. Unsupported 3.x APIs
   use type-correct stubs returning `CKR_FUNCTION_NOT_SUPPORTED`; do not add
   host-side Verify or public-key Encrypt merely to increase API coverage.
+- Standalone `C_WaitForSlotEvent` uses PC/SC status-change notifications and
+  the PnP pseudo-reader. `CKF_DONT_BLOCK` returns `CKR_NO_EVENT` when nothing
+  changed, and `C_Finalize` cancels a blocking wait. Managed mode returns
+  `CKR_FUNCTION_NOT_SUPPORTED` because the host owns its PC/SC lifecycle.
 - `C_CNK_SetPIN()` maps to the standard PIV Change Reference Data APDU. Pass
   `CNK_PIV_PIN_TYPE_PIN` (`0x80`) to change the PIN or
   `CNK_PIV_PIN_TYPE_PUK` (`0x81`) to change the PUK; the optional tries output
@@ -312,8 +316,8 @@ PIV object IDs map to slots as:
 
 ## Known Gaps
 
-- Verify, random generation, wrap/unwrap, object delete/set-attribute, init PIN,
-  and slot events are mostly stubs returning `CKR_FUNCTION_NOT_SUPPORTED`.
+- Verify, random generation, wrap/unwrap, object delete/set-attribute, and init
+  PIN are mostly stubs returning `CKR_FUNCTION_NOT_SUPPORTED`.
 - `C_GetObjectSize` is implemented as an approximate PKCS#11 object size based
   on readable attributes. `C_SetAttributeValue` validates object handles but
   treats PIV token attributes as read-only. `C_CopyObject` is intentionally

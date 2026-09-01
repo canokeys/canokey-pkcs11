@@ -192,7 +192,12 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
 
 CK_RV C_WaitForSlotEvent(CK_FLAGS flags, CK_SLOT_ID_PTR pSlot, CK_VOID_PTR pReserved) {
   CNK_LOG_FUNC(": flags: %lu, pSlot: %p, pReserved: %p", flags, pSlot, pReserved);
-  CNK_RET_UNSUPPORTED;
+  CNK_ENSURE_INITIALIZED();
+  CNK_ENSURE_NONNULL(pSlot);
+  CNK_ENSURE_NULL(pReserved);
+  if ((flags & ~CKF_DONT_BLOCK) != 0)
+    return CKR_ARGUMENTS_BAD;
+  return cnk_wait_for_slot_event(flags, pSlot);
 }
 
 CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList, CK_ULONG_PTR pulCount) {

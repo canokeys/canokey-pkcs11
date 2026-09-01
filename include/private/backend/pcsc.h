@@ -149,6 +149,8 @@ CK_ULONG cnk_get_num_readers(void);
 // Get the slot ID for a reader at the given index
 CK_SLOT_ID cnk_get_reader_slot_id(CK_ULONG index);
 
+CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot);
+
 // Connect to a card, select the CanoKey AID, and begin a transaction
 CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard);
 

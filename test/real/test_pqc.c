@@ -224,6 +224,16 @@ int main(int argc, char **argv) {
   CK_FUNCTION_LIST_3_2_PTR functions = selectedInterface->pFunctionList;
   CHECK(functions->C_Initialize(NULL));
 
+  CK_SLOT_ID eventSlot = CK_UNAVAILABLE_INFORMATION;
+  if (functions->C_WaitForSlotEvent(CKF_DONT_BLOCK, &eventSlot, NULL) != CKR_NO_EVENT)
+    return 1;
+  if (functions->C_WaitForSlotEvent(CKF_DONT_BLOCK << 1, &eventSlot, NULL) != CKR_ARGUMENTS_BAD)
+    return 1;
+  if (functions->C_WaitForSlotEvent(CKF_DONT_BLOCK, NULL, NULL) != CKR_ARGUMENTS_BAD)
+    return 1;
+  if (functions->C_WaitForSlotEvent(CKF_DONT_BLOCK, &eventSlot, &eventSlot) != CKR_ARGUMENTS_BAD)
+    return 1;
+
   CK_ULONG slotCount = 1;
   CK_SLOT_ID slot;
   CHECK(functions->C_GetSlotList(CK_TRUE, &slot, &slotCount));

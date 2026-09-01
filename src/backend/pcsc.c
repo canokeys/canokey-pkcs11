@@ -185,6 +185,7 @@ CK_RV cnk_list_readers(void) {
 
   cnk_mutex_lock(&g_cnk_readers_mutex);
   if (!g_cnk_is_initialized) {
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
 
@@ -203,6 +204,10 @@ CK_RV cnk_list_readers(void) {
 
   // First call to get the needed buffer size
   ULONG rv = SCardListReaders(g_cnk_pcsc_context, NULL, NULL, &readers_len);
+  if (rv == (ULONG)SCARD_E_NO_READERS_AVAILABLE || (rv == (ULONG)SCARD_S_SUCCESS && readers_len == 0)) {
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
+    return CKR_OK;
+  }
   if (rv != (ULONG)SCARD_S_SUCCESS && rv != (ULONG)SCARD_E_INSUFFICIENT_BUFFER) {
     cnk_mutex_unlock(&g_cnk_readers_mutex);
     CNK_ERROR("SCardListReaders failed with error: 0x%lx", rv);
@@ -237,6 +242,12 @@ CK_RV cnk_list_readers(void) {
   }
 
   // Allocate memory for the reader info array
+  if (g_cnk_num_readers == 0) {
+    ck_free(readers_buf);
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
+    return CKR_OK;
+  }
+
   g_cnk_readers = (ReaderInfo *)ck_malloc(g_cnk_num_readers * sizeof(ReaderInfo));
   if (g_cnk_readers) {
     memset(g_cnk_readers, 0, g_cnk_num_readers * sizeof(ReaderInfo));
@@ -284,8 +295,10 @@ CK_RV cnk_list_readers(void) {
 // Clean up PC/SC resources
 void cnk_cleanup_pcsc(void) {
   cnk_mutex_lock(&g_cnk_readers_mutex);
-  if (!g_cnk_is_initialized)
+  if (!g_cnk_is_initialized) {
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
     return;
+  }
 
   if (g_cnk_readers) {
     for (CK_LONG i = 0; i < g_cnk_num_readers; i++) {
@@ -296,6 +309,7 @@ void cnk_cleanup_pcsc(void) {
   }
 
   if (g_cnk_pcsc_context) {
+    SCardCancel(g_cnk_pcsc_context);
     SCardReleaseContext(g_cnk_pcsc_context);
     g_cnk_pcsc_context = 0;
   }
@@ -323,6 +337,77 @@ CK_SLOT_ID cnk_get_reader_slot_id(CK_ULONG index) {
   }
   cnk_mutex_unlock(&g_cnk_readers_mutex);
   return slot;
+}
+
+CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
+  if (g_cnk_is_managed_mode)
+    return CKR_FUNCTION_NOT_SUPPORTED;
+  if (!g_cnk_is_initialized || g_cnk_pcsc_context == 0)
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  CNK_ENSURE_OK(cnk_list_readers());
+
+  cnk_mutex_lock(&g_cnk_readers_mutex);
+  CK_ULONG readerCount = (CK_ULONG)g_cnk_num_readers;
+  SCARD_READERSTATE *states = ck_calloc(readerCount + 1, sizeof(*states));
+  CK_SLOT_ID *slotIds = ck_calloc(readerCount, sizeof(*slotIds));
+  if (states == NULL || (readerCount > 0 && slotIds == NULL)) {
+    ck_free(states);
+    ck_free(slotIds);
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
+    return CKR_HOST_MEMORY;
+  }
+  for (CK_ULONG i = 0; i < readerCount; i++) {
+    size_t nameLen = strlen(g_cnk_readers[i].name) + 1;
+    char *name = ck_malloc(nameLen);
+    if (name == NULL) {
+      for (CK_ULONG j = 0; j < i; j++)
+        ck_free((void *)states[j].szReader);
+      ck_free(states);
+      ck_free(slotIds);
+      cnk_mutex_unlock(&g_cnk_readers_mutex);
+      return CKR_HOST_MEMORY;
+    }
+    memcpy(name, g_cnk_readers[i].name, nameLen);
+    states[i].szReader = name;
+    slotIds[i] = g_cnk_readers[i].slot_id;
+  }
+  states[readerCount].szReader = "\\\\?PnP?\\Notification";
+  cnk_mutex_unlock(&g_cnk_readers_mutex);
+
+  LONG pcscRv = SCardGetStatusChange(g_cnk_pcsc_context, 0, states, readerCount + 1);
+  if (pcscRv == SCARD_S_SUCCESS) {
+    for (CK_ULONG i = 0; i <= readerCount; i++)
+      states[i].dwCurrentState = states[i].dwEventState & ~SCARD_STATE_CHANGED;
+    DWORD timeout = (flags & CKF_DONT_BLOCK) != 0 ? 0 : INFINITE;
+    pcscRv = SCardGetStatusChange(g_cnk_pcsc_context, timeout, states, readerCount + 1);
+  }
+
+  CK_RV rv = CKR_NO_EVENT;
+  if (pcscRv == SCARD_S_SUCCESS) {
+    for (CK_ULONG i = 0; i < readerCount; i++) {
+      if ((states[i].dwEventState & SCARD_STATE_CHANGED) != 0) {
+        *slot = slotIds[i];
+        rv = CKR_OK;
+        break;
+      }
+    }
+    if (rv == CKR_NO_EVENT && (states[readerCount].dwEventState & SCARD_STATE_CHANGED) != 0) {
+      if (cnk_list_readers() == CKR_OK && cnk_get_num_readers() > 0) {
+        *slot = cnk_get_reader_slot_id(0);
+        rv = CKR_OK;
+      }
+    }
+  } else if (pcscRv == SCARD_E_CANCELLED) {
+    rv = g_cnk_is_initialized ? CKR_FUNCTION_CANCELED : CKR_CRYPTOKI_NOT_INITIALIZED;
+  } else if (pcscRv != SCARD_E_TIMEOUT) {
+    rv = CKR_DEVICE_ERROR;
+  }
+
+  for (CK_ULONG i = 0; i < readerCount; i++)
+    ck_free((void *)states[i].szReader);
+  ck_free(states);
+  ck_free(slotIds);
+  return rv;
 }
 
 // Helper function to connect to a card
