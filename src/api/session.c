@@ -21,8 +21,8 @@ static CK_LONG session_table_size = 0;
 static CK_LONG session_count = 0;
 static CK_SESSION_HANDLE next_handle = 1; // Start from 1, 0 is invalid
 static CNK_PKCS11_MUTEX session_mutex;
-// Closed sessions stay allocated until finalize so a concurrent lookup cannot
-// observe freed storage after releasing the global session-table lock.
+// Close removes a session only after activeCalls reaches zero, so a concurrent
+// lookup cannot observe freed storage after releasing the table lock.
 static CNK_PKCS11_TOKEN_STATE *token_states = NULL;
 
 static void yield_session_close(void) {
@@ -624,6 +624,9 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
     CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
     // PIN-always authentication is attached to the initialized private-key
     // operation. It deliberately does not populate the token USER PIN cache.
+    if (ulPinLen > sizeof(session->signingContext.contextPin) ||
+        ulPinLen > sizeof(session->decryptingContext.contextPin))
+      CNK_RETURN(CKR_PIN_LEN_RANGE, "Context-specific PIN exceeds operation buffer");
     CK_BBOOL signAlways =
         session->signingContext.hKey != 0 && session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS;
     CK_BBOOL decryptAlways =

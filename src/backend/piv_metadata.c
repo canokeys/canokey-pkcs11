@@ -95,8 +95,8 @@ CK_RV cnk_block_piv_puk(CK_SLOT_ID slotID) {
   if (rv != CKR_OK || pinTries == 0)
     goto cleanup;
 
-  // Use distinct valid-length guesses. An accidental match can only reset the
-  // counter once; subsequent different guesses still drive it to zero.
+  // Cycle valid-length guesses. An accidental match can only reset the counter
+  // once; subsequent different guesses still drive it to zero.
   for (CK_BYTE attempt = 0; attempt < 16 && pinTries > 0; attempt++) {
     CK_BYTE apdu[] = {0x00,
                       0x20,

@@ -17,6 +17,9 @@
 #if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 
 #include "mldsa_native.c"
@@ -24,6 +27,8 @@
 
 #if defined(__clang__)
 #pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
 #endif
 
 CK_RV cnk_mldsa65_verify_signature(const CK_BYTE publicKey[CNK_MLDSA65_PUBLIC_KEY_BYTES], const CK_BYTE *message,

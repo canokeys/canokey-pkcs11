@@ -8,6 +8,8 @@
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
 
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -15,6 +17,7 @@
 #include <windows.h>
 #else
 #include <pthread.h>
+#include <sched.h>
 #endif
 
 typedef struct {
@@ -22,11 +25,13 @@ typedef struct {
   CK_BYTE *data;
   CK_ULONG dataLen;
   CK_RV rv;
+  atomic_bool entered;
 } DigestThreadContext;
 
 typedef struct {
   CK_SESSION_HANDLE session;
   CK_RV rv;
+  atomic_bool entered;
 } FindThreadContext;
 
 #ifdef _WIN32
@@ -36,6 +41,7 @@ static void *digestThread(void *opaque)
 #endif
 {
   DigestThreadContext *ctx = opaque;
+  atomic_store(&ctx->entered, true);
   ctx->rv = C_DigestUpdate(ctx->session, ctx->data, ctx->dataLen);
 #ifdef _WIN32
   return 0;
@@ -51,6 +57,7 @@ static void *findThread(void *opaque)
 #endif
 {
   FindThreadContext *ctx = opaque;
+  atomic_store(&ctx->entered, true);
   CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
   CK_ATTRIBUTE findTemplate = {CKA_CLASS, &secretClass, sizeof(secretClass)};
   ctx->rv = C_FindObjectsInit(ctx->session, &findTemplate, 1);
@@ -61,6 +68,17 @@ static void *findThread(void *opaque)
 #else
   return NULL;
 #endif
+}
+
+static void waitForWorker(atomic_bool *entered) {
+  for (int i = 0; i < 5000 && !atomic_load(entered); i++) {
+#ifdef _WIN32
+    Sleep(1);
+#else
+    sched_yield();
+#endif
+  }
+  assert_true(atomic_load(entered));
 }
 
 static int setup(void **state) {
@@ -92,16 +110,18 @@ static void test_close_does_not_deadlock_template_find(void **state) {
   CK_OBJECT_HANDLE key;
   assert_int_equal(C_GenerateKey(session, &mechanism, keyTemplate, 2, &key), CKR_OK);
 
-  FindThreadContext ctx = {.session = session, .rv = CKR_GENERAL_ERROR};
+  FindThreadContext ctx = {.session = session, .rv = CKR_GENERAL_ERROR, .entered = false};
 #ifdef _WIN32
   HANDLE thread = CreateThread(NULL, 0, findThread, &ctx, 0, NULL);
   assert_non_null(thread);
+  waitForWorker(&ctx.entered);
   assert_int_equal(C_CloseSession(session), CKR_OK);
   assert_int_equal(WaitForSingleObject(thread, 5000), WAIT_OBJECT_0);
   CloseHandle(thread);
 #else
   pthread_t thread;
   assert_int_equal(pthread_create(&thread, NULL, findThread, &ctx), 0);
+  waitForWorker(&ctx.entered);
   assert_int_equal(C_CloseSession(session), CKR_OK);
   assert_int_equal(pthread_join(thread, NULL), 0);
 #endif
@@ -119,17 +139,20 @@ static void test_cancel_serializes_with_digest_update(void **state) {
   CK_BYTE *data = malloc(dataLen);
   assert_non_null(data);
   memset(data, 0xA5, dataLen);
-  DigestThreadContext ctx = {.session = session, .data = data, .dataLen = dataLen, .rv = CKR_GENERAL_ERROR};
+  DigestThreadContext ctx = {
+      .session = session, .data = data, .dataLen = dataLen, .rv = CKR_GENERAL_ERROR, .entered = false};
 
 #ifdef _WIN32
   HANDLE thread = CreateThread(NULL, 0, digestThread, &ctx, 0, NULL);
   assert_non_null(thread);
+  waitForWorker(&ctx.entered);
   assert_int_equal(C_SessionCancel(session, CKF_DIGEST), CKR_OK);
   assert_int_equal(WaitForSingleObject(thread, 5000), WAIT_OBJECT_0);
   CloseHandle(thread);
 #else
   pthread_t thread;
   assert_int_equal(pthread_create(&thread, NULL, digestThread, &ctx), 0);
+  waitForWorker(&ctx.entered);
   assert_int_equal(C_SessionCancel(session, CKF_DIGEST), CKR_OK);
   assert_int_equal(pthread_join(thread, NULL), 0);
 #endif
@@ -149,17 +172,20 @@ static void test_close_waits_for_digest_update(void **state) {
   CK_BYTE *data = malloc(dataLen);
   assert_non_null(data);
   memset(data, 0x5A, dataLen);
-  DigestThreadContext ctx = {.session = session, .data = data, .dataLen = dataLen, .rv = CKR_GENERAL_ERROR};
+  DigestThreadContext ctx = {
+      .session = session, .data = data, .dataLen = dataLen, .rv = CKR_GENERAL_ERROR, .entered = false};
 
 #ifdef _WIN32
   HANDLE thread = CreateThread(NULL, 0, digestThread, &ctx, 0, NULL);
   assert_non_null(thread);
+  waitForWorker(&ctx.entered);
   assert_int_equal(C_CloseSession(session), CKR_OK);
   assert_int_equal(WaitForSingleObject(thread, 5000), WAIT_OBJECT_0);
   CloseHandle(thread);
 #else
   pthread_t thread;
   assert_int_equal(pthread_create(&thread, NULL, digestThread, &ctx), 0);
+  waitForWorker(&ctx.entered);
   assert_int_equal(C_CloseSession(session), CKR_OK);
   assert_int_equal(pthread_join(thread, NULL), 0);
 #endif

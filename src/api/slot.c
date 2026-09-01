@@ -299,6 +299,13 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   // Clear the mechanism info structure
   memset(pInfo, 0, sizeof(CK_MECHANISM_INFO));
 
+  if (type == CKM_ML_DSA_KEY_PAIR_GEN || type == CKM_ML_DSA || type == CKM_ML_KEM_KEY_PAIR_GEN || type == CKM_ML_KEM) {
+    CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
+    if (cnk_get_piv_algorithm_extension(slotID, &config) != CKR_OK || !config.enabled || config.mldsa65 == 0 ||
+        config.mlkem768 == 0)
+      return CKR_MECHANISM_INVALID;
+  }
+
   // Set mechanism info based on type
   switch (type) {
   case CKM_RSA_PKCS_KEY_PAIR_GEN:

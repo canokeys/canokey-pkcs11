@@ -360,7 +360,7 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not ML-DSA-65");
     if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "ML-DSA context is not supported by PIV");
-    session->signingContext.cbSignature = 3309;
+    session->signingContext.cbSignature = CNK_MLDSA65_SIGNATURE_BYTES;
   } else if (isMechRSA(pMechanism->mechanism)) {
     CNK_ENSURE_OK(validateRsaMech(session, pMechanism, algorithmType, abPublicKey, cbPublicKey));
   } else if (isMechEC(pMechanism->mechanism)) {

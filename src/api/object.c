@@ -149,7 +149,7 @@ static CK_RV setSingleAttributeValue(CK_ATTRIBUTE_PTR attribute, const void *val
     return CKR_ARGUMENTS_BAD;
   }
 
-  // Always update the value length
+  CK_ULONG capacity = attribute->ulValueLen;
   attribute->ulValueLen = cbValue;
 
   // If pValue is NULL, we're just querying the required size
@@ -158,7 +158,7 @@ static CK_RV setSingleAttributeValue(CK_ATTRIBUTE_PTR attribute, const void *val
   }
 
   // Check if the provided buffer is large enough
-  if (attribute->ulValueLen < cbValue) {
+  if (capacity < cbValue) {
     return CKR_BUFFER_TOO_SMALL;
   }
 
@@ -199,9 +199,9 @@ static void extractObjectInfo(CK_OBJECT_HANDLE hObject, CK_SLOT_ID *slotId, CK_O
  * @return CK_KEY_TYPE The corresponding key type
  */
 static CK_KEY_TYPE algoType2KeyType(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
-  if (algorithmType == session->mldsa65Algorithm)
+  if (session->mldsa65Algorithm != 0 && algorithmType == session->mldsa65Algorithm)
     return CKK_ML_DSA;
-  if (algorithmType == session->mlkem768Algorithm)
+  if (session->mlkem768Algorithm != 0 && algorithmType == session->mlkem768Algorithm)
     return CKK_ML_KEM;
   switch (algorithmType) {
   case PIV_ALG_RSA_2048:
@@ -336,6 +336,8 @@ CK_RV CNK_GetSessionSecretKey(CNK_PKCS11_SESSION *session, CK_OBJECT_HANDLE obje
 CK_RV CNK_CreateSessionSecretKey(CNK_PKCS11_SESSION *session, const CNK_PKCS11_SECRET_KEY_OBJECT *prototype,
                                  CK_OBJECT_HANDLE_PTR object) {
   CNK_ENSURE_NONNULL(session, prototype, object);
+  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
+  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
   if (prototype->token || prototype->valueLen == 0 || prototype->valueLen > sizeof(prototype->value) ||
       prototype->labelLen > sizeof(prototype->label))
     CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "Invalid session secret-key prototype");
@@ -1860,8 +1862,10 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
   }
 
   case CKA_VALUE:
-    if (keyType == CKK_ML_DSA || keyType == CKK_ML_KEM)
+    if ((keyType == CKK_ML_DSA || keyType == CKK_ML_KEM) && pbPublicPoint != NULL && cbPublicPoint > 0)
       rv = setSingleAttributeValue(attribute, pbPublicPoint, cbPublicPoint);
+    else if (keyType == CKK_ML_DSA || keyType == CKK_ML_KEM)
+      rv = CKR_DEVICE_ERROR;
     else
       rv = CKR_ATTRIBUTE_TYPE_INVALID;
     break;

@@ -572,10 +572,14 @@ int main(int argc, char **argv) {
   }
 #ifdef _WIN32
   HMODULE library = LoadLibraryA(argv[1]);
+  if (library == NULL)
+    return 1;
   CK_C_GetInterface getInterface = (CK_C_GetInterface)GetProcAddress(library, "C_GetInterface");
   CNK_LOGIN_PIN_MANAGED loginPinManaged = (CNK_LOGIN_PIN_MANAGED)GetProcAddress(library, "C_CNK_LoginPinManaged");
 #else
   void *library = dlopen(argv[1], RTLD_NOW);
+  if (library == NULL)
+    return 1;
   CK_C_GetInterface getInterface = (CK_C_GetInterface)dlsym(library, "C_GetInterface");
   CNK_LOGIN_PIN_MANAGED loginPinManaged = (CNK_LOGIN_PIN_MANAGED)dlsym(library, "C_CNK_LoginPinManaged");
 #endif
@@ -601,6 +605,8 @@ int main(int argc, char **argv) {
   CK_ULONG slotCount = 1;
   CK_SLOT_ID slot;
   CHECK(functions->C_GetSlotList(CK_TRUE, &slot, &slotCount));
+  if (slotCount == 0)
+    return 1;
   CK_SESSION_HANDLE pinManagedSession;
   CHECK(functions->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &pinManagedSession));
   CK_RV pinManagedRv = loginPinManaged(pinManagedSession, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin));

@@ -32,6 +32,13 @@ static ReaderInfo *known_readers = NULL;
 static CK_LONG known_reader_count = 0;
 static CK_SLOT_ID next_reader_slot_id = 0;
 
+static void freeScopedBuffer(CK_BYTE **buffer) {
+  if (buffer != NULL && *buffer != NULL) {
+    ck_free(*buffer);
+    *buffer = NULL;
+  }
+}
+
 // Reader indexes can change after PnP refresh. Keep a name-to-slot registry for
 // the initialized lifetime so existing sessions and removal events stay stable.
 static CK_RV getStableReaderSlot(const char *name, CK_SLOT_ID *slotId) {
@@ -1411,9 +1418,13 @@ static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESS
   if (rv != CKR_OK)
     return rv;
 
-  // Now construct the PIV TLV structure for GENERAL AUTHENTICATE
-  // Buffer for TLV data structure (tag + length + value)
-  CK_BYTE tlv_data[CNK_PIV_MAX_GENERAL_AUTH_INPUT + 16];
+  // Size the transient template to this request instead of consuming about
+  // 64 KiB from an arbitrary host application's thread stack.
+  CK_BYTE *tlv_data __attribute__((cleanup(freeScopedBuffer))) = ck_malloc(cbDataLen + 16);
+  if (tlv_data == NULL) {
+    cnk_disconnect_card(hCard);
+    return CKR_HOST_MEMORY;
+  }
   CK_ULONG tlv_len = 0;
 
   // Start with the outer Dynamic Authentication Template (tag 0x7C)
