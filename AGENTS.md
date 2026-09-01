@@ -208,6 +208,11 @@ Write-path notes:
   and maps to Reset Retry Counter (`00 2C 00 80 10 puk new-pin`). CanoKey
   core's PIV applet implements these APDUs with the same fixed 8-byte,
   `0xFF`-padded fields.
+- `C_CNK_LoginPinManaged()` checks Yubico-compatible ADMIN DATA (`5FFF00`)
+  for bit `0x02`, reads the PIN-protected management key from PRINTED
+  (`5FC109`), verifies it, and clears all temporary data before returning.
+  Keep ADMIN DATA and PRINTED parsing inside this extension so managed callers
+  never receive the raw management key.
 - `CKF_RNG` is intentionally not advertised because CanoKey PIV does not expose
   a random-generation APDU through this module.
 - `CKA_CNK_PIV_PIN_POLICY` and `CKA_CNK_PIV_TOUCH_POLICY` are public

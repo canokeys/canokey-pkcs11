@@ -67,6 +67,11 @@ CK_DEFINE_FUNCTION(CK_RV, C_CNK_Login)(CK_SESSION_HANDLE hSession, CK_USER_TYPE 
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_LoginProtectedManagementKey)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pKey,
                                                              CK_ULONG ulKeyLen);
 
+// Authenticate the user PIN and, when ADMIN DATA marks the token as
+// PIN-protected, recover and authenticate the management key without exposing
+// it to the caller.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_LoginPinManaged)(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen);
+
 // Read one PIV data object by its full BER-TLV tag. A NULL output buffer
 // queries the required length. PIN-protected objects require a cached CKU_USER
 // login and are read through that session.

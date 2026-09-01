@@ -7,8 +7,114 @@
 #include "pkcs11_canokey.h"
 
 #include <mbedtls/platform.h>
+#include <mbedtls/platform_util.h>
 #include <nsync_malloc.h>
 #include <stdlib.h>
+#include <string.h>
+
+#define CNK_ADMIN_DATA_MAX_LEN 128
+#define CNK_PIN_PROTECTED_DATA_MAX_LEN 64
+#define CNK_MANAGEMENT_KEY_LEN 24
+#define CNK_ADMIN_PIN_PROTECTED_BIT 0x02
+
+static const CK_BYTE CNK_ADMIN_DATA_TAG[] = {0x5F, 0xFF, 0x00};
+static const CK_BYTE CNK_PRINTED_INFORMATION_TAG[] = {0x5F, 0xC1, 0x09};
+
+static CK_RV readTlv(const CK_BYTE *data, CK_ULONG dataLen, CK_ULONG_PTR offset, CK_BYTE expectedTag,
+                     const CK_BYTE **value, CK_ULONG_PTR valueLen) {
+  CNK_ENSURE_NONNULL(data, offset, value, valueLen);
+  if (*offset >= dataLen || data[*offset] != expectedTag)
+    return CKR_DATA_INVALID;
+
+  CK_ULONG cursor = *offset + 1;
+  CK_LONG fail = 0;
+  CK_ULONG lengthSize = 0;
+  CK_ULONG length = tlvGetLengthSafe(data + cursor, dataLen - cursor, &fail, &lengthSize);
+  if (fail)
+    return CKR_DATA_INVALID;
+  cursor += lengthSize;
+  if (length > dataLen - cursor)
+    return CKR_DATA_INVALID;
+
+  *value = data + cursor;
+  *valueLen = length;
+  *offset = cursor + length;
+  return CKR_OK;
+}
+
+static CK_RV checkPinManagedAdminData(const CK_BYTE *data, CK_ULONG dataLen) {
+  CK_ULONG offset = 0;
+  const CK_BYTE *outer;
+  CK_ULONG outerLen;
+  if (readTlv(data, dataLen, &offset, 0x53, &outer, &outerLen) != CKR_OK || offset != dataLen)
+    return CKR_DATA_INVALID;
+
+  offset = 0;
+  const CK_BYTE *admin;
+  CK_ULONG adminLen;
+  if (readTlv(outer, outerLen, &offset, 0x80, &admin, &adminLen) != CKR_OK || offset != outerLen)
+    return CKR_DATA_INVALID;
+
+  CK_BBOOL sawBitField = CK_FALSE;
+  CK_BBOOL sawSalt = CK_FALSE;
+  CK_BBOOL sawDate = CK_FALSE;
+  CK_BBOOL pinProtected = CK_FALSE;
+  offset = 0;
+  while (offset < adminLen) {
+    CK_BYTE tag = admin[offset];
+    const CK_BYTE *value;
+    CK_ULONG valueLen;
+    if (readTlv(admin, adminLen, &offset, tag, &value, &valueLen) != CKR_OK)
+      return CKR_DATA_INVALID;
+    switch (tag) {
+    case 0x81:
+      if (sawBitField || valueLen != 1)
+        return CKR_DATA_INVALID;
+      sawBitField = CK_TRUE;
+      pinProtected = (value[0] & CNK_ADMIN_PIN_PROTECTED_BIT) != 0;
+      break;
+    case 0x82:
+      if (sawSalt || (valueLen != 0 && valueLen != 16))
+        return CKR_DATA_INVALID;
+      sawSalt = CK_TRUE;
+      break;
+    case 0x83:
+      if (sawDate || valueLen > 8)
+        return CKR_DATA_INVALID;
+      sawDate = CK_TRUE;
+      break;
+    default:
+      return CKR_DATA_INVALID;
+    }
+  }
+
+  return sawBitField && pinProtected ? CKR_OK : CKR_DATA_INVALID;
+}
+
+static CK_RV parsePinProtectedManagementKey(const CK_BYTE *data, CK_ULONG dataLen,
+                                            CK_BYTE managementKey[CNK_MANAGEMENT_KEY_LEN]) {
+  CK_ULONG offset = 0;
+  const CK_BYTE *outer;
+  CK_ULONG outerLen;
+  if (readTlv(data, dataLen, &offset, 0x53, &outer, &outerLen) != CKR_OK || offset != dataLen)
+    return CKR_DATA_INVALID;
+
+  offset = 0;
+  const CK_BYTE *container;
+  CK_ULONG containerLen;
+  if (readTlv(outer, outerLen, &offset, 0x88, &container, &containerLen) != CKR_OK || offset != outerLen)
+    return CKR_DATA_INVALID;
+
+  offset = 0;
+  const CK_BYTE *key;
+  CK_ULONG keyLen;
+  if (readTlv(container, containerLen, &offset, 0x89, &key, &keyLen) != CKR_OK || offset != containerLen ||
+      keyLen != CNK_MANAGEMENT_KEY_LEN)
+    return CKR_DATA_INVALID;
+
+  memcpy(managementKey, key, keyLen);
+  return CKR_OK;
+}
 
 // Function pointers for memory allocation (global)
 CNK_MALLOC_FUNC g_cnk_malloc_func = malloc;
@@ -60,6 +166,48 @@ CK_RV C_CNK_GetPivData(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pTag, CK_ULONG ul
   CNK_PKCS11_SESSION *session;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   return cnk_get_piv_data_by_tag_with_session(session->slotId, session, pTag, ulTagLen, pValue, pulValueLen, CK_TRUE);
+}
+
+CK_RV C_CNK_LoginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+  CNK_LOG_FUNC(": hSession: %lu, pPin: %p, ulPinLen: %lu", hSession, pPin, ulPinLen);
+  CNK_ENSURE_INITIALIZED();
+  CNK_ENSURE_NONNULL(pPin);
+
+  CK_RV rv = C_CNK_Login(hSession, CKU_USER, pPin, ulPinLen, NULL);
+  if (rv != CKR_OK && rv != CKR_USER_ALREADY_LOGGED_IN)
+    return rv;
+
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (cnk_token_management_key_is_cached(session))
+    return CKR_OK;
+
+  CK_BYTE adminData[CNK_ADMIN_DATA_MAX_LEN];
+  CK_BYTE protectedData[CNK_PIN_PROTECTED_DATA_MAX_LEN];
+  CK_BYTE managementKey[CNK_MANAGEMENT_KEY_LEN];
+  CK_ULONG dataLen = sizeof(adminData);
+
+  rv = cnk_get_piv_data_by_tag_with_session(session->slotId, session, CNK_ADMIN_DATA_TAG, sizeof(CNK_ADMIN_DATA_TAG),
+                                            adminData, &dataLen, CK_TRUE);
+  if (rv == CKR_OK)
+    rv = checkPinManagedAdminData(adminData, dataLen);
+
+  if (rv == CKR_OK) {
+    dataLen = sizeof(protectedData);
+    rv = cnk_get_piv_data_by_tag_with_session(session->slotId, session, CNK_PRINTED_INFORMATION_TAG,
+                                              sizeof(CNK_PRINTED_INFORMATION_TAG), protectedData, &dataLen, CK_TRUE);
+  }
+  if (rv == CKR_OK)
+    rv = parsePinProtectedManagementKey(protectedData, dataLen, managementKey);
+  if (rv == CKR_OK)
+    rv = C_CNK_LoginProtectedManagementKey(hSession, managementKey, sizeof(managementKey));
+  if (rv == CKR_USER_ALREADY_LOGGED_IN)
+    rv = CKR_OK;
+
+  mbedtls_platform_zeroize(managementKey, sizeof(managementKey));
+  mbedtls_platform_zeroize(protectedData, sizeof(protectedData));
+  mbedtls_platform_zeroize(adminData, sizeof(adminData));
+  return rv;
 }
 
 CK_RV C_CNK_SetPIN(CK_SESSION_HANDLE hSession, CK_BYTE pinType, CK_UTF8CHAR_PTR pOldPin, CK_ULONG ulOldLen,

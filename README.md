@@ -123,6 +123,12 @@ remaining retries for the selected secret. Standard `C_SetPIN()` forwards to
 `C_CNK_SetPIN(..., CNK_PIV_PIN_TYPE_PIN, ..., NULL)`. `C_CNK_UnblockPIN()`
 uses the PUK to reset the PIV PIN and can return the remaining PUK tries.
 
+`C_CNK_LoginPinManaged()` performs a USER PIN login and then checks the
+Yubico-compatible ADMIN DATA flag before reading the PIN-protected management
+key from PRINTED. It verifies and caches that key internally, so callers do not
+need to handle the raw management key. Temporary ADMIN DATA, PRINTED, and key
+buffers are cleared before the function returns.
+
 Standard PIV data objects are exposed as `CKO_DATA` token objects when the card
 reports that they exist. Enumeration probes a fixed table of common PIV data
 objects, including CHUID, card capability container, discovery object,

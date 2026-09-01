@@ -19,6 +19,8 @@
     }                                                                                                                  \
   } while (0)
 
+typedef CK_RV (*CNK_LOGIN_PIN_MANAGED)(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen);
+
 static void makeKeyTemplates(CK_BYTE *id, CK_KEY_TYPE *keyType, CK_ULONG *parameterSet, CK_ATTRIBUTE publicTemplate[5],
                              CK_ATTRIBUTE privateTemplate[7]) {
   static CK_OBJECT_CLASS publicClass = CKO_PUBLIC_KEY, privateClass = CKO_PRIVATE_KEY;
@@ -211,11 +213,13 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
   HMODULE library = LoadLibraryA(argv[1]);
   CK_C_GetInterface getInterface = (CK_C_GetInterface)GetProcAddress(library, "C_GetInterface");
+  CNK_LOGIN_PIN_MANAGED loginPinManaged = (CNK_LOGIN_PIN_MANAGED)GetProcAddress(library, "C_CNK_LoginPinManaged");
 #else
   void *library = dlopen(argv[1], RTLD_NOW);
   CK_C_GetInterface getInterface = (CK_C_GetInterface)dlsym(library, "C_GetInterface");
+  CNK_LOGIN_PIN_MANAGED loginPinManaged = (CNK_LOGIN_PIN_MANAGED)dlsym(library, "C_CNK_LoginPinManaged");
 #endif
-  if (library == NULL || getInterface == NULL)
+  if (library == NULL || getInterface == NULL || loginPinManaged == NULL)
     return 1;
 
   CK_VERSION version = {3, 2};
@@ -237,6 +241,11 @@ int main(int argc, char **argv) {
   CK_ULONG slotCount = 1;
   CK_SLOT_ID slot;
   CHECK(functions->C_GetSlotList(CK_TRUE, &slot, &slotCount));
+  CK_SESSION_HANDLE pinManagedSession;
+  CHECK(functions->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &pinManagedSession));
+  CHECK(loginPinManaged(pinManagedSession, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin)));
+  CHECK(functions->C_Logout(pinManagedSession));
+  CHECK(functions->C_CloseSession(pinManagedSession));
   if (testFunctionListAndSessions(functions, slot, pin) != 0)
     return 1;
   CK_SESSION_HANDLE session;
