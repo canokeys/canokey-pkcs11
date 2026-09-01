@@ -187,6 +187,8 @@ CK_RV C_GenerateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
 
   CNK_PKCS11_SESSION *session;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  // C_GenerateKey is intentionally host-side and session-only. Advertising
+  // these mechanisms does not imply a card RNG or persistent symmetric store.
   CNK_PKCS11_SECRET_KEY_OBJECT prototype = {0};
   prototype.keyType = expectedKeyType;
   prototype.private = CK_TRUE;
@@ -290,6 +292,8 @@ CK_RV C_GenerateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
     memcpy(prototype.label, defaultLabel, prototype.labelLen);
   }
 
+  // Generate directly into the temporary prototype and erase it after the
+  // session allocator has copied the value.
   psa_status_t status = psa_generate_random(prototype.value, prototype.valueLen);
   if (status != PSA_SUCCESS) {
     mbedtls_platform_zeroize(&prototype, sizeof(prototype));
@@ -605,6 +609,8 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   if (labelLen > sizeof(session->secretKeys[0].label))
     CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "derived key label is too long");
 
+  // The card returns the raw big-endian ECDH X coordinate. CKD_NULL preserves
+  // it; the X9.63 KDF variants expand it before constructing the session key.
   CK_BYTE sharedSecret[CNK_MAX_ECDH_SECRET_LEN] = {0};
   CK_ULONG sharedSecretLen = sizeof(sharedSecret);
   CK_RV rv = cnk_piv_ecdh(session->slotId, session, algorithmType, pivTag, pinPolicy, params->pPublicData,
@@ -663,6 +669,7 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
 
   rv = CNK_CreateSessionSecretKey(session, &prototype, phKey);
 
+  // Neither the raw agreement nor the KDF output may outlive this call.
   mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
   mbedtls_platform_zeroize(derivedSecret, sizeof(derivedSecret));
   mbedtls_platform_zeroize(&prototype, sizeof(prototype));

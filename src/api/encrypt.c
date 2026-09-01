@@ -104,6 +104,8 @@ static CK_RV copyRsaCryptMechanism(CK_MECHANISM *destination, const CK_MECHANISM
     CNK_RET_OK;
 
   CNK_ENSURE_NONNULL(mechanism->pParameter);
+  // OAEP embeds a caller-owned label pointer. Keep the params and label in one
+  // allocation so an active operation never depends on caller buffer lifetime.
   CK_ULONG allocationLen = mechanism->ulParameterLen;
   if (mechanism->mechanism == CKM_RSA_PKCS_OAEP) {
     const CK_RSA_PKCS_OAEP_PARAMS *params = (const CK_RSA_PKCS_OAEP_PARAMS *)mechanism->pParameter;
@@ -193,6 +195,8 @@ CK_RV C_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   CNK_ENSURE_OK(CNK_ValidateObject(hKey, session, CKO_PUBLIC_KEY, &objectId));
   CNK_ENSURE_OK(CNK_ObjectIdToPivTag(objectId, &pivSlot));
 
+  // Encryption is a host public-key operation; metadata supplies the public
+  // components while the private key remains on the card for C_Decrypt.
   CK_BYTE algorithmType;
   CK_BYTE publicKey[2048];
   CK_ULONG publicKeyLen = sizeof(publicKey);
@@ -232,6 +236,8 @@ CK_RV C_Encrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLe
   }
 
   CK_ULONG modulusLen = session->encryptingContext.modulusLen;
+  // Length queries and short buffers must preserve the initialized operation
+  // so callers can retry without another C_EncryptInit.
   if (pEncryptedData == NULL) {
     *pulEncryptedDataLen = modulusLen;
     CNK_RET_OK;
@@ -254,6 +260,8 @@ CK_RV C_Encrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLe
     goto cleanup;
   }
   memset(encoded, 0, modulusLen);
+  // Encode the message first, then perform exactly one raw RSA public
+  // operation for all three supported mechanisms.
   switch (session->encryptingContext.mechanism.mechanism) {
   case CKM_RSA_X_509:
     if (ulDataLen > modulusLen) {
@@ -391,6 +399,8 @@ CK_RV C_Decrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pEncryptedData, CK_ULONG
   CK_ULONG cbRawData = sizeof(rawData);
 
   if (pData == NULL_PTR) {
+    // This is an upper bound for padded modes. No card operation occurs, and
+    // the decrypt context remains active for the real call.
     CNK_ENSURE_OK(getDecryptOutputUpperBound(&session->decryptingContext, pulDataLen));
     CNK_RET_OK;
   }

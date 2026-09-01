@@ -15,6 +15,8 @@
 
 CK_RV cnk_rsa_public(const CK_BYTE *modulus, CK_ULONG modulusLen, const CK_BYTE *exponent, CK_ULONG exponentLen,
                      const CK_BYTE *input, CK_ULONG inputLen, CK_BYTE *output) {
+  // This is the common host primitive for RSA Encrypt and Verify. Inputs and
+  // outputs are fixed-width big-endian encoded messages.
   CNK_ENSURE_NONNULL(modulus, exponent, input, output);
   if (inputLen != modulusLen)
     return CKR_DATA_LEN_RANGE;
@@ -327,6 +329,7 @@ cleanup:
 }
 
 static CK_RV mgf1(const CK_BYTE *seed, CK_ULONG seed_len, CK_BYTE *mask, CK_ULONG mask_len, mbedtls_md_type_t md_type) {
+  // RFC 8017 MGF1 hashes seed || I2OSP(counter, 4) until the mask is full.
   const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(md_type);
   if (md_info == NULL)
     return CKR_MECHANISM_PARAM_INVALID;
@@ -371,6 +374,7 @@ CK_RV pkcs1_v1_5_encrypt_pad(const CK_BYTE *input, CK_ULONG inputLen, CK_BYTE *o
   if (outputLen < 11 || inputLen > outputLen - 11)
     return CKR_DATA_LEN_RANGE;
 
+  // EME-PKCS1-v1_5 uses block type 2 and requires every PS byte to be nonzero.
   CK_ULONG paddingLen = outputLen - inputLen - 3;
   output[0] = 0;
   output[1] = 2;
@@ -404,6 +408,8 @@ CK_RV oaep_pad(const CK_BYTE *input, CK_ULONG inputLen, CK_BYTE *output, CK_ULON
   if (outputLen < 2 * hashLen + 2 || inputLen > outputLen - 2 * hashLen - 2)
     return CKR_DATA_LEN_RANGE;
 
+  // Build EM = 0x00 || maskedSeed || maskedDB in the caller's modulus-sized
+  // buffer. PKCS#11 permits hashAlg and MGF to use different digests.
   CK_ULONG dbLen = outputLen - hashLen - 1;
   CK_BYTE *seed = output + 1;
   CK_BYTE *db = output + 1 + hashLen;
@@ -472,6 +478,7 @@ CK_RV pss_verify(const CK_BYTE *hash, CK_ULONG hashLen, const CK_BYTE *modulus, 
   if (encoded[encodedLen - 1] != 0xBC)
     return CKR_SIGNATURE_INVALID;
 
+  // Reverse EMSA-PSS: unmask DB, validate PS || 0x01 || salt, then recompute H.
   CK_ULONG dbLen = encodedLen - expectedHashLen - 1;
   CK_BYTE *db = ck_malloc(dbLen);
   CK_BYTE *mask = ck_malloc(dbLen);

@@ -334,6 +334,8 @@ static CK_BBOOL matchTemplate(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObje
                               CK_ULONG ulCount);
 
 static CK_OBJECT_HANDLE makeObjectHandle(CK_SLOT_ID slotId, CK_OBJECT_CLASS objectClass, CK_BYTE objectId) {
+  // Session secrets share the normal handle encoding but use IDs >= 0x80,
+  // outside the fixed PIV object-ID range.
   return (slotId << OBJECT_SLOT_SHIFT) | (objectClass << OBJECT_CLASS_SHIFT) | objectId;
 }
 
@@ -389,6 +391,8 @@ CK_RV CNK_CreateSessionSecretKey(CNK_PKCS11_SESSION *session, const CNK_PKCS11_S
   if (prototype->keyType != CKK_GENERIC_SECRET && prototype->keyType != CKK_AES)
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "Unsupported session secret-key type");
 
+  // Allocate storage and a handle ID independently: destroyed array entries
+  // are reusable, while a live handle ID must never alias another live key.
   CK_ULONG index = MAX_SESSION_SECRET_KEYS;
   for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
     if (!session->secretKeys[i].active) {
@@ -415,6 +419,7 @@ CK_RV CNK_CreateSessionSecretKey(CNK_PKCS11_SESSION *session, const CNK_PKCS11_S
       newId = CNK_SESSION_SECRET_KEY_FIRST_ID;
   }
 
+  // Clear reused storage before copying the caller's fully validated prototype.
   CNK_PKCS11_SECRET_KEY_OBJECT *secret = &session->secretKeys[index];
   mbedtls_platform_zeroize(secret, sizeof(*secret));
   memcpy(secret, prototype, sizeof(*secret));
@@ -432,6 +437,9 @@ CK_RV CNK_CreateSessionSecretKey(CNK_PKCS11_SESSION *session, const CNK_PKCS11_S
 
 static CK_RV applyMutableSecretAttributes(CNK_PKCS11_SECRET_KEY_OBJECT *secret, CK_ATTRIBUTE_PTR attributes,
                                           CK_ULONG attributeCount) {
+  // Callers apply this to a temporary object and commit only after the complete
+  // template succeeds, so a late read-only/invalid attribute cannot half-update
+  // a live key.
   CNK_ENSURE_NONNULL(secret);
   if (attributeCount > 0)
     CNK_ENSURE_NONNULL(attributes);
@@ -1337,6 +1345,7 @@ CK_RV C_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTR
     CNK_RETURN(CKR_ACTION_PROHIBITED, "Session secret key is not copyable");
 
   CNK_PKCS11_SECRET_KEY_OBJECT copy = *source;
+  // The local copy also keeps raw key bytes; zero it on every return path.
   rv = applyMutableSecretAttributes(&copy, pTemplate, ulCount);
   if (rv == CKR_OK)
     rv = CNK_CreateSessionSecretKey(session, &copy, phNewObject);
@@ -1744,6 +1753,8 @@ CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       CNK_RET_OK;
     if (!secret->modifiable)
       CNK_RETURN(CKR_ACTION_PROHIBITED, "Session secret key is not modifiable");
+    // Validate transactionally because PKCS#11 templates have no defined
+    // partial-update semantics.
     CNK_PKCS11_SECRET_KEY_OBJECT updated = *secret;
     CK_RV rv = applyMutableSecretAttributes(&updated, pTemplate, ulCount);
     if (rv == CKR_OK)

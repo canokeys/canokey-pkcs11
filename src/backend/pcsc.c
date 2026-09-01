@@ -309,6 +309,8 @@ void cnk_cleanup_pcsc(void) {
   }
 
   if (g_cnk_pcsc_context) {
+    // Wake a thread blocked in SCardGetStatusChange before releasing the
+    // context that backs C_WaitForSlotEvent.
     SCardCancel(g_cnk_pcsc_context);
     SCardReleaseContext(g_cnk_pcsc_context);
     g_cnk_pcsc_context = 0;
@@ -346,6 +348,8 @@ CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   CNK_ENSURE_OK(cnk_list_readers());
 
+  // Copy names and slot IDs because the global reader list may be refreshed by
+  // a PnP notification while SCardGetStatusChange is blocked.
   cnk_mutex_lock(&g_cnk_readers_mutex);
   CK_ULONG readerCount = (CK_ULONG)g_cnk_num_readers;
   SCARD_READERSTATE *states = ck_calloc(readerCount + 1, sizeof(*states));
@@ -371,9 +375,13 @@ CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
     states[i].szReader = name;
     slotIds[i] = g_cnk_readers[i].slot_id;
   }
+  // The PC/SC pseudo-reader reports reader arrival/removal even when there are
+  // currently no CanoKey readers to place in the status array.
   states[readerCount].szReader = "\\\\?PnP?\\Notification";
   cnk_mutex_unlock(&g_cnk_readers_mutex);
 
+  // The first zero-timeout call establishes a baseline. The second call then
+  // reports only changes after this invocation, matching PKCS#11 wait semantics.
   LONG pcscRv = SCardGetStatusChange(g_cnk_pcsc_context, 0, states, readerCount + 1);
   if (pcscRv == SCARD_S_SUCCESS) {
     for (CK_ULONG i = 0; i <= readerCount; i++)
@@ -2075,6 +2083,8 @@ CK_RV cnk_get_piv_metadata_directory(CK_SLOT_ID slotID, CNK_PIV_METADATA_DIRECTO
     rv = CKR_DEVICE_ERROR;
     goto cleanup;
   }
+  // INS F7/P1=01 is a CanoKey 5.7+ extension. Gate it on the firmware APDU so
+  // older PIV implementations never receive an unknown extension command.
   if (versionResponse[versionResponseLen - 2] != 0x90 || versionResponse[versionResponseLen - 1] != 0x00 ||
       versionResponseLen != 5 || versionResponse[0] < 5 || (versionResponse[0] == 5 && versionResponse[1] < 7)) {
     rv = CKR_FUNCTION_NOT_SUPPORTED;

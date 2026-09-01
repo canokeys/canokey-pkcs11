@@ -121,6 +121,9 @@ static int exercisePqcPrivateOperations(CK_FUNCTION_LIST_3_2_PTR functions, CK_S
   return 0;
 }
 
+// Exercise the mutable surface of host-resident session keys without changing
+// any additional PIV slots. A rejected update also checks transactional
+// rollback.
 static int testSessionSecretLifecycle(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE session) {
   CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
   CK_KEY_TYPE genericType = CKK_GENERIC_SECRET;
@@ -266,6 +269,7 @@ static CK_RV findKeyPair(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE s
   return count == 1 ? CKR_OK : CKR_KEY_HANDLE_INVALID;
 }
 
+// Sign on-card and verify on-host across raw, combined-hash, and streaming APIs.
 static int exerciseVerify(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE session) {
   CK_OBJECT_HANDLE rsaPublic, rsaPrivate;
   CHECK(findKeyPair(functions, session, CKK_RSA, CKA_SIGN, &rsaPublic, &rsaPrivate));
@@ -366,6 +370,8 @@ static int encryptDecryptRoundTrip(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSIO
   return recoveredLen == plaintextLen && memcmp(recovered, plaintext, plaintextLen) == 0 ? 0 : 1;
 }
 
+// Host encryption must round-trip through the corresponding on-card private
+// operation; OAEP also checks that C_EncryptInit deep-copies its label.
 static int exerciseEncrypt(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE session) {
   CK_OBJECT_HANDLE publicKey, privateKey;
   CHECK(findKeyPair(functions, session, CKK_RSA, CKA_DECRYPT, &publicKey, &privateKey));

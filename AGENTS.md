@@ -61,6 +61,10 @@ TF-PSA-Crypto migration.
 
 - Before committing C source or header changes, run `clang-format` on the
   touched `.c` and `.h` files only. Do not run `clang-format` on CMake files.
+- Add succinct comments for non-obvious invariants and boundaries: sensitive
+  data ownership/zeroization, operation-state lifetime, two-stage output
+  retries, wire encodings, endianness, and host-versus-card responsibilities.
+  Do not add comments that merely restate the next line of code.
 - The VS bundled formatter is:
   `C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin\clang-format.exe`
 - Commit messages must follow Conventional Commits, include enough detail in the
@@ -89,9 +93,11 @@ Useful follow-up probes:
 & 'C:\Program Files\OpenSC Project\OpenSC\tools\pkcs11-tool.exe' --module "$PWD\build-ninja-clangcl-x64\canokey-pkcs11.dll" --list-objects --slot-index 0
 ```
 
-## Real CanoKey Probe Notes
+## Historical CanoKey Probe Notes
 
-With a CanoKey inserted, `opensc-tool --list-readers` reported:
+These observations came from an earlier, mostly empty development-card state.
+They are useful compatibility history, not the current object inventory.
+`opensc-tool --list-readers` reported:
 
 ```text
 0    Yes             canokeys.org OpenPGP PIV OATH 0
@@ -146,16 +152,19 @@ Management Key: 010203040506070801020304050607080102030405060708
 Prepared objects on the current key:
 
 ```text
-ID 01 -> slot 9A -> RSA-2048 key and certificate
-ID 02 -> slot 9C -> EC P-256 key and certificate
+ID 01 -> slot 9A -> EC P-256 key
+ID 02 -> slot 9C -> EC P-256 key
+ID 03 -> slot 9D -> EC P-256 key
+ID 04 -> slot 9E -> RSA-2048 key
+ID 05 -> slot 82 -> EC P-256 key
+ID 06 -> slot 83 -> EC P-384 key
+ID 17 -> slot 94 -> ML-DSA-65 key
+ID 18 -> slot 95 -> ML-KEM-768 key
 ```
 
-Generated test artifacts are under:
-
-```text
-build-ninja-clangcl-x64\piv-9a-rsa-test\
-build-ninja-clangcl-x64\piv-9c-test\
-```
+Certificates are independent PIV data objects and may not exist for every key
+listed above. Re-enumerate metadata before relying on this table because
+destructive tests intentionally overwrite selected slots.
 
 OpenSC's own module is useful as an external comparison point:
 
@@ -179,9 +188,9 @@ Write-path notes:
   uses a 32-byte `CKA_SEED`; ML-KEM-768 uses a 64-byte `CKA_SEED` (`d || z`).
   Both require the matching `CKA_PARAMETER_SET`. Expanded-only `CKA_VALUE`
   import is unsupported because CanoKey persists the compact seed.
-- Object deletion is not implemented. CanoKey has PUT DATA and a special empty
-  certificate delete encoding, but there is no standard PIV APDU that deletes
-  both the certificate and private key with PKCS#11-style object semantics.
+- PIV token-object deletion is not implemented. Session secret keys are
+  securely destroyable, but there is no standard PIV APDU that deletes both a
+  certificate and private key with PKCS#11-style object semantics.
 - Windows minidriver `CardQueryFreeSpace` should report unknown free space for
   now. There is no PIV APDU for real object-store capacity, and adding one would
   require extending the CanoKey PIV applet.
@@ -261,7 +270,8 @@ RSA signing note:
 - CanoKey rejects the equivalent extended APDU form with `6700`.
 - OpenSC sends the RSA-2048 request as `10 87 07 9A FF <first 255 bytes>` followed by `00 87 07 9A 0B <last 11 bytes> 00`.
 
-Known-good real-hardware probes after the chaining fix:
+Known-good historical hardware probes after the chaining fix follow. Their
+slot IDs no longer match the current key inventory:
 
 ```powershell
 & 'C:\Program Files\OpenSC Project\OpenSC\tools\pkcs11-tool.exe' --module "$PWD\build-ninja-clangcl-x64\canokey-pkcs11.dll" --slot-index 0 --login --pin 123456 --sign --type privkey --id 01 --mechanism SHA256-RSA-PKCS --input-file .\build-ninja-clangcl-x64\piv-9a-rsa-test\rsa-message.txt --output-file .\build-ninja-clangcl-x64\piv-9a-rsa-test\rsa-message.sha256-rsa-pkcs.sig
@@ -303,17 +313,17 @@ Additional probes that passed:
 ## Current Implementation Shape
 
 - `src/api/`: exported PKCS#11 and CanoKey extension entry points, including
-  initialization, slots, sessions, objects, digesting, signing, encryption
-  stubs, and crypto extension stubs.
+  initialization, slots, sessions, objects, digesting, signing, host-side
+  verification/encryption, card-side decryption, and 3.x compatibility stubs.
 - `include/private/api/`: private declarations shared by the API entry-point
   source files.
 - `src/backend/`: card/backend integrations. `pcsc.c` handles PC/SC
   reader discovery, PIV AID selection, PIN verify/logout, GET DATA, metadata,
-  and GENERAL AUTHENTICATE signing.
+  and GENERAL AUTHENTICATE signing, RSA decryption, ECDH, and ML-KEM.
 - `include/private/backend/`: private backend-facing declarations.
 - `src/internal/`: implementation helpers that are not direct API entry points,
-  including logging, mutex wrappers, RSA padding/PSS helpers, TLV utilities, and
-  the PIV management-key 3DES block helper.
+  including logging, mutex wrappers, RSA padding/PSS helpers, ML-DSA/ML-KEM
+  wrappers, TLV utilities, and the PIV management-key 3DES block helper.
 - `include/private/internal/`: private helper declarations for the internal
   implementation layer.
 
@@ -330,9 +340,10 @@ PIV object IDs map to slots as:
 
 ## Known Gaps
 
-- Random generation, wrap/unwrap, multipart encrypt/decrypt, token-object
+- `C_GenerateRandom`, wrap/unwrap, multipart encrypt/decrypt, PIV token-object
   delete/set-attribute, and init PIN remain unsupported or return the
-  corresponding object-policy error.
+  corresponding object-policy error. `C_GenerateKey` does use host randomness
+  for session-only AES and generic-secret keys.
 - `C_GetObjectSize` is implemented as an approximate PKCS#11 object size based
   on readable attributes. `C_SetAttributeValue` validates object handles but
   treats PIV token attributes as read-only. `C_CopyObject` supports session

@@ -20,6 +20,9 @@
 static const CK_BYTE CNK_ADMIN_DATA_TAG[] = {0x5F, 0xFF, 0x00};
 static const CK_BYTE CNK_PRINTED_INFORMATION_TAG[] = {0x5F, 0xC1, 0x09};
 
+// Parse one bounded BER-TLV element and advance the caller-owned cursor. These
+// PIN-management objects are security decisions, so trailing or duplicate
+// fields are rejected by their higher-level parsers rather than ignored.
 static CK_RV readTlv(const CK_BYTE *data, CK_ULONG dataLen, CK_ULONG_PTR offset, CK_BYTE expectedTag,
                      const CK_BYTE **value, CK_ULONG_PTR valueLen) {
   CNK_ENSURE_NONNULL(data, offset, value, valueLen);
@@ -43,6 +46,8 @@ static CK_RV readTlv(const CK_BYTE *data, CK_ULONG dataLen, CK_ULONG_PTR offset,
 }
 
 static CK_RV checkPinManagedAdminData(const CK_BYTE *data, CK_ULONG dataLen) {
+  // Yubico ADMIN DATA: 53 { 80 { 81 bit-field, [82 salt], [83 date] } }.
+  // Bit 0x02 is the explicit opt-in to reading a key from PRINTED.
   CK_ULONG offset = 0;
   const CK_BYTE *outer;
   CK_ULONG outerLen;
@@ -93,6 +98,8 @@ static CK_RV checkPinManagedAdminData(const CK_BYTE *data, CK_ULONG dataLen) {
 
 static CK_RV parsePinProtectedManagementKey(const CK_BYTE *data, CK_ULONG dataLen,
                                             CK_BYTE managementKey[CNK_MANAGEMENT_KEY_LEN]) {
+  // PIN-protected PRINTED: 53 { 88 { 89 <24-byte management key> } }.
+  // Require exact nesting so unrelated PRINTED data cannot be used as a key.
   CK_ULONG offset = 0;
   const CK_BYTE *outer;
   CK_ULONG outerLen;
@@ -173,6 +180,8 @@ CK_RV C_CNK_LoginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK
   CNK_ENSURE_INITIALIZED();
   CNK_ENSURE_NONNULL(pPin);
 
+  // Keep USER login active while GET DATA reads PRINTED. The management-key
+  // cache is separate, allowing managed callers to retain normal USER state.
   CK_RV rv = C_CNK_Login(hSession, CKU_USER, pPin, ulPinLen, NULL);
   if (rv != CKR_OK && rv != CKR_USER_ALREADY_LOGGED_IN)
     return rv;
@@ -204,6 +213,7 @@ CK_RV C_CNK_LoginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK
   if (rv == CKR_USER_ALREADY_LOGGED_IN)
     rv = CKR_OK;
 
+  // None of the ADMIN/PRINTED payload or recovered key escapes this boundary.
   mbedtls_platform_zeroize(managementKey, sizeof(managementKey));
   mbedtls_platform_zeroize(protectedData, sizeof(protectedData));
   mbedtls_platform_zeroize(adminData, sizeof(adminData));

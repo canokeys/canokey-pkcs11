@@ -18,6 +18,8 @@ static CK_RV readBoolAttribute(CK_ATTRIBUTE_PTR attribute, CK_BBOOL *value) {
 
 static CK_RV createSharedSecret(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount,
                                 const CK_BYTE value[CNK_MLKEM768_SHARED_SECRET_BYTES], CK_OBJECT_HANDLE_PTR key) {
+  // Encapsulation and decapsulation converge here so both produce identical
+  // session-object defaults, policy validation, and handle allocation.
   CK_OBJECT_CLASS objectClass = CKO_SECRET_KEY;
   CK_KEY_TYPE keyType = CKK_GENERIC_SECRET;
   CK_ULONG valueLen = CNK_MLKEM768_SHARED_SECRET_BYTES;
@@ -128,6 +130,7 @@ static CK_RV createSharedSecret(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR at
   }
 
   CK_RV rv = CNK_CreateSessionSecretKey(session, &prototype, key);
+  // The allocator owns its copy; remove the second plaintext copy immediately.
   mbedtls_platform_zeroize(&prototype, sizeof(prototype));
   return rv;
 }

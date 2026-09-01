@@ -21,6 +21,8 @@ typedef enum {
   TOKEN_LOGIN_SO,
 } CNK_TOKEN_LOGIN_STATE;
 
+// Login credentials are shared by every session for one slot, as required by
+// PKCS#11. The lock protects state and both sensitive caches.
 typedef struct CNK_PKCS11_TOKEN_STATE {
   CK_SLOT_ID slotId;
   CNK_TOKEN_LOGIN_STATE loginState;
@@ -34,7 +36,8 @@ typedef struct CNK_PKCS11_TOKEN_STATE {
   struct CNK_PKCS11_TOKEN_STATE *next;
 } CNK_PKCS11_TOKEN_STATE;
 
-// Maximum number of session-only secret keys, currently produced by C_DeriveKey.
+// Maximum number of session-only secret keys produced by generation,
+// derivation, ML-KEM, or object copying.
 #define MAX_SESSION_SECRET_KEYS 8
 
 // Maximum number of objects that can be found (24 PIV slots x cert/public/private, 16 PIV data objects,
@@ -100,6 +103,8 @@ typedef struct {
   CK_ULONG contextPinLen;
 } CNK_PKCS11_DECRYPTING_CONTEXT;
 
+// Verify may own the shared digest context for combined-hash mechanisms, or a
+// buffered raw message for raw RSA/ECDSA and ML-DSA.
 typedef struct {
   CK_OBJECT_HANDLE hKey;
   CK_MECHANISM mechanism;

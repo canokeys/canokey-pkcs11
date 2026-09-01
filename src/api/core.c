@@ -325,6 +325,8 @@ static CK_FUNCTION_LIST ck_function_list = {{2, 40}, // PKCS #11 version 2.40
                                             C_CancelFunction,
                                             C_WaitForSlotEvent};
 
+// Generate the 3.2 table from the canonical declaration list. Unsupported
+// entries still point at type-correct stubs, so clients never dereference NULL.
 #define CK_PKCS11_FUNCTION_INFO(name) name,
 static CK_FUNCTION_LIST_3_2 ck_function_list_3_2 = {
     {3, 2},

@@ -260,6 +260,8 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
       CKM_ML_KEM,
   };
 
+  // Keep the four firmware-dependent PQC mechanisms last: older firmware uses
+  // the same table with that suffix removed after extension discovery fails.
   CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig;
   CK_BBOOL pqcSupported = cnk_get_piv_algorithm_extension(slotID, &algorithmConfig) == CKR_OK &&
                           algorithmConfig.enabled && algorithmConfig.mldsa65 != 0 && algorithmConfig.mlkem768 != 0;
@@ -305,6 +307,8 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
 
   case CKM_RSA_X_509:
   case CKM_RSA_PKCS:
+    // Sign/decrypt use the card, while verify/encrypt use the host. CKF_HW
+    // would incorrectly claim every advertised operation is hardware-backed.
     pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT | CKF_SIGN | CKF_VERIFY;
     pInfo->ulMinKeySize = 2048;
     pInfo->ulMaxKeySize = 4096;

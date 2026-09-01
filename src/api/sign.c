@@ -416,6 +416,8 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
     }
     session->signingContext.mdType = session->digestingContext.type;
   } else if (pMechanism->mechanism == CKM_RSA_PKCS_PSS) {
+    // Raw PSS receives a caller-supplied digest, so remember its hash without
+    // creating a streaming digest operation.
     const CK_RSA_PKCS_PSS_PARAMS *params = (const CK_RSA_PKCS_PSS_PARAMS *)pMechanism->pParameter;
     CNK_ENSURE_OK(cnk_hash_mech_to_md(params->hashAlg, &session->signingContext.mdType));
   }
@@ -632,6 +634,8 @@ static void resetVerifyingContext(CNK_PKCS11_SESSION *session) {
     mbedtls_platform_zeroize(session->verifyingContext.message, session->verifyingContext.messageCapacity);
     ck_free(session->verifyingContext.message);
   }
+  // Only combined-hash Verify owns digestingContext. Raw Verify may coexist
+  // with an independent C_Digest operation in the same session.
   CK_BBOOL ownsDigestContext = session->verifyingContext.ownsDigestContext;
   memset(&session->verifyingContext, 0, sizeof(session->verifyingContext));
   if (ownsDigestContext) {
@@ -647,6 +651,8 @@ static CK_RV appendVerifyingMessage(CNK_PKCS11_SESSION *session, const CK_BYTE *
   CNK_ENSURE_NONNULL(part);
   if (partLen > 65520 - session->verifyingContext.messageLen)
     CNK_RETURN(CKR_DATA_LEN_RANGE, "verification message is too large");
+  // Raw RSA/ECDSA and ML-DSA have no incremental host primitive here, so keep
+  // bounded input until VerifyFinal. Combined-hash mechanisms stream to MD.
   CK_ULONG required = session->verifyingContext.messageLen + partLen;
   if (required > session->verifyingContext.messageCapacity) {
     CK_ULONG capacity =
@@ -685,6 +691,8 @@ static CK_RV verifyRsaSignature(CNK_PKCS11_SESSION *session, const CK_BYTE *data
   CK_BYTE expected[512];
   if (modulusLen > sizeof(encoded))
     return CKR_KEY_SIZE_RANGE;
+  // RSA verification first recovers EM = signature^e mod n, then validates the
+  // mechanism-specific EMSA encoding without invoking the card.
   CK_RV rv = cnk_rsa_public(modulus, modulusLen, exponent, exponentLen, signature, signatureLen, encoded);
   if (rv != CKR_OK) {
     mbedtls_platform_zeroize(encoded, sizeof(encoded));
@@ -743,6 +751,7 @@ static CK_RV verifyEcSignature(CNK_PKCS11_SESSION *session, const CK_BYTE *data,
   default:
     return CKR_KEY_TYPE_INCONSISTENT;
   }
+  // PKCS#11 represents ECDSA signatures as fixed-width r || s, not ASN.1 DER.
   if (signatureLen != 2 * coordinateLen)
     return CKR_SIGNATURE_LEN_RANGE;
 
@@ -805,6 +814,8 @@ CK_RV C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_O
   CNK_ENSURE_OK(CNK_ValidateObject(hKey, session, CKO_PUBLIC_KEY, &objectId));
   CNK_ENSURE_OK(CNK_ObjectIdToPivTag(objectId, &pivSlot));
 
+  // Verification is host-side. Read the immutable public key from PIV metadata
+  // once and bind that snapshot to this operation.
   CK_BYTE algorithmType;
   CK_BYTE publicKey[2048];
   CK_ULONG publicKeyLen = sizeof(publicKey);
@@ -837,6 +848,8 @@ CK_RV C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_O
   memcpy(session->verifyingContext.publicKey, publicKey, publicKeyLen);
   session->verifyingContext.mechanism.mechanism = pMechanism->mechanism;
   session->verifyingContext.mechanism.ulParameterLen = pMechanism->ulParameterLen;
+  // PSS parameters are copied because the caller may release its CK_MECHANISM
+  // immediately after C_VerifyInit returns.
   if (pMechanism->ulParameterLen > 0) {
     session->verifyingContext.mechanism.pParameter = ck_malloc(pMechanism->ulParameterLen);
     if (session->verifyingContext.mechanism.pParameter == NULL) {
@@ -945,6 +958,7 @@ CK_RV C_VerifyFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG
     rv = verifyPrepared(session, session->verifyingContext.message, session->verifyingContext.messageLen, pSignature,
                         ulSignatureLen);
   }
+  // VerifyFinal always consumes the operation, including signature mismatch.
   resetVerifyingContext(session);
   return rv;
 }

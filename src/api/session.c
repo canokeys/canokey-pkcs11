@@ -14,6 +14,8 @@ static CK_LONG session_table_size = 0;
 static CK_LONG session_count = 0;
 static CK_SESSION_HANDLE next_handle = 1; // Start from 1, 0 is invalid
 static CNK_PKCS11_MUTEX session_mutex;
+// Closed sessions stay allocated until finalize so a concurrent lookup cannot
+// observe freed storage after releasing the global session-table lock.
 static CNK_PKCS11_SESSION *retired_sessions = NULL;
 static CNK_PKCS11_TOKEN_STATE *token_states = NULL;
 
@@ -61,6 +63,8 @@ static void free_session(CNK_PKCS11_SESSION *session) {
   if (session == NULL)
     return;
 
+  // Operation contexts can own copied parameters, buffered messages, and key
+  // material independently of whether the operation reached its final call.
   ck_free(session->signingContext.mechanism.pParameter);
   if (session->signingContext.message != NULL) {
     mbedtls_platform_zeroize(session->signingContext.message, session->signingContext.messageCapacity);
@@ -85,6 +89,8 @@ static void free_session(CNK_PKCS11_SESSION *session) {
 }
 
 static void clear_token_auth(CNK_PKCS11_TOKEN_STATE *token) {
+  // Authentication is token-scoped. Clear both caches together on logout,
+  // last-session close, and finalize so later sessions cannot inherit secrets.
   memset(token->pin, 0xFF, sizeof(token->pin));
   token->cbPin = 0;
   mbedtls_platform_zeroize(token->managementKey, sizeof(token->managementKey));
@@ -315,6 +321,8 @@ CK_RV cnk_session_cancel_operations(CNK_PKCS11_SESSION *session, CK_FLAGS flags)
     memset(&session->signingContext, 0, sizeof(session->signingContext));
   }
   if ((flags & CKF_VERIFY) != 0 && session->verifyingContext.hKey != 0) {
+    // Hashed Verify borrows the session digest context; raw Verify can coexist
+    // with an unrelated digest and must not cancel it.
     CK_BBOOL ownsDigestContext = session->verifyingContext.ownsDigestContext;
     ck_free(session->verifyingContext.mechanism.pParameter);
     if (session->verifyingContext.message != NULL) {
@@ -503,6 +511,8 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
   cnk_mutex_unlock(&session->token->lock);
   if (lastSession && hadPin)
     cnk_logout_piv_pin_with_session(session->slotId);
+  // Retire instead of freeing here; cnk_session_find callers hold stable
+  // pointers for the lifetime of the initialized module.
   session->retiredNext = retired_sessions;
   retired_sessions = session;
 
@@ -628,6 +638,8 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
   CK_RV rv = CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   if (userType == CKU_CONTEXT_SPECIFIC) {
+    // PIN-always authentication is attached to the initialized private-key
+    // operation. It deliberately does not populate the token USER PIN cache.
     CK_BBOOL signAlways =
         session->signingContext.hKey != 0 && session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS;
     CK_BBOOL decryptAlways =

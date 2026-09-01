@@ -2,6 +2,9 @@
 
 #include <mbedtls/platform_util.h>
 
+// Build a private, fixed-level ML-DSA-65 verifier from the same pinned
+// mldsa-native source used by TF-PSA. Static namespacing avoids exporting or
+// colliding with the dependency's optional PQCP integration.
 #define MLD_CONFIG_PARAMETER_SET 65
 #define MLD_CONFIG_NAMESPACE_PREFIX cnk_mldsa65
 #define MLD_CONFIG_EXTERNAL_API_QUALIFIER static

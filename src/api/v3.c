@@ -18,6 +18,8 @@ CK_RV C_SessionCancel(CK_SESSION_HANDLE hSession, CK_FLAGS flags) {
   return cnk_session_cancel_operations(session, flags);
 }
 
+// Keep one explicit, signature-correct entry point per 3.x API even when the
+// PIV object model cannot provide the operation yet.
 #define CNK_V3_UNSUPPORTED()                                                                                           \
   do {                                                                                                                 \
     CNK_RET_UNSUPPORTED;                                                                                               \
