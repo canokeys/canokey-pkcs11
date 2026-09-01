@@ -72,6 +72,13 @@ CK_DEFINE_FUNCTION(CK_RV, C_CNK_LoginProtectedManagementKey)(CK_SESSION_HANDLE h
 // it to the caller.
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_LoginPinManaged)(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen);
 
+// Finish a preconfigured PIN-managed setup by authenticating USER and the
+// protected management key, then permanently blocking the PIV PUK. This is a
+// destructive provisioning operation; successful completion leaves zero PUK
+// retries.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_FinalizePinManaged)(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin,
+                                                    CK_ULONG ulPinLen);
+
 // Read one PIV data object by its full BER-TLV tag. A NULL output buffer
 // queries the required length. PIN-protected objects require a cached CKU_USER
 // login and are read through that session.
@@ -87,6 +94,7 @@ CK_DEFINE_FUNCTION(CK_RV, C_CNK_SetPIN)(CK_SESSION_HANDLE hSession, CK_BYTE pinT
 
 // Extension API to unblock the PIV PIN using the PUK and set a new PIN
 // pPinTries: pointer to an integer to receive the number of remaining PUK tries (NULL for not needed)
+// Returns CKR_ACTION_PROHIBITED when PIN-managed management-key recovery is configured.
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_UnblockPIN)(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULONG ulPukLen,
                                             CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewPinLen, CK_BYTE_PTR pPinTries);
 

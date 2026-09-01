@@ -127,10 +127,16 @@ remaining retries for the selected secret. Standard `C_SetPIN()` forwards to
 uses the PUK to reset the PIV PIN and can return the remaining PUK tries.
 
 `C_CNK_LoginPinManaged()` performs a USER PIN login and then checks the
-Yubico-compatible ADMIN DATA flag before reading the PIN-protected management
-key from PRINTED. It verifies and caches that key internally, so callers do not
-need to handle the raw management key. Temporary ADMIN DATA, PRINTED, and key
-buffers are cleared before the function returns.
+Yubico-compatible ADMIN DATA flags before reading the PIN-protected management
+key from PRINTED. It requires the actual PUK retry counter to be zero, verifies
+and caches the key internally, and clears temporary ADMIN DATA, PRINTED, and key
+buffers before returning. `C_CNK_UnblockPIN()` is prohibited in that mode.
+
+For an already prepared development card,
+`scripts/finalize-pin-managed.ps1` calls the destructive
+`C_CNK_FinalizePinManaged()` extension to authenticate USER and the protected
+management key, permanently block the PUK, and confirm zero retries. It requires
+an explicit acknowledgement switch.
 
 Standard PIV data objects are exposed as `CKO_DATA` token objects when the card
 reports that they exist. Enumeration probes a fixed table of common PIV data

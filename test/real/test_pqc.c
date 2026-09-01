@@ -595,7 +595,11 @@ int main(int argc, char **argv) {
   CHECK(functions->C_GetSlotList(CK_TRUE, &slot, &slotCount));
   CK_SESSION_HANDLE pinManagedSession;
   CHECK(functions->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &pinManagedSession));
-  CHECK(loginPinManaged(pinManagedSession, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin)));
+  CK_RV pinManagedRv = loginPinManaged(pinManagedSession, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin));
+  if (pinManagedRv != CKR_OK && pinManagedRv != CKR_ACTION_PROHIBITED)
+    return 1;
+  if (pinManagedRv == CKR_ACTION_PROHIBITED)
+    printf("PIN-managed login correctly rejected an active PUK\n");
   CHECK(functions->C_Logout(pinManagedSession));
   CHECK(functions->C_CloseSession(pinManagedSession));
   if (testFunctionListAndSessions(functions, slot, pin) != 0)

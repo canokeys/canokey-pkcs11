@@ -232,10 +232,15 @@ Write-path notes:
   core's PIV applet implements these APDUs with the same fixed 8-byte,
   `0xFF`-padded fields.
 - `C_CNK_LoginPinManaged()` checks Yubico-compatible ADMIN DATA (`5FFF00`)
-  for bit `0x02`, reads the PIN-protected management key from PRINTED
-  (`5FC109`), verifies it, and clears all temporary data before returning.
+  for both PUK-blocked and PIN-protected bits, confirms the actual PUK retry
+  counter is zero, reads the protected management key from PRINTED (`5FC109`),
+  verifies it, and clears all temporary data before returning.
   Keep ADMIN DATA and PRINTED parsing inside this extension so managed callers
   never receive the raw management key.
+- `C_CNK_FinalizePinManaged()` is an explicitly destructive provisioning
+  operation. It authenticates USER and the protected management key before
+  permanently blocking the PUK and confirming zero retries. Do not hide this
+  mutation in ordinary login or initialization paths.
 - PIV version 6.0+ exposes unauthenticated token randomness through `00 84`.
   Advertise `CKF_RNG` only after that version check. `C_GenerateRandom` chunks
   requests at 256 bytes; `C_SeedRandom` returns

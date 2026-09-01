@@ -15,6 +15,7 @@
 #define CNK_ADMIN_DATA_MAX_LEN 128
 #define CNK_PIN_PROTECTED_DATA_MAX_LEN 64
 #define CNK_MANAGEMENT_KEY_LEN 24
+#define CNK_ADMIN_PUK_BLOCKED_BIT 0x01
 #define CNK_ADMIN_PIN_PROTECTED_BIT 0x02
 
 static const CK_BYTE CNK_ADMIN_DATA_TAG[] = {0x5F, 0xFF, 0x00};
@@ -63,6 +64,7 @@ static CK_RV checkPinManagedAdminData(const CK_BYTE *data, CK_ULONG dataLen) {
   CK_BBOOL sawBitField = CK_FALSE;
   CK_BBOOL sawSalt = CK_FALSE;
   CK_BBOOL sawDate = CK_FALSE;
+  CK_BBOOL pukBlocked = CK_FALSE;
   CK_BBOOL pinProtected = CK_FALSE;
   offset = 0;
   while (offset < adminLen) {
@@ -76,6 +78,7 @@ static CK_RV checkPinManagedAdminData(const CK_BYTE *data, CK_ULONG dataLen) {
       if (sawBitField || valueLen != 1)
         return CKR_DATA_INVALID;
       sawBitField = CK_TRUE;
+      pukBlocked = (value[0] & CNK_ADMIN_PUK_BLOCKED_BIT) != 0;
       pinProtected = (value[0] & CNK_ADMIN_PIN_PROTECTED_BIT) != 0;
       break;
     case 0x82:
@@ -93,7 +96,9 @@ static CK_RV checkPinManagedAdminData(const CK_BYTE *data, CK_ULONG dataLen) {
     }
   }
 
-  return sawBitField && pinProtected ? CKR_OK : CKR_DATA_INVALID;
+  // A PUK holder could otherwise reset the user PIN and recover the protected
+  // management key. PIN-managed login is valid only for the PUK-blocked mode.
+  return sawBitField && pukBlocked && pinProtected ? CKR_OK : CKR_DATA_INVALID;
 }
 
 static CK_RV parsePinProtectedManagementKey(const CK_BYTE *data, CK_ULONG dataLen,
@@ -175,11 +180,8 @@ CK_RV C_CNK_GetPivData(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pTag, CK_ULONG ul
   return cnk_get_piv_data_by_tag_with_session(session->slotId, session, pTag, ulTagLen, pValue, pulValueLen, CK_TRUE);
 }
 
-CK_RV C_CNK_LoginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
-  CNK_LOG_FUNC(": hSession: %lu, pPin: %p, ulPinLen: %lu", hSession, pPin, ulPinLen);
-  CNK_ENSURE_INITIALIZED();
-  CNK_ENSURE_NONNULL(pPin);
-
+static CK_RV loginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,
+                             CK_BBOOL requireBlockedPuk) {
   // Keep USER login active while GET DATA reads PRINTED. The management-key
   // cache is separate, allowing managed callers to retain normal USER state.
   CK_RV rv = C_CNK_Login(hSession, CKU_USER, pPin, ulPinLen, NULL);
@@ -188,8 +190,6 @@ CK_RV C_CNK_LoginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK
 
   CNK_PKCS11_SESSION *session;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  if (cnk_token_management_key_is_cached(session))
-    return CKR_OK;
 
   CK_BYTE adminData[CNK_ADMIN_DATA_MAX_LEN];
   CK_BYTE protectedData[CNK_PIN_PROTECTED_DATA_MAX_LEN];
@@ -200,6 +200,15 @@ CK_RV C_CNK_LoginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK
                                             adminData, &dataLen, CK_TRUE);
   if (rv == CKR_OK)
     rv = checkPinManagedAdminData(adminData, dataLen);
+  if (rv == CKR_OK && requireBlockedPuk) {
+    CK_BYTE pukTries = 0;
+    rv = cnk_get_piv_pin_retries(session->slotId, CNK_PIV_PIN_TYPE_PUK, &pukTries);
+    if (rv == CKR_OK && pukTries != 0)
+      rv = CKR_ACTION_PROHIBITED;
+  }
+
+  if (rv == CKR_OK && cnk_token_management_key_is_cached(session))
+    goto cleanup;
 
   if (rv == CKR_OK) {
     dataLen = sizeof(protectedData);
@@ -213,11 +222,38 @@ CK_RV C_CNK_LoginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK
   if (rv == CKR_USER_ALREADY_LOGGED_IN)
     rv = CKR_OK;
 
+cleanup:
   // None of the ADMIN/PRINTED payload or recovered key escapes this boundary.
   mbedtls_platform_zeroize(managementKey, sizeof(managementKey));
   mbedtls_platform_zeroize(protectedData, sizeof(protectedData));
   mbedtls_platform_zeroize(adminData, sizeof(adminData));
   return rv;
+}
+
+CK_RV C_CNK_LoginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+  CNK_LOG_FUNC(": hSession: %lu, pPin: %p, ulPinLen: %lu", hSession, pPin, ulPinLen);
+  CNK_ENSURE_INITIALIZED();
+  CNK_ENSURE_NONNULL(pPin);
+  return loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE);
+}
+
+CK_RV C_CNK_FinalizePinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+  CNK_LOG_FUNC(": hSession: %lu, pPin: %p, ulPinLen: %lu", hSession, pPin, ulPinLen);
+  CNK_ENSURE_INITIALIZED();
+  CNK_ENSURE_NONNULL(pPin);
+
+  CNK_PKCS11_SESSION *session;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (!(session->flags & CKF_RW_SESSION))
+    CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
+
+  CK_RV rv = loginPinManaged(hSession, pPin, ulPinLen, CK_FALSE);
+  if (rv != CKR_OK)
+    return rv;
+  rv = cnk_block_piv_puk(session->slotId);
+  if (rv != CKR_OK)
+    return rv;
+  return loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE);
 }
 
 CK_RV C_CNK_SetPIN(CK_SESSION_HANDLE hSession, CK_BYTE pinType, CK_UTF8CHAR_PTR pOldPin, CK_ULONG ulOldLen,
@@ -250,6 +286,20 @@ CK_RV C_CNK_UnblockPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULON
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
+
+  // Refuse the PUK path once protected management-key recovery is configured.
+  // Otherwise the PUK could set a known user PIN and immediately elevate to SO.
+  CK_BYTE adminData[CNK_ADMIN_DATA_MAX_LEN];
+  CK_ULONG adminDataLen = sizeof(adminData);
+  CK_RV policyRv = cnk_get_piv_data_by_tag(session->slotId, CNK_ADMIN_DATA_TAG, sizeof(CNK_ADMIN_DATA_TAG), adminData,
+                                           &adminDataLen, CK_TRUE);
+  if (policyRv == CKR_OK)
+    policyRv = checkPinManagedAdminData(adminData, adminDataLen);
+  mbedtls_platform_zeroize(adminData, sizeof(adminData));
+  if (policyRv == CKR_OK)
+    CNK_RETURN(CKR_ACTION_PROHIBITED, "PUK reset is disabled for PIN-managed management keys");
+  if (policyRv != CKR_DATA_INVALID)
+    return policyRv;
 
   return cnk_unblock_piv_pin_with_session(session->slotId, session, pPuk, ulPukLen, pNewPin, ulNewPinLen, pPinTries);
 }

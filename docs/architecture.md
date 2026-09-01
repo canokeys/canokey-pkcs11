@@ -17,11 +17,11 @@ PIV import wire encoding is isolated in `internal/piv_object.c`, and generic
 template decoding is isolated in `internal/template.c`.
 
 `backend/piv_metadata.c` owns PIV version gates, metadata discovery, algorithm
-extensions, and token randomness. `backend/pcsc.c` still combines reader/
-transaction transport with PIV auth, data, and private-key commands; future
-splits should preserve managed mode, where the minidriver supplies an existing
-card handle and every operation must balance `SCardBeginTransaction` with
-`cnk_disconnect_card`.
+extensions, PIN/PUK retry metadata, permanent PUK blocking, and token
+randomness. `backend/pcsc.c` still combines reader/transaction transport with
+PIV auth, data, and private-key commands; future splits should preserve managed
+mode, where the minidriver supplies an existing card handle and every operation
+must balance `SCardBeginTransaction` with `cnk_disconnect_card`.
 
 ## State Ownership
 
@@ -40,6 +40,11 @@ retired sessions and zeroizes every sensitive cache and session key.
 Combined-hash Sign and Verify borrow the session digest context. Their
 operation contexts record that ownership so cancellation clears only the
 digest they created. Raw Sign/Verify can coexist with an independent Digest.
+
+PIN-managed management-key login requires both the ADMIN DATA policy bits and
+an actually blocked PUK. `C_CNK_FinalizePinManaged` is the explicit destructive
+provisioning boundary that authenticates USER and management authority before
+driving PUK retries to zero; ordinary login never mutates retry counters.
 
 ## Card And Host Responsibilities
 

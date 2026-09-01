@@ -34,6 +34,118 @@ static CK_RV connectPiv(CK_SLOT_ID slotId, SCARDHANDLE *card) {
   return rv;
 }
 
+static CK_RV readPivPinRetriesOnCard(SCARDHANDLE card, CK_BYTE pinReference, CK_BYTE_PTR pinTries) {
+  CNK_ENSURE_NONNULL(pinTries);
+  if (pinReference != CNK_PIV_PIN_TYPE_PIN && pinReference != CNK_PIV_PIN_TYPE_PUK)
+    return CKR_ARGUMENTS_BAD;
+
+  CK_BYTE apdu[] = {0x00, 0xF7, 0x00, pinReference, 0x00};
+  CK_BYTE response[32];
+  DWORD responseLen = sizeof(response);
+  LONG pcscRv = cnk_transceive_apdu(card, apdu, sizeof(apdu), response, &responseLen, CK_FALSE);
+  if (pcscRv != SCARD_S_SUCCESS || responseLen < 2)
+    return CKR_DEVICE_ERROR;
+  CK_BYTE sw1 = response[responseLen - 2];
+  CK_BYTE sw2 = response[responseLen - 1];
+  if (sw1 != 0x90 || sw2 != 0x00)
+    return sw1 == 0x6D || (sw1 == 0x6A && (sw2 == 0x81 || sw2 == 0x86)) ? CKR_FUNCTION_NOT_SUPPORTED : CKR_DEVICE_ERROR;
+
+  CK_ULONG offset = 0;
+  CK_ULONG dataLen = responseLen - 2;
+  while (offset < dataLen) {
+    CK_BYTE tag = response[offset++];
+    CK_LONG fail = 0;
+    CK_ULONG lengthSize = 0;
+    CK_ULONG length = tlvGetLengthSafe(response + offset, dataLen - offset, &fail, &lengthSize);
+    if (fail || lengthSize > dataLen - offset)
+      return CKR_DEVICE_ERROR;
+    offset += lengthSize;
+    if (length > dataLen - offset)
+      return CKR_DEVICE_ERROR;
+    if (tag == 0x06) {
+      if (length != 2)
+        return CKR_DEVICE_ERROR;
+      *pinTries = response[offset + 1];
+      return CKR_OK;
+    }
+    offset += length;
+  }
+  return CKR_DEVICE_ERROR;
+}
+
+CK_RV cnk_get_piv_pin_retries(CK_SLOT_ID slotID, CK_BYTE pinReference, CK_BYTE_PTR pinTries) {
+  CNK_ENSURE_NONNULL(pinTries);
+  SCARDHANDLE card = 0;
+  CK_RV rv = connectPiv(slotID, &card);
+  if (rv != CKR_OK)
+    return rv;
+  rv = readPivPinRetriesOnCard(card, pinReference, pinTries);
+  cnk_disconnect_card(card);
+  return rv;
+}
+
+CK_RV cnk_block_piv_puk(CK_SLOT_ID slotID) {
+  SCARDHANDLE card = 0;
+  CK_RV rv = connectPiv(slotID, &card);
+  if (rv != CKR_OK)
+    return rv;
+
+  CK_BYTE pinTries = 0;
+  rv = readPivPinRetriesOnCard(card, CNK_PIV_PIN_TYPE_PUK, &pinTries);
+  if (rv != CKR_OK || pinTries == 0)
+    goto cleanup;
+
+  // Use distinct valid-length guesses. An accidental match can only reset the
+  // counter once; subsequent different guesses still drive it to zero.
+  for (CK_BYTE attempt = 0; attempt < 16 && pinTries > 0; attempt++) {
+    CK_BYTE apdu[] = {0x00,
+                      0x20,
+                      0x00,
+                      CNK_PIV_PIN_TYPE_PUK,
+                      0x08,
+                      (CK_BYTE)('0' + attempt % 10),
+                      (CK_BYTE)('0' + attempt % 10),
+                      (CK_BYTE)('0' + attempt % 10),
+                      (CK_BYTE)('0' + attempt % 10),
+                      (CK_BYTE)('0' + attempt % 10),
+                      (CK_BYTE)('0' + attempt % 10),
+                      (CK_BYTE)('0' + attempt % 10),
+                      (CK_BYTE)('0' + attempt % 10)};
+    CK_BYTE response[16];
+    DWORD responseLen = sizeof(response);
+    LONG pcscRv = cnk_transceive_apdu(card, apdu, sizeof(apdu), response, &responseLen, CK_FALSE);
+    if (pcscRv != SCARD_S_SUCCESS || responseLen < 2) {
+      rv = CKR_DEVICE_ERROR;
+      goto cleanup;
+    }
+    CK_BYTE sw1 = response[responseLen - 2];
+    CK_BYTE sw2 = response[responseLen - 1];
+    if (sw1 == 0x69 && sw2 == 0x83) {
+      pinTries = 0;
+      break;
+    }
+    if (sw1 == 0x63 && (sw2 & 0xF0) == 0xC0) {
+      pinTries = sw2 & 0x0F;
+      continue;
+    }
+    if (sw1 != 0x90 || sw2 != 0x00) {
+      rv = CKR_DEVICE_ERROR;
+      goto cleanup;
+    }
+    rv = readPivPinRetriesOnCard(card, CNK_PIV_PIN_TYPE_PUK, &pinTries);
+    if (rv != CKR_OK)
+      goto cleanup;
+  }
+
+  rv = readPivPinRetriesOnCard(card, CNK_PIV_PIN_TYPE_PUK, &pinTries);
+  if (rv == CKR_OK && pinTries != 0)
+    rv = CKR_DEVICE_ERROR;
+
+cleanup:
+  cnk_disconnect_card(card);
+  return rv;
+}
+
 CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR algorithmType, CK_BYTE_PTR publicKey,
                        CK_ULONG_PTR publicKeyLen, CK_BYTE_PTR pinPolicy, CK_BYTE_PTR touchPolicy) {
   CNK_ENSURE_NONNULL(algorithmType);
