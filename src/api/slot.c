@@ -413,7 +413,12 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
 
   case CKM_ECDH1_DERIVE:
     pInfo->flags = CKF_HW | CKF_DERIVE | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_UNCOMPRESS;
-    pInfo->ulMinKeySize = 256;
+    {
+      CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
+      CK_BBOOL x25519Supported =
+          cnk_get_piv_algorithm_extension(slotID, &config) == CKR_OK && config.enabled && config.x25519 != 0;
+      pInfo->ulMinKeySize = x25519Supported ? 255 : 256;
+    }
     pInfo->ulMaxKeySize = 521;
     break;
 
