@@ -160,7 +160,21 @@ CK_RV cnk_build_piv_ec_import(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCou
   rv = cnk_ec_params_to_piv_algorithm(paramsAttribute->pValue, paramsAttribute->ulValueLen, algorithmType);
   if (rv != CKR_OK)
     return rv;
-  CK_ULONG expectedLen = *algorithmType == PIV_ALG_ECC_384 ? 48 : 32;
+  CK_ULONG expectedLen;
+  switch (*algorithmType) {
+  case PIV_ALG_ECC_256:
+  case PIV_ALG_SECP256K1:
+    expectedLen = 32;
+    break;
+  case PIV_ALG_ECC_384:
+    expectedLen = 48;
+    break;
+  case PIV_ALG_ECC_521:
+    expectedLen = 66;
+    break;
+  default:
+    return CKR_ATTRIBUTE_VALUE_INVALID;
+  }
   if (valueAttribute->ulValueLen != expectedLen)
     return CKR_ATTRIBUTE_VALUE_INVALID;
 

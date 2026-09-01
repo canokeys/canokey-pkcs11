@@ -8,6 +8,7 @@
 // EC groups exposed by CanoKey PIV slots.
 #define PSA_WANT_ECC_SECP_R1_256 1
 #define PSA_WANT_ECC_SECP_R1_384 1
+#define PSA_WANT_ECC_SECP_R1_521 1
 #define PSA_WANT_ECC_SECP_K1_256 1
 
 // disable SSL/ TLS key exchange algorithms

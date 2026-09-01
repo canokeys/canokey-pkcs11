@@ -419,6 +419,9 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   case PIV_ALG_ECC_384:
     expectedSecretLen = 48;
     break;
+  case PIV_ALG_ECC_521:
+    expectedSecretLen = 66;
+    break;
   default:
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "base key is not a supported EC key");
   }

@@ -50,6 +50,7 @@ extern CNK_FREE_FUNC g_cnk_free_func;
 #define PIV_ALG_RSA_2048 0x07
 #define PIV_ALG_ECC_256 0x11
 #define PIV_ALG_ECC_384 0x14
+#define PIV_ALG_ECC_521 0x15
 #define PIV_ALG_ED25519 0xE0
 #define PIV_ALG_RSA_3072 0x05
 #define PIV_ALG_RSA_4096 0x16

@@ -108,6 +108,7 @@ CK_RV cnk_template_get_optional_byte(CK_ATTRIBUTE_PTR attributes, CK_ULONG attri
 CK_RV cnk_ec_params_to_piv_algorithm(const CK_BYTE *params, CK_ULONG paramsLen, CK_BYTE *algorithmType) {
   static const CK_BYTE p256[] = {0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07};
   static const CK_BYTE p384[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22};
+  static const CK_BYTE p521[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x23};
   static const CK_BYTE secp256k1[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x0A};
   CNK_ENSURE_NONNULL(params, algorithmType);
 
@@ -115,6 +116,8 @@ CK_RV cnk_ec_params_to_piv_algorithm(const CK_BYTE *params, CK_ULONG paramsLen, 
     *algorithmType = PIV_ALG_ECC_256;
   else if (paramsLen == sizeof(p384) && memcmp(params, p384, sizeof(p384)) == 0)
     *algorithmType = PIV_ALG_ECC_384;
+  else if (paramsLen == sizeof(p521) && memcmp(params, p521, sizeof(p521)) == 0)
+    *algorithmType = PIV_ALG_ECC_521;
   else if (paramsLen == sizeof(secp256k1) && memcmp(params, secp256k1, sizeof(secp256k1)) == 0)
     *algorithmType = PIV_ALG_SECP256K1;
   else

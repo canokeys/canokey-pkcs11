@@ -211,6 +211,7 @@ static CK_KEY_TYPE algoType2KeyType(const CNK_PKCS11_SESSION *session, CK_BYTE a
 
   case PIV_ALG_ECC_256:
   case PIV_ALG_ECC_384:
+  case PIV_ALG_ECC_521:
   case PIV_ALG_SECP256K1:
   case PIV_ALG_SM2:
     return CKK_EC;
@@ -762,6 +763,7 @@ CK_BBOOL CNK_PivPrivateKeyCanSign(CK_BYTE algorithmType) {
   case PIV_ALG_RSA_4096:
   case PIV_ALG_ECC_256:
   case PIV_ALG_ECC_384:
+  case PIV_ALG_ECC_521:
   case PIV_ALG_SECP256K1:
   case PIV_ALG_MLDSA65:
     return CK_TRUE;
@@ -785,6 +787,7 @@ CK_BBOOL CNK_PivPrivateKeyCanDerive(CK_BYTE algorithmType) {
   switch (algorithmType) {
   case PIV_ALG_ECC_256:
   case PIV_ALG_ECC_384:
+  case PIV_ALG_ECC_521:
   case PIV_ALG_SECP256K1:
     return CK_TRUE;
   default:
@@ -1931,6 +1934,10 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
         break;
       case PIV_ALG_ECC_384:
         oid = "\x2B\x81\x04\x00\x22";
+        cbOid = 5;
+        break;
+      case PIV_ALG_ECC_521:
+        oid = "\x2B\x81\x04\x00\x23";
         cbOid = 5;
         break;
       case PIV_ALG_SECP256K1:

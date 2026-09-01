@@ -7,6 +7,7 @@
 
 #include "api/object.h"
 #include "backend/pcsc.h"
+#include "internal/template.h"
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
 
@@ -126,6 +127,19 @@ static void test_key_capabilities_by_algorithm(void **state) {
   assert_true(CNK_PivPrivateKeyCanSign(PIV_ALG_ECC_256));
   assert_false(CNK_PivPrivateKeyCanDecrypt(PIV_ALG_ECC_256));
   assert_true(CNK_PivPrivateKeyCanDerive(PIV_ALG_ECC_256));
+
+  assert_true(CNK_PivPrivateKeyCanSign(PIV_ALG_ECC_521));
+  assert_false(CNK_PivPrivateKeyCanDecrypt(PIV_ALG_ECC_521));
+  assert_true(CNK_PivPrivateKeyCanDerive(PIV_ALG_ECC_521));
+}
+
+static void test_p521_named_curve_parameters(void **state) {
+  (void)state;
+  static const CK_BYTE p521[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x23};
+  CK_BYTE algorithmType = 0;
+
+  assert_int_equal(cnk_ec_params_to_piv_algorithm(p521, sizeof(p521), &algorithmType), CKR_OK);
+  assert_int_equal(algorithmType, PIV_ALG_ECC_521);
 }
 
 int main(void) {
@@ -138,6 +152,7 @@ int main(void) {
       cmocka_unit_test(test_reject_invalid_pin_policy),
       cmocka_unit_test(test_reject_invalid_touch_policy),
       cmocka_unit_test(test_key_capabilities_by_algorithm),
+      cmocka_unit_test(test_p521_named_curve_parameters),
   };
 
   return cmocka_run_group_tests(tests, NULL, NULL);

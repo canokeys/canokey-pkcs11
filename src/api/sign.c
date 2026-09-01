@@ -172,6 +172,8 @@ static CK_ULONG getEcSignatureLength(CK_BYTE algorithmType) {
     return 64;
   case PIV_ALG_ECC_384:
     return 96;
+  case PIV_ALG_ECC_521:
+    return 132;
   default:
     return 0;
   }
@@ -693,6 +695,10 @@ static CK_RV verifyEcSignature(CNK_PKCS11_SESSION *session, const CK_BYTE *data,
   case PIV_ALG_ECC_384:
     groupId = MBEDTLS_ECP_DP_SECP384R1;
     coordinateLen = 48;
+    break;
+  case PIV_ALG_ECC_521:
+    groupId = MBEDTLS_ECP_DP_SECP521R1;
+    coordinateLen = 66;
     break;
   case PIV_ALG_SECP256K1:
     groupId = MBEDTLS_ECP_DP_SECP256K1;
