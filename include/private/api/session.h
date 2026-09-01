@@ -17,6 +17,8 @@ typedef enum {
 
 typedef enum {
   TOKEN_LOGIN_PUBLIC = 0,
+  TOKEN_LOGIN_PENDING_USER,
+  TOKEN_LOGIN_PENDING_SO,
   TOKEN_LOGIN_USER,
   TOKEN_LOGIN_SO,
 } CNK_TOKEN_LOGIN_STATE;
@@ -75,6 +77,12 @@ typedef struct {
 } CNK_PKCS11_SECRET_KEY_OBJECT;
 
 typedef struct {
+  CK_MECHANISM_TYPE mechanismType;
+  mbedtls_md_type_t type;
+  mbedtls_md_context_t context;
+} CNK_PKCS11_DIGESTING_CONTEXT;
+
+typedef struct {
   CK_OBJECT_HANDLE hKey;
   CK_MECHANISM mechanism;
   CK_BYTE pivSlot;
@@ -86,7 +94,7 @@ typedef struct {
   CK_BYTE_PTR message;
   CK_ULONG messageLen;
   CK_ULONG messageCapacity;
-  CK_BBOOL ownsDigestContext;
+  CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
   CK_BBOOL contextAuthenticated;
   CK_BYTE contextPin[8];
   CK_ULONG contextPinLen;
@@ -111,7 +119,7 @@ typedef struct {
   CK_MECHANISM mechanism;
   CK_BYTE algorithmType;
   mbedtls_md_type_t mdType;
-  CK_BBOOL ownsDigestContext;
+  CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
   CK_BYTE publicKey[2048];
   CK_ULONG publicKeyLen;
   CK_BYTE_PTR message;
@@ -126,12 +134,6 @@ typedef struct {
   CK_ULONG publicKeyLen;
   CK_ULONG modulusLen;
 } CNK_PKCS11_ENCRYPTING_CONTEXT;
-
-typedef struct {
-  CK_MECHANISM_TYPE mechanismType;
-  mbedtls_md_type_t type;
-  mbedtls_md_context_t context;
-} CNK_PKCS11_DIGESTING_CONTEXT;
 
 // Session structure
 typedef struct CNK_PKCS11_SESSION {
@@ -164,8 +166,18 @@ typedef struct CNK_PKCS11_SESSION {
   CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
   CNK_PKCS11_SECRET_KEY_OBJECT secretKeys[MAX_SESSION_SECRET_KEYS];
   CK_BYTE nextSecretKeyId;
-  struct CNK_PKCS11_SESSION *retiredNext;
+  // Protected by the global session-table mutex. Close removes the session
+  // only after every API call that acquired this pointer has released it.
+  CK_ULONG activeCalls;
 } CNK_PKCS11_SESSION;
+
+void cnk_session_release_ref(CNK_PKCS11_SESSION **session);
+
+#if defined(__clang__) || defined(__GNUC__)
+#define CNK_SESSION_REF __attribute__((cleanup(cnk_session_release_ref)))
+#else
+#error "CanoKey PKCS11 session lifetime guards require compiler cleanup support"
+#endif
 
 // Initialize the session manager
 CK_RV cnk_session_manager_init(void);

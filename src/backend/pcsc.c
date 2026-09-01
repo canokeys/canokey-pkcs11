@@ -28,6 +28,38 @@ ReaderInfo *g_cnk_readers = NULL; // Array of reader info structs
 CK_LONG g_cnk_num_readers = 0;
 CK_BBOOL g_cnk_is_initialized = CK_FALSE;
 CNK_PKCS11_MUTEX g_cnk_readers_mutex;
+static ReaderInfo *known_readers = NULL;
+static CK_LONG known_reader_count = 0;
+static CK_SLOT_ID next_reader_slot_id = 0;
+
+// Reader indexes can change after PnP refresh. Keep a name-to-slot registry for
+// the initialized lifetime so existing sessions and removal events stay stable.
+static CK_RV getStableReaderSlot(const char *name, CK_SLOT_ID *slotId) {
+  for (CK_LONG i = 0; i < known_reader_count; i++) {
+    if (strcmp(known_readers[i].name, name) == 0) {
+      *slotId = known_readers[i].slot_id;
+      return CKR_OK;
+    }
+  }
+  ReaderInfo *replacement = ck_calloc((size_t)known_reader_count + 1, sizeof(*replacement));
+  if (replacement == NULL)
+    return CKR_HOST_MEMORY;
+  if (known_reader_count > 0)
+    memcpy(replacement, known_readers, (size_t)known_reader_count * sizeof(*replacement));
+  size_t nameLen = strlen(name) + 1;
+  replacement[known_reader_count].name = ck_malloc(nameLen);
+  if (replacement[known_reader_count].name == NULL) {
+    ck_free(replacement);
+    return CKR_HOST_MEMORY;
+  }
+  memcpy(replacement[known_reader_count].name, name, nameLen);
+  replacement[known_reader_count].slot_id = next_reader_slot_id++;
+  *slotId = replacement[known_reader_count].slot_id;
+  ck_free(known_readers);
+  known_readers = replacement;
+  known_reader_count++;
+  return CKR_OK;
+}
 
 // Function pointer type for card operations
 typedef CK_RV (*CardOperationFunc)(SCARDHANDLE hCard, void *context);
@@ -280,8 +312,17 @@ CK_RV cnk_list_readers(void) {
         cnk_mutex_unlock(&g_cnk_readers_mutex);
         return CKR_HOST_MEMORY;
       }
-      // Assign a unique ID to this reader (using index as the ID)
-      g_cnk_readers[index].slot_id = index;
+      CK_RV slotRv = getStableReaderSlot(reader, &g_cnk_readers[index].slot_id);
+      if (slotRv != CKR_OK) {
+        for (CK_LONG i = 0; i <= index; i++)
+          ck_free(g_cnk_readers[i].name);
+        ck_free(g_cnk_readers);
+        g_cnk_readers = NULL;
+        g_cnk_num_readers = 0;
+        ck_free(readers_buf);
+        cnk_mutex_unlock(&g_cnk_readers_mutex);
+        return slotRv;
+      }
       index++;
     }
     reader += strlen(reader) + 1;
@@ -307,6 +348,12 @@ void cnk_cleanup_pcsc(void) {
     ck_free(g_cnk_readers);
     g_cnk_readers = NULL;
   }
+  for (CK_LONG i = 0; i < known_reader_count; i++)
+    ck_free(known_readers[i].name);
+  ck_free(known_readers);
+  known_readers = NULL;
+  known_reader_count = 0;
+  next_reader_slot_id = 0;
 
   if (g_cnk_pcsc_context) {
     // Wake a thread blocked in SCardGetStatusChange before releasing the
@@ -400,9 +447,32 @@ CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
       }
     }
     if (rv == CKR_NO_EVENT && (states[readerCount].dwEventState & SCARD_STATE_CHANGED) != 0) {
-      if (cnk_list_readers() == CKR_OK && cnk_get_num_readers() > 0) {
-        *slot = cnk_get_reader_slot_id(0);
-        rv = CKR_OK;
+      CK_RV refreshRv = cnk_list_readers();
+      if (refreshRv == CKR_OK) {
+        cnk_mutex_lock(&g_cnk_readers_mutex);
+        // Report removals using the old stable slot, including removal of the
+        // final reader. If nothing was removed, report the newly added reader.
+        for (CK_ULONG i = 0; i < readerCount && rv == CKR_NO_EVENT; i++) {
+          CK_BBOOL stillPresent = CK_FALSE;
+          for (CK_LONG j = 0; j < g_cnk_num_readers; j++)
+            if (strcmp(states[i].szReader, g_cnk_readers[j].name) == 0)
+              stillPresent = CK_TRUE;
+          if (!stillPresent) {
+            *slot = slotIds[i];
+            rv = CKR_OK;
+          }
+        }
+        for (CK_LONG i = 0; i < g_cnk_num_readers && rv == CKR_NO_EVENT; i++) {
+          CK_BBOOL wasPresent = CK_FALSE;
+          for (CK_ULONG j = 0; j < readerCount; j++)
+            if (strcmp(g_cnk_readers[i].name, states[j].szReader) == 0)
+              wasPresent = CK_TRUE;
+          if (!wasPresent) {
+            *slot = g_cnk_readers[i].slot_id;
+            rv = CKR_OK;
+          }
+        }
+        cnk_mutex_unlock(&g_cnk_readers_mutex);
       }
     }
   } else if (pcscRv == SCARD_E_CANCELLED) {
@@ -1095,17 +1165,29 @@ static CK_RV authenticateManagementKeyOnCard(SCARDHANDLE hCard, const CK_BYTE ke
 static CK_RV authenticateAdminForWrite(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, SCARDHANDLE *hCard) {
   CNK_ENSURE_NONNULL(session, hCard);
 
-  CK_BYTE managementKey[PIV_MANAGEMENT_KEY_LEN];
-  if (cnk_token_copy_management_key(session, managementKey) != CKR_OK)
-    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "management-key login is required");
+  CK_BYTE managementKey[PIV_MANAGEMENT_KEY_LEN] = {0};
+  CK_BBOOL connected = CK_FALSE;
+  *hCard = 0;
+  CK_RV rv = cnk_token_copy_management_key(session, managementKey);
+  if (rv != CKR_OK) {
+    rv = CKR_USER_NOT_LOGGED_IN;
+    goto cleanup;
+  }
+  rv = cnk_connect_and_select_canokey(slotID, hCard);
+  if (rv != CKR_OK)
+    goto cleanup;
+  connected = CK_TRUE;
+  rv = cnk_select_piv_application(*hCard);
+  if (rv != CKR_OK)
+    goto cleanup;
+  rv = authenticateManagementKeyOnCard(*hCard, managementKey);
 
-  CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotID, hCard));
-  CNK_ENSURE_OK(cnk_select_piv_application(*hCard));
-
-  CK_RV rv = authenticateManagementKeyOnCard(*hCard, managementKey);
+cleanup:
   mbedtls_platform_zeroize(managementKey, sizeof(managementKey));
   if (rv != CKR_OK) {
-    cnk_disconnect_card(*hCard);
+    if (connected)
+      cnk_disconnect_card(*hCard);
+    *hCard = 0;
     return rv;
   }
 

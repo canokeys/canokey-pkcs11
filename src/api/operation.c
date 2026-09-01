@@ -5,41 +5,42 @@
 #include <mbedtls/platform_util.h>
 #include <string.h>
 
-void cnk_reset_digesting_context(CNK_PKCS11_SESSION *session) {
-  if (session == NULL)
+static void resetDigestingContext(CNK_PKCS11_DIGESTING_CONTEXT *context) {
+  if (context == NULL)
     return;
-  if (session->digestingContext.mechanismType != 0)
-    mbedtls_md_free(&session->digestingContext.context);
-  memset(&session->digestingContext, 0, sizeof(session->digestingContext));
+  if (context->mechanismType != 0)
+    mbedtls_md_free(&context->context);
+  memset(context, 0, sizeof(*context));
+}
+
+void cnk_reset_digesting_context(CNK_PKCS11_SESSION *session) {
+  if (session != NULL)
+    resetDigestingContext(&session->digestingContext);
 }
 
 void cnk_reset_signing_context(CNK_PKCS11_SESSION *session) {
   if (session == NULL)
     return;
-  CK_BBOOL ownsDigestContext = session->signingContext.ownsDigestContext;
   ck_free(session->signingContext.mechanism.pParameter);
   if (session->signingContext.message != NULL) {
     mbedtls_platform_zeroize(session->signingContext.message, session->signingContext.messageCapacity);
     ck_free(session->signingContext.message);
   }
   mbedtls_platform_zeroize(session->signingContext.contextPin, sizeof(session->signingContext.contextPin));
+  resetDigestingContext(&session->signingContext.digestingContext);
   memset(&session->signingContext, 0, sizeof(session->signingContext));
-  if (ownsDigestContext)
-    cnk_reset_digesting_context(session);
 }
 
 void cnk_reset_verifying_context(CNK_PKCS11_SESSION *session) {
   if (session == NULL)
     return;
-  CK_BBOOL ownsDigestContext = session->verifyingContext.ownsDigestContext;
   ck_free(session->verifyingContext.mechanism.pParameter);
   if (session->verifyingContext.message != NULL) {
     mbedtls_platform_zeroize(session->verifyingContext.message, session->verifyingContext.messageCapacity);
     ck_free(session->verifyingContext.message);
   }
+  resetDigestingContext(&session->verifyingContext.digestingContext);
   memset(&session->verifyingContext, 0, sizeof(session->verifyingContext));
-  if (ownsDigestContext)
-    cnk_reset_digesting_context(session);
 }
 
 void cnk_reset_encrypting_context(CNK_PKCS11_SESSION *session) {

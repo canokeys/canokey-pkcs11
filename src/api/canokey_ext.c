@@ -175,7 +175,7 @@ CK_RV C_CNK_GetPivData(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pTag, CK_ULONG ul
   if (ulTagLen == 0 || ulTagLen > 4)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "Invalid PIV data-object tag");
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   return cnk_get_piv_data_by_tag_with_session(session->slotId, session, pTag, ulTagLen, pValue, pulValueLen, CK_TRUE);
 }
@@ -187,8 +187,9 @@ static CK_RV loginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, C
   CK_RV rv = C_CNK_Login(hSession, CKU_USER, pPin, ulPinLen, NULL);
   if (rv != CKR_OK && rv != CKR_USER_ALREADY_LOGGED_IN)
     return rv;
+  CK_BBOOL establishedUserLogin = rv == CKR_OK;
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   CK_BYTE adminData[CNK_ADMIN_DATA_MAX_LEN];
@@ -227,6 +228,11 @@ cleanup:
   mbedtls_platform_zeroize(managementKey, sizeof(managementKey));
   mbedtls_platform_zeroize(protectedData, sizeof(protectedData));
   mbedtls_platform_zeroize(adminData, sizeof(adminData));
+  if (rv != CKR_OK && establishedUserLogin) {
+    CK_RV logoutRv = C_Logout(hSession);
+    if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
+      CNK_WARN("Failed to roll back USER login after PIN-managed failure: 0x%lx", logoutRv);
+  }
   return rv;
 }
 
@@ -242,7 +248,7 @@ CK_RV C_CNK_FinalizePinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin,
   CNK_ENSURE_INITIALIZED();
   CNK_ENSURE_NONNULL(pPin);
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
@@ -265,7 +271,7 @@ CK_RV C_CNK_SetPIN(CK_SESSION_HANDLE hSession, CK_BYTE pinType, CK_UTF8CHAR_PTR 
   CNK_ENSURE_INITIALIZED();
   CNK_ENSURE_NONNULL(pOldPin, pNewPin);
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
@@ -282,7 +288,7 @@ CK_RV C_CNK_UnblockPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULON
   CNK_ENSURE_INITIALIZED();
   CNK_ENSURE_NONNULL(pPuk, pNewPin);
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");

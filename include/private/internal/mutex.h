@@ -36,4 +36,12 @@ CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex);
 // Unlock a mutex
 CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex);
 
+void cnk_mutex_unlock_guard(CNK_PKCS11_MUTEX **mutex);
+
+#if defined(__clang__) || defined(__GNUC__)
+#define CNK_MUTEX_GUARD __attribute__((cleanup(cnk_mutex_unlock_guard)))
+#else
+#error "CanoKey PKCS11 scoped mutex guards require compiler cleanup support"
+#endif
+
 #endif /* CNK_INTERNAL_MUTEX_H */

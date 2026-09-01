@@ -33,13 +33,19 @@ Each `CNK_PKCS11_SESSION` owns active operation contexts, copied mechanism
 parameters, bounded multipart buffers, session-only secret keys, and find
 state. It references, but does not own, token authentication state.
 
-Closed sessions are retired until `C_Finalize`. This keeps pointers returned by
-session lookup stable if another thread closes the handle. Finalize frees
-retired sessions and zeroizes every sensitive cache and session key.
+Session lookup acquires an active-call reference protected by the global
+session-table mutex. Close waits for those references to drain, removes the
+handle, then cancels operations, zeroizes session secrets, and frees the session
+immediately. Close never acquires a session lock while holding the global lock.
 
-Combined-hash Sign and Verify borrow the session digest context. Their
-operation contexts record that ownership so cancellation clears only the
-digest they created. Raw Sign/Verify can coexist with an independent Digest.
+Digest, Sign, Verify, Encrypt, and Decrypt state is protected by the per-session
+lock for the complete API call. Cancellation uses the same lock. Combined-hash
+Sign and Verify own embedded hash contexts, so either can coexist with the
+session's independent Digest operation.
+
+USER and SO authentication use token-lock-protected pending states while their
+card verification is in flight. Read-only session creation checks and updates
+the SO/read-only counters in the same token critical section.
 
 PIN-managed management-key login requires both the ADMIN DATA policy bits and
 an actually blocked PUK. `C_CNK_FinalizePinManaged` is the explicit destructive
@@ -83,6 +89,10 @@ sensitive.
 
 Older firmware uses per-slot probes, does not advertise PQ mechanisms, and
 does not set `CKF_RNG`.
+
+Standalone reader names retain stable slot IDs for one initialized module
+lifetime. PnP refresh compares old and new reader sets so removal reports the
+removed slot, including removal of the final reader.
 
 ## Variable-Length Operations
 

@@ -69,6 +69,16 @@ TF-PSA-Crypto migration.
   data ownership/zeroization, operation-state lifetime, two-stage output
   retries, wire encodings, endianness, and host-versus-card responsibilities.
   Do not add comments that merely restate the next line of code.
+- Keep session lock ordering explicit: `session_mutex` protects the table and
+  active-call references, but close must release it before acquiring a
+  per-session lock. Scoped cleanup must release the session lock before the
+  session reference.
+- Every API path that calls `cnk_session_find()` must declare its pointer with
+  `CNK_SESSION_REF`; otherwise concurrent close can either leak or free the
+  session too early.
+- Cryptographic operation contexts are protected by `session->lock` for the
+  complete API call. `C_SessionCancel` and close use the same lock before
+  freeing copied parameters, buffered messages, or hash contexts.
 - Update `docs/architecture.md` when moving ownership, adding an internal
   layer, or changing the host/card responsibility boundary.
 - The VS bundled formatter is:

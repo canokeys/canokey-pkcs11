@@ -122,7 +122,7 @@ CK_RV C_GenerateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
     CNK_RETURN(CKR_MECHANISM_INVALID, "unsupported secret-key generation mechanism");
   }
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   // C_GenerateKey is intentionally host-side and session-only. Advertising
   // these mechanisms does not imply a card RNG or persistent symmetric store.
@@ -257,7 +257,7 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   if (ulPrivateKeyAttributeCount > 0)
     CNK_ENSURE_NONNULL(pPrivateKeyTemplate);
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
@@ -394,7 +394,7 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   if (params->kdf != CKD_NULL)
     CNK_ENSURE_OK(cnk_ec_kdf_to_md(params->kdf, &kdfMdType));
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CK_BYTE objId;
   CK_BYTE pivTag;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
@@ -628,7 +628,7 @@ CK_RV C_SeedRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSeed, CK_ULONG ulSee
   if (pSeed == NULL && ulSeedLen > 0)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pSeed is NULL but ulSeedLen > 0");
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   CK_BBOOL supported = CK_FALSE;
   CNK_ENSURE_OK(cnk_piv_random_supported(session->slotId, &supported));
@@ -645,7 +645,7 @@ CK_RV C_GenerateRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pRandomData, CK_U
   if (pRandomData == NULL && ulRandomLen > 0)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pRandomData is NULL but ulRandomLen > 0");
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   return cnk_piv_generate_random(session->slotId, pRandomData, ulRandomLen);
 }

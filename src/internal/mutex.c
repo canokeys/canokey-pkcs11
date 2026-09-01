@@ -132,3 +132,10 @@ CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex) {
   CNK_ENSURE_NONNULL(mutex, mutex->mutex_handle, mutex->unlock);
   return mutex->unlock(mutex->mutex_handle);
 }
+
+void cnk_mutex_unlock_guard(CNK_PKCS11_MUTEX **mutex) {
+  if (mutex != NULL && *mutex != NULL) {
+    cnk_mutex_unlock(*mutex);
+    *mutex = NULL;
+  }
+}

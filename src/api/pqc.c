@@ -148,7 +148,7 @@ CK_RV C_EncapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
     return CKR_BUFFER_TOO_SMALL;
   }
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   CNK_ENSURE_OK(CNK_ValidateObject(publicKey, session, CKO_PUBLIC_KEY, NULL));
   CK_BYTE encodedPublicKey[CNK_MLKEM768_PUBLIC_KEY_BYTES];
@@ -181,7 +181,7 @@ CK_RV C_DecapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
   if (ciphertextLen != CNK_MLKEM768_CIPHERTEXT_BYTES)
     return CKR_ENCRYPTED_DATA_LEN_RANGE;
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CK_BYTE objectId, pivSlot;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   CNK_ENSURE_OK(CNK_ValidateObject(privateKey, session, CKO_PRIVATE_KEY, &objectId));

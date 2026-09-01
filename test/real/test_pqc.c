@@ -320,8 +320,16 @@ static int exerciseVerify(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE 
 
   CHECK(functions->C_SignInit(session, &mechanism, rsaPrivate));
   CHECK(functions->C_Sign(session, message, sizeof(message) - 1, signature, &signatureLen));
+
+  // A combined-hash Verify owns a separate digest context and must coexist
+  // with the session's independent Digest operation.
+  CHECK(functions->C_DigestInit(session, &digestMechanism));
   CHECK(functions->C_VerifyInit(session, &mechanism, rsaPublic));
   CHECK(functions->C_Verify(session, message, sizeof(message) - 1, signature, signatureLen));
+  CHECK(functions->C_DigestUpdate(session, message, sizeof(message) - 1));
+  CK_BYTE independentDigest[32];
+  CK_ULONG independentDigestLen = sizeof(independentDigest);
+  CHECK(functions->C_DigestFinal(session, independentDigest, &independentDigestLen));
 
   CHECK(functions->C_VerifyInit(session, &mechanism, rsaPublic));
   CHECK(functions->C_VerifyUpdate(session, message, 5));
@@ -598,9 +606,15 @@ int main(int argc, char **argv) {
   CK_RV pinManagedRv = loginPinManaged(pinManagedSession, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin));
   if (pinManagedRv != CKR_OK && pinManagedRv != CKR_ACTION_PROHIBITED)
     return 1;
-  if (pinManagedRv == CKR_ACTION_PROHIBITED)
+  if (pinManagedRv == CKR_ACTION_PROHIBITED) {
     printf("PIN-managed login correctly rejected an active PUK\n");
-  CHECK(functions->C_Logout(pinManagedSession));
+    CK_SESSION_INFO info;
+    CHECK(functions->C_GetSessionInfo(pinManagedSession, &info));
+    if (info.state != CKS_RW_PUBLIC_SESSION || functions->C_Logout(pinManagedSession) != CKR_USER_NOT_LOGGED_IN)
+      return 1;
+  } else {
+    CHECK(functions->C_Logout(pinManagedSession));
+  }
   CHECK(functions->C_CloseSession(pinManagedSession));
   if (testFunctionListAndSessions(functions, slot, pin) != 0)
     return 1;

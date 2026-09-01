@@ -182,8 +182,8 @@ static CK_RV validateEcMech(CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) 
   return CKR_OK;
 }
 
-static CK_RV initDigestingContext(CNK_PKCS11_SESSION *session, CK_MECHANISM_TYPE mechanism) {
-  if (session->digestingContext.mechanismType != 0)
+static CK_RV initDigestingContext(CNK_PKCS11_DIGESTING_CONTEXT *context, CK_MECHANISM_TYPE mechanism) {
+  if (context->mechanismType != 0)
     CNK_RETURN(CKR_OPERATION_ACTIVE, "digest context is already active");
   mbedtls_md_type_t mdType;
   CNK_ENSURE_OK(cnk_sign_mech_to_md(mechanism, &mdType));
@@ -192,17 +192,17 @@ static CK_RV initDigestingContext(CNK_PKCS11_SESSION *session, CK_MECHANISM_TYPE
   if (!md_info)
     CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "invalid md_info");
 
-  mbedtls_md_init(&session->digestingContext.context);
-  if (mbedtls_md_setup(&session->digestingContext.context, md_info, 0) != 0) {
-    mbedtls_md_free(&session->digestingContext.context);
+  mbedtls_md_init(&context->context);
+  if (mbedtls_md_setup(&context->context, md_info, 0) != 0) {
+    mbedtls_md_free(&context->context);
     CNK_RETURN(CKR_HOST_MEMORY, "md setup failed");
   }
-  if (mbedtls_md_starts(&session->digestingContext.context) != 0) {
-    mbedtls_md_free(&session->digestingContext.context);
+  if (mbedtls_md_starts(&context->context) != 0) {
+    mbedtls_md_free(&context->context);
     CNK_RETURN(CKR_FUNCTION_FAILED, "md start failed");
   }
-  session->digestingContext.mechanismType = mechanism;
-  session->digestingContext.type = mdType;
+  context->mechanismType = mechanism;
+  context->type = mdType;
 
   CNK_RET_OK;
 }
@@ -330,10 +330,12 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pMechanism);
 
   // Find the session, validate the key object, and map object ID to PIV tag
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CK_BYTE objId;
   CK_BYTE pivTag;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
+  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
   if (session->signingContext.hKey != 0)
     CNK_RETURN(CKR_OPERATION_ACTIVE, "sign operation is already active");
   CNK_ENSURE_OK(CNK_ValidateObject(hKey, session, CKO_PRIVATE_KEY, &objId));
@@ -384,13 +386,12 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   }
 
   if (isMechRequireDigesting(pMechanism->mechanism)) {
-    CK_RV rv = initDigestingContext(session, pMechanism->mechanism);
+    CK_RV rv = initDigestingContext(&session->signingContext.digestingContext, pMechanism->mechanism);
     if (rv != CKR_OK) {
       cnk_reset_signing_context(session);
       CNK_RETURN(rv, "initDigestingContext failed");
     }
-    session->signingContext.ownsDigestContext = CK_TRUE;
-    session->signingContext.mdType = session->digestingContext.type;
+    session->signingContext.mdType = session->signingContext.digestingContext.type;
   } else if (pMechanism->mechanism == CKM_RSA_PKCS_PSS) {
     // Raw PSS receives a caller-supplied digest, so remember its hash without
     // creating a streaming digest operation.
@@ -401,6 +402,77 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   CNK_RET_OK;
 }
 
+static CK_RV signUpdate(CNK_PKCS11_SESSION *session, CK_BYTE_PTR part, CK_ULONG partLen) {
+  if (session->signingContext.hKey == 0)
+    return CKR_OPERATION_NOT_INITIALIZED;
+  if (session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS && !session->signingContext.contextAuthenticated)
+    return CKR_USER_NOT_LOGGED_IN;
+  if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism) &&
+      session->signingContext.mechanism.mechanism != CKM_ML_DSA)
+    return CKR_ARGUMENTS_BAD;
+  if (session->signingContext.mechanism.mechanism == CKM_ML_DSA)
+    return appendSigningMessage(session, part, partLen);
+  if (session->signingContext.digestingContext.mechanismType == 0)
+    return CKR_OPERATION_NOT_INITIALIZED;
+  if (mbedtls_md_update(&session->signingContext.digestingContext.context, part, partLen) != 0) {
+    cnk_reset_signing_context(session);
+    return CKR_FUNCTION_FAILED;
+  }
+  return CKR_OK;
+}
+
+static CK_RV signFinal(CNK_PKCS11_SESSION *session, CK_BYTE_PTR signature, CK_ULONG_PTR signatureLen) {
+  if (session->signingContext.hKey == 0)
+    return CKR_OPERATION_NOT_INITIALIZED;
+  if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism) &&
+      session->signingContext.mechanism.mechanism != CKM_ML_DSA)
+    return CKR_ARGUMENTS_BAD;
+  if (session->signingContext.mechanism.mechanism == CKM_ML_DSA) {
+    if (signature == NULL) {
+      *signatureLen = session->signingContext.cbSignature;
+      return CKR_OK;
+    }
+    if (*signatureLen < session->signingContext.cbSignature) {
+      *signatureLen = session->signingContext.cbSignature;
+      return CKR_BUFFER_TOO_SMALL;
+    }
+    if (session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS && !session->signingContext.contextAuthenticated)
+      return CKR_USER_NOT_LOGGED_IN;
+    CK_RV rv = prepareAndSign(session, session->signingContext.message, session->signingContext.messageLen, signature,
+                              signatureLen);
+    if (rv != CKR_USER_NOT_LOGGED_IN && rv != CKR_BUFFER_TOO_SMALL)
+      cnk_reset_signing_context(session);
+    return rv;
+  }
+  if (session->signingContext.digestingContext.mechanismType == 0)
+    return CKR_OPERATION_NOT_INITIALIZED;
+  if (signature == NULL) {
+    *signatureLen = session->signingContext.cbSignature;
+    return CKR_OK;
+  }
+  if (*signatureLen < session->signingContext.cbSignature) {
+    *signatureLen = session->signingContext.cbSignature;
+    return CKR_BUFFER_TOO_SMALL;
+  }
+  if (session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS && !session->signingContext.contextAuthenticated)
+    return CKR_USER_NOT_LOGGED_IN;
+
+  const mbedtls_md_info_t *mdInfo = mbedtls_md_info_from_type(session->signingContext.digestingContext.type);
+  if (mdInfo == NULL)
+    return CKR_FUNCTION_FAILED;
+  CK_ULONG digestLen = mbedtls_md_get_size(mdInfo);
+  CK_BYTE digest[MBEDTLS_MD_MAX_SIZE];
+  CK_RV rv = CKR_OK;
+  if (mbedtls_md_finish(&session->signingContext.digestingContext.context, digest) != 0)
+    rv = CKR_FUNCTION_FAILED;
+  else
+    rv = prepareAndSign(session, digest, digestLen, signature, signatureLen);
+  mbedtls_platform_zeroize(digest, sizeof(digest));
+  if (rv != CKR_USER_NOT_LOGGED_IN && rv != CKR_BUFFER_TOO_SMALL)
+    cnk_reset_signing_context(session);
+  return rv;
+}
+
 CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
              CK_ULONG_PTR pulSignatureLen) {
   CNK_LOG_FUNC(": hSession: %lu, ulDataLen: %lu, pSignature: %p, pulSignatureLen: %p", hSession, ulDataLen, pSignature,
@@ -409,8 +481,10 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pulSignatureLen);
 
   // Validate the session, and check if we have an active key
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
+  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
   if (session->signingContext.hKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called - no active key");
   if (pData == NULL && ulDataLen > 0) {
@@ -432,10 +506,10 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
 
   // If the mechanism requires digesting, do it using C_SignUpdate and C_SignFinal
   if (isMechRequireDigesting(session->signingContext.mechanism.mechanism)) {
-    rv = C_SignUpdate(hSession, pData, ulDataLen);
+    rv = signUpdate(session, pData, ulDataLen);
     if (rv != CKR_OK)
       goto cleanup;
-    rv = C_SignFinal(hSession, pSignature, pulSignatureLen);
+    rv = signFinal(session, pSignature, pulSignatureLen);
     if (rv != CKR_OK)
       goto cleanup;
     goto cleanup;
@@ -459,28 +533,11 @@ CK_RV C_SignUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart, CK_ULONG ulPar
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pPart is NULL but ulPartLen > 0");
 
   // Validate the session, check if we have an active key, and check if we have a mechanism
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  if (session->signingContext.hKey == 0)
-    CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called");
-  if (session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS && !session->signingContext.contextAuthenticated)
-    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always key requires context-specific login");
-  if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism) &&
-      session->signingContext.mechanism.mechanism != CKM_ML_DSA)
-    CNK_RETURN(CKR_ARGUMENTS_BAD, "single-part mechanism");
-  if (session->signingContext.mechanism.mechanism == CKM_ML_DSA)
-    return appendSigningMessage(session, pPart, ulPartLen);
-  if (session->digestingContext.mechanismType == 0)
-    CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called");
-
-  if (mbedtls_md_update(&session->digestingContext.context, pPart, ulPartLen) != 0) {
-    // Reset signing context
-    cnk_reset_signing_context(session);
-
-    CNK_RETURN(CKR_FUNCTION_FAILED, "md update failed");
-  }
-
-  CNK_RET_OK;
+  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
+  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  return signUpdate(session, pPart, ulPartLen);
 }
 
 CK_RV C_SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen) {
@@ -489,74 +546,11 @@ CK_RV C_SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG_P
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pulSignatureLen);
 
   // Validate the session, check if we have an active key, and check if we have a mechanism
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  if (session->signingContext.hKey == 0)
-    CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called");
-  if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism) &&
-      session->signingContext.mechanism.mechanism != CKM_ML_DSA)
-    CNK_RETURN(CKR_ARGUMENTS_BAD, "single-part mechanism");
-  if (session->signingContext.mechanism.mechanism == CKM_ML_DSA) {
-    if (pSignature == NULL) {
-      *pulSignatureLen = session->signingContext.cbSignature;
-      return CKR_OK;
-    }
-    if (*pulSignatureLen < session->signingContext.cbSignature) {
-      *pulSignatureLen = session->signingContext.cbSignature;
-      return CKR_BUFFER_TOO_SMALL;
-    }
-    if (session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS && !session->signingContext.contextAuthenticated)
-      CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always key requires context-specific login");
-    CK_RV signRv = prepareAndSign(session, session->signingContext.message, session->signingContext.messageLen,
-                                  pSignature, pulSignatureLen);
-    if (signRv != CKR_USER_NOT_LOGGED_IN && signRv != CKR_BUFFER_TOO_SMALL)
-      cnk_reset_signing_context(session);
-    return signRv;
-  }
-  if (session->digestingContext.mechanismType == 0)
-    CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called");
-
-  // For signature-only call to get the signature length
-  if (pSignature == NULL) {
-    *pulSignatureLen = session->signingContext.cbSignature;
-    CNK_RET_OK;
-  }
-  if (*pulSignatureLen < session->signingContext.cbSignature) {
-    *pulSignatureLen = session->signingContext.cbSignature;
-    return CKR_BUFFER_TOO_SMALL;
-  }
-  if (session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS && !session->signingContext.contextAuthenticated)
-    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always key requires context-specific login");
-
-  CK_RV rv = CKR_OK;
-
-  // Get the digest
-  const mbedtls_md_info_t *mdInfo = mbedtls_md_info_from_type(session->digestingContext.type);
-  CNK_ENSURE_NONNULL(mdInfo);
-
-  CK_ULONG cbMD = mbedtls_md_get_size(mdInfo);
-  CK_BYTE_PTR pMD = ck_malloc(cbMD);
-  CNK_ENSURE_NONNULL(pMD);
-
-  if (mbedtls_md_finish(&session->digestingContext.context, pMD) != 0) {
-    CNK_ERROR("Failed to finish digesting");
-    rv = CKR_FUNCTION_FAILED;
-    goto cleanup;
-  }
-
-  // Compute signature
-  rv = prepareAndSign(session, pMD, cbMD, pSignature, pulSignatureLen);
-  if (rv != CKR_OK) {
-    goto cleanup;
-  }
-
-cleanup:
-  ck_free(pMD);
-  if (rv != CKR_USER_NOT_LOGGED_IN && rv != CKR_BUFFER_TOO_SMALL) {
-    cnk_reset_signing_context(session);
-  }
-
-  CNK_RETURN(rv, "C_SignFinal finished");
+  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
+  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  return signFinal(session, pSignature, pulSignatureLen);
 }
 
 CK_RV C_SignRecoverInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {
@@ -756,9 +750,11 @@ CK_RV C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_O
   CNK_LOG_FUNC(": hSession: %lu, pMechanism: %p, hKey: %lu", hSession, pMechanism, hKey);
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pMechanism);
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CK_BYTE objectId, pivSlot;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
+  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
   if (session->verifyingContext.hKey != 0)
     CNK_RETURN(CKR_OPERATION_ACTIVE, "verify operation is already active");
   CNK_ENSURE_OK(CNK_ValidateObject(hKey, session, CKO_PUBLIC_KEY, &objectId));
@@ -811,10 +807,9 @@ CK_RV C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_O
 
   CK_RV rv = CKR_OK;
   if (isMechRequireDigesting(pMechanism->mechanism)) {
-    rv = initDigestingContext(session, pMechanism->mechanism);
+    rv = initDigestingContext(&session->verifyingContext.digestingContext, pMechanism->mechanism);
     if (rv == CKR_OK) {
-      session->verifyingContext.ownsDigestContext = CK_TRUE;
-      session->verifyingContext.mdType = session->digestingContext.type;
+      session->verifyingContext.mdType = session->verifyingContext.digestingContext.type;
     }
   } else if (pMechanism->mechanism == CKM_RSA_PKCS_PSS) {
     const CK_RSA_PKCS_PSS_PARAMS *params = (const CK_RSA_PKCS_PSS_PARAMS *)pMechanism->pParameter;
@@ -827,13 +822,61 @@ CK_RV C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_O
   CNK_RET_OK;
 }
 
+static CK_RV verifyUpdate(CNK_PKCS11_SESSION *session, CK_BYTE_PTR part, CK_ULONG partLen) {
+  if (session->verifyingContext.hKey == 0)
+    return CKR_OPERATION_NOT_INITIALIZED;
+  if (isMechRequireDigesting(session->verifyingContext.mechanism.mechanism)) {
+    if (session->verifyingContext.digestingContext.mechanismType == 0)
+      return CKR_OPERATION_NOT_INITIALIZED;
+    if (mbedtls_md_update(&session->verifyingContext.digestingContext.context, part, partLen) != 0) {
+      cnk_reset_verifying_context(session);
+      return CKR_FUNCTION_FAILED;
+    }
+    return CKR_OK;
+  }
+  return appendVerifyingMessage(session, part, partLen);
+}
+
+static CK_RV verifyFinal(CNK_PKCS11_SESSION *session, CK_BYTE_PTR signature, CK_ULONG signatureLen) {
+  if (session->verifyingContext.hKey == 0)
+    return CKR_OPERATION_NOT_INITIALIZED;
+  if (signature == NULL) {
+    cnk_reset_verifying_context(session);
+    return CKR_ARGUMENTS_BAD;
+  }
+
+  CK_RV rv;
+  if (isMechRequireDigesting(session->verifyingContext.mechanism.mechanism)) {
+    if (session->verifyingContext.digestingContext.mechanismType == 0) {
+      cnk_reset_verifying_context(session);
+      return CKR_OPERATION_NOT_INITIALIZED;
+    }
+    CK_BYTE digest[MBEDTLS_MD_MAX_SIZE];
+    const mbedtls_md_info_t *mdInfo = mbedtls_md_info_from_type(session->verifyingContext.digestingContext.type);
+    if (mdInfo == NULL || mbedtls_md_finish(&session->verifyingContext.digestingContext.context, digest) != 0) {
+      mbedtls_platform_zeroize(digest, sizeof(digest));
+      cnk_reset_verifying_context(session);
+      return CKR_FUNCTION_FAILED;
+    }
+    rv = verifyPrepared(session, digest, mbedtls_md_get_size(mdInfo), signature, signatureLen);
+    mbedtls_platform_zeroize(digest, sizeof(digest));
+  } else {
+    rv = verifyPrepared(session, session->verifyingContext.message, session->verifyingContext.messageLen, signature,
+                        signatureLen);
+  }
+  cnk_reset_verifying_context(session);
+  return rv;
+}
+
 CK_RV C_Verify(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
                CK_ULONG ulSignatureLen) {
   CNK_LOG_FUNC(": hSession: %lu, pData: %p, ulDataLen: %lu, pSignature: %p, ulSignatureLen: %lu", hSession, pData,
                ulDataLen, pSignature, ulSignatureLen);
   CNK_ENSURE_INITIALIZED();
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
+  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
   if (session->verifyingContext.hKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_VerifyInit not called");
   if ((pData == NULL && ulDataLen > 0) || pSignature == NULL) {
@@ -843,9 +886,9 @@ CK_RV C_Verify(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen
 
   CK_RV rv;
   if (isMechRequireDigesting(session->verifyingContext.mechanism.mechanism)) {
-    rv = C_VerifyUpdate(hSession, pData, ulDataLen);
+    rv = verifyUpdate(session, pData, ulDataLen);
     if (rv == CKR_OK)
-      rv = C_VerifyFinal(hSession, pSignature, ulSignatureLen);
+      rv = verifyFinal(session, pSignature, ulSignatureLen);
     else
       cnk_reset_verifying_context(session);
     return rv;
@@ -860,57 +903,21 @@ CK_RV C_VerifyUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart, CK_ULONG ulP
   CNK_ENSURE_INITIALIZED();
   if (pPart == NULL && ulPartLen > 0)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "invalid verify part");
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  if (session->verifyingContext.hKey == 0)
-    CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_VerifyInit not called");
-
-  if (isMechRequireDigesting(session->verifyingContext.mechanism.mechanism)) {
-    if (session->digestingContext.mechanismType == 0)
-      CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "verify digest is not initialized");
-    if (mbedtls_md_update(&session->digestingContext.context, pPart, ulPartLen) != 0) {
-      cnk_reset_verifying_context(session);
-      CNK_RETURN(CKR_FUNCTION_FAILED, "verify digest update failed");
-    }
-    CNK_RET_OK;
-  }
-  return appendVerifyingMessage(session, pPart, ulPartLen);
+  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
+  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  return verifyUpdate(session, pPart, ulPartLen);
 }
 
 CK_RV C_VerifyFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG ulSignatureLen) {
   CNK_LOG_FUNC(": hSession: %lu, pSignature: %p, ulSignatureLen: %lu", hSession, pSignature, ulSignatureLen);
   CNK_ENSURE_INITIALIZED();
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  if (session->verifyingContext.hKey == 0)
-    CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_VerifyInit not called");
-  if (pSignature == NULL) {
-    cnk_reset_verifying_context(session);
-    CNK_RETURN(CKR_ARGUMENTS_BAD, "signature is NULL");
-  }
-
-  CK_RV rv;
-  if (isMechRequireDigesting(session->verifyingContext.mechanism.mechanism)) {
-    if (session->digestingContext.mechanismType == 0) {
-      cnk_reset_verifying_context(session);
-      return CKR_OPERATION_NOT_INITIALIZED;
-    }
-    CK_BYTE digest[MBEDTLS_MD_MAX_SIZE];
-    const mbedtls_md_info_t *mdInfo = mbedtls_md_info_from_type(session->digestingContext.type);
-    if (mdInfo == NULL || mbedtls_md_finish(&session->digestingContext.context, digest) != 0) {
-      mbedtls_platform_zeroize(digest, sizeof(digest));
-      cnk_reset_verifying_context(session);
-      return CKR_FUNCTION_FAILED;
-    }
-    rv = verifyPrepared(session, digest, mbedtls_md_get_size(mdInfo), pSignature, ulSignatureLen);
-    mbedtls_platform_zeroize(digest, sizeof(digest));
-  } else {
-    rv = verifyPrepared(session, session->verifyingContext.message, session->verifyingContext.messageLen, pSignature,
-                        ulSignatureLen);
-  }
-  // VerifyFinal always consumes the operation, including signature mismatch.
-  cnk_reset_verifying_context(session);
-  return rv;
+  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
+  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  return verifyFinal(session, pSignature, ulSignatureLen);
 }
 
 CK_RV C_VerifyRecoverInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {

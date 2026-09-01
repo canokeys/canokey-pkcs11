@@ -876,7 +876,7 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
   if (ulCount > 0)
     CNK_ENSURE_NONNULL(pTemplate);
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   if (!(session->flags & CKF_RW_SESSION))
@@ -982,7 +982,7 @@ CK_RV C_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTR
   if (ulCount > 0)
     CNK_ENSURE_NONNULL(pTemplate);
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   CNK_PKCS11_SECRET_KEY_OBJECT *source;
   CK_RV rv = CNK_GetSessionSecretKey(session, hObject, &source);
@@ -1006,7 +1006,7 @@ CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
   CNK_LOG_FUNC(": hSession: %lu, hObject: %lu", hSession, hObject);
   CNK_ENSURE_INITIALIZED();
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
   if (isSessionSecretHandle(session, hObject, &secret)) {
@@ -1140,7 +1140,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   }
 
   // Validate session
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
@@ -1393,7 +1393,7 @@ CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   if (ulCount > 0)
     CNK_ENSURE_NONNULL(pTemplate);
 
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
@@ -1426,7 +1426,7 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
     return CKR_ARGUMENTS_BAD;
 
   // Validate the session
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CK_RV rv = CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   // Lock the session
@@ -1538,7 +1538,7 @@ CK_RV C_FindObjects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject, C
     return CKR_ARGUMENTS_BAD;
 
   // Find the session
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   // Lock the session
@@ -1574,7 +1574,7 @@ CK_RV C_FindObjectsFinal(CK_SESSION_HANDLE hSession) {
   CNK_ENSURE_INITIALIZED();
 
   // Find the session
-  CNK_PKCS11_SESSION *session;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   // Lock the session
