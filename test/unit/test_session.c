@@ -84,9 +84,13 @@ static void test_close_does_not_deadlock_template_find(void **state) {
 
   CK_MECHANISM mechanism = {CKM_GENERIC_SECRET_KEY_GEN, NULL, 0};
   CK_ULONG valueLen = 32;
-  CK_ATTRIBUTE keyTemplate = {CKA_VALUE_LEN, &valueLen, sizeof(valueLen)};
+  CK_BBOOL privateValue = CK_FALSE;
+  CK_ATTRIBUTE keyTemplate[] = {
+      {CKA_VALUE_LEN, &valueLen, sizeof(valueLen)},
+      {CKA_PRIVATE, &privateValue, sizeof(privateValue)},
+  };
   CK_OBJECT_HANDLE key;
-  assert_int_equal(C_GenerateKey(session, &mechanism, &keyTemplate, 1, &key), CKR_OK);
+  assert_int_equal(C_GenerateKey(session, &mechanism, keyTemplate, 2, &key), CKR_OK);
 
   FindThreadContext ctx = {.session = session, .rv = CKR_GENERAL_ERROR};
 #ifdef _WIN32
