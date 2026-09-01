@@ -5,6 +5,7 @@
 #include "internal/util.h"
 
 #include <mbedtls/platform_util.h>
+#include <psa/crypto.h>
 #include <string.h>
 
 #define CNK_PIV_MAX_PUBLIC_KEY_RESPONSE 4096
@@ -92,7 +93,15 @@ CK_RV cnk_block_piv_puk(CK_SLOT_ID slotID) {
 
   CK_BYTE knownPuk[8] = {0};
   CK_BBOOL pukKnown = CK_FALSE;
-  static const CK_BYTE replacementPuk[8] = {'9', '8', '7', '6', '5', '4', '3', '2'};
+  CK_BYTE replacementPuk[8];
+  CK_BYTE randomPuk[8];
+  if (psa_generate_random(randomPuk, sizeof(randomPuk)) != PSA_SUCCESS) {
+    rv = CKR_RANDOM_NO_RNG;
+    goto cleanup;
+  }
+  for (CK_ULONG i = 0; i < sizeof(replacementPuk); i++)
+    replacementPuk[i] = (CK_BYTE)('0' + randomPuk[i] % 10);
+  mbedtls_platform_zeroize(randomPuk, sizeof(randomPuk));
   CK_BYTE pinTries = 0;
   rv = readPivPinRetriesOnCard(card, CNK_PIV_PIN_TYPE_PUK, &pinTries);
   if (rv != CKR_OK || pinTries == 0)
@@ -139,9 +148,9 @@ CK_RV cnk_block_piv_puk(CK_SLOT_ID slotID) {
     }
     memcpy(knownPuk, replacementPuk, sizeof(knownPuk));
     pukKnown = CK_TRUE;
-    rv = readPivPinRetriesOnCard(card, CNK_PIV_PIN_TYPE_PUK, &pinTries);
-    if (rv != CKR_OK)
-      goto cleanup;
+    // A successful change resets retries. Continue immediately with a known
+    // wrong old value; the resulting retry status supplies the new count.
+    pinTries = 0xFF;
   }
 
   rv = readPivPinRetriesOnCard(card, CNK_PIV_PIN_TYPE_PUK, &pinTries);
@@ -150,6 +159,8 @@ CK_RV cnk_block_piv_puk(CK_SLOT_ID slotID) {
 
 cleanup:
   mbedtls_platform_zeroize(knownPuk, sizeof(knownPuk));
+  mbedtls_platform_zeroize(replacementPuk, sizeof(replacementPuk));
+  mbedtls_platform_zeroize(randomPuk, sizeof(randomPuk));
   cnk_disconnect_card(card);
   return rv;
 }

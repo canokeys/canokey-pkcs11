@@ -248,7 +248,8 @@ void cnk_session_release_ref(CNK_PKCS11_SESSION **session) {
 CK_BBOOL cnk_token_pin_is_cached(CNK_PKCS11_SESSION *session) {
   CK_BBOOL result;
   cnk_mutex_lock(&session->token->lock);
-  result = session->token->loginState == TOKEN_LOGIN_USER && session->token->cbPin > 0;
+  result =
+      !session->token->logoutPending && session->token->loginState == TOKEN_LOGIN_USER && session->token->cbPin > 0;
   cnk_mutex_unlock(&session->token->lock);
   return result;
 }
@@ -256,7 +257,7 @@ CK_BBOOL cnk_token_pin_is_cached(CNK_PKCS11_SESSION *session) {
 CK_RV cnk_token_copy_pin(CNK_PKCS11_SESSION *session, CK_BYTE pin[8], CK_ULONG_PTR pinLen) {
   CNK_ENSURE_NONNULL(session, pin, pinLen);
   cnk_mutex_lock(&session->token->lock);
-  if (session->token->loginState != TOKEN_LOGIN_USER || session->token->cbPin == 0) {
+  if (session->token->logoutPending || session->token->loginState != TOKEN_LOGIN_USER || session->token->cbPin == 0) {
     cnk_mutex_unlock(&session->token->lock);
     return CKR_USER_NOT_LOGGED_IN;
   }
@@ -294,7 +295,7 @@ CK_RV cnk_token_update_cached_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR o
 CK_BBOOL cnk_token_management_key_is_cached(CNK_PKCS11_SESSION *session) {
   CK_BBOOL result;
   cnk_mutex_lock(&session->token->lock);
-  result = session->token->cbManagementKey == sizeof(session->token->managementKey);
+  result = !session->token->logoutPending && session->token->cbManagementKey == sizeof(session->token->managementKey);
   cnk_mutex_unlock(&session->token->lock);
   return result;
 }
@@ -302,7 +303,7 @@ CK_BBOOL cnk_token_management_key_is_cached(CNK_PKCS11_SESSION *session) {
 CK_RV cnk_token_copy_management_key(CNK_PKCS11_SESSION *session, CK_BYTE key[24]) {
   CNK_ENSURE_NONNULL(session, key);
   cnk_mutex_lock(&session->token->lock);
-  if (session->token->cbManagementKey != sizeof(session->token->managementKey)) {
+  if (session->token->logoutPending || session->token->cbManagementKey != sizeof(session->token->managementKey)) {
     cnk_mutex_unlock(&session->token->lock);
     return CKR_USER_NOT_LOGGED_IN;
   }
@@ -314,7 +315,7 @@ CK_RV cnk_token_copy_management_key(CNK_PKCS11_SESSION *session, CK_BYTE key[24]
 CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session) {
   CNK_ENSURE_NONNULL(session, session->token);
   cnk_mutex_lock(&session->token->lock);
-  if (session->token->loginState != TOKEN_LOGIN_USER || session->token->cbPin == 0) {
+  if (session->token->logoutPending || session->token->loginState != TOKEN_LOGIN_USER || session->token->cbPin == 0) {
     cnk_mutex_unlock(&session->token->lock);
     return CKR_USER_NOT_LOGGED_IN;
   }
@@ -554,14 +555,22 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
     session->token->readOnlySessions--;
   CK_BBOOL lastSession = session->token->openSessions == 0;
   CK_BBOOL hadPin = session->token->cbPin > 0;
-  if (lastSession)
+  if (lastSession) {
+    session->token->logoutPending = CK_TRUE;
     clear_token_auth(session->token);
+  }
   cnk_mutex_unlock(&session->token->lock);
+  CK_RV logoutRv = CKR_OK;
   if (lastSession && hadPin)
-    cnk_logout_piv_pin_with_session(session->slotId);
+    logoutRv = cnk_logout_piv_pin_with_session(session->slotId);
+  if (lastSession) {
+    cnk_mutex_lock(&session->token->lock);
+    session->token->logoutPending = CK_FALSE;
+    cnk_mutex_unlock(&session->token->lock);
+  }
   free_session(session);
 
-  CNK_RET_OK;
+  return logoutRv;
 }
 
 // Close all sessions for a slot
@@ -664,6 +673,12 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
   // Find the session
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CK_RV rv = CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+
+  cnk_mutex_lock(&session->token->lock);
+  CK_BBOOL logoutPending = session->token->logoutPending;
+  cnk_mutex_unlock(&session->token->lock);
+  if (logoutPending)
+    CNK_RETURN(CKR_OPERATION_ACTIVE, "Token logout is in progress");
 
   if (userType == CKU_CONTEXT_SPECIFIC) {
     CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
@@ -813,25 +828,29 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
 
   cnk_mutex_lock(&session->token->lock);
   if (session->token->loginState == TOKEN_LOGIN_PENDING_USER || session->token->loginState == TOKEN_LOGIN_PENDING_SO ||
-      session->token->managementLoginPending) {
+      session->token->managementLoginPending || session->token->logoutPending) {
     cnk_mutex_unlock(&session->token->lock);
     return CKR_OPERATION_ACTIVE;
   }
   CK_BBOOL hasPin = session->token->cbPin > 0;
   CK_BBOOL hasManagementKey = session->token->cbManagementKey > 0;
+  session->token->logoutPending = CK_TRUE;
   cnk_mutex_unlock(&session->token->lock);
   if (!hasPin && !hasManagementKey) {
+    cnk_mutex_lock(&session->token->lock);
+    session->token->logoutPending = CK_FALSE;
+    cnk_mutex_unlock(&session->token->lock);
     return CKR_USER_NOT_LOGGED_IN;
   }
 
   // Send the logout APDU only for user PIN sessions. Management-key
   // authentication is per-card transaction and has no matching logout APDU.
-  if (hasPin)
-    CNK_ENSURE_OK(cnk_logout_piv_pin_with_session(session->slotId));
+  CK_RV logoutRv = hasPin ? cnk_logout_piv_pin_with_session(session->slotId) : CKR_OK;
 
   cnk_mutex_lock(&session->token->lock);
   clear_token_auth(session->token);
+  session->token->logoutPending = CK_FALSE;
   cnk_mutex_unlock(&session->token->lock);
 
-  CNK_RET_OK;
+  return logoutRv;
 }

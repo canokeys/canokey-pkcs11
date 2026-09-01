@@ -256,6 +256,7 @@ static CK_RV findKeyPair(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE s
                          CK_ATTRIBUTE_TYPE usage, CK_OBJECT_HANDLE_PTR publicKey, CK_OBJECT_HANDLE_PTR privateKey) {
   CK_OBJECT_CLASS privateClass = CKO_PRIVATE_KEY;
   CK_BBOOL trueValue = CK_TRUE;
+  CK_BYTE pinPolicy = keyType == CKK_EC_MONTGOMERY ? CNK_PIV_PIN_POLICY_ALWAYS : CNK_PIV_PIN_POLICY_ONCE;
   CK_ATTRIBUTE privateTemplate[] = {
       {CKA_CLASS, &privateClass, sizeof(privateClass)},
       {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
@@ -582,6 +583,7 @@ static int generate25519KeyPair(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_H
       {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
       {CKA_ID, &id, sizeof(id)},
       {keyType == CKK_EC_EDWARDS ? CKA_SIGN : CKA_DERIVE, &trueValue, sizeof(trueValue)},
+      {CKA_CNK_PIV_PIN_POLICY, &pinPolicy, sizeof(pinPolicy)},
   };
   CK_MECHANISM mechanism = {mechanismType, NULL, 0};
   return functions->C_GenerateKeyPair(session, &mechanism, publicTemplate,
@@ -863,6 +865,7 @@ int main(int argc, char **argv) {
 
   id = 9;
   keyType = CKK_EC_MONTGOMERY;
+  CK_BYTE xPinPolicy = CNK_PIV_PIN_POLICY_ALWAYS;
   CK_ATTRIBUTE xImportTemplate[] = {
       {CKA_CLASS, &privateClass, sizeof(privateClass)},
       {CKA_TOKEN, &trueValue, sizeof(trueValue)},
@@ -872,6 +875,7 @@ int main(int argc, char **argv) {
       {CKA_DERIVE, &trueValue, sizeof(trueValue)},
       {CKA_EC_PARAMS, (CK_VOID_PTR)xParams, sizeof(xParams)},
       {CKA_VALUE, xPrivateValue, sizeof(xPrivateValue)},
+      {CKA_CNK_PIV_PIN_POLICY, &xPinPolicy, sizeof(xPinPolicy)},
   };
   CHECK(functions->C_CreateObject(session, xImportTemplate, sizeof(xImportTemplate) / sizeof(xImportTemplate[0]),
                                   &xPrivate));

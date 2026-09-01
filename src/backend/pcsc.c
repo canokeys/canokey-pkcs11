@@ -1844,15 +1844,37 @@ CK_RV cnk_piv_decrypt(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_P
 CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
                    CK_BYTE pinPolicy, CK_BYTE_PTR pPublicData, CK_ULONG cbPublicData, CK_BYTE_PTR pSharedSecret,
                    CK_ULONG_PTR pcbSharedSecret) {
-  return cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, pinPolicy, 0x85, pPublicData,
-                                          cbPublicData, pSharedSecret, pcbSharedSecret, NULL, 0, "ECDH");
+  CK_BYTE pin[PIV_PADDED_PIN_LEN] = {0};
+  CK_ULONG pinLen = 0;
+  if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS) {
+    CK_RV rv = cnk_token_copy_pin(pSession, pin, &pinLen);
+    if (rv != CKR_OK)
+      return CKR_USER_NOT_LOGGED_IN;
+  }
+  // Derive is a one-shot PKCS#11 operation with no Init boundary for a
+  // context-specific login, so PIN-always consumes the token USER PIN here.
+  CK_RV rv = cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, pinPolicy, 0x85, pPublicData,
+                                              cbPublicData, pSharedSecret, pcbSharedSecret, pinLen == 0 ? NULL : pin,
+                                              pinLen, "ECDH");
+  mbedtls_platform_zeroize(pin, sizeof(pin));
+  return rv;
 }
 
 CK_RV cnk_piv_mlkem_decapsulate(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
                                 CK_BYTE pinPolicy, CK_BYTE_PTR pCiphertext, CK_ULONG cbCiphertext,
                                 CK_BYTE_PTR pSharedSecret, CK_ULONG_PTR pcbSharedSecret) {
-  return cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, pinPolicy, 0x81, pCiphertext,
-                                          cbCiphertext, pSharedSecret, pcbSharedSecret, NULL, 0, "ML-KEM decapsulate");
+  CK_BYTE pin[PIV_PADDED_PIN_LEN] = {0};
+  CK_ULONG pinLen = 0;
+  if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS) {
+    CK_RV rv = cnk_token_copy_pin(pSession, pin, &pinLen);
+    if (rv != CKR_OK)
+      return CKR_USER_NOT_LOGGED_IN;
+  }
+  CK_RV rv = cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, pinPolicy, 0x81, pCiphertext,
+                                              cbCiphertext, pSharedSecret, pcbSharedSecret, pinLen == 0 ? NULL : pin,
+                                              pinLen, "ML-KEM decapsulate");
+  mbedtls_platform_zeroize(pin, sizeof(pin));
+  return rv;
 }
 
 // Sign data using PIV key
