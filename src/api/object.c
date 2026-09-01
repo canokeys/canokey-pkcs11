@@ -1845,6 +1845,7 @@ static CK_RV setEcParamsAttribute(const CNK_PKCS11_SESSION *session, CK_ATTRIBUT
       oid = "\x2A\x81\x1C\xCF\x55\x01\x82\x2D";
       oidLen = 8;
     } else {
+      CNK_ERROR("Should not be reached");
       return CKR_ATTRIBUTE_VALUE_INVALID;
     }
   }

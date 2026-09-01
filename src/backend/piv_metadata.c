@@ -167,6 +167,7 @@ cleanup:
 
 CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR algorithmType, CK_BYTE_PTR publicKey,
                        CK_ULONG_PTR publicKeyLen, CK_BYTE_PTR pinPolicy, CK_BYTE_PTR touchPolicy) {
+  CNK_DEBUG("Sending metadata command for PIV tag 0x%02X", pivTag);
   CNK_ENSURE_NONNULL(algorithmType);
   if (publicKey != NULL && publicKeyLen == NULL)
     return CKR_ARGUMENTS_BAD;
@@ -180,13 +181,20 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR algorithmT
   CK_BYTE response[CNK_PIV_MAX_PUBLIC_KEY_RESPONSE];
   DWORD responseLen = sizeof(response);
   LONG pcscRv = cnk_transceive_apdu(card, apdu, sizeof(apdu), response, &responseLen, CK_TRUE);
-  if (pcscRv != SCARD_S_SUCCESS || responseLen < 2) {
+  if (pcscRv != SCARD_S_SUCCESS) {
+    CNK_ERROR("Failed to send metadata command: %ld", pcscRv);
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+  if (responseLen < 2) {
+    CNK_ERROR("Response too short");
     rv = CKR_DEVICE_ERROR;
     goto cleanup;
   }
   CK_BYTE sw1 = response[responseLen - 2];
   CK_BYTE sw2 = response[responseLen - 1];
   if (sw1 != 0x90 || sw2 != 0x00) {
+    CNK_ERROR("GET METADATA returned error status: %02X%02X", sw1, sw2);
     rv = sw1 == 0x6A && (sw2 == 0x82 || sw2 == 0x88) ? CKR_DATA_INVALID : CKR_DEVICE_ERROR;
     goto cleanup;
   }
@@ -195,17 +203,20 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR algorithmT
   CK_ULONG offset = 0;
   CK_BBOOL sawAlgorithm = CK_FALSE;
   CK_ULONG publicKeyCapacity = publicKeyLen == NULL ? 0 : *publicKeyLen;
+  CNK_DEBUG("Complete metadata response length: %lu bytes", dataLen);
   while (offset < dataLen) {
     CK_BYTE tag = response[offset++];
     CK_LONG fail = 0;
     CK_ULONG lengthSize = 0;
     CK_ULONG length = tlvGetLengthSafe(response + offset, dataLen - offset, &fail, &lengthSize);
     if (fail || lengthSize > dataLen - offset) {
+      CNK_ERROR("Invalid length encoding in metadata response");
       rv = CKR_DEVICE_ERROR;
       goto cleanup;
     }
     offset += lengthSize;
     if (length > dataLen - offset) {
+      CNK_ERROR("Incomplete TLV data in metadata response");
       rv = CKR_DEVICE_ERROR;
       goto cleanup;
     }
@@ -219,6 +230,7 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR algorithmT
       }
       *algorithmType = value[0];
       sawAlgorithm = CK_TRUE;
+      CNK_DEBUG("Algorithm type: 0x%02X", *algorithmType);
       break;
     case 0x02:
       if (length < 2) {
@@ -229,6 +241,11 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR algorithmT
         *pinPolicy = value[0];
       if (touchPolicy != NULL)
         *touchPolicy = value[1];
+      CNK_DEBUG("Pin and touch policies: 0x%02X 0x%02X", value[0], value[1]);
+      break;
+    case 0x03:
+      if (length >= 1)
+        CNK_DEBUG("Key origin: 0x%02X", value[0]);
       break;
     case 0x04:
       if (publicKeyLen != NULL)
@@ -239,9 +256,11 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR algorithmT
           goto cleanup;
         }
         memcpy(publicKey, value, length);
+        CNK_DEBUG("Public key data present, length: %lu bytes", length);
       }
       break;
     default:
+      CNK_DEBUG("Unhandled metadata tag: 0x%02X, length: %lu", tag, length);
       break;
     }
     offset += length;

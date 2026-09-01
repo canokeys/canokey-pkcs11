@@ -910,6 +910,7 @@ static CK_RV verifyFinal(CNK_PKCS11_SESSION *session, CK_BYTE_PTR signature, CK_
     CK_BYTE digest[MBEDTLS_MD_MAX_SIZE];
     const mbedtls_md_info_t *mdInfo = mbedtls_md_info_from_type(session->verifyingContext.digestingContext.type);
     if (mdInfo == NULL || mbedtls_md_finish(&session->verifyingContext.digestingContext.context, digest) != 0) {
+      CNK_ERROR("Failed to finish digesting");
       mbedtls_platform_zeroize(digest, sizeof(digest));
       cnk_reset_verifying_context(session);
       return CKR_FUNCTION_FAILED;

@@ -759,8 +759,10 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
   }
   cnk_mutex_unlock(&g_cnk_readers_mutex);
 
-  if (!readerFound)
+  if (!readerFound) {
+    CNK_ERROR("No reader found for slot %lu", slotID);
     CNK_RETURN(CKR_SLOT_ID_INVALID, "Invalid slot ID");
+  }
   if (readerName == NULL)
     CNK_RETURN(CKR_HOST_MEMORY, "Failed to copy reader name");
 
