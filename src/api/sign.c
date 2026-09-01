@@ -65,6 +65,9 @@ static const CK_MECHANISM_TYPE requireDigesting[] = {
     CKM_ECDSA_SHA3_256,    CKM_ECDSA_SHA3_384,        CKM_ECDSA_SHA3_512,
 };
 
+static CK_RV getPublicKeyComponent(const CK_BYTE *publicKey, CK_ULONG publicKeyLen, CK_BYTE tag, const CK_BYTE **value,
+                                   CK_ULONG_PTR valueLen);
+
 static CK_BBOOL mechInList(CK_MECHANISM_TYPE m, const CK_MECHANISM_TYPE *list, CK_ULONG len) {
   for (CK_ULONG i = 0; i < len; ++i)
     if (list[i] == m)
@@ -103,9 +106,8 @@ static CK_RV validateRsaPssParams(const CK_MECHANISM *m) {
   if (cnk_hash_mech_to_md(p->hashAlg, &hashType) != CKR_OK || cnk_mgf_to_md(p->mgf, &mgfType) != CKR_OK ||
       hashType != mgfType)
     CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unsupported PSS hash or MGF");
-  const mbedtls_md_info_t *mdInfo = mbedtls_md_info_from_type(hashType);
-  if (mdInfo == NULL || p->sLen > mbedtls_md_get_size(mdInfo))
-    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS salt length");
+  if (mbedtls_md_info_from_type(hashType) == NULL)
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unsupported PSS hash");
 
   if (m->mechanism != CKM_RSA_PKCS_PSS) {
     CK_MECHANISM_TYPE expectedHashAlg;
@@ -115,6 +117,19 @@ static CK_RV validateRsaPssParams(const CK_MECHANISM *m) {
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS param: hashAlg or mgf");
   }
 
+  return CKR_OK;
+}
+
+static CK_RV validateRsaPssSaltLength(const CK_MECHANISM *mechanism, CK_ULONG modulusLen) {
+  const CK_RSA_PKCS_PSS_PARAMS *params = mechanism->pParameter;
+  mbedtls_md_type_t mdType;
+  CNK_ENSURE_OK(cnk_hash_mech_to_md(params->hashAlg, &mdType));
+  const mbedtls_md_info_t *mdInfo = mbedtls_md_info_from_type(mdType);
+  CK_ULONG hashLen = mdInfo == NULL ? 0 : mbedtls_md_get_size(mdInfo);
+  // CanoKey RSA moduli have their top bit set, so emBits = modBits - 1 still
+  // occupies modulusLen bytes. RFC 8017 requires emLen >= hLen + sLen + 2.
+  if (hashLen == 0 || modulusLen < hashLen + 2 || params->sLen > modulusLen - hashLen - 2)
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "PSS salt does not fit the RSA modulus");
   return CKR_OK;
 }
 
@@ -161,6 +176,9 @@ static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m,
 
   if (session->signingContext.cbSignature == 0)
     CNK_RETURN(CKR_DEVICE_ERROR, "Modulus not found in public key");
+
+  if (isMechRsaPss(m->mechanism))
+    CNK_ENSURE_OK(validateRsaPssSaltLength(m, session->signingContext.cbSignature));
 
   return CKR_OK;
 }
@@ -817,9 +835,13 @@ CK_RV C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_O
   } else if (isMechRSA(pMechanism->mechanism)) {
     if (algorithmType != PIV_ALG_RSA_2048 && algorithmType != PIV_ALG_RSA_3072 && algorithmType != PIV_ALG_RSA_4096)
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "verify key is not RSA");
-    if (isMechRsaPss(pMechanism->mechanism))
+    if (isMechRsaPss(pMechanism->mechanism)) {
       CNK_ENSURE_OK(validateRsaPssParams(pMechanism));
-    else if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
+      const CK_BYTE *modulus;
+      CK_ULONG modulusLen;
+      CNK_ENSURE_OK(getPublicKeyComponent(publicKey, publicKeyLen, 0x81, &modulus, &modulusLen));
+      CNK_ENSURE_OK(validateRsaPssSaltLength(pMechanism, modulusLen));
+    } else if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unexpected RSA mechanism parameters");
   } else if (isMechEC(pMechanism->mechanism)) {
     if (getEcSignatureLength(algorithmType) == 0)

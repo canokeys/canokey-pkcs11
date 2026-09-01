@@ -32,6 +32,7 @@ typedef struct CNK_PKCS11_TOKEN_STATE {
   CK_ULONG cbPin;
   CK_BYTE managementKey[24];
   CK_ULONG cbManagementKey;
+  CK_BBOOL managementLoginPending;
   CK_ULONG openSessions;
   CK_ULONG readOnlySessions;
   CNK_PKCS11_MUTEX lock;

@@ -270,6 +270,9 @@ static CK_RV handlePrivateKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE
  * @return CK_RV CKR_OK on success, error code otherwise
  */
 static CK_RV handleSecretKeyAttribute(CK_ATTRIBUTE_PTR attribute, const CNK_PKCS11_SECRET_KEY_OBJECT *secret);
+static CK_RV handleSessionSecretAttribute(CK_ATTRIBUTE_PTR attribute, const CNK_PKCS11_SECRET_KEY_OBJECT *secret);
+static CK_BBOOL matchSessionSecretTemplate(const CNK_PKCS11_SECRET_KEY_OBJECT *secret, CK_ATTRIBUTE_PTR pTemplate,
+                                           CK_ULONG ulCount);
 
 /**
  * @brief Check if an object matches a template
@@ -714,7 +717,7 @@ static CK_RV appendMatchingSecretObjects(CNK_PKCS11_SESSION *session, CK_SESSION
       continue;
 
     CK_OBJECT_HANDLE hObject = makeObjectHandle(session->slotId, CKO_SECRET_KEY, id);
-    if (ulCount == 0 || matchTemplate(hSession, hObject, pTemplate, ulCount)) {
+    if (ulCount == 0 || matchSessionSecretTemplate(&session->secretKeys[i], pTemplate, ulCount)) {
       if (session->findObjectsCount >= MAX_FIND_OBJECTS)
         return CKR_HOST_MEMORY;
 
@@ -992,17 +995,30 @@ CK_RV C_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTR
 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_SECRET_KEY_OBJECT *source;
-  CK_RV rv = CNK_GetSessionSecretKey(session, hObject, &source);
+  CNK_PKCS11_SECRET_KEY_OBJECT copy = {0};
+  CK_RV rv;
+  cnk_mutex_lock(&session->lock);
+  CNK_PKCS11_SECRET_KEY_OBJECT *source = NULL;
+  rv = CNK_GetSessionSecretKey(session, hObject, &source);
+  if (rv == CKR_OK) {
+    if (!source->copyable) {
+      cnk_mutex_unlock(&session->lock);
+      CNK_RETURN(CKR_ACTION_PROHIBITED, "Session secret key is not copyable");
+    }
+    copy = *source;
+  }
+  cnk_mutex_unlock(&session->lock);
   if (rv != CKR_OK) {
+    CK_OBJECT_CLASS objectClass;
+    extractObjectInfo(hObject, NULL, &objectClass, NULL);
+    if (objectClass == OBJECT_CLASS_SECRET_KEY_HANDLE)
+      CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid session secret-key handle");
     CNK_ENSURE_OK(CNK_ValidateObject(hObject, session, 0, NULL));
     CNK_RETURN(CKR_ACTION_PROHIBITED, "PIV token objects are not copyable");
   }
-  if (!source->copyable)
-    CNK_RETURN(CKR_ACTION_PROHIBITED, "Session secret key is not copyable");
 
-  CNK_PKCS11_SECRET_KEY_OBJECT copy = *source;
-  // The local copy also keeps raw key bytes; zero it on every return path.
+  // The snapshot linearizes the copy before a concurrent destroy. The new
+  // object is allocated separately after releasing the non-recursive lock.
   rv = applyMutableSecretAttributes(&copy, pTemplate, ulCount);
   if (rv == CKR_OK)
     rv = CNK_CreateSessionSecretKey(session, &copy, phNewObject);
@@ -1016,6 +1032,8 @@ CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
+  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
   CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
   if (isSessionSecretHandle(session, hObject, &secret)) {
     if (!secret->destroyable)
@@ -1151,43 +1169,21 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
-  CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
-  if (isSessionSecretHandle(session, hObject, &secret)) {
+  CK_OBJECT_CLASS requestedClass;
+  extractObjectInfo(hObject, NULL, &requestedClass, NULL);
+  if (requestedClass == OBJECT_CLASS_SECRET_KEY_HANDLE) {
+    CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
+    CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+    CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
+    if (!isSessionSecretHandle(session, hObject, &secret))
+      CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid session secret-key handle");
     CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
     CK_RV rvReturn = CKR_OK;
 
     for (CK_ULONG i = 0; i < ulCount; i++) {
-      CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
-
-      switch (pTemplate[i].type) {
-      case CKA_CLASS:
-        rv = setSingleAttributeValue(&pTemplate[i], &secretClass, sizeof(secretClass));
-        break;
-      case CKA_TOKEN:
-        rv = setSingleAttributeValue(&pTemplate[i], &secret->token, sizeof(secret->token));
-        break;
-      case CKA_PRIVATE:
-        rv = setSingleAttributeValue(&pTemplate[i], &secret->private, sizeof(secret->private));
-        break;
-      case CKA_ID:
-        rv = setSingleAttributeValue(&pTemplate[i], &secret->id, sizeof(secret->id));
-        break;
-      case CKA_LABEL:
-        rv = setSingleAttributeValue(&pTemplate[i], secret->label, secret->labelLen);
-        break;
-      case CKA_MODIFIABLE:
-        rv = setSingleAttributeValue(&pTemplate[i], &secret->modifiable, sizeof(secret->modifiable));
-        break;
-      case CKA_COPYABLE:
-        rv = setSingleAttributeValue(&pTemplate[i], &secret->copyable, sizeof(secret->copyable));
-        break;
-      case CKA_DESTROYABLE:
-        rv = setSingleAttributeValue(&pTemplate[i], &secret->destroyable, sizeof(secret->destroyable));
-        break;
-      default:
-        rv = handleSecretKeyAttribute(&pTemplate[i], secret);
-        break;
-      }
+      CK_RV rv = pTemplate[i].type == CKA_CLASS
+                     ? setSingleAttributeValue(&pTemplate[i], &secretClass, sizeof(secretClass))
+                     : handleSessionSecretAttribute(&pTemplate[i], secret);
 
       if (rv != CKR_OK) {
         pTemplate[i].ulValueLen = CK_UNAVAILABLE_INFORMATION;
@@ -1404,8 +1400,14 @@ CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
-  CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
-  if (isSessionSecretHandle(session, hObject, &secret)) {
+  CK_OBJECT_CLASS requestedClass;
+  extractObjectInfo(hObject, NULL, &requestedClass, NULL);
+  if (requestedClass == OBJECT_CLASS_SECRET_KEY_HANDLE) {
+    CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
+    CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+    CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
+    if (!isSessionSecretHandle(session, hObject, &secret))
+      CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid session secret-key handle");
     if (ulCount == 0)
       CNK_RET_OK;
     if (!secret->modifiable)
@@ -1892,7 +1894,8 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
   }
 
   case CKA_DERIVE: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type) || algorithm_type == session->x25519Algorithm;
+    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type) ||
+                     (session->x25519Algorithm != 0 && algorithm_type == session->x25519Algorithm);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -1962,7 +1965,27 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
     break;
 
   case CKA_EC_POINT:
-    if (keyType == CKK_EC || keyType == CKK_EC_EDWARDS || keyType == CKK_EC_MONTGOMERY) {
+    if (keyType == CKK_EC) {
+      if (pbPublicPoint == NULL || cbPublicPoint == 0 || cbPublicPoint > 255) {
+        rv = CKR_DEVICE_ERROR;
+        break;
+      }
+      // Conventional CKK_EC points use the PKCS#11-mandated DER OCTET STRING
+      // wrapper. Edwards and Montgomery objects use raw RFC bytes below.
+      CK_BYTE encodedPoint[3 + 255];
+      CK_ULONG headerLen;
+      encodedPoint[0] = 0x04;
+      if (cbPublicPoint < 0x80) {
+        encodedPoint[1] = (CK_BYTE)cbPublicPoint;
+        headerLen = 2;
+      } else {
+        encodedPoint[1] = 0x81;
+        encodedPoint[2] = (CK_BYTE)cbPublicPoint;
+        headerLen = 3;
+      }
+      memcpy(encodedPoint + headerLen, pbPublicPoint, cbPublicPoint);
+      rv = setSingleAttributeValue(attribute, encodedPoint, headerLen + cbPublicPoint);
+    } else if (keyType == CKK_EC_EDWARDS || keyType == CKK_EC_MONTGOMERY) {
       rv = setSingleAttributeValue(attribute, pbPublicPoint, cbPublicPoint);
     } else {
       // Not applicable for non-ECC keys
@@ -2038,6 +2061,56 @@ static CK_RV handleSecretKeyAttribute(CK_ATTRIBUTE_PTR attribute, const CNK_PKCS
   default:
     return CKR_ATTRIBUTE_TYPE_INVALID;
   }
+}
+
+static CK_RV handleSessionSecretAttribute(CK_ATTRIBUTE_PTR attribute, const CNK_PKCS11_SECRET_KEY_OBJECT *secret) {
+  switch (attribute->type) {
+  case CKA_TOKEN:
+    return setSingleAttributeValue(attribute, &secret->token, sizeof(secret->token));
+  case CKA_PRIVATE:
+    return setSingleAttributeValue(attribute, &secret->private, sizeof(secret->private));
+  case CKA_ID:
+    return setSingleAttributeValue(attribute, &secret->id, sizeof(secret->id));
+  case CKA_LABEL:
+    return setSingleAttributeValue(attribute, secret->label, secret->labelLen);
+  case CKA_MODIFIABLE:
+    return setSingleAttributeValue(attribute, &secret->modifiable, sizeof(secret->modifiable));
+  case CKA_COPYABLE:
+    return setSingleAttributeValue(attribute, &secret->copyable, sizeof(secret->copyable));
+  case CKA_DESTROYABLE:
+    return setSingleAttributeValue(attribute, &secret->destroyable, sizeof(secret->destroyable));
+  default:
+    return handleSecretKeyAttribute(attribute, secret);
+  }
+}
+
+static CK_BBOOL matchSessionSecretTemplate(const CNK_PKCS11_SECRET_KEY_OBJECT *secret, CK_ATTRIBUTE_PTR pTemplate,
+                                           CK_ULONG ulCount) {
+  CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
+  for (CK_ULONG i = 0; i < ulCount; i++) {
+    if (pTemplate[i].ulValueLen > 0 && pTemplate[i].pValue == NULL)
+      return CK_FALSE;
+    CK_ATTRIBUTE actual = {pTemplate[i].type, NULL, 0};
+    CK_RV rv = actual.type == CKA_CLASS ? setSingleAttributeValue(&actual, &secretClass, sizeof(secretClass))
+                                        : handleSessionSecretAttribute(&actual, secret);
+    if (rv != CKR_OK || actual.ulValueLen != pTemplate[i].ulValueLen)
+      return CK_FALSE;
+    if (actual.ulValueLen == 0)
+      continue;
+    actual.pValue = ck_malloc(actual.ulValueLen);
+    if (actual.pValue == NULL)
+      return CK_FALSE;
+    CK_ULONG valueLen = actual.ulValueLen;
+    rv = actual.type == CKA_CLASS ? setSingleAttributeValue(&actual, &secretClass, sizeof(secretClass))
+                                  : handleSessionSecretAttribute(&actual, secret);
+    CK_BBOOL matches =
+        rv == CKR_OK && actual.ulValueLen == valueLen && memcmp(actual.pValue, pTemplate[i].pValue, valueLen) == 0;
+    mbedtls_platform_zeroize(actual.pValue, valueLen);
+    ck_free(actual.pValue);
+    if (!matches)
+      return CK_FALSE;
+  }
+  return CK_TRUE;
 }
 
 // Handle private key specific attributes
@@ -2147,7 +2220,8 @@ static CK_RV handlePrivateKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE
   }
 
   case CKA_DERIVE: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type) || algorithm_type == session->x25519Algorithm;
+    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type) ||
+                     (session->x25519Algorithm != 0 && algorithm_type == session->x25519Algorithm);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }

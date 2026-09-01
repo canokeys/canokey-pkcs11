@@ -90,27 +90,32 @@ CK_RV cnk_block_piv_puk(CK_SLOT_ID slotID) {
   if (rv != CKR_OK)
     return rv;
 
+  CK_BYTE knownPuk[8] = {0};
+  CK_BBOOL pukKnown = CK_FALSE;
+  static const CK_BYTE replacementPuk[8] = {'9', '8', '7', '6', '5', '4', '3', '2'};
   CK_BYTE pinTries = 0;
   rv = readPivPinRetriesOnCard(card, CNK_PIV_PIN_TYPE_PUK, &pinTries);
   if (rv != CKR_OK || pinTries == 0)
     goto cleanup;
 
-  // Cycle valid-length guesses. An accidental match can only reset the counter
-  // once; subsequent different guesses still drive it to zero.
-  for (CK_BYTE attempt = 0; attempt < 16 && pinTries > 0; attempt++) {
-    CK_BYTE apdu[] = {0x00,
-                      0x20,
-                      0x00,
-                      CNK_PIV_PIN_TYPE_PUK,
-                      0x08,
-                      (CK_BYTE)('0' + attempt % 10),
-                      (CK_BYTE)('0' + attempt % 10),
-                      (CK_BYTE)('0' + attempt % 10),
-                      (CK_BYTE)('0' + attempt % 10),
-                      (CK_BYTE)('0' + attempt % 10),
-                      (CK_BYTE)('0' + attempt % 10),
-                      (CK_BYTE)('0' + attempt % 10),
-                      (CK_BYTE)('0' + attempt % 10)};
+  // Firmware validates and decrements the PUK only through CHANGE REFERENCE
+  // DATA. If a guess accidentally succeeds, remember the replacement value
+  // and make every subsequent old-PUK field provably different from it.
+  for (CK_ULONG attempt = 0; attempt < 32 && pinTries > 0; attempt++) {
+    CK_BYTE oldPuk[8];
+    if (pukKnown) {
+      memcpy(oldPuk, knownPuk, sizeof(oldPuk));
+      oldPuk[0] = oldPuk[0] == '9' ? '0' : (CK_BYTE)(oldPuk[0] + 1);
+    } else {
+      CK_ULONG value = attempt;
+      for (CK_LONG i = (CK_LONG)sizeof(oldPuk) - 1; i >= 0; i--) {
+        oldPuk[i] = (CK_BYTE)('0' + value % 10);
+        value /= 10;
+      }
+    }
+    CK_BYTE apdu[21] = {0x00, 0x24, 0x00, CNK_PIV_PIN_TYPE_PUK, 0x10};
+    memcpy(apdu + 5, oldPuk, sizeof(oldPuk));
+    memcpy(apdu + 5 + sizeof(oldPuk), replacementPuk, sizeof(replacementPuk));
     CK_BYTE response[16];
     DWORD responseLen = sizeof(response);
     LONG pcscRv = cnk_transceive_apdu(card, apdu, sizeof(apdu), response, &responseLen, CK_FALSE);
@@ -132,6 +137,8 @@ CK_RV cnk_block_piv_puk(CK_SLOT_ID slotID) {
       rv = CKR_DEVICE_ERROR;
       goto cleanup;
     }
+    memcpy(knownPuk, replacementPuk, sizeof(knownPuk));
+    pukKnown = CK_TRUE;
     rv = readPivPinRetriesOnCard(card, CNK_PIV_PIN_TYPE_PUK, &pinTries);
     if (rv != CKR_OK)
       goto cleanup;
@@ -142,6 +149,7 @@ CK_RV cnk_block_piv_puk(CK_SLOT_ID slotID) {
     rv = CKR_DEVICE_ERROR;
 
 cleanup:
+  mbedtls_platform_zeroize(knownPuk, sizeof(knownPuk));
   cnk_disconnect_card(card);
   return rv;
 }

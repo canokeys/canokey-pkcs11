@@ -195,11 +195,10 @@ CK_RV pss_encode(CK_BYTE_PTR pbHash, CK_ULONG cbHash, CK_BYTE_PTR pbModulus, CK_
   const size_t hLen = mbedtls_md_get_size(pMdInfo);
   if (cbHash != hLen)
     return CKR_DATA_LEN_RANGE;
-  if (cbSalt > hLen)
-    return CKR_MECHANISM_PARAM_INVALID;
 
   CK_RV rv = CKR_OK;
   CK_BYTE_PTR pSalt = NULL_PTR;
+  CK_BYTE_PTR pMPrime = NULL_PTR;
   CK_BYTE_PTR pDB = NULL_PTR;
   CK_BYTE_PTR pDBMask = NULL_PTR;
   mbedtls_mpi modulus_mpi;
@@ -232,26 +231,34 @@ CK_RV pss_encode(CK_BYTE_PTR pbHash, CK_ULONG cbHash, CK_BYTE_PTR pbModulus, CK_
     goto cleanup;
   }
 
-  pSalt = ck_malloc(cbSalt);
-  if (!pSalt) {
-    CNK_ERROR("Failed to allocate salt buffer");
-    rv = CKR_HOST_MEMORY;
-    goto cleanup;
-  }
-  if (mbedtls_ctr_drbg_random(&ctrDrbgCtx, pSalt, cbSalt) != 0) {
-    CNK_ERROR("Failed to generate salt");
-    rv = CKR_FUNCTION_FAILED;
-    goto cleanup;
+  if (cbSalt > 0) {
+    pSalt = ck_malloc(cbSalt);
+    if (!pSalt) {
+      CNK_ERROR("Failed to allocate salt buffer");
+      rv = CKR_HOST_MEMORY;
+      goto cleanup;
+    }
+    if (mbedtls_ctr_drbg_random(&ctrDrbgCtx, pSalt, cbSalt) != 0) {
+      CNK_ERROR("Failed to generate salt");
+      rv = CKR_FUNCTION_FAILED;
+      goto cleanup;
+    }
   }
 
   /* -------- H = Hash( eight zero bytes || mHash || salt ) -------- */
-  CK_BYTE M_prime[8 + 64 + 64];
-  memset(M_prime, 0, 8);
-  memcpy(M_prime + 8, pbHash, hLen);
-  memcpy(M_prime + 8 + hLen, pSalt, cbSalt);
+  CK_ULONG mPrimeLen = 8 + hLen + cbSalt;
+  pMPrime = ck_malloc(mPrimeLen);
+  if (pMPrime == NULL) {
+    rv = CKR_HOST_MEMORY;
+    goto cleanup;
+  }
+  memset(pMPrime, 0, 8);
+  memcpy(pMPrime + 8, pbHash, hLen);
+  if (cbSalt > 0)
+    memcpy(pMPrime + 8 + hLen, pSalt, cbSalt);
 
   CK_BYTE H[64]; /* hLen <= 64 */
-  if (mbedtls_md(pMdInfo, M_prime, 8 + hLen + cbSalt, H) != 0) {
+  if (mbedtls_md(pMdInfo, pMPrime, mPrimeLen, H) != 0) {
     CNK_ERROR("Failed to generate hash");
     rv = CKR_FUNCTION_FAILED;
     goto cleanup;
@@ -269,7 +276,8 @@ CK_RV pss_encode(CK_BYTE_PTR pbHash, CK_ULONG cbHash, CK_BYTE_PTR pbModulus, CK_
   }
   memset(pDB, 0, psLen);
   pDB[psLen] = 0x01;
-  memcpy(pDB + psLen + 1, pSalt, cbSalt);
+  if (cbSalt > 0)
+    memcpy(pDB + psLen + 1, pSalt, cbSalt);
 
   /* -------- dbMask = MGF1(H, dbLen) -------- */
   pDBMask = ck_malloc(dbLen);
@@ -322,7 +330,12 @@ cleanup:
   mbedtls_ctr_drbg_free(&ctrDrbgCtx);
   mbedtls_entropy_free(&entropyCtx);
   mbedtls_mpi_free(&modulus_mpi);
+  if (pSalt != NULL)
+    mbedtls_platform_zeroize(pSalt, cbSalt);
+  if (pMPrime != NULL)
+    mbedtls_platform_zeroize(pMPrime, 8 + hLen + cbSalt);
   ck_free(pSalt);
+  ck_free(pMPrime);
   ck_free(pDB);
   ck_free(pDBMask);
   CNK_RETURN(rv, "pss_encode finished");

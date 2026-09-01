@@ -345,6 +345,8 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
         CNK_RETURN(CKR_KEY_SIZE_RANGE, "only ML-KEM-768 is supported");
       algorithmType = session->mlkem768Algorithm;
     }
+    if (algorithmType == 0)
+      CNK_RETURN(CKR_MECHANISM_INVALID, "requested PQC firmware algorithm is unavailable");
     break;
   }
 
@@ -426,7 +428,7 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
 
-  CK_BBOOL x25519 = algorithmType == session->x25519Algorithm;
+  CK_BBOOL x25519 = session->x25519Algorithm != 0 && algorithmType == session->x25519Algorithm;
   if (!CNK_PivPrivateKeyCanDerive(algorithmType) && !x25519)
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for ECDH derive");
 

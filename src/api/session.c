@@ -100,6 +100,7 @@ static void clear_token_auth(CNK_PKCS11_TOKEN_STATE *token) {
   token->cbPin = 0;
   mbedtls_platform_zeroize(token->managementKey, sizeof(token->managementKey));
   token->cbManagementKey = 0;
+  token->managementLoginPending = CK_FALSE;
   token->loginState = TOKEN_LOGIN_PUBLIC;
 }
 
@@ -419,8 +420,10 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
     cnk_mutex_unlock(&session_mutex);
     return rv;
   }
-  session->mldsa65Algorithm = PIV_ALG_MLDSA65;
-  session->mlkem768Algorithm = PIV_ALG_MLKEM768;
+  // PQC exists only behind the firmware algorithm-extension contract. Keep
+  // IDs unavailable until that contract is read successfully.
+  session->mldsa65Algorithm = 0;
+  session->mlkem768Algorithm = 0;
   session->ed25519Algorithm = PIV_ALG_ED25519;
   session->x25519Algorithm = PIV_ALG_X25519;
   CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig;
@@ -744,21 +747,41 @@ CK_RV C_CNK_LoginProtectedManagementKey(CK_SESSION_HANDLE hSession, CK_BYTE_PTR 
 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  if (!cnk_token_pin_is_cached(session))
-    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "User PIN login is required");
-  if (cnk_token_management_key_is_cached(session))
-    CNK_RETURN(CKR_USER_ALREADY_LOGGED_IN, "Protected management key is already cached");
   if (ulKeyLen != sizeof(session->token->managementKey))
     CNK_RETURN(CKR_PIN_LEN_RANGE, "Invalid management key length");
 
-  CK_RV rv = cnkVerifyManagementKey(session, pKey);
-  if (rv != CKR_OK)
-    CNK_RETURN(rv, "Management key verification failed");
-
+  // Reserve the token authorization transition before the card round trip.
+  // Logout observes this reservation and cannot clear USER state underneath
+  // verification, then leave a management key cached in PUBLIC state.
   cnk_mutex_lock(&session->token->lock);
-  memcpy(session->token->managementKey, pKey, ulKeyLen);
-  session->token->cbManagementKey = ulKeyLen;
+  if (session->token->loginState != TOKEN_LOGIN_USER || session->token->cbPin == 0) {
+    cnk_mutex_unlock(&session->token->lock);
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "User PIN login is required");
+  }
+  if (session->token->cbManagementKey == sizeof(session->token->managementKey)) {
+    cnk_mutex_unlock(&session->token->lock);
+    CNK_RETURN(CKR_USER_ALREADY_LOGGED_IN, "Protected management key is already cached");
+  }
+  if (session->token->managementLoginPending) {
+    cnk_mutex_unlock(&session->token->lock);
+    CNK_RETURN(CKR_OPERATION_ACTIVE, "Protected management-key login is already in progress");
+  }
+  session->token->managementLoginPending = CK_TRUE;
   cnk_mutex_unlock(&session->token->lock);
+
+  CK_RV rv = cnkVerifyManagementKey(session, pKey);
+  cnk_mutex_lock(&session->token->lock);
+  if (rv == CKR_OK && session->token->managementLoginPending && session->token->loginState == TOKEN_LOGIN_USER &&
+      session->token->cbPin > 0) {
+    memcpy(session->token->managementKey, pKey, ulKeyLen);
+    session->token->cbManagementKey = ulKeyLen;
+  } else if (rv == CKR_OK) {
+    rv = CKR_USER_NOT_LOGGED_IN;
+  }
+  session->token->managementLoginPending = CK_FALSE;
+  cnk_mutex_unlock(&session->token->lock);
+  if (rv != CKR_OK)
+    CNK_RETURN(rv, "Management key verification failed or USER state changed");
   CNK_RET_OK;
 }
 
@@ -773,7 +796,8 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   cnk_mutex_lock(&session->token->lock);
-  if (session->token->loginState == TOKEN_LOGIN_PENDING_USER || session->token->loginState == TOKEN_LOGIN_PENDING_SO) {
+  if (session->token->loginState == TOKEN_LOGIN_PENDING_USER || session->token->loginState == TOKEN_LOGIN_PENDING_SO ||
+      session->token->managementLoginPending) {
     cnk_mutex_unlock(&session->token->lock);
     return CKR_OPERATION_ACTIVE;
   }
