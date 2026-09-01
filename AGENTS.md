@@ -326,8 +326,9 @@ Additional probes that passed:
 - `include/private/api/`: private declarations shared by the API entry-point
   source files.
 - `src/backend/`: card/backend integrations. `pcsc.c` handles PC/SC
-  reader discovery, PIV AID selection, PIN verify/logout, GET DATA, metadata,
-  and GENERAL AUTHENTICATE signing, RSA decryption, ECDH, and ML-KEM.
+  reader discovery, PIV AID selection, PIN verify/logout, GET DATA, and GENERAL
+  AUTHENTICATE signing, RSA decryption, ECDH, and ML-KEM. `piv_metadata.c`
+  handles version-gated metadata, algorithm extensions, and token randomness.
 - `include/private/backend/`: private backend-facing declarations.
 - `src/internal/`: implementation helpers that are not direct API entry points,
   including logging, mutex wrappers, RSA padding/PSS helpers, ML-DSA/ML-KEM

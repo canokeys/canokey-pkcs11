@@ -16,11 +16,12 @@ and decrypt contexts. `object.c` owns PKCS#11 object discovery and attributes;
 PIV import wire encoding is isolated in `internal/piv_object.c`, and generic
 template decoding is isolated in `internal/template.c`.
 
-`backend/pcsc.c` is still the largest mixed-responsibility module. A future
-split should separate reader/transaction transport from PIV data, auth, and
-private-key commands. That split must preserve managed mode: the minidriver
-supplies an existing card handle, and every operation must balance
-`SCardBeginTransaction` with `cnk_disconnect_card`.
+`backend/piv_metadata.c` owns PIV version gates, metadata discovery, algorithm
+extensions, and token randomness. `backend/pcsc.c` still combines reader/
+transaction transport with PIV auth, data, and private-key commands; future
+splits should preserve managed mode, where the minidriver supplies an existing
+card handle and every operation must balance `SCardBeginTransaction` with
+`cnk_disconnect_card`.
 
 ## State Ownership
 

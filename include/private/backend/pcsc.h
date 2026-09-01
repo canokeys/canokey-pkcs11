@@ -157,6 +157,10 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard);
 // Disconnect from a card and end any active transaction
 void cnk_disconnect_card(SCARDHANDLE hCard);
 
+// Internal APDU transport shared by focused PIV backend modules.
+LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, CK_ULONG commandLen, CK_BYTE *response,
+                         DWORD *responseLen, CK_BBOOL autoGetResponse);
+
 // Get firmware version and hardware name
 CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, char *hw_name, size_t hw_name_len);
 
