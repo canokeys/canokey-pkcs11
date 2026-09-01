@@ -135,7 +135,7 @@ static CK_RV validateRsaPssSaltLength(const CK_MECHANISM *mechanism, CK_ULONG mo
 
 static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m, CK_BYTE algorithmType,
                              const CK_BYTE *abPublicKey, CK_ULONG cbPublicKey) {
-  if (algorithmType != PIV_ALG_RSA_2048 && algorithmType != PIV_ALG_RSA_3072 && algorithmType != PIV_ALG_RSA_4096)
+  if (!CNK_PivAlgorithmIsRsa(session, algorithmType))
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not RSA");
 
   if (isMechRsaPss(m->mechanism))
@@ -183,22 +183,18 @@ static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m,
   return CKR_OK;
 }
 
-static CK_ULONG getEcSignatureLength(CK_BYTE algorithmType) {
-  switch (algorithmType) {
-  case PIV_ALG_ECC_256:
-  case PIV_ALG_SECP256K1:
+static CK_ULONG getEcSignatureLength(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
+  if (algorithmType == PIV_ALG_ECC_256 || algorithmType == CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1))
     return 64;
-  case PIV_ALG_ECC_384:
+  if (algorithmType == PIV_ALG_ECC_384)
     return 96;
-  case PIV_ALG_ECC_521:
+  if (algorithmType == CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521))
     return 132;
-  default:
-    return 0;
-  }
+  return 0;
 }
 
 static CK_RV validateEcMech(CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
-  CK_ULONG signatureLength = getEcSignatureLength(algorithmType);
+  CK_ULONG signatureLength = getEcSignatureLength(session, algorithmType);
   if (signatureLength == 0)
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not a supported EC signing key");
 
@@ -396,8 +392,7 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
 
-  if (!CNK_PivPrivateKeyCanSign(algorithmType) && algorithmType != session->mldsa65Algorithm &&
-      algorithmType != session->ed25519Algorithm)
+  if (!CNK_PivPrivateKeyCanSign(session, algorithmType))
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for signing");
 
   if (pMechanism->mechanism == CKM_ML_DSA) {
@@ -736,24 +731,20 @@ static CK_RV verifyEcSignature(CNK_PKCS11_SESSION *session, const CK_BYTE *data,
                                const CK_BYTE *signature, CK_ULONG signatureLen) {
   mbedtls_ecp_group_id groupId;
   CK_ULONG coordinateLen;
-  switch (session->verifyingContext.algorithmType) {
-  case PIV_ALG_ECC_256:
+  CK_BYTE algorithmType = session->verifyingContext.algorithmType;
+  if (algorithmType == PIV_ALG_ECC_256) {
     groupId = MBEDTLS_ECP_DP_SECP256R1;
     coordinateLen = 32;
-    break;
-  case PIV_ALG_ECC_384:
+  } else if (algorithmType == PIV_ALG_ECC_384) {
     groupId = MBEDTLS_ECP_DP_SECP384R1;
     coordinateLen = 48;
-    break;
-  case PIV_ALG_ECC_521:
+  } else if (algorithmType == CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521)) {
     groupId = MBEDTLS_ECP_DP_SECP521R1;
     coordinateLen = 66;
-    break;
-  case PIV_ALG_SECP256K1:
+  } else if (algorithmType == CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1)) {
     groupId = MBEDTLS_ECP_DP_SECP256K1;
     coordinateLen = 32;
-    break;
-  default:
+  } else {
     return CKR_KEY_TYPE_INCONSISTENT;
   }
   // PKCS#11 represents ECDSA signatures as fixed-width r || s, not ASN.1 DER.
@@ -833,7 +824,7 @@ CK_RV C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_O
     if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "ML-DSA context is not supported");
   } else if (isMechRSA(pMechanism->mechanism)) {
-    if (algorithmType != PIV_ALG_RSA_2048 && algorithmType != PIV_ALG_RSA_3072 && algorithmType != PIV_ALG_RSA_4096)
+    if (!CNK_PivAlgorithmIsRsa(session, algorithmType))
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "verify key is not RSA");
     if (isMechRsaPss(pMechanism->mechanism)) {
       CNK_ENSURE_OK(validateRsaPssParams(pMechanism));
@@ -844,7 +835,7 @@ CK_RV C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_O
     } else if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unexpected RSA mechanism parameters");
   } else if (isMechEC(pMechanism->mechanism)) {
-    if (getEcSignatureLength(algorithmType) == 0)
+    if (getEcSignatureLength(session, algorithmType) == 0)
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "verify key is not EC");
     if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unexpected ECDSA mechanism parameters");

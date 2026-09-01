@@ -297,6 +297,9 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
       algorithmType = PIV_ALG_RSA_4096;
     else
       CNK_RETURN(CKR_KEY_SIZE_RANGE, "unsupported RSA key size");
+    algorithmType = CNK_PivConfiguredAlgorithm(session, algorithmType);
+    if (algorithmType == 0)
+      CNK_RETURN(CKR_MECHANISM_INVALID, "requested firmware algorithm is disabled");
     break;
   }
 
@@ -306,6 +309,9 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
         cnk_template_get_attribute(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_EC_PARAMS, &paramsAttr));
     CNK_ENSURE_OK(
         cnk_ec_params_to_piv_algorithm((CK_BYTE_PTR)paramsAttr->pValue, paramsAttr->ulValueLen, &algorithmType));
+    algorithmType = CNK_PivConfiguredAlgorithm(session, algorithmType);
+    if (algorithmType == 0)
+      CNK_RETURN(CKR_MECHANISM_INVALID, "requested firmware algorithm is disabled");
     break;
   }
 
@@ -429,22 +435,17 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
 
   CK_BBOOL x25519 = session->x25519Algorithm != 0 && algorithmType == session->x25519Algorithm;
-  if (!CNK_PivPrivateKeyCanDerive(algorithmType) && !x25519)
+  if (!CNK_PivPrivateKeyCanDerive(session, algorithmType) && !x25519)
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for ECDH derive");
 
   CK_ULONG expectedSecretLen = 0;
-  switch (algorithmType) {
-  case PIV_ALG_ECC_256:
-  case PIV_ALG_SECP256K1:
+  if (algorithmType == PIV_ALG_ECC_256 || algorithmType == CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1)) {
     expectedSecretLen = 32;
-    break;
-  case PIV_ALG_ECC_384:
+  } else if (algorithmType == PIV_ALG_ECC_384) {
     expectedSecretLen = 48;
-    break;
-  case PIV_ALG_ECC_521:
+  } else if (algorithmType == CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521)) {
     expectedSecretLen = 66;
-    break;
-  default:
+  } else {
     if (x25519)
       expectedSecretLen = 32;
     else

@@ -480,14 +480,24 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
   // IDs unavailable until that contract is read successfully.
   session->mldsa65Algorithm = 0;
   session->mlkem768Algorithm = 0;
-  session->ed25519Algorithm = PIV_ALG_ED25519;
-  session->x25519Algorithm = PIV_ALG_X25519;
+  session->ed25519Algorithm = 0;
+  session->x25519Algorithm = 0;
+  session->rsa3072Algorithm = 0;
+  session->rsa4096Algorithm = 0;
+  session->secp256k1Algorithm = 0;
+  session->secp521r1Algorithm = 0;
+  session->sm2Algorithm = 0;
   CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig;
   if (cnk_get_piv_algorithm_extension(slotID, &algorithmConfig) == CKR_OK && algorithmConfig.enabled) {
     session->mldsa65Algorithm = algorithmConfig.mldsa65;
     session->mlkem768Algorithm = algorithmConfig.mlkem768;
     session->ed25519Algorithm = algorithmConfig.ed25519;
     session->x25519Algorithm = algorithmConfig.x25519;
+    session->rsa3072Algorithm = algorithmConfig.rsa3072;
+    session->rsa4096Algorithm = algorithmConfig.rsa4096;
+    session->secp256k1Algorithm = algorithmConfig.secp256k1;
+    session->secp521r1Algorithm = algorithmConfig.secp521r1;
+    session->sm2Algorithm = algorithmConfig.sm2;
   }
   session->nextSecretKeyId = CNK_SESSION_SECRET_KEY_FIRST_ID;
 

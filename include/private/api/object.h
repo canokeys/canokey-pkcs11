@@ -44,6 +44,12 @@ CK_RV CNK_GetPivPolicies(CK_ATTRIBUTE_PTR p_template, CK_ULONG ul_count, CK_BYTE
  */
 CK_BYTE CNK_DefaultPinPolicyForPivObjectId(CK_BYTE obj_id);
 
+// Translate a canonical algorithm constant to the ID configured by the card.
+// Standard PIV algorithms are returned unchanged; disabled extensions return 0.
+CK_BYTE CNK_PivConfiguredAlgorithm(const CNK_PKCS11_SESSION *session, CK_BYTE canonical_algorithm);
+CK_BBOOL CNK_PivAlgorithmIsRsa(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
+CK_BBOOL CNK_PivAlgorithmIsEc(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
+
 /**
  * Reports whether a stored PIV key algorithm supports PKCS#11 signing.
  *
@@ -52,11 +58,11 @@ CK_BYTE CNK_DefaultPinPolicyForPivObjectId(CK_BYTE obj_id);
  *
  * @param algorithm_type PIV algorithm type from metadata
  */
-CK_BBOOL CNK_PivPrivateKeyCanSign(CK_BYTE algorithm_type);
+CK_BBOOL CNK_PivPrivateKeyCanSign(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
 
-CK_BBOOL CNK_PivPrivateKeyCanDecrypt(CK_BYTE algorithm_type);
+CK_BBOOL CNK_PivPrivateKeyCanDecrypt(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
 
-CK_BBOOL CNK_PivPrivateKeyCanDerive(CK_BYTE algorithm_type);
+CK_BBOOL CNK_PivPrivateKeyCanDerive(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
 
 /**
  * Maps a PIV object ID to its PIV certificate data-object tag.

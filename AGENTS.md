@@ -237,6 +237,11 @@ Write-path notes:
   until the bundled crypto provider supplies a compatible primitive. PKCS#11
   3.2 has no SM2 mechanism, so expose the SM2 object identity without mapping
   it to `CKM_ECDSA`.
+- PIV extension algorithm IDs are card configuration, not compile-time
+  constants. Cache every field from `CNK_PIV_ALGORITHM_EXTENSION_CONFIG` and
+  use the configured value for discovery, key generation/import, capability
+  checks, and GENERAL AUTHENTICATE. A card may replace the documented default
+  byte values with another valid, non-conflicting mapping.
 - Host Verify supports RSA PKCS#1 v1.5/PSS, ECDSA, and ML-DSA-65 in single-part
   and streaming forms. Host Encrypt supports single-part RSA X.509, PKCS#1
   v1.5, and OAEP. OAEP mechanism copies must deep-copy `pSourceData` so caller

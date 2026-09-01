@@ -207,17 +207,22 @@ static CK_KEY_TYPE algoType2KeyType(const CNK_PKCS11_SESSION *session, CK_BYTE a
     return CKK_EC_EDWARDS;
   if (session->x25519Algorithm != 0 && algorithmType == session->x25519Algorithm)
     return CKK_EC_MONTGOMERY;
+  if (session->rsa3072Algorithm != 0 && algorithmType == session->rsa3072Algorithm)
+    return CKK_RSA;
+  if (session->rsa4096Algorithm != 0 && algorithmType == session->rsa4096Algorithm)
+    return CKK_RSA;
+  if (session->secp256k1Algorithm != 0 && algorithmType == session->secp256k1Algorithm)
+    return CKK_EC;
+  if (session->secp521r1Algorithm != 0 && algorithmType == session->secp521r1Algorithm)
+    return CKK_EC;
+  if (session->sm2Algorithm != 0 && algorithmType == session->sm2Algorithm)
+    return CKK_EC;
   switch (algorithmType) {
   case PIV_ALG_RSA_2048:
-  case PIV_ALG_RSA_3072:
-  case PIV_ALG_RSA_4096:
     return CKK_RSA;
 
   case PIV_ALG_ECC_256:
   case PIV_ALG_ECC_384:
-  case PIV_ALG_ECC_521:
-  case PIV_ALG_SECP256K1:
-  case PIV_ALG_SM2:
     return CKK_EC;
 
   default:
@@ -757,43 +762,69 @@ CK_BYTE CNK_DefaultPinPolicyForPivObjectId(CK_BYTE objId) {
   return objId == PIV_SLOT_9E ? CNK_PIV_PIN_POLICY_NEVER : CNK_PIV_PIN_POLICY_ONCE;
 }
 
-CK_BBOOL CNK_PivPrivateKeyCanSign(CK_BYTE algorithmType) {
-  switch (algorithmType) {
-  case PIV_ALG_RSA_2048:
+CK_BYTE CNK_PivConfiguredAlgorithm(const CNK_PKCS11_SESSION *session, CK_BYTE canonicalAlgorithm) {
+  if (session == NULL)
+    return 0;
+  switch (canonicalAlgorithm) {
   case PIV_ALG_RSA_3072:
+    return session->rsa3072Algorithm;
   case PIV_ALG_RSA_4096:
-  case PIV_ALG_ECC_256:
-  case PIV_ALG_ECC_384:
-  case PIV_ALG_ECC_521:
+    return session->rsa4096Algorithm;
+  case PIV_ALG_ED25519:
+    return session->ed25519Algorithm;
+  case PIV_ALG_X25519:
+    return session->x25519Algorithm;
   case PIV_ALG_SECP256K1:
+    return session->secp256k1Algorithm;
+  case PIV_ALG_ECC_521:
+    return session->secp521r1Algorithm;
+  case PIV_ALG_SM2:
+    return session->sm2Algorithm;
   case PIV_ALG_MLDSA65:
-    return CK_TRUE;
+    return session->mldsa65Algorithm;
+  case PIV_ALG_MLKEM768:
+    return session->mlkem768Algorithm;
   default:
-    return CK_FALSE;
+    return canonicalAlgorithm;
   }
 }
 
-CK_BBOOL CNK_PivPrivateKeyCanDecrypt(CK_BYTE algorithmType) {
-  switch (algorithmType) {
-  case PIV_ALG_RSA_2048:
-  case PIV_ALG_RSA_3072:
-  case PIV_ALG_RSA_4096:
-    return CK_TRUE;
-  default:
-    return CK_FALSE;
-  }
+CK_BBOOL CNK_PivAlgorithmIsRsa(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
+  CK_BYTE rsa3072 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_RSA_3072);
+  CK_BYTE rsa4096 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_RSA_4096);
+  return algorithmType == PIV_ALG_RSA_2048 || (rsa3072 != 0 && algorithmType == rsa3072) ||
+         (rsa4096 != 0 && algorithmType == rsa4096);
 }
 
-CK_BBOOL CNK_PivPrivateKeyCanDerive(CK_BYTE algorithmType) {
-  switch (algorithmType) {
-  case PIV_ALG_ECC_256:
-  case PIV_ALG_ECC_384:
-  case PIV_ALG_ECC_521:
-  case PIV_ALG_SECP256K1:
-    return CK_TRUE;
-  default:
-    return CK_FALSE;
-  }
+CK_BBOOL CNK_PivAlgorithmIsEc(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
+  CK_BYTE p521 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521);
+  CK_BYTE secp256k1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1);
+  CK_BYTE sm2 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SM2);
+  return algorithmType == PIV_ALG_ECC_256 || algorithmType == PIV_ALG_ECC_384 || (p521 != 0 && algorithmType == p521) ||
+         (secp256k1 != 0 && algorithmType == secp256k1) || (sm2 != 0 && algorithmType == sm2);
+}
+
+CK_BBOOL CNK_PivPrivateKeyCanSign(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
+  CK_BYTE mldsa = CNK_PivConfiguredAlgorithm(session, PIV_ALG_MLDSA65);
+  CK_BYTE ed25519 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ED25519);
+  CK_BYTE p521 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521);
+  CK_BYTE secp256k1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1);
+  return CNK_PivAlgorithmIsRsa(session, algorithmType) || algorithmType == PIV_ALG_ECC_256 ||
+         algorithmType == PIV_ALG_ECC_384 || (p521 != 0 && algorithmType == p521) ||
+         (secp256k1 != 0 && algorithmType == secp256k1) || (mldsa != 0 && algorithmType == mldsa) ||
+         (ed25519 != 0 && algorithmType == ed25519);
+}
+
+CK_BBOOL CNK_PivPrivateKeyCanDecrypt(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
+  return CNK_PivAlgorithmIsRsa(session, algorithmType);
+}
+
+CK_BBOOL CNK_PivPrivateKeyCanDerive(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
+  CK_BYTE p521 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521);
+  CK_BYTE secp256k1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1);
+  CK_BYTE x25519 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_X25519);
+  return algorithmType == PIV_ALG_ECC_256 || algorithmType == PIV_ALG_ECC_384 || (p521 != 0 && algorithmType == p521) ||
+         (secp256k1 != 0 && algorithmType == secp256k1) || (x25519 != 0 && algorithmType == x25519);
 }
 
 CK_RV CNK_ObjectIdToCertificateTag(CK_BYTE objId, CK_BYTE *dataTag) {
@@ -970,6 +1001,11 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
     default:
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "unsupported private key type for C_CreateObject");
     }
+
+    if (keyType == CKK_RSA || keyType == CKK_EC)
+      algorithmType = CNK_PivConfiguredAlgorithm(session, algorithmType);
+    if (algorithmType == 0)
+      CNK_RETURN(CKR_MECHANISM_INVALID, "requested firmware algorithm is disabled");
 
     CK_RV rv = cnk_piv_import_key(session->slotId, session, algorithmType, pivTag, importData, importDataLen);
     mbedtls_platform_zeroize(importData, sizeof(importData));
@@ -1768,36 +1804,35 @@ static CK_RV setEcParamsAttribute(const CNK_PKCS11_SESSION *session, CK_ATTRIBUT
   const char *oid = NULL;
   size_t oidLen = 0;
   CK_BYTE encoded[16];
+  CK_BYTE ed25519 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ED25519);
+  CK_BYTE x25519 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_X25519);
+  CK_BYTE p521 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521);
+  CK_BYTE secp256k1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1);
+  CK_BYTE sm2 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SM2);
 
-  if (algorithmType == session->ed25519Algorithm) {
+  if (ed25519 != 0 && algorithmType == ed25519) {
     oid = "\x2B\x65\x70"; // id-Ed25519, 1.3.101.112
     oidLen = 3;
-  } else if (algorithmType == session->x25519Algorithm) {
+  } else if (x25519 != 0 && algorithmType == x25519) {
     oid = "\x2B\x65\x6E"; // id-X25519, 1.3.101.110
     oidLen = 3;
   } else {
-    switch (algorithmType) {
-    case PIV_ALG_ECC_256:
+    if (algorithmType == PIV_ALG_ECC_256) {
       oid = "\x2A\x86\x48\xCE\x3D\x03\x01\x07";
       oidLen = 8;
-      break;
-    case PIV_ALG_ECC_384:
+    } else if (algorithmType == PIV_ALG_ECC_384) {
       oid = "\x2B\x81\x04\x00\x22";
       oidLen = 5;
-      break;
-    case PIV_ALG_ECC_521:
+    } else if (p521 != 0 && algorithmType == p521) {
       oid = "\x2B\x81\x04\x00\x23";
       oidLen = 5;
-      break;
-    case PIV_ALG_SECP256K1:
+    } else if (secp256k1 != 0 && algorithmType == secp256k1) {
       oid = "\x2B\x81\x04\x00\x0A";
       oidLen = 5;
-      break;
-    case PIV_ALG_SM2:
+    } else if (sm2 != 0 && algorithmType == sm2) {
       oid = "\x2A\x81\x1C\xCF\x55\x01\x82\x2D";
       oidLen = 8;
-      break;
-    default:
+    } else {
       return CKR_ATTRIBUTE_VALUE_INVALID;
     }
   }
@@ -1864,7 +1899,7 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
     break;
 
   case CKA_VERIFY: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanSign(algorithm_type) || algorithm_type == session->mldsa65Algorithm;
+    CK_BBOOL value = CNK_PivPrivateKeyCanSign(session, algorithm_type);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -1894,8 +1929,7 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
   }
 
   case CKA_DERIVE: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type) ||
-                     (session->x25519Algorithm != 0 && algorithm_type == session->x25519Algorithm);
+    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(session, algorithm_type);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -2127,8 +2161,7 @@ static CK_RV handlePrivateKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE
     break;
 
   case CKA_SIGN: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanSign(algorithm_type) || algorithm_type == session->mldsa65Algorithm ||
-                     algorithm_type == session->ed25519Algorithm;
+    CK_BBOOL value = CNK_PivPrivateKeyCanSign(session, algorithm_type);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -2140,7 +2173,7 @@ static CK_RV handlePrivateKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE
   }
 
   case CKA_DECRYPT: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanDecrypt(algorithm_type);
+    CK_BBOOL value = CNK_PivPrivateKeyCanDecrypt(session, algorithm_type);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -2220,8 +2253,7 @@ static CK_RV handlePrivateKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE
   }
 
   case CKA_DERIVE: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type) ||
-                     (session->x25519Algorithm != 0 && algorithm_type == session->x25519Algorithm);
+    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(session, algorithm_type);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }

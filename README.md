@@ -159,7 +159,9 @@ label and usage attributes. PIV token objects remain non-copyable,
 non-destroyable, and read-only.
 
 Firmware algorithm extensions are also exposed through their standard
-PKCS#11 key types and named-curve encodings. P-521 supports key generation,
+PKCS#11 key types and named-curve encodings. All extension algorithm IDs are
+read from the card at session creation, so deployments that customize the
+firmware mapping remain discoverable and usable. P-521 supports key generation,
 private-key import, ECDSA sign/verify, and ECDH. Ed25519 supports
 `CKM_EC_EDWARDS_KEY_PAIR_GEN`, private-key import, and pure `CKM_EDDSA`
 signing without a context. X25519 supports

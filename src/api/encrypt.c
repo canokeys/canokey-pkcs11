@@ -191,7 +191,7 @@ CK_RV C_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   CK_BYTE publicKey[2048];
   CK_ULONG publicKeyLen = sizeof(publicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivSlot, &algorithmType, publicKey, &publicKeyLen, NULL, NULL));
-  if (algorithmType != PIV_ALG_RSA_2048 && algorithmType != PIV_ALG_RSA_3072 && algorithmType != PIV_ALG_RSA_4096)
+  if (!CNK_PivAlgorithmIsRsa(session, algorithmType))
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "encrypt key is not RSA");
 
   const CK_BYTE *modulus, *exponent;
@@ -342,10 +342,10 @@ CK_RV C_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
 
-  if (!CNK_PivPrivateKeyCanDecrypt(algorithmType))
+  if (!CNK_PivPrivateKeyCanDecrypt(session, algorithmType))
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for decrypt");
 
-  if (algorithmType != PIV_ALG_RSA_2048 && algorithmType != PIV_ALG_RSA_3072 && algorithmType != PIV_ALG_RSA_4096)
+  if (!CNK_PivAlgorithmIsRsa(session, algorithmType))
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "decrypt key is not RSA");
 
   CK_ULONG cbModulus = 0;

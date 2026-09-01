@@ -291,6 +291,18 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
   CNK_RET_OK;
 }
 
+static CK_ULONG piv_rsa_max_bits(CK_SLOT_ID slotID) {
+  CK_ULONG maxBits = 2048;
+  CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
+  if (cnk_get_piv_algorithm_extension(slotID, &config) == CKR_OK && config.enabled) {
+    if (config.rsa3072 != 0)
+      maxBits = 3072;
+    if (config.rsa4096 != 0)
+      maxBits = 4096;
+  }
+  return maxBits;
+}
+
 CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM_INFO_PTR pInfo) {
   CNK_LOG_FUNC(": slotID: %lu, type: %lu, pInfo: %p", slotID, type, pInfo);
 
@@ -321,7 +333,7 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   case CKM_RSA_PKCS_KEY_PAIR_GEN:
     pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR;
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = 4096;
+    pInfo->ulMaxKeySize = piv_rsa_max_bits(slotID);
     break;
 
   case CKM_RSA_X_509:
@@ -330,13 +342,13 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
     // would incorrectly claim every advertised operation is hardware-backed.
     pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT | CKF_SIGN | CKF_VERIFY;
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = 4096;
+    pInfo->ulMaxKeySize = piv_rsa_max_bits(slotID);
     break;
 
   case CKM_RSA_PKCS_OAEP:
     pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT;
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = 4096;
+    pInfo->ulMaxKeySize = piv_rsa_max_bits(slotID);
     break;
 
   case CKM_RSA_PKCS_PSS:
@@ -360,13 +372,18 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   case CKM_SHA3_512_RSA_PKCS_PSS:
     pInfo->flags = CKF_SIGN | CKF_VERIFY;
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = 4096;
+    pInfo->ulMaxKeySize = piv_rsa_max_bits(slotID);
     break;
 
   case CKM_ECDSA_KEY_PAIR_GEN:
     pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_NAMEDCURVE;
     pInfo->ulMinKeySize = 256;
-    pInfo->ulMaxKeySize = 521;
+    pInfo->ulMaxKeySize = 384;
+    {
+      CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
+      if (cnk_get_piv_algorithm_extension(slotID, &config) == CKR_OK && config.enabled && config.secp521r1 != 0)
+        pInfo->ulMaxKeySize = 521;
+    }
     break;
 
   case CKM_EC_EDWARDS_KEY_PAIR_GEN:
@@ -401,7 +418,12 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   case CKM_ECDSA_SHA3_512:
     pInfo->flags = CKF_SIGN | CKF_VERIFY | CKF_EC_F_P | CKF_EC_NAMEDCURVE;
     pInfo->ulMinKeySize = 256;
-    pInfo->ulMaxKeySize = 521;
+    pInfo->ulMaxKeySize = 384;
+    {
+      CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
+      if (cnk_get_piv_algorithm_extension(slotID, &config) == CKR_OK && config.enabled && config.secp521r1 != 0)
+        pInfo->ulMaxKeySize = 521;
+    }
     break;
 
   case CKM_ECDH1_DERIVE:
@@ -412,7 +434,12 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
           cnk_get_piv_algorithm_extension(slotID, &config) == CKR_OK && config.enabled && config.x25519 != 0;
       pInfo->ulMinKeySize = x25519Supported ? 255 : 256;
     }
-    pInfo->ulMaxKeySize = 521;
+    pInfo->ulMaxKeySize = 384;
+    {
+      CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
+      if (cnk_get_piv_algorithm_extension(slotID, &config) == CKR_OK && config.enabled && config.secp521r1 != 0)
+        pInfo->ulMaxKeySize = 521;
+    }
     break;
 
   case CKM_GENERIC_SECRET_KEY_GEN:
