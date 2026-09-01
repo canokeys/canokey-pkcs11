@@ -109,6 +109,7 @@ CK_RV cnk_mutex_create(CNK_PKCS11_MUTEX *mutex) {
     mutex->unlock = os_unlock_mutex;
   }
 
+  mutex->is_locked = CK_FALSE;
   // Create the actual mutex
   return mutex->create(&mutex->mutex_handle);
 }
@@ -123,18 +124,24 @@ CK_RV cnk_mutex_destroy(CNK_PKCS11_MUTEX *mutex) {
 CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex) {
   CNK_LOG_FUNC(": mutex: %p", mutex);
   CNK_ENSURE_NONNULL(mutex, mutex->mutex_handle, mutex->lock);
-  return mutex->lock(mutex->mutex_handle);
+  CK_RV rv = mutex->lock(mutex->mutex_handle);
+  if (rv == CKR_OK)
+    mutex->is_locked = CK_TRUE;
+  return rv;
 }
 
 // Unlock a mutex
 CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex) {
   CNK_LOG_FUNC(": mutex: %p", mutex);
   CNK_ENSURE_NONNULL(mutex, mutex->mutex_handle, mutex->unlock);
-  return mutex->unlock(mutex->mutex_handle);
+  CK_RV rv = mutex->unlock(mutex->mutex_handle);
+  if (rv == CKR_OK)
+    mutex->is_locked = CK_FALSE;
+  return rv;
 }
 
 void cnk_mutex_unlock_guard(CNK_PKCS11_MUTEX **mutex) {
-  if (mutex != NULL && *mutex != NULL) {
+  if (mutex != NULL && *mutex != NULL && (*mutex)->is_locked) {
     cnk_mutex_unlock(*mutex);
     *mutex = NULL;
   }

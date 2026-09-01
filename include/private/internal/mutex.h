@@ -15,6 +15,7 @@ typedef struct CNK_PKCS11_MUTEX {
   CK_RV (*destroy)(void *mutex);
   CK_RV (*lock)(void *mutex);
   CK_RV (*unlock)(void *mutex);
+  CK_BBOOL is_locked;
 } CNK_PKCS11_MUTEX;
 
 // Initialize the mutex system with the given mutex functions

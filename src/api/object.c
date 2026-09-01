@@ -975,41 +975,53 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
     CK_BYTE algorithmType;
     CK_BYTE importData[MAX_PIV_IMPORT_KEY_SIZE];
     CK_ULONG importDataLen = 0;
+    CK_RV rv = CKR_OK;
 
-    CNK_ENSURE_OK(cnk_template_get_key_type(pTemplate, ulCount, CKA_KEY_TYPE, &keyType));
-    CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &pivTag));
+    rv = cnk_template_get_key_type(pTemplate, ulCount, CKA_KEY_TYPE, &keyType);
+    if (rv != CKR_OK)
+      goto cleanup_import;
+    rv = C_CNK_ObjIdToPivTag(objId, &pivTag);
+    if (rv != CKR_OK)
+      goto cleanup_import;
 
     switch (keyType) {
     case CKK_RSA:
-      CNK_ENSURE_OK(cnk_build_piv_rsa_import(pTemplate, ulCount, objId, importData, sizeof(importData), &importDataLen,
-                                             &algorithmType));
+      rv = cnk_build_piv_rsa_import(pTemplate, ulCount, objId, importData, sizeof(importData), &importDataLen,
+                                    &algorithmType);
       break;
     case CKK_EC:
-      CNK_ENSURE_OK(cnk_build_piv_ec_import(pTemplate, ulCount, objId, importData, sizeof(importData), &importDataLen,
-                                            &algorithmType));
+      rv = cnk_build_piv_ec_import(pTemplate, ulCount, objId, importData, sizeof(importData), &importDataLen,
+                                   &algorithmType);
       break;
     case CKK_EC_EDWARDS:
     case CKK_EC_MONTGOMERY:
-      CNK_ENSURE_OK(cnk_build_piv_25519_import(session, pTemplate, ulCount, objId, keyType, importData,
-                                               sizeof(importData), &importDataLen, &algorithmType));
+      rv = cnk_build_piv_25519_import(session, pTemplate, ulCount, objId, keyType, importData, sizeof(importData),
+                                      &importDataLen, &algorithmType);
       break;
     case CKK_ML_DSA:
     case CKK_ML_KEM:
-      CNK_ENSURE_OK(cnk_build_piv_pqc_import(session, pTemplate, ulCount, objId, keyType, importData,
-                                             sizeof(importData), &importDataLen, &algorithmType));
+      rv = cnk_build_piv_pqc_import(session, pTemplate, ulCount, objId, keyType, importData, sizeof(importData),
+                                    &importDataLen, &algorithmType);
       break;
     default:
-      CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "unsupported private key type for C_CreateObject");
+      rv = CKR_KEY_TYPE_INCONSISTENT;
+      goto cleanup_import;
     }
+    if (rv != CKR_OK)
+      goto cleanup_import;
 
     if (keyType == CKK_RSA || keyType == CKK_EC)
       algorithmType = CNK_PivConfiguredAlgorithm(session, algorithmType);
-    if (algorithmType == 0)
-      CNK_RETURN(CKR_MECHANISM_INVALID, "requested firmware algorithm is disabled");
+    if (algorithmType == 0) {
+      rv = CKR_MECHANISM_INVALID;
+      goto cleanup_import;
+    }
 
-    CK_RV rv = cnk_piv_import_key(session->slotId, session, algorithmType, pivTag, importData, importDataLen);
+    rv = cnk_piv_import_key(session->slotId, session, algorithmType, pivTag, importData, importDataLen);
+  cleanup_import:
     mbedtls_platform_zeroize(importData, sizeof(importData));
-    CNK_ENSURE_OK(rv);
+    if (rv != CKR_OK)
+      return rv;
 
     *phObject = makeObjectHandle(session->slotId, CKO_PRIVATE_KEY, objId);
     CNK_RET_OK;

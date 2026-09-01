@@ -729,8 +729,12 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
     }
   }
 
-  // If readers haven't been listed yet, list them now
-  if (g_cnk_num_readers == 0 || g_cnk_readers == NULL) {
+  // If readers haven't been listed yet, list them now. Read the globals under
+  // the same lock used by the PnP refresh path.
+  cnk_mutex_lock(&g_cnk_readers_mutex);
+  CK_BBOOL readersMissing = g_cnk_num_readers == 0 || g_cnk_readers == NULL;
+  cnk_mutex_unlock(&g_cnk_readers_mutex);
+  if (readersMissing) {
     CK_RV rv = cnk_list_readers();
     if (rv != CKR_OK) {
       CNK_ERROR("Failed to list readers: 0x%lx", rv);
@@ -738,26 +742,33 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
     }
   }
 
-  if (g_cnk_readers == NULL) {
-    CNK_ERROR("No readers found after listing");
-    CNK_RETURN(CKR_SLOT_ID_INVALID, "No readers found");
-  }
-
-  // Find the reader corresponding to the slot ID
-  CK_LONG i;
-  for (i = 0; i < g_cnk_num_readers; i++) {
-    if (g_cnk_readers[i].slot_id == slotID)
+  // Copy the selected reader name while holding the reader lock. PnP refresh
+  // replaces and frees the global reader array asynchronously.
+  char *readerName = NULL;
+  CK_BBOOL readerFound = CK_FALSE;
+  cnk_mutex_lock(&g_cnk_readers_mutex);
+  for (CK_LONG i = 0; i < g_cnk_num_readers; i++) {
+    if (g_cnk_readers[i].slot_id == slotID) {
+      readerFound = CK_TRUE;
+      size_t nameLen = strlen(g_cnk_readers[i].name) + 1;
+      readerName = ck_malloc(nameLen);
+      if (readerName != NULL)
+        memcpy(readerName, g_cnk_readers[i].name, nameLen);
       break;
+    }
   }
+  cnk_mutex_unlock(&g_cnk_readers_mutex);
 
-  if (i >= g_cnk_num_readers) {
+  if (!readerFound)
     CNK_RETURN(CKR_SLOT_ID_INVALID, "Invalid slot ID");
-  }
+  if (readerName == NULL)
+    CNK_RETURN(CKR_HOST_MEMORY, "Failed to copy reader name");
 
   // Connect to the card
   DWORD active_protocol;
-  LONG rv = SCardConnect(g_cnk_pcsc_context, g_cnk_readers[i].name, SCARD_SHARE_SHARED,
-                         SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1, phCard, &active_protocol);
+  LONG rv = SCardConnect(g_cnk_pcsc_context, readerName, SCARD_SHARE_SHARED, SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1,
+                         phCard, &active_protocol);
+  ck_free(readerName);
   if (rv != SCARD_S_SUCCESS) {
     CNK_ERROR("SCardConnect failed with error: 0x%lx", rv);
     CNK_RETURN(CKR_DEVICE_ERROR, "SCardConnect failed");
