@@ -115,6 +115,7 @@ CK_RV cnk_initialize_pcsc(void);
 
 // List readers and populate g_readers
 CK_RV cnk_list_readers(void);
+CK_BBOOL cnk_slot_exists(CK_SLOT_ID slotID);
 
 // Clean up PC/SC resources
 void cnk_cleanup_pcsc(void);

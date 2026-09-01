@@ -32,6 +32,23 @@ static ReaderInfo *known_readers = NULL;
 static CK_LONG known_reader_count = 0;
 static CK_SLOT_ID next_reader_slot_id = 0;
 
+typedef struct {
+  char *name;
+  CK_SLOT_ID slotId;
+  DWORD currentState;
+} CNK_SLOT_EVENT_READER;
+
+static CNK_PKCS11_MUTEX g_cnk_slot_event_mutex;
+static CNK_SLOT_EVENT_READER *slot_event_readers = NULL;
+static CK_ULONG slot_event_reader_count = 0;
+static CK_BBOOL slot_event_initialized = CK_FALSE;
+static DWORD slot_event_pnp_state = SCARD_STATE_UNAWARE;
+static CK_SLOT_ID *pending_slot_events = NULL;
+static CK_ULONG pending_slot_event_count = 0;
+static CK_ULONG pending_slot_event_capacity = 0;
+
+static void freeSlotEventReaders(CNK_SLOT_EVENT_READER *readers, CK_ULONG count);
+
 static void freeScopedBuffer(CK_BYTE **buffer) {
   if (buffer != NULL && *buffer != NULL) {
     ck_free(*buffer);
@@ -198,8 +215,26 @@ static void cache_piv_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin, CK_
 }
 
 CK_RV cnk_initialize_backend(void) {
-  cnk_mutex_create(&g_cnk_readers_mutex);
+  CNK_ENSURE_OK(cnk_mutex_create(&g_cnk_readers_mutex));
+  CK_RV rv = cnk_mutex_create(&g_cnk_slot_event_mutex);
+  if (rv != CKR_OK) {
+    cnk_mutex_destroy(&g_cnk_readers_mutex);
+    return rv;
+  }
   CNK_RET_OK;
+}
+
+CK_BBOOL cnk_slot_exists(CK_SLOT_ID slotID) {
+  CK_BBOOL found = CK_FALSE;
+  cnk_mutex_lock(&g_cnk_readers_mutex);
+  for (CK_LONG i = 0; i < g_cnk_num_readers; i++) {
+    if (g_cnk_readers[i].slot_id == slotID) {
+      found = CK_TRUE;
+      break;
+    }
+  }
+  cnk_mutex_unlock(&g_cnk_readers_mutex);
+  return found;
 }
 
 // Initialize PC/SC context only
@@ -342,11 +377,15 @@ CK_RV cnk_list_readers(void) {
 
 // Clean up PC/SC resources
 void cnk_cleanup_pcsc(void) {
-  cnk_mutex_lock(&g_cnk_readers_mutex);
   if (!g_cnk_is_initialized) {
-    cnk_mutex_unlock(&g_cnk_readers_mutex);
     return;
   }
+
+  // Wake a blocked waiter before taking its serialization mutex.
+  if (g_cnk_pcsc_context)
+    SCardCancel(g_cnk_pcsc_context);
+  cnk_mutex_lock(&g_cnk_slot_event_mutex);
+  cnk_mutex_lock(&g_cnk_readers_mutex);
 
   if (g_cnk_readers) {
     for (CK_LONG i = 0; i < g_cnk_num_readers; i++) {
@@ -363,17 +402,25 @@ void cnk_cleanup_pcsc(void) {
   next_reader_slot_id = 0;
 
   if (g_cnk_pcsc_context) {
-    // Wake a thread blocked in SCardGetStatusChange before releasing the
-    // context that backs C_WaitForSlotEvent.
-    SCardCancel(g_cnk_pcsc_context);
     SCardReleaseContext(g_cnk_pcsc_context);
     g_cnk_pcsc_context = 0;
   }
 
   g_cnk_num_readers = 0;
   g_cnk_is_initialized = CK_FALSE;
+  freeSlotEventReaders(slot_event_readers, slot_event_reader_count);
+  slot_event_readers = NULL;
+  slot_event_reader_count = 0;
+  slot_event_initialized = CK_FALSE;
+  slot_event_pnp_state = SCARD_STATE_UNAWARE;
+  ck_free(pending_slot_events);
+  pending_slot_events = NULL;
+  pending_slot_event_count = 0;
+  pending_slot_event_capacity = 0;
   cnk_mutex_unlock(&g_cnk_readers_mutex);
+  cnk_mutex_unlock(&g_cnk_slot_event_mutex);
   cnk_mutex_destroy(&g_cnk_readers_mutex);
+  cnk_mutex_destroy(&g_cnk_slot_event_mutex);
 }
 
 // Get the number of readers
@@ -395,104 +442,259 @@ CK_SLOT_ID cnk_get_reader_slot_id(CK_ULONG index) {
   return slot;
 }
 
-CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
-  if (g_cnk_is_managed_mode)
-    return CKR_FUNCTION_NOT_SUPPORTED;
-  if (!g_cnk_is_initialized || g_cnk_pcsc_context == 0)
-    return CKR_CRYPTOKI_NOT_INITIALIZED;
-  CNK_ENSURE_OK(cnk_list_readers());
+static void freeSlotEventReaders(CNK_SLOT_EVENT_READER *readers, CK_ULONG count) {
+  if (readers != NULL) {
+    for (CK_ULONG i = 0; i < count; i++)
+      ck_free(readers[i].name);
+    ck_free(readers);
+  }
+}
 
-  // Copy names and slot IDs because the global reader list may be refreshed by
-  // a PnP notification while SCardGetStatusChange is blocked.
+static CK_RV ensurePendingSlotEventCapacity(CK_ULONG additional) {
+  CK_ULONG required = pending_slot_event_count + additional;
+  if (required <= pending_slot_event_capacity)
+    return CKR_OK;
+  CK_ULONG capacity = pending_slot_event_capacity == 0 ? 8 : pending_slot_event_capacity;
+  while (capacity < required)
+    capacity *= 2;
+  CK_SLOT_ID *replacement = ck_malloc(capacity * sizeof(*replacement));
+  if (replacement == NULL)
+    return CKR_HOST_MEMORY;
+  if (pending_slot_event_count > 0)
+    memcpy(replacement, pending_slot_events, pending_slot_event_count * sizeof(*replacement));
+  ck_free(pending_slot_events);
+  pending_slot_events = replacement;
+  pending_slot_event_capacity = capacity;
+  return CKR_OK;
+}
+
+static CK_RV enqueueSlotEvent(CK_SLOT_ID slotId) {
+  CNK_ENSURE_OK(ensurePendingSlotEventCapacity(1));
+  pending_slot_events[pending_slot_event_count++] = slotId;
+  return CKR_OK;
+}
+
+static CK_BBOOL popSlotEvent(CK_SLOT_ID_PTR slot) {
+  if (pending_slot_event_count == 0)
+    return CK_FALSE;
+  *slot = pending_slot_events[0];
+  pending_slot_event_count--;
+  if (pending_slot_event_count > 0)
+    memmove(pending_slot_events, pending_slot_events + 1, pending_slot_event_count * sizeof(*pending_slot_events));
+  return CK_TRUE;
+}
+
+static CK_LONG findSlotEventReaderByName(const CNK_SLOT_EVENT_READER *readers, CK_ULONG count, const char *name) {
+  for (CK_ULONG i = 0; i < count; i++)
+    if (strcmp(readers[i].name, name) == 0)
+      return (CK_LONG)i;
+  return -1;
+}
+
+// Refresh the persistent logical reader snapshot. Existing entries retain
+// their PC/SC baseline; additions and removals are queued by stable slot ID.
+static CK_RV refreshSlotEventReaders(CK_BBOOL queueChanges) {
+  CNK_ENSURE_OK(cnk_list_readers());
   cnk_mutex_lock(&g_cnk_readers_mutex);
-  CK_ULONG readerCount = (CK_ULONG)g_cnk_num_readers;
-  SCARD_READERSTATE *states = ck_calloc(readerCount + 1, sizeof(*states));
-  CK_SLOT_ID *slotIds = ck_calloc(readerCount, sizeof(*slotIds));
-  if (states == NULL || (readerCount > 0 && slotIds == NULL)) {
-    ck_free(states);
-    ck_free(slotIds);
+  CK_ULONG newCount = (CK_ULONG)g_cnk_num_readers;
+  CNK_SLOT_EVENT_READER *replacement = ck_calloc(newCount, sizeof(*replacement));
+  if (newCount > 0 && replacement == NULL) {
     cnk_mutex_unlock(&g_cnk_readers_mutex);
     return CKR_HOST_MEMORY;
   }
-  for (CK_ULONG i = 0; i < readerCount; i++) {
+  for (CK_ULONG i = 0; i < newCount; i++) {
     size_t nameLen = strlen(g_cnk_readers[i].name) + 1;
+    replacement[i].name = ck_malloc(nameLen);
+    if (replacement[i].name == NULL) {
+      freeSlotEventReaders(replacement, newCount);
+      cnk_mutex_unlock(&g_cnk_readers_mutex);
+      return CKR_HOST_MEMORY;
+    }
+    memcpy(replacement[i].name, g_cnk_readers[i].name, nameLen);
+    replacement[i].slotId = g_cnk_readers[i].slot_id;
+    replacement[i].currentState = SCARD_STATE_UNAWARE;
+    CK_LONG oldIndex = findSlotEventReaderByName(slot_event_readers, slot_event_reader_count, replacement[i].name);
+    if (oldIndex >= 0)
+      replacement[i].currentState = slot_event_readers[oldIndex].currentState;
+  }
+  cnk_mutex_unlock(&g_cnk_readers_mutex);
+
+  if (queueChanges) {
+    CK_RV capacityRv = ensurePendingSlotEventCapacity(slot_event_reader_count + newCount);
+    if (capacityRv != CKR_OK) {
+      freeSlotEventReaders(replacement, newCount);
+      return capacityRv;
+    }
+    for (CK_ULONG i = 0; i < slot_event_reader_count; i++)
+      if (findSlotEventReaderByName(replacement, newCount, slot_event_readers[i].name) < 0)
+        pending_slot_events[pending_slot_event_count++] = slot_event_readers[i].slotId;
+    for (CK_ULONG i = 0; i < newCount; i++)
+      if (findSlotEventReaderByName(slot_event_readers, slot_event_reader_count, replacement[i].name) < 0)
+        pending_slot_events[pending_slot_event_count++] = replacement[i].slotId;
+  }
+
+  freeSlotEventReaders(slot_event_readers, slot_event_reader_count);
+  slot_event_readers = replacement;
+  slot_event_reader_count = newCount;
+  return CKR_OK;
+}
+
+static CK_RV buildSlotEventStates(SCARD_READERSTATE **statesOut, CK_SLOT_ID **slotIdsOut) {
+  CK_ULONG stateCount = slot_event_reader_count + 1;
+  SCARD_READERSTATE *states = ck_calloc(stateCount, sizeof(*states));
+  CK_SLOT_ID *slotIds = ck_calloc(slot_event_reader_count, sizeof(*slotIds));
+  if (states == NULL || (slot_event_reader_count > 0 && slotIds == NULL)) {
+    ck_free(states);
+    ck_free(slotIds);
+    return CKR_HOST_MEMORY;
+  }
+  for (CK_ULONG i = 0; i < slot_event_reader_count; i++) {
+    size_t nameLen = strlen(slot_event_readers[i].name) + 1;
     char *name = ck_malloc(nameLen);
     if (name == NULL) {
       for (CK_ULONG j = 0; j < i; j++)
         ck_free((void *)states[j].szReader);
       ck_free(states);
       ck_free(slotIds);
-      cnk_mutex_unlock(&g_cnk_readers_mutex);
       return CKR_HOST_MEMORY;
     }
-    memcpy(name, g_cnk_readers[i].name, nameLen);
+    memcpy(name, slot_event_readers[i].name, nameLen);
     states[i].szReader = name;
-    slotIds[i] = g_cnk_readers[i].slot_id;
+    states[i].dwCurrentState = slot_event_readers[i].currentState;
+    slotIds[i] = slot_event_readers[i].slotId;
   }
-  // The PC/SC pseudo-reader reports reader arrival/removal even when there are
-  // currently no CanoKey readers to place in the status array.
-  states[readerCount].szReader = "\\\\?PnP?\\Notification";
-  cnk_mutex_unlock(&g_cnk_readers_mutex);
+  states[slot_event_reader_count].szReader = "\\\\?PnP?\\Notification";
+  states[slot_event_reader_count].dwCurrentState = slot_event_pnp_state;
+  *statesOut = states;
+  *slotIdsOut = slotIds;
+  return CKR_OK;
+}
 
-  // The first zero-timeout call establishes a baseline. The second call then
-  // reports only changes after this invocation, matching PKCS#11 wait semantics.
-  LONG pcscRv = SCardGetStatusChange(g_cnk_pcsc_context, 0, states, readerCount + 1);
-  if (pcscRv == SCARD_S_SUCCESS) {
-    for (CK_ULONG i = 0; i <= readerCount; i++)
-      states[i].dwCurrentState = states[i].dwEventState & ~SCARD_STATE_CHANGED;
-    DWORD timeout = (flags & CKF_DONT_BLOCK) != 0 ? 0 : INFINITE;
-    pcscRv = SCardGetStatusChange(g_cnk_pcsc_context, timeout, states, readerCount + 1);
-  }
-
-  CK_RV rv = CKR_NO_EVENT;
-  if (pcscRv == SCARD_S_SUCCESS) {
-    for (CK_ULONG i = 0; i < readerCount; i++) {
-      if ((states[i].dwEventState & SCARD_STATE_CHANGED) != 0) {
-        *slot = slotIds[i];
-        rv = CKR_OK;
-        break;
-      }
-    }
-    if (rv == CKR_NO_EVENT && (states[readerCount].dwEventState & SCARD_STATE_CHANGED) != 0) {
-      CK_RV refreshRv = cnk_list_readers();
-      if (refreshRv == CKR_OK) {
-        cnk_mutex_lock(&g_cnk_readers_mutex);
-        // Report removals using the old stable slot, including removal of the
-        // final reader. If nothing was removed, report the newly added reader.
-        for (CK_ULONG i = 0; i < readerCount && rv == CKR_NO_EVENT; i++) {
-          CK_BBOOL stillPresent = CK_FALSE;
-          for (CK_LONG j = 0; j < g_cnk_num_readers; j++)
-            if (strcmp(states[i].szReader, g_cnk_readers[j].name) == 0)
-              stillPresent = CK_TRUE;
-          if (!stillPresent) {
-            *slot = slotIds[i];
-            rv = CKR_OK;
-          }
-        }
-        for (CK_LONG i = 0; i < g_cnk_num_readers && rv == CKR_NO_EVENT; i++) {
-          CK_BBOOL wasPresent = CK_FALSE;
-          for (CK_ULONG j = 0; j < readerCount; j++)
-            if (strcmp(g_cnk_readers[i].name, states[j].szReader) == 0)
-              wasPresent = CK_TRUE;
-          if (!wasPresent) {
-            *slot = g_cnk_readers[i].slot_id;
-            rv = CKR_OK;
-          }
-        }
-        cnk_mutex_unlock(&g_cnk_readers_mutex);
-      }
-    }
-  } else if (pcscRv == SCARD_E_CANCELLED) {
-    rv = g_cnk_is_initialized ? CKR_FUNCTION_CANCELED : CKR_CRYPTOKI_NOT_INITIALIZED;
-  } else if (pcscRv != SCARD_E_TIMEOUT) {
-    rv = CKR_DEVICE_ERROR;
-  }
-
-  for (CK_ULONG i = 0; i < readerCount; i++)
-    ck_free((void *)states[i].szReader);
+static void freeSlotEventStates(SCARD_READERSTATE *states, CK_SLOT_ID *slotIds, CK_ULONG readerCount) {
+  if (states != NULL)
+    for (CK_ULONG i = 0; i < readerCount; i++)
+      ck_free((void *)states[i].szReader);
   ck_free(states);
   ck_free(slotIds);
-  return rv;
+}
+
+static CK_RV establishSlotEventBaseline(void) {
+  SCARD_READERSTATE *states = NULL;
+  CK_SLOT_ID *slotIds = NULL;
+  CNK_ENSURE_OK(buildSlotEventStates(&states, &slotIds));
+  LONG pcscRv = SCardGetStatusChange(g_cnk_pcsc_context, 0, states, slot_event_reader_count + 1);
+  if (pcscRv == SCARD_S_SUCCESS) {
+    for (CK_ULONG i = 0; i < slot_event_reader_count; i++)
+      slot_event_readers[i].currentState = states[i].dwEventState & ~SCARD_STATE_CHANGED;
+    slot_event_pnp_state = states[slot_event_reader_count].dwEventState & ~SCARD_STATE_CHANGED;
+  }
+  freeSlotEventStates(states, slotIds, slot_event_reader_count);
+  return pcscRv == SCARD_S_SUCCESS || pcscRv == SCARD_E_TIMEOUT ? CKR_OK : CKR_DEVICE_ERROR;
+}
+
+static CK_RV synchronizeSlotEventReadersAfterPnp(void) {
+  // Newly added readers start at UNAWARE, while the PnP state remains the one
+  // that woke the waiter. Re-query until PnP is stable: reader states are
+  // baselined without duplicate events, and a second PnP transition is diffed
+  // rather than absorbed between calls.
+  for (;;) {
+    CK_ULONG readerCount = slot_event_reader_count;
+    SCARD_READERSTATE *states = NULL;
+    CK_SLOT_ID *slotIds = NULL;
+    CNK_ENSURE_OK(buildSlotEventStates(&states, &slotIds));
+    LONG pcscRv = SCardGetStatusChange(g_cnk_pcsc_context, 0, states, readerCount + 1);
+    if (pcscRv != SCARD_S_SUCCESS && pcscRv != SCARD_E_TIMEOUT) {
+      freeSlotEventStates(states, slotIds, readerCount);
+      return CKR_DEVICE_ERROR;
+    }
+    if (pcscRv == SCARD_E_TIMEOUT) {
+      freeSlotEventStates(states, slotIds, readerCount);
+      return CKR_OK;
+    }
+    for (CK_ULONG i = 0; i < readerCount; i++) {
+      CK_LONG index = findSlotEventReaderByName(slot_event_readers, slot_event_reader_count, states[i].szReader);
+      if (index >= 0)
+        slot_event_readers[index].currentState = states[i].dwEventState & ~SCARD_STATE_CHANGED;
+    }
+    CK_BBOOL pnpChanged = (states[readerCount].dwEventState & SCARD_STATE_CHANGED) != 0;
+    slot_event_pnp_state = states[readerCount].dwEventState & ~SCARD_STATE_CHANGED;
+    freeSlotEventStates(states, slotIds, readerCount);
+    if (!pnpChanged)
+      return CKR_OK;
+    CNK_ENSURE_OK(refreshSlotEventReaders(CK_TRUE));
+  }
+}
+
+CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
+  if (g_cnk_is_managed_mode)
+    return CKR_FUNCTION_NOT_SUPPORTED;
+  if (!g_cnk_is_initialized || g_cnk_pcsc_context == 0)
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  CNK_PKCS11_MUTEX *eventLock CNK_MUTEX_GUARD = &g_cnk_slot_event_mutex;
+  CNK_ENSURE_OK(cnk_mutex_lock(eventLock));
+  if (popSlotEvent(slot))
+    return CKR_OK;
+
+  if (!slot_event_initialized) {
+    CNK_ENSURE_OK(refreshSlotEventReaders(CK_FALSE));
+    CNK_ENSURE_OK(establishSlotEventBaseline());
+    slot_event_initialized = CK_TRUE;
+    if ((flags & CKF_DONT_BLOCK) != 0)
+      return CKR_NO_EVENT;
+  }
+
+  for (;;) {
+    CK_ULONG oldReaderCount = slot_event_reader_count;
+    SCARD_READERSTATE *states = NULL;
+    CK_SLOT_ID *slotIds = NULL;
+    CNK_ENSURE_OK(buildSlotEventStates(&states, &slotIds));
+    DWORD timeout = (flags & CKF_DONT_BLOCK) != 0 ? 0 : INFINITE;
+    LONG pcscRv = SCardGetStatusChange(g_cnk_pcsc_context, timeout, states, oldReaderCount + 1);
+    if (pcscRv == SCARD_E_TIMEOUT) {
+      freeSlotEventStates(states, slotIds, oldReaderCount);
+      return CKR_NO_EVENT;
+    }
+    if (pcscRv == SCARD_E_CANCELLED) {
+      freeSlotEventStates(states, slotIds, oldReaderCount);
+      return g_cnk_is_initialized ? CKR_FUNCTION_CANCELED : CKR_CRYPTOKI_NOT_INITIALIZED;
+    }
+    if (pcscRv != SCARD_S_SUCCESS) {
+      freeSlotEventStates(states, slotIds, oldReaderCount);
+      return CKR_DEVICE_ERROR;
+    }
+
+    CK_BBOOL pnpChanged = (states[oldReaderCount].dwEventState & SCARD_STATE_CHANGED) != 0;
+    CK_RV rv = CKR_OK;
+    for (CK_ULONG i = 0; i < oldReaderCount; i++) {
+      CK_LONG snapshotIndex =
+          findSlotEventReaderByName(slot_event_readers, slot_event_reader_count, states[i].szReader);
+      if (snapshotIndex >= 0)
+        slot_event_readers[snapshotIndex].currentState = states[i].dwEventState & ~SCARD_STATE_CHANGED;
+      if ((states[i].dwEventState & SCARD_STATE_CHANGED) != 0 && !pnpChanged && rv == CKR_OK)
+        rv = enqueueSlotEvent(slotIds[i]);
+    }
+    slot_event_pnp_state = states[oldReaderCount].dwEventState & ~SCARD_STATE_CHANGED;
+
+    if (pnpChanged) {
+      if (rv == CKR_OK)
+        rv = refreshSlotEventReaders(CK_TRUE);
+      // Reader arrival/removal is already queued. Establish state for new
+      // names without absorbing another PnP transition.
+      if (rv == CKR_OK)
+        rv = synchronizeSlotEventReadersAfterPnp();
+      for (CK_ULONG i = 0; i < oldReaderCount; i++)
+        if (rv == CKR_OK && (states[i].dwEventState & SCARD_STATE_CHANGED) != 0 && cnk_slot_exists(slotIds[i]))
+          rv = enqueueSlotEvent(slotIds[i]);
+    }
+    freeSlotEventStates(states, slotIds, oldReaderCount);
+    if (rv != CKR_OK)
+      return rv;
+
+    if (popSlotEvent(slot))
+      return CKR_OK;
+    if ((flags & CKF_DONT_BLOCK) != 0)
+      return CKR_NO_EVENT;
+  }
 }
 
 // Helper function to connect to a card
@@ -1919,12 +2121,16 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
     // Get sequence length
     CK_LONG seq_len_fail = 0;
     CK_ULONG seq_len_size = 0;
-    tlvGetLengthSafe(der_sig + der_pos, der_len - der_pos, &seq_len_fail, &seq_len_size);
-    if (seq_len_fail) {
+    CK_ULONG seq_len = tlvGetLengthSafe(der_sig + der_pos, der_len - der_pos, &seq_len_fail, &seq_len_size);
+    if (seq_len_fail || seq_len_size > der_len - der_pos) {
       cnk_disconnect_card(hCard);
       CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: couldn't parse SEQUENCE length");
     }
     der_pos += seq_len_size;
+    if (seq_len != der_len - der_pos) {
+      cnk_disconnect_card(hCard);
+      CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: SEQUENCE length mismatch");
+    }
 
     // Expect r INTEGER
     if (der_pos >= der_len || der_sig[der_pos] != 0x02) { // 0x02 is the INTEGER tag in DER
@@ -1937,11 +2143,15 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
     CK_LONG r_len_fail = 0;
     CK_ULONG r_len_size = 0;
     CK_ULONG r_len = tlvGetLengthSafe(der_sig + der_pos, der_len - der_pos, &r_len_fail, &r_len_size);
-    if (r_len_fail) {
+    if (r_len_fail || r_len_size > der_len - der_pos) {
       cnk_disconnect_card(hCard);
       CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: couldn't parse r INTEGER length");
     }
     der_pos += r_len_size;
+    if (r_len > der_len - der_pos) {
+      cnk_disconnect_card(hCard);
+      CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: r value exceeds response");
+    }
 
     // Adjust for negative numbers (where first byte is 0x00)
     CK_ULONG r_value_offset = 0;
@@ -1956,8 +2166,8 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
       memset(raw_sig, 0, ec_size - r_len);
       memcpy(raw_sig + (ec_size - r_len), der_sig + der_pos + r_value_offset, r_len);
     } else {
-      // Truncate extra leading bytes (this shouldn't happen with valid signatures)
-      memcpy(raw_sig, der_sig + der_pos + r_value_offset + (r_len - ec_size), ec_size);
+      cnk_disconnect_card(hCard);
+      CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: r value is too large");
     }
     der_pos += r_len + r_value_offset;
 
@@ -1972,11 +2182,15 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
     CK_LONG s_len_fail = 0;
     CK_ULONG s_len_size = 0;
     CK_ULONG s_len = tlvGetLengthSafe(der_sig + der_pos, der_len - der_pos, &s_len_fail, &s_len_size);
-    if (s_len_fail) {
+    if (s_len_fail || s_len_size > der_len - der_pos) {
       cnk_disconnect_card(hCard);
       CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: couldn't parse s INTEGER length");
     }
     der_pos += s_len_size;
+    if (s_len > der_len - der_pos) {
+      cnk_disconnect_card(hCard);
+      CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: s value exceeds response");
+    }
 
     // Adjust for negative numbers (where first byte is 0x00)
     CK_ULONG s_value_offset = 0;
@@ -1991,8 +2205,13 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
       memset(raw_sig + ec_size, 0, ec_size - s_len);
       memcpy(raw_sig + ec_size + (ec_size - s_len), der_sig + der_pos + s_value_offset, s_len);
     } else {
-      // Truncate extra leading bytes
-      memcpy(raw_sig + ec_size, der_sig + der_pos + s_value_offset + (s_len - ec_size), ec_size);
+      cnk_disconnect_card(hCard);
+      CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: s value is too large");
+    }
+    der_pos += s_len + s_value_offset;
+    if (der_pos != der_len) {
+      cnk_disconnect_card(hCard);
+      CNK_RETURN(CKR_DEVICE_ERROR, "Invalid ECDSA signature: trailing DER data");
     }
 
     // Copy the raw signature to output buffer

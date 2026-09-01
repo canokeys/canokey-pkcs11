@@ -50,7 +50,7 @@ CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PT
 CK_RV C_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
   CNK_LOG_FUNC(": slotID: %lu, pInfo: %p", slotID, pInfo);
 
-  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pInfo);
+  PKCS11_VALIDATE(pInfo, slotID);
 
   // Get firmware version and hardware name
   CK_BYTE fw_major, fw_minor;
@@ -93,15 +93,9 @@ CK_RV C_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
 CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   CNK_LOG_FUNC(": slotID: %lu", slotID);
 
-  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pInfo);
+  PKCS11_VALIDATE(pInfo, slotID);
 
   cnk_mutex_lock(&g_cnk_readers_mutex);
-
-  // Check if the slot ID is valid
-  if (slotID >= (CK_SLOT_ID)g_cnk_num_readers) {
-    cnk_mutex_unlock(&g_cnk_readers_mutex);
-    CNK_RETURN(CKR_SLOT_ID_INVALID, "invalid slot");
-  }
 
   // Get the serial number
   CK_ULONG serial_number;
