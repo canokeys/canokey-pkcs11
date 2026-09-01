@@ -215,15 +215,8 @@ CK_RV cnk_build_piv_25519_import(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR a
   CK_BYTE privateValue[32];
   memcpy(privateValue, valueAttribute->pValue, sizeof(privateValue));
   CK_BYTE tag = keyType == CKK_EC_EDWARDS ? 0x07 : 0x08;
-  if (keyType == CKK_EC_MONTGOMERY) {
-    // PKCS#11 stores RFC 7748 private values little-endian; the PIV import
-    // extension uses a big-endian integer before firmware converts internally.
-    for (CK_ULONG i = 0; i < sizeof(privateValue) / 2; i++) {
-      CK_BYTE tmp = privateValue[i];
-      privateValue[i] = privateValue[sizeof(privateValue) - 1 - i];
-      privateValue[sizeof(privateValue) - 1 - i] = tmp;
-    }
-  }
+  // The X25519 import tag and PKCS#11 both use RFC 7748 little-endian bytes;
+  // firmware performs the conversion to its internal big-endian key form.
 
   CK_ULONG offset = 0;
   CK_RV rv = appendTlv(output, outputLen, &offset, tag, privateValue, sizeof(privateValue));

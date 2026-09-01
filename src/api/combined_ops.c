@@ -585,27 +585,12 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   // it; the X9.63 KDF variants expand it before constructing the session key.
   CK_BYTE sharedSecret[CNK_MAX_ECDH_SECRET_LEN] = {0};
   CK_ULONG sharedSecretLen = sizeof(sharedSecret);
-  CK_BYTE peerPublic[CNK_MAX_ECDH_PUBLIC_DATA];
-  const CK_BYTE *cardPublic = params->pPublicData;
-  if (x25519) {
-    // PKCS#11 follows RFC 7748 little-endian encoding, while CanoKey's PIV
-    // extension carries X25519 integers in big-endian form.
-    for (CK_ULONG i = 0; i < expectedSecretLen; i++)
-      peerPublic[i] = params->pPublicData[expectedSecretLen - 1 - i];
-    cardPublic = peerPublic;
-  }
-  CK_RV rv = cnk_piv_ecdh(session->slotId, session, algorithmType, pivTag, pinPolicy, (CK_BYTE_PTR)cardPublic,
+  // The CanoKey PIV X25519 extension follows RFC 7748 little-endian wire
+  // encoding, matching PKCS#11. Firmware converts only its internal key form.
+  CK_RV rv = cnk_piv_ecdh(session->slotId, session, algorithmType, pivTag, pinPolicy, params->pPublicData,
                           params->ulPublicDataLen, sharedSecret, &sharedSecretLen);
-  mbedtls_platform_zeroize(peerPublic, sizeof(peerPublic));
   if (rv != CKR_OK)
     CNK_RETURN(rv, "PIV ECDH failed");
-  if (x25519) {
-    for (CK_ULONG i = 0; i < sharedSecretLen / 2; i++) {
-      CK_BYTE tmp = sharedSecret[i];
-      sharedSecret[i] = sharedSecret[sharedSecretLen - 1 - i];
-      sharedSecret[sharedSecretLen - 1 - i] = tmp;
-    }
-  }
   if (params->kdf == CKD_NULL && sharedSecretLen < requestedValueLen) {
     mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
     CNK_RETURN(CKR_DEVICE_ERROR, "ECDH secret shorter than requested key");

@@ -158,9 +158,8 @@ private-key import, ECDSA sign/verify, and ECDH. Ed25519 supports
 `CKM_EC_EDWARDS_KEY_PAIR_GEN`, private-key import, and pure `CKM_EDDSA`
 signing without a context. X25519 supports
 `CKM_EC_MONTGOMERY_KEY_PAIR_GEN`, private-key import, and
-`CKM_ECDH1_DERIVE`; RFC 7748 values are converted at the PIV boundary because
-PKCS#11 uses little-endian bytes while the CanoKey PIV extension uses
-big-endian integers. SM2 keys expose their correct curve OID but no signing or
+`CKM_ECDH1_DERIVE`; both PKCS#11 and the CanoKey PIV extension use RFC 7748
+little-endian wire values. SM2 keys expose their correct curve OID but no signing or
 derivation mechanism, because PKCS#11 3.2 defines no SM2 mechanism.
 
 `CKM_EDDSA` currently advertises card-side signing only. The bundled host
