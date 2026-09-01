@@ -61,7 +61,8 @@ static CK_RV cnk_with_card(CK_SLOT_ID slotID, CardOperationFunc operation, void 
 }
 
 static CK_RV connectForPrivateKeyOperation(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *session, CK_BYTE pinPolicy,
-                                           SCARDHANDLE *hCard, const char *operationName) {
+                                           const CK_BYTE *contextPin, CK_ULONG contextPinLen, SCARDHANDLE *hCard,
+                                           const char *operationName) {
   CNK_ENSURE_NONNULL(session, hCard);
 
   if (pinPolicy == CNK_PIV_PIN_POLICY_NEVER) {
@@ -75,10 +76,27 @@ static CK_RV connectForPrivateKeyOperation(CK_SLOT_ID slotId, CNK_PKCS11_SESSION
     CNK_RET_OK;
   }
 
-  if (session->cbPin == 0)
-    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN verification required before private-key operation");
+  if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS) {
+    if (contextPin == NULL || contextPinLen == 0)
+      CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "context-specific PIN verification required");
+    CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotId, hCard));
+    CK_RV rv = cnk_select_piv_application(*hCard);
+    if (rv == CKR_OK)
+      rv = cnk_verify_piv_pin(*hCard, (CK_UTF8CHAR_PTR)contextPin, contextPinLen, NULL);
+    if (rv != CKR_OK) {
+      cnk_disconnect_card(*hCard);
+      *hCard = 0;
+    }
+    return rv;
+  }
 
-  CK_RV rv = cnk_verify_piv_pin_with_session_ex(slotId, session, session->pin, session->cbPin, NULL, hCard);
+  CK_BYTE pin[PIV_PADDED_PIN_LEN];
+  CK_ULONG pinLen = 0;
+  CK_RV rv = cnk_token_copy_pin(session, pin, &pinLen);
+  if (rv != CKR_OK)
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN verification required before private-key operation");
+  rv = cnk_verify_piv_pin_with_session_ex(slotId, session, pin, pinLen, NULL, hCard);
+  mbedtls_platform_zeroize(pin, sizeof(pin));
   if (rv != CKR_OK) {
     CNK_ERROR("Failed to verify PIN before %s", operationName ? operationName : "private-key operation");
     if (*hCard != 0)
@@ -137,9 +155,7 @@ static CK_RV handle_pin_status(CK_BYTE sw1, CK_BYTE sw2, CK_BYTE_PTR pPinTries, 
 }
 
 static void cache_piv_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
-  memset(session->pin, 0xFF, sizeof(session->pin));
-  memcpy(session->pin, pPin, ulPinLen);
-  session->cbPin = ulPinLen;
+  cnk_token_cache_pin(session, pPin, ulPinLen);
 }
 
 CK_RV cnk_initialize_backend(void) {
@@ -696,10 +712,8 @@ static CK_RV change_pin_card_operation(SCARDHANDLE hCard, void *context) {
       ctx->pin_reference == CNK_PIV_PIN_TYPE_PUK ? "PIV PUK change failed" : "PIV PIN change failed";
   CK_RV rv = cnk_update_piv_pin(hCard, 0x24, ctx->pin_reference, ctx->old_pin, ctx->old_pin_len, ctx->new_pin,
                                 ctx->new_pin_len, ctx->pin_tries, operationName);
-  if (rv == CKR_OK && ctx->pin_reference == CNK_PIV_PIN_TYPE_PIN && ctx->session->cbPin > 0 &&
-      ctx->session->cbPin == ctx->old_pin_len && memcmp(ctx->session->pin, ctx->old_pin, ctx->old_pin_len) == 0) {
-    cache_piv_pin(ctx->session, ctx->new_pin, ctx->new_pin_len);
-  }
+  if (rv == CKR_OK && ctx->pin_reference == CNK_PIV_PIN_TYPE_PIN)
+    cnk_token_update_cached_pin(ctx->session, ctx->old_pin, ctx->old_pin_len, ctx->new_pin, ctx->new_pin_len);
   return rv;
 }
 
@@ -738,7 +752,9 @@ static CK_RV unblock_pin_card_operation(SCARDHANDLE hCard, void *context) {
                                 ctx->new_pin_len, ctx->pin_tries, "PIV PIN unblock failed");
   if (rv == CKR_OK) {
     cache_piv_pin(ctx->session, ctx->new_pin, ctx->new_pin_len);
-    ctx->session->state = (ctx->session->flags & CKF_RW_SESSION) ? SESSION_STATE_RW_USER : SESSION_STATE_RO_USER;
+    cnk_mutex_lock(&ctx->session->token->lock);
+    ctx->session->token->loginState = TOKEN_LOGIN_USER;
+    cnk_mutex_unlock(&ctx->session->token->lock);
   }
   return rv;
 }
@@ -844,8 +860,11 @@ CK_RV cnk_get_piv_data_by_tag_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION
   SCARDHANDLE hCard = 0;
 
   CK_RV rv;
-  if (session->cbPin > 0) {
-    rv = cnk_verify_piv_pin_with_session_ex(slotID, session, session->pin, session->cbPin, NULL, &hCard);
+  CK_BYTE pin[PIV_PADDED_PIN_LEN];
+  CK_ULONG pinLen = 0;
+  if (cnk_token_copy_pin(session, pin, &pinLen) == CKR_OK) {
+    rv = cnk_verify_piv_pin_with_session_ex(slotID, session, pin, pinLen, NULL, &hCard);
+    mbedtls_platform_zeroize(pin, sizeof(pin));
   } else {
     rv = cnk_connect_and_select_canokey(slotID, &hCard);
     if (rv == CKR_OK)
@@ -983,13 +1002,15 @@ static CK_RV authenticateManagementKeyOnCard(SCARDHANDLE hCard, const CK_BYTE ke
 static CK_RV authenticateAdminForWrite(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, SCARDHANDLE *hCard) {
   CNK_ENSURE_NONNULL(session, hCard);
 
-  if (session->cbManagementKey != PIV_MANAGEMENT_KEY_LEN)
-    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "CKU_SO login is required");
+  CK_BYTE managementKey[PIV_MANAGEMENT_KEY_LEN];
+  if (cnk_token_copy_management_key(session, managementKey) != CKR_OK)
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "management-key login is required");
 
   CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotID, hCard));
   CNK_ENSURE_OK(cnk_select_piv_application(*hCard));
 
-  CK_RV rv = authenticateManagementKeyOnCard(*hCard, session->managementKey);
+  CK_RV rv = authenticateManagementKeyOnCard(*hCard, managementKey);
+  mbedtls_platform_zeroize(managementKey, sizeof(managementKey));
   if (rv != CKR_OK) {
     cnk_disconnect_card(*hCard);
     return rv;
@@ -1204,6 +1225,7 @@ CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
 static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType,
                                               CK_BYTE pivSlot, CK_BYTE pinPolicy, CK_BYTE inputTag, CK_BYTE_PTR pData,
                                               CK_ULONG cbDataLen, CK_BYTE_PTR pOutput, CK_ULONG_PTR pcbOutput,
+                                              const CK_BYTE *contextPin, CK_ULONG contextPinLen,
                                               const char *operationName) {
   SCARDHANDLE hCard = 0;
   CK_RV rv = CKR_OK;
@@ -1216,7 +1238,7 @@ static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESS
   if (cbDataLen > CNK_PIV_MAX_GENERAL_AUTH_INPUT)
     CNK_RETURN(CKR_DATA_LEN_RANGE, "GENERAL AUTHENTICATE input exceeds firmware limit");
 
-  rv = connectForPrivateKeyOperation(slotId, pSession, pinPolicy, &hCard, operationName);
+  rv = connectForPrivateKeyOperation(slotId, pSession, pinPolicy, contextPin, contextPinLen, &hCard, operationName);
   if (rv != CKR_OK)
     return rv;
 
@@ -1424,23 +1446,24 @@ static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESS
 
 CK_RV cnk_piv_decrypt(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pEncryptedData,
                       CK_ULONG cbEncryptedData, CK_BYTE_PTR pRawData, CK_ULONG_PTR pcbRawData) {
-  return cnk_piv_general_authenticate_raw(slotId, pSession, pSession->decryptingContext.algorithmType,
-                                          pSession->decryptingContext.pivSlot, pSession->decryptingContext.pinPolicy,
-                                          0x81, pEncryptedData, cbEncryptedData, pRawData, pcbRawData, "decrypt");
+  return cnk_piv_general_authenticate_raw(
+      slotId, pSession, pSession->decryptingContext.algorithmType, pSession->decryptingContext.pivSlot,
+      pSession->decryptingContext.pinPolicy, 0x81, pEncryptedData, cbEncryptedData, pRawData, pcbRawData,
+      pSession->decryptingContext.contextPin, pSession->decryptingContext.contextPinLen, "decrypt");
 }
 
 CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
                    CK_BYTE pinPolicy, CK_BYTE_PTR pPublicData, CK_ULONG cbPublicData, CK_BYTE_PTR pSharedSecret,
                    CK_ULONG_PTR pcbSharedSecret) {
   return cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, pinPolicy, 0x85, pPublicData,
-                                          cbPublicData, pSharedSecret, pcbSharedSecret, "ECDH");
+                                          cbPublicData, pSharedSecret, pcbSharedSecret, NULL, 0, "ECDH");
 }
 
 CK_RV cnk_piv_mlkem_decapsulate(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
                                 CK_BYTE pinPolicy, CK_BYTE_PTR pCiphertext, CK_ULONG cbCiphertext,
                                 CK_BYTE_PTR pSharedSecret, CK_ULONG_PTR pcbSharedSecret) {
   return cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, pinPolicy, 0x81, pCiphertext,
-                                          cbCiphertext, pSharedSecret, pcbSharedSecret, "ML-KEM decapsulate");
+                                          cbCiphertext, pSharedSecret, pcbSharedSecret, NULL, 0, "ML-KEM decapsulate");
 }
 
 // Sign data using PIV key
@@ -1448,9 +1471,10 @@ CK_RV cnk_piv_mlkem_decapsulate(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession,
 CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pData, CK_ULONG cbDataLen,
                    CK_BYTE_PTR pSignature, CK_ULONG_PTR pcbSignature) {
   if (pSession->signingContext.algorithmType == pSession->mldsa65Algorithm)
-    return cnk_piv_general_authenticate_raw(slotId, pSession, pSession->signingContext.algorithmType,
-                                            pSession->signingContext.pivSlot, pSession->signingContext.pinPolicy, 0x81,
-                                            pData, cbDataLen, pSignature, pcbSignature, "ML-DSA sign");
+    return cnk_piv_general_authenticate_raw(
+        slotId, pSession, pSession->signingContext.algorithmType, pSession->signingContext.pivSlot,
+        pSession->signingContext.pinPolicy, 0x81, pData, cbDataLen, pSignature, pcbSignature,
+        pSession->signingContext.contextPin, pSession->signingContext.contextPinLen, "ML-DSA sign");
 
   SCARDHANDLE hCard;
 
@@ -1462,7 +1486,9 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
   if (cbDataLen > 512)
     CNK_RETURN(CKR_DATA_LEN_RANGE, "Input data too large (max 512 bytes)");
 
-  CK_RV rv = connectForPrivateKeyOperation(slotId, pSession, pSession->signingContext.pinPolicy, &hCard, "sign");
+  CK_RV rv = connectForPrivateKeyOperation(slotId, pSession, pSession->signingContext.pinPolicy,
+                                           pSession->signingContext.contextPin, pSession->signingContext.contextPinLen,
+                                           &hCard, "sign");
   if (rv != CKR_OK)
     return rv;
 
@@ -2155,10 +2181,7 @@ static CK_RV verify_pin_card_operation(SCARDHANDLE hCard, void *context) {
   // Verify the PIN
   CNK_ENSURE_OK(cnk_verify_piv_pin(hCard, ctx->pin, ctx->pin_len, ctx->pin_tries));
 
-  // If PIN verification was successful, cache the PIN in the session
-  if (ctx->session->pin != ctx->pin) {
-    cache_piv_pin(ctx->session, ctx->pin, ctx->pin_len);
-  }
+  cache_piv_pin(ctx->session, ctx->pin, ctx->pin_len);
 
   CNK_RET_OK;
 }
@@ -2183,6 +2206,23 @@ CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
 CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
                                       CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries) {
   return cnk_verify_piv_pin_with_session_ex(slotID, session, pPin, ulPinLen, pPinTries, NULL);
+}
+
+typedef struct {
+  CK_UTF8CHAR_PTR pin;
+  CK_ULONG pinLen;
+  CK_BYTE_PTR pinTries;
+} ContextPinVerification;
+
+static CK_RV verify_context_pin_card_operation(SCARDHANDLE hCard, void *context) {
+  ContextPinVerification *verification = context;
+  return cnk_verify_piv_pin(hCard, verification->pin, verification->pinLen, verification->pinTries);
+}
+
+CK_RV cnk_verify_piv_pin_for_context(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,
+                                     CK_BYTE_PTR pPinTries) {
+  ContextPinVerification verification = {.pin = pPin, .pinLen = ulPinLen, .pinTries = pPinTries};
+  return cnk_with_card(slotID, verify_context_pin_card_operation, &verification, NULL);
 }
 
 /* Verify the PIV management key using the algorithm reported by slot 9B

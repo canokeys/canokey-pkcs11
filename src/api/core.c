@@ -19,8 +19,6 @@ static CK_FUNCTION_LIST ck_function_list;
 static CK_FUNCTION_LIST_3_2 ck_function_list_3_2;
 static CK_UTF8CHAR ck_interface_name[] = "PKCS 11";
 static CK_INTERFACE ck_interface_3_2 = {ck_interface_name, &ck_function_list_3_2, 0};
-static atomic_flag ck_function_list_3_2_lock = ATOMIC_FLAG_INIT;
-static atomic_bool ck_function_list_3_2_initialized = false;
 
 // Global variables
 static atomic_int g_ref_count = 0;
@@ -214,30 +212,8 @@ CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList) {
   CNK_RET_OK;
 }
 
-static void initializeFunctionList32(void) {
-  if (atomic_load(&ck_function_list_3_2_initialized))
-    return;
-  while (atomic_flag_test_and_set(&ck_function_list_3_2_lock)) {
-  }
-  if (atomic_load(&ck_function_list_3_2_initialized)) {
-    atomic_flag_clear(&ck_function_list_3_2_lock);
-    return;
-  }
-  memset(&ck_function_list_3_2, 0, sizeof(ck_function_list_3_2));
-  memcpy(&ck_function_list_3_2, &ck_function_list, sizeof(ck_function_list));
-  ck_function_list_3_2.version.major = 3;
-  ck_function_list_3_2.version.minor = 2;
-  ck_function_list_3_2.C_GetInterfaceList = C_GetInterfaceList;
-  ck_function_list_3_2.C_GetInterface = C_GetInterface;
-  ck_function_list_3_2.C_EncapsulateKey = C_EncapsulateKey;
-  ck_function_list_3_2.C_DecapsulateKey = C_DecapsulateKey;
-  atomic_store(&ck_function_list_3_2_initialized, true);
-  atomic_flag_clear(&ck_function_list_3_2_lock);
-}
-
 CK_RV C_GetInterfaceList(CK_INTERFACE_PTR interfaces, CK_ULONG_PTR count) {
   CNK_ENSURE_NONNULL(count);
-  initializeFunctionList32();
   if (interfaces == NULL) {
     *count = 1;
     return CKR_OK;
@@ -260,7 +236,6 @@ CK_RV C_GetInterface(CK_UTF8CHAR_PTR interfaceName, CK_VERSION_PTR version, CK_I
     return CKR_ARGUMENTS_BAD;
   if (version != NULL && (version->major != 3 || version->minor != 2))
     return CKR_ARGUMENTS_BAD;
-  initializeFunctionList32();
   *ppInterface = &ck_interface_3_2;
   return CKR_OK;
 }
@@ -349,3 +324,10 @@ static CK_FUNCTION_LIST ck_function_list = {{2, 40}, // PKCS #11 version 2.40
                                             C_GetFunctionStatus,
                                             C_CancelFunction,
                                             C_WaitForSlotEvent};
+
+#define CK_PKCS11_FUNCTION_INFO(name) name,
+static CK_FUNCTION_LIST_3_2 ck_function_list_3_2 = {
+    {3, 2},
+#include "pkcs11f.h"
+};
+#undef CK_PKCS11_FUNCTION_INFO

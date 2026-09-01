@@ -221,18 +221,23 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
       CKM_SHA3_256_RSA_PKCS,     // RSA PKCS #1 v1.5 with SHA3-256
       CKM_SHA3_384_RSA_PKCS,     // RSA PKCS #1 v1.5 with SHA3-384
       CKM_SHA3_512_RSA_PKCS,     // RSA PKCS #1 v1.5 with SHA3-512
-      CKM_ECDSA_KEY_PAIR_GEN,    // ECDSA key pair generation
-      CKM_ECDSA,                 // ECDSA
-      CKM_ECDSA_SHA1,            // ECDSA with SHA-1
-      CKM_ECDSA_SHA224,          // ECDSA with SHA-224
-      CKM_ECDSA_SHA256,          // ECDSA with SHA-256
-      CKM_ECDSA_SHA384,          // ECDSA with SHA-384
-      CKM_ECDSA_SHA512,          // ECDSA with SHA-512
-      CKM_ECDSA_SHA3_224,        // ECDSA with SHA3-224
-      CKM_ECDSA_SHA3_256,        // ECDSA with SHA3-256
-      CKM_ECDSA_SHA3_384,        // ECDSA with SHA3-384
-      CKM_ECDSA_SHA3_512,        // ECDSA with SHA3-512
-      CKM_ECDH1_DERIVE,          // ECDH key agreement
+      CKM_SHA3_224_RSA_PKCS,
+      CKM_SHA3_224_RSA_PKCS_PSS,
+      CKM_SHA3_256_RSA_PKCS_PSS,
+      CKM_SHA3_384_RSA_PKCS_PSS,
+      CKM_SHA3_512_RSA_PKCS_PSS,
+      CKM_ECDSA_KEY_PAIR_GEN, // ECDSA key pair generation
+      CKM_ECDSA,              // ECDSA
+      CKM_ECDSA_SHA1,         // ECDSA with SHA-1
+      CKM_ECDSA_SHA224,       // ECDSA with SHA-224
+      CKM_ECDSA_SHA256,       // ECDSA with SHA-256
+      CKM_ECDSA_SHA384,       // ECDSA with SHA-384
+      CKM_ECDSA_SHA512,       // ECDSA with SHA-512
+      CKM_ECDSA_SHA3_224,     // ECDSA with SHA3-224
+      CKM_ECDSA_SHA3_256,     // ECDSA with SHA3-256
+      CKM_ECDSA_SHA3_384,     // ECDSA with SHA3-384
+      CKM_ECDSA_SHA3_512,     // ECDSA with SHA3-512
+      CKM_ECDH1_DERIVE,       // ECDH key agreement
       CKM_SHA_1,
       CKM_SHA224,
       CKM_SHA256,
@@ -267,7 +272,7 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
   }
 
   // Copy the mechanism list to the provided buffer
-  memcpy(pMechanismList, supported_mechanisms, sizeof(supported_mechanisms));
+  memcpy(pMechanismList, supported_mechanisms, num_mechanisms * sizeof(*supported_mechanisms));
   *pulCount = num_mechanisms;
 
   CNK_DEBUG("Returned %lu mechanisms", num_mechanisms);
@@ -318,6 +323,11 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   case CKM_SHA3_256_RSA_PKCS:
   case CKM_SHA3_384_RSA_PKCS:
   case CKM_SHA3_512_RSA_PKCS:
+  case CKM_SHA3_224_RSA_PKCS:
+  case CKM_SHA3_224_RSA_PKCS_PSS:
+  case CKM_SHA3_256_RSA_PKCS_PSS:
+  case CKM_SHA3_384_RSA_PKCS_PSS:
+  case CKM_SHA3_512_RSA_PKCS_PSS:
     pInfo->flags = CKF_HW | CKF_SIGN;
     pInfo->ulMinKeySize = 2048;
     pInfo->ulMaxKeySize = 4096;
@@ -352,26 +362,26 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
 
   case CKM_ML_DSA_KEY_PAIR_GEN:
     pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR;
-    pInfo->ulMinKeySize = CKP_ML_DSA_65;
-    pInfo->ulMaxKeySize = CKP_ML_DSA_65;
+    pInfo->ulMinKeySize = 1952;
+    pInfo->ulMaxKeySize = 1952;
     break;
 
   case CKM_ML_DSA:
     pInfo->flags = CKF_HW | CKF_SIGN;
-    pInfo->ulMinKeySize = CKP_ML_DSA_65;
-    pInfo->ulMaxKeySize = CKP_ML_DSA_65;
+    pInfo->ulMinKeySize = 1952;
+    pInfo->ulMaxKeySize = 1952;
     break;
 
   case CKM_ML_KEM_KEY_PAIR_GEN:
     pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR;
-    pInfo->ulMinKeySize = CKP_ML_KEM_768;
-    pInfo->ulMaxKeySize = CKP_ML_KEM_768;
+    pInfo->ulMinKeySize = 1184;
+    pInfo->ulMaxKeySize = 1184;
     break;
 
   case CKM_ML_KEM:
-    pInfo->flags = CKF_HW | CKF_ENCAPSULATE | CKF_DECAPSULATE;
-    pInfo->ulMinKeySize = CKP_ML_KEM_768;
-    pInfo->ulMaxKeySize = CKP_ML_KEM_768;
+    pInfo->flags = CKF_ENCAPSULATE | CKF_DECAPSULATE;
+    pInfo->ulMinKeySize = 1184;
+    pInfo->ulMaxKeySize = 1184;
     break;
 
   case CKM_SHA_1:

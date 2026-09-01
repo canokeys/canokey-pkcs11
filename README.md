@@ -55,6 +55,19 @@ Its `pInitArgs` parameter is treated as the standard PKCS#11
 `CK_C_INITIALIZE_ARGS` pointer, and `pReserved` must be NULL as required by the
 PKCS#11 specification.
 
+Login state is shared by all sessions for the same token, as required by
+PKCS#11. Closing the last session performs an implicit logout and clears cached
+PIN and management-key material. PIV PIN-always keys use the standard
+`CKU_CONTEXT_SPECIFIC` flow after `C_SignInit` or `C_DecryptInit`; one
+context-specific login authorizes exactly one private-key operation.
+
+The PKCS#11 3.2 function list contains non-NULL pointers for every standard
+entry point. Unsupported Message, Async, authenticated-wrap, host verification,
+and host public-key encryption operations return `CKR_FUNCTION_NOT_SUPPORTED`.
+The module intentionally advertises only operations provided by the CanoKey/PIV
+boundary; applications should use their normal host crypto library for verify
+and public-key encryption.
+
 ## Logging
 
 In standalone mode, logging is configured during `C_Initialize()` from

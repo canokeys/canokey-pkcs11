@@ -188,6 +188,8 @@ CK_RV C_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   CK_BYTE objId;
   CK_BYTE pivTag;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (session->decryptingContext.hKey != 0)
+    CNK_RETURN(CKR_OPERATION_ACTIVE, "decrypt operation is already active");
   CNK_ENSURE_OK(CNK_ValidateObject(hKey, session, CKO_PRIVATE_KEY, &objId));
   CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &pivTag));
 
@@ -230,14 +232,15 @@ CK_RV C_Decrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pEncryptedData, CK_ULONG
 
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pulDataLen);
 
-  if (pEncryptedData == NULL_PTR && ulEncryptedDataLen > 0)
-    CNK_RETURN(CKR_ARGUMENTS_BAD, "pEncryptedData is NULL but ulEncryptedDataLen > 0");
-
   CNK_PKCS11_SESSION *session;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   if (session->decryptingContext.hKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_DecryptInit not called");
+  if (pEncryptedData == NULL_PTR && ulEncryptedDataLen > 0) {
+    resetDecryptingContext(session);
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "pEncryptedData is NULL but ulEncryptedDataLen > 0");
+  }
 
   CK_RV rv = CKR_OK;
   CK_BYTE rawData[512];
@@ -247,6 +250,9 @@ CK_RV C_Decrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pEncryptedData, CK_ULONG
     CNK_ENSURE_OK(getDecryptOutputUpperBound(&session->decryptingContext, pulDataLen));
     CNK_RET_OK;
   }
+  if (session->decryptingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS &&
+      !session->decryptingContext.contextAuthenticated)
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always key requires context-specific login");
 
   if (ulEncryptedDataLen != session->decryptingContext.cbModulus) {
     resetDecryptingContext(session);

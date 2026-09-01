@@ -1100,7 +1100,7 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
 
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
-  if (session->cbManagementKey != sizeof(session->managementKey))
+  if (!cnk_token_management_key_is_cached(session))
     CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "CKU_SO login is required");
 
   CK_OBJECT_CLASS objectClass;
@@ -1581,6 +1581,8 @@ CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
   CNK_LOG_FUNC(": hSession: %lu, ulCount: %lu", hSession, ulCount);
   CNK_ENSURE_INITIALIZED();
+  if (pTemplate == NULL && ulCount > 0)
+    return CKR_ARGUMENTS_BAD;
 
   // Validate the session
   CNK_PKCS11_SESSION *session;

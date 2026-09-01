@@ -11,11 +11,17 @@
 #include <string.h>
 
 static const CK_MECHANISM_TYPE rsaMechs[] = {
-    CKM_RSA_PKCS,          CKM_RSA_X_509,           CKM_RSA_PKCS_OAEP,     CKM_RSA_PKCS_PSS,
-    CKM_SHA1_RSA_PKCS,     CKM_SHA1_RSA_PKCS_PSS,   CKM_SHA224_RSA_PKCS,   CKM_SHA224_RSA_PKCS_PSS,
-    CKM_SHA256_RSA_PKCS,   CKM_SHA256_RSA_PKCS_PSS, CKM_SHA384_RSA_PKCS,   CKM_SHA384_RSA_PKCS_PSS,
-    CKM_SHA512_RSA_PKCS,   CKM_SHA512_RSA_PKCS_PSS, CKM_SHA3_224_RSA_PKCS, CKM_SHA3_224_RSA_PKCS_PSS,
-    CKM_SHA3_256_RSA_PKCS, CKM_SHA3_384_RSA_PKCS,   CKM_SHA3_512_RSA_PKCS,
+    CKM_RSA_PKCS,          CKM_RSA_X_509,
+    CKM_RSA_PKCS_OAEP,     CKM_RSA_PKCS_PSS,
+    CKM_SHA1_RSA_PKCS,     CKM_SHA1_RSA_PKCS_PSS,
+    CKM_SHA224_RSA_PKCS,   CKM_SHA224_RSA_PKCS_PSS,
+    CKM_SHA256_RSA_PKCS,   CKM_SHA256_RSA_PKCS_PSS,
+    CKM_SHA384_RSA_PKCS,   CKM_SHA384_RSA_PKCS_PSS,
+    CKM_SHA512_RSA_PKCS,   CKM_SHA512_RSA_PKCS_PSS,
+    CKM_SHA3_224_RSA_PKCS, CKM_SHA3_224_RSA_PKCS_PSS,
+    CKM_SHA3_256_RSA_PKCS, CKM_SHA3_256_RSA_PKCS_PSS,
+    CKM_SHA3_384_RSA_PKCS, CKM_SHA3_384_RSA_PKCS_PSS,
+    CKM_SHA3_512_RSA_PKCS, CKM_SHA3_512_RSA_PKCS_PSS,
 };
 
 static const CK_MECHANISM_TYPE rsaPkcsV15Mechs[] = {
@@ -194,6 +200,9 @@ static void resetSigningContext(CNK_PKCS11_SESSION *session) {
   session->signingContext.message = NULL;
   session->signingContext.messageLen = 0;
   session->signingContext.messageCapacity = 0;
+  mbedtls_platform_zeroize(session->signingContext.contextPin, sizeof(session->signingContext.contextPin));
+  session->signingContext.contextPinLen = 0;
+  session->signingContext.contextAuthenticated = CK_FALSE;
 }
 
 static CK_RV appendSigningMessage(CNK_PKCS11_SESSION *session, const CK_BYTE *part, CK_ULONG partLen) {
@@ -236,6 +245,8 @@ static CK_RV appendSigningMessage(CNK_PKCS11_SESSION *session, const CK_BYTE *pa
  */
 static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData, CK_ULONG cbInputData,
                             CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen) {
+  if (pSession->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS && !pSession->signingContext.contextAuthenticated)
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always key requires context-specific login");
   CK_RV rv = CKR_OK;
   CK_BYTE pivSlot = pSession->signingContext.pivSlot;
   CNK_DEBUG("Signing with active key, PIV slot 0x%x", pivSlot);
@@ -299,6 +310,11 @@ static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData
 
   // Sign the data
   rv = cnk_piv_sign(pSession->slotId, pSession, pbSignRawData, cbSignRawData, pSignature, pulSignatureLen);
+  if (rv != CKR_BUFFER_TOO_SMALL) {
+    pSession->signingContext.contextAuthenticated = CK_FALSE;
+    mbedtls_platform_zeroize(pSession->signingContext.contextPin, sizeof(pSession->signingContext.contextPin));
+    pSession->signingContext.contextPinLen = 0;
+  }
   if (rv != CKR_OK) {
     CNK_ERROR("Failed to sign data: ret = %lu", rv);
   }
@@ -318,6 +334,8 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   CK_BYTE objId;
   CK_BYTE pivTag;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (session->signingContext.hKey != 0)
+    CNK_RETURN(CKR_OPERATION_ACTIVE, "sign operation is already active");
   CNK_ENSURE_OK(CNK_ValidateObject(hKey, session, CKO_PRIVATE_KEY, &objId));
   CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &pivTag));
 
@@ -388,11 +406,19 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   if (session->signingContext.hKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called - no active key");
+  if (pData == NULL && ulDataLen > 0) {
+    resetSigningContext(session);
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "pData is NULL but ulDataLen > 0");
+  }
 
   // For signature-only call to get the signature length
   if (pSignature == NULL_PTR) {
     *pulSignatureLen = session->signingContext.cbSignature;
     CNK_RET_OK;
+  }
+  if (*pulSignatureLen < session->signingContext.cbSignature) {
+    *pulSignatureLen = session->signingContext.cbSignature;
+    return CKR_BUFFER_TOO_SMALL;
   }
 
   CK_RV rv = CKR_OK;
@@ -412,8 +438,8 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   rv = prepareAndSign(session, pData, ulDataLen, pSignature, pulSignatureLen);
 
 cleanup:
-  // Reset the context
-  resetSigningContext(session);
+  if (rv != CKR_USER_NOT_LOGGED_IN && rv != CKR_BUFFER_TOO_SMALL)
+    resetSigningContext(session);
 
   return rv;
 }
@@ -421,13 +447,17 @@ cleanup:
 CK_RV C_SignUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart, CK_ULONG ulPartLen) {
   CNK_LOG_FUNC(": hSession: %lu, pPart: %p, ulPartLen: %lu", hSession, pPart, ulPartLen);
 
-  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pPart);
+  CNK_ENSURE_INITIALIZED();
+  if (pPart == NULL && ulPartLen > 0)
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "pPart is NULL but ulPartLen > 0");
 
   // Validate the session, check if we have an active key, and check if we have a mechanism
   CNK_PKCS11_SESSION *session;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   if (session->signingContext.hKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called");
+  if (session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS && !session->signingContext.contextAuthenticated)
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always key requires context-specific login");
   if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism) &&
       session->signingContext.mechanism.mechanism != CKM_ML_DSA)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "single-part mechanism");
@@ -455,10 +485,6 @@ CK_RV C_SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG_P
 
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pulSignatureLen);
 
-  // Parameter validation
-  if (!pSignature && *pulSignatureLen > 0)
-    CNK_RETURN(CKR_ARGUMENTS_BAD, "pSignature is NULL but pulSignatureLen > 0");
-
   // Validate the session, check if we have an active key, and check if we have a mechanism
   CNK_PKCS11_SESSION *session;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
@@ -472,9 +498,16 @@ CK_RV C_SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG_P
       *pulSignatureLen = session->signingContext.cbSignature;
       return CKR_OK;
     }
+    if (*pulSignatureLen < session->signingContext.cbSignature) {
+      *pulSignatureLen = session->signingContext.cbSignature;
+      return CKR_BUFFER_TOO_SMALL;
+    }
+    if (session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS && !session->signingContext.contextAuthenticated)
+      CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always key requires context-specific login");
     CK_RV signRv = prepareAndSign(session, session->signingContext.message, session->signingContext.messageLen,
                                   pSignature, pulSignatureLen);
-    resetSigningContext(session);
+    if (signRv != CKR_USER_NOT_LOGGED_IN && signRv != CKR_BUFFER_TOO_SMALL)
+      resetSigningContext(session);
     return signRv;
   }
   if (session->digestingContext.mechanismType == 0)
@@ -485,6 +518,12 @@ CK_RV C_SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG_P
     *pulSignatureLen = session->signingContext.cbSignature;
     CNK_RET_OK;
   }
+  if (*pulSignatureLen < session->signingContext.cbSignature) {
+    *pulSignatureLen = session->signingContext.cbSignature;
+    return CKR_BUFFER_TOO_SMALL;
+  }
+  if (session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS && !session->signingContext.contextAuthenticated)
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always key requires context-specific login");
 
   CK_RV rv = CKR_OK;
 
@@ -509,13 +548,13 @@ CK_RV C_SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG_P
   }
 
 cleanup:
-  // Reset signing context
-  resetSigningContext(session);
-
-  // Reset digesting context
   ck_free(pMD);
-  mbedtls_md_free(&session->digestingContext.context);
-  session->digestingContext.type = MBEDTLS_MD_NONE;
+  if (rv != CKR_USER_NOT_LOGGED_IN && rv != CKR_BUFFER_TOO_SMALL) {
+    resetSigningContext(session);
+    mbedtls_md_free(&session->digestingContext.context);
+    session->digestingContext.type = MBEDTLS_MD_NONE;
+    session->digestingContext.mechanismType = 0;
+  }
 
   CNK_RETURN(rv, "C_SignFinal finished");
 }

@@ -179,7 +179,7 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
-  if (session->cbManagementKey != sizeof(session->managementKey))
+  if (!cnk_token_management_key_is_cached(session))
     CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "CKU_SO login is required");
 
   CK_OBJECT_CLASS publicClass;

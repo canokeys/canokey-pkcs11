@@ -27,6 +27,8 @@ CK_RV C_DigestInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism) {
 
   CNK_PKCS11_SESSION *session;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (session->digestingContext.mechanismType != 0)
+    CNK_RETURN(CKR_OPERATION_ACTIVE, "digest operation is already active");
 
   mbedtls_md_type_t md_type;
   CNK_ENSURE_OK(cnk_hash_mech_to_md(pMechanism->mechanism, &md_type));
@@ -36,10 +38,14 @@ CK_RV C_DigestInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism) {
     CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "invalid md_info");
 
   mbedtls_md_init(&session->digestingContext.context);
-  if (mbedtls_md_setup(&session->digestingContext.context, md_info, 0) != 0)
+  if (mbedtls_md_setup(&session->digestingContext.context, md_info, 0) != 0) {
+    mbedtls_md_free(&session->digestingContext.context);
     CNK_RETURN(CKR_HOST_MEMORY, "md setup failed");
-  if (mbedtls_md_starts(&session->digestingContext.context) != 0)
+  }
+  if (mbedtls_md_starts(&session->digestingContext.context) != 0) {
+    mbedtls_md_free(&session->digestingContext.context);
     CNK_RETURN(CKR_FUNCTION_FAILED, "md start failed");
+  }
   session->digestingContext.mechanismType = pMechanism->mechanism;
 
   CNK_RET_OK;
@@ -53,6 +59,13 @@ CK_RV C_Digest(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen
 
   CNK_PKCS11_SESSION *session;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (session->digestingContext.mechanismType == 0)
+    CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_DigestInit not called");
+  if (pData == NULL && ulDataLen > 0) {
+    mbedtls_md_free(&session->digestingContext.context);
+    memset(&session->digestingContext, 0, sizeof(session->digestingContext));
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "pData is NULL but ulDataLen > 0");
+  }
 
   if (pDigest == NULL) {
     size_t length = get_md_size(session->digestingContext.mechanismType);
@@ -114,8 +127,11 @@ CK_RV C_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest, CK_ULONG_PT
     *pulDigestLen = hash_len;
     CNK_RETURN(CKR_BUFFER_TOO_SMALL, "buffer too small");
   }
-  if (mbedtls_md_finish(&session->digestingContext.context, pDigest) != 0)
+  if (mbedtls_md_finish(&session->digestingContext.context, pDigest) != 0) {
+    mbedtls_md_free(&session->digestingContext.context);
+    memset(&session->digestingContext, 0, sizeof(session->digestingContext));
     CNK_RETURN(CKR_FUNCTION_FAILED, "md finish failed");
+  }
   *pulDigestLen = hash_len;
   mbedtls_md_free(&session->digestingContext.context);
   session->digestingContext.mechanismType = 0;

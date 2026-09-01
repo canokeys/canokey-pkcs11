@@ -40,15 +40,38 @@ static void makeKeyTemplates(CK_BYTE *id, CK_KEY_TYPE *keyType, CK_ULONG *parame
 
 static int exercisePqcPrivateOperations(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE session,
                                         CK_OBJECT_HANDLE mldsaPrivate, CK_OBJECT_HANDLE mlkemPublic,
-                                        CK_OBJECT_HANDLE mlkemPrivate) {
+                                        CK_OBJECT_HANDLE mlkemPrivate, const char *pin, CK_BBOOL contextSpecific) {
   CK_MECHANISM mechanism = {CKM_ML_DSA, NULL, 0};
   CK_BYTE message[] = "CanoKey PKCS11 3.2 ML-DSA streaming test";
   CK_BYTE signature[3309];
   CK_ULONG signatureLen = sizeof(signature);
   CHECK(functions->C_SignInit(session, &mechanism, mldsaPrivate));
-  CHECK(functions->C_SignUpdate(session, message, 13));
-  CHECK(functions->C_SignUpdate(session, message + 13, sizeof(message) - 1 - 13));
-  CHECK(functions->C_SignFinal(session, signature, &signatureLen));
+  if (contextSpecific) {
+    CHECK(functions->C_SessionCancel(session, CKF_SIGN));
+    if (functions->C_Login(session, CKU_CONTEXT_SPECIFIC, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin)) !=
+        CKR_OPERATION_NOT_INITIALIZED)
+      return 1;
+    CHECK(functions->C_SignInit(session, &mechanism, mldsaPrivate));
+    signatureLen = 123;
+    CHECK(functions->C_Sign(session, message, sizeof(message) - 1, NULL, &signatureLen));
+    if (signatureLen != sizeof(signature))
+      return 1;
+    if (functions->C_Sign(session, message, sizeof(message) - 1, signature, &signatureLen) != CKR_USER_NOT_LOGGED_IN)
+      return 1;
+    CHECK(functions->C_Login(session, CKU_CONTEXT_SPECIFIC, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin)));
+    signatureLen = 1;
+    if (functions->C_Sign(session, message, sizeof(message) - 1, signature, &signatureLen) != CKR_BUFFER_TOO_SMALL ||
+        signatureLen != sizeof(signature))
+      return 1;
+    CHECK(functions->C_Sign(session, message, sizeof(message) - 1, signature, &signatureLen));
+    if (functions->C_Login(session, CKU_CONTEXT_SPECIFIC, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin)) !=
+        CKR_OPERATION_NOT_INITIALIZED)
+      return 1;
+  } else {
+    CHECK(functions->C_SignUpdate(session, message, 13));
+    CHECK(functions->C_SignUpdate(session, message + 13, sizeof(message) - 1 - 13));
+    CHECK(functions->C_SignFinal(session, signature, &signatureLen));
+  }
   if (signatureLen != sizeof(signature))
     return 1;
 
@@ -73,6 +96,105 @@ static int exercisePqcPrivateOperations(CK_FUNCTION_LIST_3_2_PTR functions, CK_S
   CHECK(functions->C_GetAttributeValue(session, decapsulatedSecret, &secretBValue, 1));
   if (secretAValue.ulValueLen != 32 || secretBValue.ulValueLen != 32 || memcmp(secretA, secretB, 32) != 0)
     return 1;
+  return 0;
+}
+
+static int testFunctionListAndSessions(CK_FUNCTION_LIST_3_2_PTR functions, CK_SLOT_ID slot, const char *pin) {
+#define CK_PKCS11_FUNCTION_INFO(name)                                                                                  \
+  if (functions->name == NULL) {                                                                                       \
+    fprintf(stderr, "3.2 function pointer is NULL: %s\n", #name);                                                      \
+    return 1;                                                                                                          \
+  }
+#include "pkcs11f.h"
+#undef CK_PKCS11_FUNCTION_INFO
+
+  CK_ULONG mechanismCount = 0;
+  CHECK(functions->C_GetMechanismList(slot, NULL, &mechanismCount));
+  CK_MECHANISM_TYPE *mechanisms = calloc(mechanismCount + 2, sizeof(*mechanisms));
+  if (mechanisms == NULL)
+    return 1;
+  mechanisms[mechanismCount] = CK_UNAVAILABLE_INFORMATION;
+  mechanisms[mechanismCount + 1] = CK_UNAVAILABLE_INFORMATION;
+  CK_ULONG exactCount = mechanismCount;
+  CHECK(functions->C_GetMechanismList(slot, mechanisms, &exactCount));
+  if (exactCount != mechanismCount || mechanisms[mechanismCount] != CK_UNAVAILABLE_INFORMATION ||
+      mechanisms[mechanismCount + 1] != CK_UNAVAILABLE_INFORMATION) {
+    free(mechanisms);
+    return 1;
+  }
+  for (CK_ULONG i = 0; i < mechanismCount; i++) {
+    CK_MECHANISM_INFO mechanismInfo;
+    CHECK(functions->C_GetMechanismInfo(slot, mechanisms[i], &mechanismInfo));
+  }
+  free(mechanisms);
+
+  CK_SESSION_HANDLE sessions[16];
+  for (CK_ULONG i = 0; i < 16; i++)
+    CHECK(functions->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &sessions[i]));
+
+  CK_MECHANISM digestMechanism = {CKM_SHA256, NULL, 0};
+  CHECK(functions->C_DigestInit(sessions[0], &digestMechanism));
+  if (functions->C_DigestInit(sessions[0], &digestMechanism) != CKR_OPERATION_ACTIVE)
+    return 1;
+  CHECK(functions->C_SessionCancel(sessions[0], CKF_DIGEST));
+  CK_ULONG digestLen = 32;
+  CK_BYTE digest[32];
+  if (functions->C_DigestFinal(sessions[0], digest, &digestLen) != CKR_OPERATION_NOT_INITIALIZED)
+    return 1;
+  CHECK(functions->C_DigestInit(sessions[0], &digestMechanism));
+  digestLen = 99;
+  CHECK(functions->C_DigestFinal(sessions[0], NULL, &digestLen));
+  if (digestLen != 32)
+    return 1;
+  digestLen = 1;
+  if (functions->C_DigestFinal(sessions[0], digest, &digestLen) != CKR_BUFFER_TOO_SMALL || digestLen != 32)
+    return 1;
+  CHECK(functions->C_DigestFinal(sessions[0], digest, &digestLen));
+
+  CHECK(functions->C_FindObjectsInit(sessions[0], NULL, 0));
+  if (functions->C_FindObjectsInit(sessions[0], NULL, 0) != CKR_OPERATION_ACTIVE)
+    return 1;
+  CHECK(functions->C_SessionCancel(sessions[0], CKF_FIND_OBJECTS));
+  if (functions->C_FindObjectsFinal(sessions[0]) != CKR_OPERATION_NOT_INITIALIZED)
+    return 1;
+  if (functions->C_MessageSignInit(sessions[0], NULL, 0) != CKR_FUNCTION_NOT_SUPPORTED)
+    return 1;
+  CK_UTF8CHAR username[] = "unsupported";
+  if (functions->C_LoginUser(sessions[0], CKU_USER, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin), username,
+                             sizeof(username) - 1) != CKR_ARGUMENTS_BAD)
+    return 1;
+
+  CHECK(functions->C_LoginUser(sessions[0], CKU_USER, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin), NULL, 0));
+  CK_SESSION_INFO info;
+  CHECK(functions->C_GetSessionInfo(sessions[1], &info));
+  if (info.state != CKS_RW_USER_FUNCTIONS)
+    return 1;
+
+  CK_SESSION_HANDLE readOnlySession;
+  CHECK(functions->C_OpenSession(slot, CKF_SERIAL_SESSION, NULL, NULL, &readOnlySession));
+  CHECK(functions->C_GetSessionInfo(readOnlySession, &info));
+  if (info.state != CKS_RO_USER_FUNCTIONS)
+    return 1;
+  CHECK(functions->C_Logout(sessions[1]));
+  CHECK(functions->C_GetSessionInfo(sessions[0], &info));
+  if (info.state != CKS_RW_PUBLIC_SESSION)
+    return 1;
+
+  CK_BYTE managementKey[] = {1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8};
+  if (functions->C_Login(sessions[0], CKU_SO, managementKey, sizeof(managementKey)) != CKR_SESSION_READ_ONLY_EXISTS)
+    return 1;
+  CHECK(functions->C_CloseSession(readOnlySession));
+  if (functions->C_Login(readOnlySession, CKU_SO, managementKey, sizeof(managementKey)) != CKR_SESSION_HANDLE_INVALID)
+    return 1;
+
+  CK_SESSION_HANDLE anotherReadOnly;
+  CHECK(functions->C_OpenSession(slot, CKF_SERIAL_SESSION, NULL, NULL, &anotherReadOnly));
+  if (functions->C_Login(anotherReadOnly, CKU_SO, managementKey, sizeof(managementKey)) != CKR_SESSION_READ_ONLY)
+    return 1;
+  CHECK(functions->C_CloseSession(anotherReadOnly));
+
+  for (CK_ULONG i = 0; i < 16; i++)
+    CHECK(functions->C_CloseSession(sessions[i]));
   return 0;
 }
 
@@ -105,19 +227,23 @@ int main(int argc, char **argv) {
   CK_ULONG slotCount = 1;
   CK_SLOT_ID slot;
   CHECK(functions->C_GetSlotList(CK_TRUE, &slot, &slotCount));
+  if (testFunctionListAndSessions(functions, slot, pin) != 0)
+    return 1;
   CK_SESSION_HANDLE session;
   CHECK(functions->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session));
   CK_BYTE managementKey[] = {1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8};
   CHECK(functions->C_Login(session, CKU_SO, managementKey, sizeof(managementKey)));
 
   CK_OBJECT_HANDLE mldsaPublic, mldsaPrivate, mlkemPublic, mlkemPrivate;
-  CK_ATTRIBUTE publicTemplate[5], privateTemplate[7];
+  CK_ATTRIBUTE publicTemplate[5], privateTemplate[8];
   CK_BYTE id = 23;
   CK_KEY_TYPE keyType = CKK_ML_DSA;
   CK_ULONG parameterSet = CKP_ML_DSA_65;
   makeKeyTemplates(&id, &keyType, &parameterSet, publicTemplate, privateTemplate);
+  CK_BBOOL trueValue = CK_TRUE;
+  privateTemplate[7] = (CK_ATTRIBUTE){CKA_ALWAYS_AUTHENTICATE, &trueValue, sizeof(trueValue)};
   CK_MECHANISM mechanism = {CKM_ML_DSA_KEY_PAIR_GEN, NULL, 0};
-  CHECK(functions->C_GenerateKeyPair(session, &mechanism, publicTemplate, 5, privateTemplate, 7, &mldsaPublic,
+  CHECK(functions->C_GenerateKeyPair(session, &mechanism, publicTemplate, 5, privateTemplate, 8, &mldsaPublic,
                                      &mldsaPrivate));
 
   id = 24;
@@ -130,7 +256,7 @@ int main(int argc, char **argv) {
   CHECK(functions->C_Logout(session));
   CHECK(functions->C_Login(session, CKU_USER, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin)));
 
-  if (exercisePqcPrivateOperations(functions, session, mldsaPrivate, mlkemPublic, mlkemPrivate) != 0)
+  if (exercisePqcPrivateOperations(functions, session, mldsaPrivate, mlkemPublic, mlkemPrivate, pin, CK_TRUE) != 0)
     return 1;
 
   CHECK(functions->C_CloseSession(session));
@@ -138,7 +264,6 @@ int main(int argc, char **argv) {
   CHECK(functions->C_Login(session, CKU_SO, managementKey, sizeof(managementKey)));
 
   CK_OBJECT_CLASS privateClass = CKO_PRIVATE_KEY;
-  CK_BBOOL trueValue = CK_TRUE;
   CK_BYTE mldsaSeed[32], mlkemSeed[64];
   for (CK_ULONG i = 0; i < sizeof(mldsaSeed); i++)
     mldsaSeed[i] = (CK_BYTE)(0x20 + i);
@@ -183,7 +308,7 @@ int main(int argc, char **argv) {
 
   CHECK(functions->C_Logout(session));
   CHECK(functions->C_Login(session, CKU_USER, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin)));
-  if (exercisePqcPrivateOperations(functions, session, mldsaPrivate, mlkemPublic, mlkemPrivate) != 0)
+  if (exercisePqcPrivateOperations(functions, session, mldsaPrivate, mlkemPublic, mlkemPrivate, pin, CK_FALSE) != 0)
     return 1;
 
   printf("PKCS#11 3.2 ML-DSA-65 and ML-KEM-768 generation/import hardware test passed\n");

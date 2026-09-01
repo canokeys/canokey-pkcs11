@@ -15,6 +15,25 @@ typedef enum {
   SESSION_STATE_RW_SO
 } SessionState;
 
+typedef enum {
+  TOKEN_LOGIN_PUBLIC = 0,
+  TOKEN_LOGIN_USER,
+  TOKEN_LOGIN_SO,
+} CNK_TOKEN_LOGIN_STATE;
+
+typedef struct CNK_PKCS11_TOKEN_STATE {
+  CK_SLOT_ID slotId;
+  CNK_TOKEN_LOGIN_STATE loginState;
+  CK_BYTE pin[8];
+  CK_ULONG cbPin;
+  CK_BYTE managementKey[24];
+  CK_ULONG cbManagementKey;
+  CK_ULONG openSessions;
+  CK_ULONG readOnlySessions;
+  CNK_PKCS11_MUTEX lock;
+  struct CNK_PKCS11_TOKEN_STATE *next;
+} CNK_PKCS11_TOKEN_STATE;
+
 // Maximum number of session-only secret keys, currently produced by C_DeriveKey.
 #define MAX_SESSION_SECRET_KEYS 8
 
@@ -58,6 +77,9 @@ typedef struct {
   CK_BYTE_PTR message;
   CK_ULONG messageLen;
   CK_ULONG messageCapacity;
+  CK_BBOOL contextAuthenticated;
+  CK_BYTE contextPin[8];
+  CK_ULONG contextPinLen;
 } CNK_PKCS11_SIGNING_CONTEXT;
 
 typedef struct {
@@ -67,6 +89,9 @@ typedef struct {
   CK_BYTE algorithmType;
   CK_BYTE pinPolicy;
   CK_ULONG cbModulus;
+  CK_BBOOL contextAuthenticated;
+  CK_BYTE contextPin[8];
+  CK_ULONG contextPinLen;
 } CNK_PKCS11_DECRYPTING_CONTEXT;
 
 typedef struct {
@@ -77,17 +102,13 @@ typedef struct {
 
 // Session structure
 typedef struct CNK_PKCS11_SESSION {
-  CK_SESSION_HANDLE handle;  // Session handle
-  CK_SLOT_ID slotId;         // Slot ID associated with this session
-  CK_FLAGS flags;            // Session flags
-  CK_VOID_PTR application;   // Application pointer
-  CK_NOTIFY notify;          // Notification callback
-  SessionState state;        // Current session state
-  CK_BBOOL isOpen;           // Flag indicating if the session is open
-  CK_BYTE pin[8];            // Cached PIV PIN (padded with 0xFF)
-  CK_ULONG cbPin;            // Length of the cached PIV PIN
-  CK_BYTE managementKey[24]; // Cached PIV management key after CKU_SO login
-  CK_ULONG cbManagementKey;  // Length of the cached PIV management key
+  CK_SESSION_HANDLE handle; // Session handle
+  CK_SLOT_ID slotId;        // Slot ID associated with this session
+  CK_FLAGS flags;           // Session flags
+  CK_VOID_PTR application;  // Application pointer
+  CK_NOTIFY notify;         // Notification callback
+  CK_BBOOL isOpen;          // Flag indicating if the session is open
+  CNK_PKCS11_TOKEN_STATE *token;
   CK_BYTE mldsa65Algorithm;  // Runtime PIV algorithm-extension ID
   CK_BYTE mlkem768Algorithm; // Runtime PIV algorithm-extension ID
   CNK_PKCS11_MUTEX lock;     // Session lock using abstract mutex
@@ -108,6 +129,7 @@ typedef struct CNK_PKCS11_SESSION {
   CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
   CNK_PKCS11_SECRET_KEY_OBJECT secretKeys[MAX_SESSION_SECRET_KEYS];
   CK_BYTE nextSecretKeyId;
+  struct CNK_PKCS11_SESSION *retiredNext;
 } CNK_PKCS11_SESSION;
 
 // Initialize the session manager
@@ -118,5 +140,15 @@ void cnk_session_manager_cleanup(void);
 
 // Find a session by handle
 CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session);
+
+CK_RV cnk_session_cancel_operations(CNK_PKCS11_SESSION *session, CK_FLAGS flags);
+
+CK_BBOOL cnk_token_pin_is_cached(CNK_PKCS11_SESSION *session);
+CK_RV cnk_token_copy_pin(CNK_PKCS11_SESSION *session, CK_BYTE pin[8], CK_ULONG_PTR pinLen);
+CK_RV cnk_token_cache_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pin, CK_ULONG pinLen);
+CK_RV cnk_token_update_cached_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR oldPin, CK_ULONG oldPinLen,
+                                  CK_UTF8CHAR_PTR newPin, CK_ULONG newPinLen);
+CK_BBOOL cnk_token_management_key_is_cached(CNK_PKCS11_SESSION *session);
+CK_RV cnk_token_copy_management_key(CNK_PKCS11_SESSION *session, CK_BYTE key[24]);
 
 #endif /* CNK_API_SESSION_H */

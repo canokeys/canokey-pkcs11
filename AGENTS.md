@@ -185,6 +185,16 @@ Write-path notes:
 - Windows minidriver `CardQueryFreeSpace` should report unknown free space for
   now. There is no PIV APDU for real object-store capacity, and adding one would
   require extending the CanoKey PIV applet.
+- PKCS#11 login state is token-scoped, not session-scoped. PIN and management
+  key caches live in `CNK_PKCS11_TOKEN_STATE`; all sessions derive their state
+  from that object. Last-session close and finalize must zero those caches.
+- PIV PIN-always maps to `CKA_ALWAYS_AUTHENTICATE` and requires
+  `C_Login(CKU_CONTEXT_SPECIFIC)` after operation init. The context PIN is
+  operation-local, must not enter the token USER cache, and is consumed and
+  zeroized after one operation or cancellation.
+- Every PKCS#11 3.2 function-list entry must be non-NULL. Unsupported 3.x APIs
+  use type-correct stubs returning `CKR_FUNCTION_NOT_SUPPORTED`; do not add
+  host-side Verify or public-key Encrypt merely to increase API coverage.
 - `C_CNK_SetPIN()` maps to the standard PIV Change Reference Data APDU. Pass
   `CNK_PIV_PIN_TYPE_PIN` (`0x80`) to change the PIN or
   `CNK_PIV_PIN_TYPE_PUK` (`0x81`) to change the PUK; the optional tries output
