@@ -261,6 +261,25 @@ static void test_logout_revokes_context_specific_authorization(void **state) {
   assert_int_equal(C_CloseSession(session), CKR_OK);
 }
 
+static void test_context_login_rejects_two_pin_always_operations(void **state) {
+  (void)state;
+  CK_SESSION_HANDLE session;
+  assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session), CKR_OK);
+  CNK_PKCS11_SESSION *internal = NULL;
+  assert_int_equal(cnk_session_find(session, &internal), CKR_OK);
+  cnk_mutex_lock(&internal->lock);
+  internal->signingContext.hKey = 1;
+  internal->signingContext.pinPolicy = CNK_PIV_PIN_POLICY_ALWAYS;
+  internal->decryptingContext.hKey = 2;
+  internal->decryptingContext.pinPolicy = CNK_PIV_PIN_POLICY_ALWAYS;
+  cnk_mutex_unlock(&internal->lock);
+
+  CK_BYTE pin = '1';
+  assert_int_equal(C_Login(session, CKU_CONTEXT_SPECIFIC, &pin, sizeof(pin)), CKR_OPERATION_ACTIVE);
+  cnk_session_release_ref(&internal);
+  assert_int_equal(C_CloseSession(session), CKR_OK);
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test_setup_teardown(test_close_does_not_deadlock_template_find, setup, teardown),
@@ -268,6 +287,7 @@ int main(void) {
       cmocka_unit_test_setup_teardown(test_close_waits_for_digest_update, setup, teardown),
       cmocka_unit_test_setup_teardown(test_logout_cannot_race_protected_management_login, setup, teardown),
       cmocka_unit_test_setup_teardown(test_logout_revokes_context_specific_authorization, setup, teardown),
+      cmocka_unit_test_setup_teardown(test_context_login_rejects_two_pin_always_operations, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

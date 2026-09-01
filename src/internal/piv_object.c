@@ -104,6 +104,26 @@ static CK_RV rsaComponentSizeToAlgorithm(CK_ULONG componentLen, CK_BYTE *algorit
   }
 }
 
+static CK_ULONG rsaWidthFromModulusLength(CK_ULONG modulusLen) {
+  if (modulusLen == 255 || modulusLen == 256)
+    return 128;
+  if (modulusLen == 383 || modulusLen == 384)
+    return 192;
+  if (modulusLen == 511 || modulusLen == 512)
+    return 256;
+  return 0;
+}
+
+static CK_ULONG rsaWidthFromPrimeLength(CK_ULONG primeLen) {
+  if (primeLen == 127 || primeLen == 128)
+    return 128;
+  if (primeLen == 191 || primeLen == 192)
+    return 192;
+  if (primeLen == 255 || primeLen == 256)
+    return 256;
+  return 0;
+}
+
 static CK_RV appendPolicies(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount, CK_BYTE objectId, CK_BYTE *output,
                             CK_ULONG outputLen, CK_ULONG_PTR offset) {
   CK_BYTE pinPolicy;
@@ -156,10 +176,19 @@ CK_RV cnk_build_piv_rsa_import(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCo
       maxPrimeLen = components[i]->ulValueLen;
   }
 
-  // RSA CRT integers may omit leading zero bytes. Infer the fixed PIV field
-  // width from the largest prime and left-pad every component on the wire.
-  CK_ULONG componentWidth = maxPrimeLen <= 128 ? 128 : (maxPrimeLen <= 192 ? 192 : 256);
-  if (maxPrimeLen == 0 || maxPrimeLen > 256)
+  CK_ATTRIBUTE_PTR modulus = NULL;
+  CNK_ENSURE_OK(cnk_template_find_attribute(attributes, attributeCount, CKA_MODULUS, &modulus));
+  CK_ULONG componentWidth = 0;
+  if (modulus != NULL && (modulus->pValue == NULL || modulus->ulValueLen == 0))
+    return CKR_ATTRIBUTE_VALUE_INVALID;
+  if (modulus != NULL) {
+    componentWidth = rsaWidthFromModulusLength(modulus->ulValueLen);
+    if (componentWidth == 0)
+      return CKR_KEY_SIZE_RANGE;
+  } else {
+    componentWidth = rsaWidthFromPrimeLength(maxPrimeLen);
+  }
+  if (componentWidth == 0 || maxPrimeLen > componentWidth)
     return CKR_KEY_SIZE_RANGE;
   if (components[0]->ulValueLen < componentWidth / 2 || components[1]->ulValueLen < componentWidth / 2)
     return CKR_KEY_SIZE_RANGE;

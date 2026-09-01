@@ -38,11 +38,12 @@ CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PT
     pSlotList[i] = g_cnk_readers[i].slot_id;
   }
 
-  *pulCount = g_cnk_num_readers;
+  CK_ULONG readerCount = (CK_ULONG)g_cnk_num_readers;
+  *pulCount = readerCount;
 
   cnk_mutex_unlock(&g_cnk_readers_mutex);
 
-  CNK_DEBUG("C_GetSlotList: %lu slots", g_cnk_num_readers);
+  CNK_DEBUG("C_GetSlotList: %lu slots", readerCount);
 
   CNK_RET_OK;
 }
@@ -101,15 +102,11 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   CK_ULONG readOnlySessions = 0;
   cnk_token_get_session_counts(slotID, &openSessions, &readOnlySessions);
 
-  cnk_mutex_lock(&g_cnk_readers_mutex);
-
   // Get the serial number
   CK_ULONG serial_number;
   CK_RV ret = cnk_get_serial_number(slotID, &serial_number);
-  if (ret != CKR_OK) {
-    cnk_mutex_unlock(&g_cnk_readers_mutex);
+  if (ret != CKR_OK)
     CNK_RETURN(ret, "failed to get serial number");
-  }
 
   // Clear the structure
   memset(pInfo, 0, sizeof(CK_TOKEN_INFO));
@@ -186,8 +183,6 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   memset(pInfo->utcTime, 0, sizeof(pInfo->utcTime));
 
   CNK_DEBUG("Serial number: %lu, Label: %s", serial_number, label);
-
-  cnk_mutex_unlock(&g_cnk_readers_mutex);
 
   CNK_RET_OK;
 }

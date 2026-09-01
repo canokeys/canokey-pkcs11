@@ -24,6 +24,13 @@ jobs:
               sudo apt-get update -y
               sudo apt-get install -y libpcsclite-dev libcmocka-dev
             cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=clang'
+          - name: Ubuntu latest / ASan UBSan
+            os: ubuntu-latest
+            artifact-suffix: ubuntu-sanitized
+            pre-build-script: |
+              sudo apt-get update -y
+              sudo apt-get install -y libpcsclite-dev libcmocka-dev
+            cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=clang -DCMAKE_C_FLAGS=-fsanitize=address,undefined\ -fno-omit-frame-pointer -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined'
           - name: Windows Server 2022 / Visual Studio 2022
             os: windows-2022
             artifact-suffix: windows-2022
@@ -82,6 +89,9 @@ jobs:
           cmake --build build -v
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
         if: runner.os != 'Windows' # Windows does not have cmocka installed now.
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
