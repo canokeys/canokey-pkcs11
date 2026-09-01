@@ -100,3 +100,19 @@ cmake --build build-real-ninja-clangcl-x64
 function-table completeness, sessions/login, session-secret lifecycle, random
 generation, PQ operations, host Verify/Encrypt, and retry/cancellation behavior
 on current hardware.
+
+## Remaining Structural Work
+
+The current large files still have identifiable future boundaries:
+
+- `backend/pcsc.c`: separate reader/transaction transport, PIV authentication,
+  PIV data objects, and private-key commands.
+- `api/object.c`: separate enumeration/handle validation from class-specific
+  attribute readers. Wire encoding has already moved out.
+- `api/sign.c`: separate Verify after extracting one shared signature-mechanism
+  descriptor layer; splitting first would duplicate RSA/ECDSA mechanism rules.
+- `api/slot.c` and signature/encryption dispatch: converge mechanism lists,
+  flags, key sizes, and dispatch validation on one descriptor table.
+
+These are ownership-driven splits. File length alone is not a reason to create
+another module or expose a formerly static helper.
