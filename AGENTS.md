@@ -152,7 +152,7 @@ Observed APDU behavior for the inserted key:
 Local compatibility fixes made during probing:
 
 - Empty `C_FindObjectsInit` templates now enumerate certificate, public-key, and private-key classes instead of ending the find operation immediately.
-- `MAX_FIND_OBJECTS` must fit 6 PIV slots x 3 key/certificate classes, fixed
+- `MAX_FIND_OBJECTS` must fit 24 PIV slots x 3 key/certificate classes, fixed
   PIV data-object candidates, and session-only secret keys.
 - `cnk_get_metadata()` maps `6A82` and `6A88` to `CKR_DATA_INVALID` so object enumeration skips missing PIV keys.
 
@@ -267,6 +267,13 @@ Write-path notes:
   confirming zero retries. The provisioning script requires an explicit stable
   slot ID and expected token serial. Do not hide this mutation in ordinary login
   or initialization paths.
+- Token logout has a protected pending state. New login and credential-cache
+  reads must wait until the card logout round trip completes; local credentials
+  are cleared even when that round trip fails. `C_GetTokenInfo` reports the
+  token-wide open/read-only session counters under the token lock.
+- Conventional `CKK_EC` objects return `CKA_EC_POINT` as a DER OCTET STRING
+  containing the uncompressed point. Edwards and Montgomery objects retain raw
+  RFC 8032/7748 bytes.
 - PIV version 6.0+ exposes unauthenticated token randomness through `00 84`.
   Advertise `CKF_RNG` only after that version check. `C_GenerateRandom` chunks
   requests at 256 bytes; `C_SeedRandom` returns
