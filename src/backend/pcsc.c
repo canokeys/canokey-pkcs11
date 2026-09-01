@@ -122,6 +122,12 @@ static CK_RV connectForPrivateKeyOperation(CK_SLOT_ID slotId, CNK_PKCS11_SESSION
                                            const char *operationName) {
   CNK_ENSURE_NONNULL(session, hCard);
 
+  cnk_mutex_lock(&session->token->lock);
+  CK_BBOOL logoutPending = session->token->logoutPending;
+  cnk_mutex_unlock(&session->token->lock);
+  if (logoutPending)
+    CNK_RETURN(CKR_OPERATION_ACTIVE, "Token logout is in progress");
+
   if (pinPolicy == CNK_PIV_PIN_POLICY_NEVER) {
     CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotId, hCard));
     CK_RV rv = cnk_select_piv_application(*hCard);

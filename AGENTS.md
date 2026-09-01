@@ -274,8 +274,9 @@ Write-path notes:
   or initialization paths.
 - Token logout has a protected pending state. New login and credential-cache
   reads must wait until the card logout round trip completes; local credentials
-  are cleared even when that round trip fails. `C_GetTokenInfo` reports the
-  token-wide open/read-only session counters under the token lock.
+  are cleared even when that round trip fails. Logout also clears every open
+  session's private operation context and context-specific PIN. `C_GetTokenInfo`
+  reports the token-wide open/read-only session counters under the token lock.
 - Conventional `CKK_EC` objects return `CKA_EC_POINT` as a DER OCTET STRING
   containing the uncompressed point. Edwards and Montgomery objects retain raw
   RFC 8032/7748 bytes.

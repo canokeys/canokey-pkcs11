@@ -26,12 +26,14 @@ typedef struct {
   CK_BYTE *data;
   CK_ULONG dataLen;
   CK_RV rv;
+  CNK_PKCS11_SESSION *held;
   atomic_bool entered;
 } DigestThreadContext;
 
 typedef struct {
   CK_SESSION_HANDLE session;
   CK_RV rv;
+  CNK_PKCS11_SESSION *held;
   atomic_bool entered;
 } FindThreadContext;
 
@@ -42,8 +44,14 @@ static void *digestThread(void *opaque)
 #endif
 {
   DigestThreadContext *ctx = opaque;
+  CK_RV heldRv = cnk_session_find(ctx->session, &ctx->held);
   atomic_store(&ctx->entered, true);
-  ctx->rv = C_DigestUpdate(ctx->session, ctx->data, ctx->dataLen);
+  if (heldRv != CKR_OK)
+    ctx->rv = heldRv;
+  else {
+    ctx->rv = C_DigestUpdate(ctx->session, ctx->data, ctx->dataLen);
+    cnk_session_release_ref(&ctx->held);
+  }
 #ifdef _WIN32
   return 0;
 #else
@@ -58,12 +66,18 @@ static void *findThread(void *opaque)
 #endif
 {
   FindThreadContext *ctx = opaque;
+  CK_RV heldRv = cnk_session_find(ctx->session, &ctx->held);
   atomic_store(&ctx->entered, true);
-  CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
-  CK_ATTRIBUTE findTemplate = {CKA_CLASS, &secretClass, sizeof(secretClass)};
-  ctx->rv = C_FindObjectsInit(ctx->session, &findTemplate, 1);
-  if (ctx->rv == CKR_OK)
-    ctx->rv = C_FindObjectsFinal(ctx->session);
+  if (heldRv != CKR_OK)
+    ctx->rv = heldRv;
+  else {
+    CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
+    CK_ATTRIBUTE findTemplate = {CKA_CLASS, &secretClass, sizeof(secretClass)};
+    ctx->rv = C_FindObjectsInit(ctx->session, &findTemplate, 1);
+    if (ctx->rv == CKR_OK)
+      ctx->rv = C_FindObjectsFinal(ctx->session);
+    cnk_session_release_ref(&ctx->held);
+  }
 #ifdef _WIN32
   return 0;
 #else
@@ -222,12 +236,37 @@ static void test_logout_cannot_race_protected_management_login(void **state) {
   assert_int_equal(C_CloseSession(session), CKR_OK);
 }
 
+static void test_logout_revokes_context_specific_authorization(void **state) {
+  (void)state;
+  CK_SESSION_HANDLE session;
+  assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session), CKR_OK);
+  CNK_PKCS11_SESSION *internal = NULL;
+  assert_int_equal(cnk_session_find(session, &internal), CKR_OK);
+  cnk_mutex_lock(&internal->lock);
+  internal->signingContext.hKey = 1;
+  internal->signingContext.pinPolicy = CNK_PIV_PIN_POLICY_ALWAYS;
+  internal->signingContext.contextAuthenticated = CK_TRUE;
+  internal->signingContext.contextPin[0] = '1';
+  internal->signingContext.contextPinLen = 1;
+  cnk_mutex_unlock(&internal->lock);
+
+  assert_int_equal(cnk_token_revoke_private_operations(internal->token), CKR_OK);
+  cnk_mutex_lock(&internal->lock);
+  assert_int_equal(internal->signingContext.hKey, 0);
+  assert_false(internal->signingContext.contextAuthenticated);
+  assert_int_equal(internal->signingContext.contextPinLen, 0);
+  cnk_mutex_unlock(&internal->lock);
+  cnk_session_release_ref(&internal);
+  assert_int_equal(C_CloseSession(session), CKR_OK);
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test_setup_teardown(test_close_does_not_deadlock_template_find, setup, teardown),
       cmocka_unit_test_setup_teardown(test_cancel_serializes_with_digest_update, setup, teardown),
       cmocka_unit_test_setup_teardown(test_close_waits_for_digest_update, setup, teardown),
       cmocka_unit_test_setup_teardown(test_logout_cannot_race_protected_management_login, setup, teardown),
+      cmocka_unit_test_setup_teardown(test_logout_revokes_context_specific_authorization, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

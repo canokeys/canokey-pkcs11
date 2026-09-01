@@ -60,7 +60,8 @@ PKCS#11 specification.
 
 Login state is shared by all sessions for the same token, as required by
 PKCS#11. Closing the last session performs an implicit logout and clears cached
-PIN and management-key material. PIV PIN-always keys use the standard
+PIN and management-key material. Explicit logout also cancels all open private
+operation contexts and their context-specific PIN authorizations. PIV PIN-always keys use the standard
 `CKU_CONTEXT_SPECIFIC` flow after `C_SignInit` or `C_DecryptInit`; one
 context-specific login authorizes exactly one private-key operation.
 

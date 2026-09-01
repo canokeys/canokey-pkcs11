@@ -95,6 +95,12 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
 
   PKCS11_VALIDATE(pInfo, slotID);
 
+  // Read token-wide counters before the reader lock. C_OpenSession acquires
+  // session_mutex first, so taking the locks in the reverse order can deadlock.
+  CK_ULONG openSessions = 0;
+  CK_ULONG readOnlySessions = 0;
+  cnk_token_get_session_counts(slotID, &openSessions, &readOnlySessions);
+
   cnk_mutex_lock(&g_cnk_readers_mutex);
 
   // Get the serial number
@@ -147,7 +153,8 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   // Session counts are token-wide, not tied to the caller's session.
   pInfo->ulMaxSessionCount = CK_EFFECTIVELY_INFINITE;
   pInfo->ulMaxRwSessionCount = CK_EFFECTIVELY_INFINITE;
-  cnk_token_get_session_counts(slotID, &pInfo->ulSessionCount, &pInfo->ulRwSessionCount);
+  pInfo->ulSessionCount = openSessions;
+  pInfo->ulRwSessionCount = openSessions >= readOnlySessions ? openSessions - readOnlySessions : 0;
 
   // Set PIN constraints
   pInfo->ulMaxPinLen = 8; // PIV PIN is 8 digits max
@@ -264,9 +271,11 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
   }
   if (extensionsSupported && algorithmConfig.x25519 != 0)
     supportedMechanisms[numMechanisms++] = CKM_EC_MONTGOMERY_KEY_PAIR_GEN;
-  if (extensionsSupported && algorithmConfig.mldsa65 != 0 && algorithmConfig.mlkem768 != 0) {
+  if (extensionsSupported && algorithmConfig.mldsa65 != 0) {
     supportedMechanisms[numMechanisms++] = CKM_ML_DSA_KEY_PAIR_GEN;
     supportedMechanisms[numMechanisms++] = CKM_ML_DSA;
+  }
+  if (extensionsSupported && algorithmConfig.mlkem768 != 0) {
     supportedMechanisms[numMechanisms++] = CKM_ML_KEM_KEY_PAIR_GEN;
     supportedMechanisms[numMechanisms++] = CKM_ML_KEM;
   }
@@ -314,8 +323,8 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
 
   if (type == CKM_ML_DSA_KEY_PAIR_GEN || type == CKM_ML_DSA || type == CKM_ML_KEM_KEY_PAIR_GEN || type == CKM_ML_KEM) {
     CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
-    if (cnk_get_piv_algorithm_extension(slotID, &config) != CKR_OK || !config.enabled || config.mldsa65 == 0 ||
-        config.mlkem768 == 0)
+    if (cnk_get_piv_algorithm_extension(slotID, &config) != CKR_OK || !config.enabled ||
+        ((type == CKM_ML_DSA_KEY_PAIR_GEN || type == CKM_ML_DSA) ? config.mldsa65 == 0 : config.mlkem768 == 0))
       return CKR_MECHANISM_INVALID;
   }
   if (type == CKM_EC_EDWARDS_KEY_PAIR_GEN || type == CKM_EDDSA || type == CKM_EC_MONTGOMERY_KEY_PAIR_GEN) {

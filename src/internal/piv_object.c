@@ -66,6 +66,27 @@ static CK_RV appendImportAttribute(CK_BYTE *buffer, CK_ULONG bufferLen, CK_ULONG
   return appendTlv(buffer, bufferLen, offset, tag, attribute->pValue, attribute->ulValueLen);
 }
 
+static CK_RV appendPaddedImportAttribute(CK_BYTE *buffer, CK_ULONG bufferLen, CK_ULONG_PTR offset, CK_BYTE tag,
+                                         CK_ATTRIBUTE_PTR attribute, CK_ULONG width) {
+  CNK_ENSURE_NONNULL(attribute);
+  if (attribute->pValue == NULL || attribute->ulValueLen == 0 || attribute->ulValueLen > width)
+    return CKR_ATTRIBUTE_VALUE_INVALID;
+  if (*offset >= bufferLen)
+    return CKR_BUFFER_TOO_SMALL;
+  buffer[(*offset)++] = tag;
+  CK_ULONG lengthSize;
+  CK_RV rv = writeTlvLength(buffer + *offset, bufferLen - *offset, width, &lengthSize);
+  if (rv != CKR_OK)
+    return rv;
+  *offset += lengthSize;
+  if (bufferLen - *offset < width)
+    return CKR_BUFFER_TOO_SMALL;
+  memset(buffer + *offset, 0, width);
+  memcpy(buffer + *offset + width - attribute->ulValueLen, attribute->pValue, attribute->ulValueLen);
+  *offset += width;
+  return CKR_OK;
+}
+
 static CK_RV rsaComponentSizeToAlgorithm(CK_ULONG componentLen, CK_BYTE *algorithmType) {
   CNK_ENSURE_NONNULL(algorithmType);
   switch (componentLen) {
@@ -124,20 +145,28 @@ CK_RV cnk_build_piv_rsa_import(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCo
       CKA_PRIME_1, CKA_PRIME_2, CKA_EXPONENT_1, CKA_EXPONENT_2, CKA_COEFFICIENT,
   };
   CNK_ENSURE_NONNULL(output, written, algorithmType);
+  CK_ULONG maxPrimeLen = 0;
   for (CK_ULONG i = 0; i < 5; i++) {
     CK_RV rv = cnk_template_get_attribute(attributes, attributeCount, types[i], &components[i]);
     if (rv != CKR_OK)
       return rv;
     if (components[i]->pValue == NULL)
       return CKR_ATTRIBUTE_VALUE_INVALID;
-    if (i > 0 && components[i]->ulValueLen != components[0]->ulValueLen)
-      return CKR_ATTRIBUTE_VALUE_INVALID;
+    if (i < 2 && components[i]->ulValueLen > maxPrimeLen)
+      maxPrimeLen = components[i]->ulValueLen;
   }
 
-  CK_RV rv = rsaComponentSizeToAlgorithm(components[0]->ulValueLen, algorithmType);
+  // RSA CRT integers may omit leading zero bytes. Infer the fixed PIV field
+  // width from the largest prime and left-pad every component on the wire.
+  CK_ULONG componentWidth = maxPrimeLen <= 128 ? 128 : (maxPrimeLen <= 192 ? 192 : 256);
+  if (maxPrimeLen == 0 || maxPrimeLen > 256)
+    return CKR_KEY_SIZE_RANGE;
+  if (components[0]->ulValueLen < componentWidth / 2 || components[1]->ulValueLen < componentWidth / 2)
+    return CKR_KEY_SIZE_RANGE;
+  CK_RV rv = rsaComponentSizeToAlgorithm(componentWidth, algorithmType);
   CK_ULONG offset = 0;
   for (CK_ULONG i = 0; rv == CKR_OK && i < 5; i++)
-    rv = appendImportAttribute(output, outputLen, &offset, (CK_BYTE)(i + 1), components[i]);
+    rv = appendPaddedImportAttribute(output, outputLen, &offset, (CK_BYTE)(i + 1), components[i], componentWidth);
   if (rv == CKR_OK)
     rv = appendPolicies(attributes, attributeCount, objectId, output, outputLen, &offset);
   if (rv == CKR_OK)
@@ -175,11 +204,11 @@ CK_RV cnk_build_piv_ec_import(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCou
   default:
     return CKR_ATTRIBUTE_VALUE_INVALID;
   }
-  if (valueAttribute->ulValueLen != expectedLen)
+  if (valueAttribute->ulValueLen == 0 || valueAttribute->ulValueLen > expectedLen)
     return CKR_ATTRIBUTE_VALUE_INVALID;
 
   CK_ULONG offset = 0;
-  rv = appendImportAttribute(output, outputLen, &offset, 0x06, valueAttribute);
+  rv = appendPaddedImportAttribute(output, outputLen, &offset, 0x06, valueAttribute, expectedLen);
   if (rv == CKR_OK)
     rv = appendPolicies(attributes, attributeCount, objectId, output, outputLen, &offset);
   if (rv == CKR_OK)

@@ -94,6 +94,8 @@ static CK_RV createSharedSecret(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR at
     return CKR_KEY_SIZE_RANGE;
   if (labelLen > sizeof(session->secretKeys[0].label))
     return CKR_ATTRIBUTE_VALUE_INVALID;
+  if (privateObject && !cnk_token_pin_is_cached(session))
+    return CKR_USER_NOT_LOGGED_IN;
 
   CNK_PKCS11_SECRET_KEY_OBJECT prototype = {0};
   prototype.keyType = keyType;

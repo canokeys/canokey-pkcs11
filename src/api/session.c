@@ -367,6 +367,47 @@ void cnk_token_get_session_counts(CK_SLOT_ID slotId, CK_ULONG_PTR openSessions, 
   cnk_mutex_unlock(&session_mutex);
 }
 
+CK_RV cnk_token_revoke_private_operations(CNK_PKCS11_TOKEN_STATE *token) {
+  CNK_ENSURE_NONNULL(token);
+
+  // Take guarded references while holding the table lock, then acquire each
+  // session lock after releasing it. This preserves the global lock order and
+  // keeps session storage alive while Logout clears operation contexts.
+  cnk_mutex_lock(&session_mutex);
+  CK_ULONG count = 0;
+  for (CK_LONG i = 0; i < session_table_size; i++)
+    if (session_table[i] != NULL && session_table[i]->token == token)
+      count++;
+
+  CNK_PKCS11_SESSION **sessions = count == 0 ? NULL : ck_malloc(count * sizeof(*sessions));
+  if (count != 0 && sessions == NULL) {
+    cnk_mutex_unlock(&session_mutex);
+    return CKR_HOST_MEMORY;
+  }
+
+  CK_ULONG index = 0;
+  for (CK_LONG i = 0; i < session_table_size; i++) {
+    if (session_table[i] != NULL && session_table[i]->token == token) {
+      sessions[index] = session_table[i];
+      sessions[index]->activeCalls++;
+      index++;
+    }
+  }
+  cnk_mutex_unlock(&session_mutex);
+
+  for (CK_ULONG i = 0; i < count; i++) {
+    CNK_PKCS11_SESSION *session = sessions[i];
+    cnk_mutex_lock(&session->lock);
+    cnk_reset_signing_context(session);
+    cnk_reset_decrypting_context(session);
+    cnk_mutex_unlock(&session->lock);
+    CNK_PKCS11_SESSION *reference = session;
+    cnk_session_release_ref(&reference);
+  }
+  ck_free(sessions);
+  return CKR_OK;
+}
+
 CK_RV cnk_session_cancel_operations(CNK_PKCS11_SESSION *session, CK_FLAGS flags) {
   CNK_ENSURE_NONNULL(session);
   cnk_mutex_lock(&session->lock);
@@ -700,15 +741,14 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CK_RV rv = CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
-  cnk_mutex_lock(&session->token->lock);
-  CK_BBOOL logoutPending = session->token->logoutPending;
-  cnk_mutex_unlock(&session->token->lock);
-  if (logoutPending)
-    CNK_RETURN(CKR_OPERATION_ACTIVE, "Token logout is in progress");
-
   if (userType == CKU_CONTEXT_SPECIFIC) {
     CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
     CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+    cnk_mutex_lock(&session->token->lock);
+    CK_BBOOL logoutPending = session->token->logoutPending;
+    cnk_mutex_unlock(&session->token->lock);
+    if (logoutPending)
+      CNK_RETURN(CKR_OPERATION_ACTIVE, "Token logout is in progress");
     // PIN-always authentication is attached to the initialized private-key
     // operation. It deliberately does not populate the token USER PIN cache.
     if (ulPinLen > sizeof(session->signingContext.contextPin) ||
@@ -722,18 +762,24 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
       CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "No PIN-always private-key operation is active");
     rv = cnk_verify_piv_pin_for_context(session->slotId, pPin, ulPinLen, pPinTries);
     if (rv == CKR_OK) {
-      if (signAlways) {
-        session->signingContext.contextAuthenticated = CK_TRUE;
-        memset(session->signingContext.contextPin, 0xFF, sizeof(session->signingContext.contextPin));
-        memcpy(session->signingContext.contextPin, pPin, ulPinLen);
-        session->signingContext.contextPinLen = ulPinLen;
+      cnk_mutex_lock(&session->token->lock);
+      if (session->token->logoutPending) {
+        rv = CKR_OPERATION_ACTIVE;
+      } else {
+        if (signAlways) {
+          session->signingContext.contextAuthenticated = CK_TRUE;
+          memset(session->signingContext.contextPin, 0xFF, sizeof(session->signingContext.contextPin));
+          memcpy(session->signingContext.contextPin, pPin, ulPinLen);
+          session->signingContext.contextPinLen = ulPinLen;
+        }
+        if (decryptAlways) {
+          session->decryptingContext.contextAuthenticated = CK_TRUE;
+          memset(session->decryptingContext.contextPin, 0xFF, sizeof(session->decryptingContext.contextPin));
+          memcpy(session->decryptingContext.contextPin, pPin, ulPinLen);
+          session->decryptingContext.contextPinLen = ulPinLen;
+        }
       }
-      if (decryptAlways) {
-        session->decryptingContext.contextAuthenticated = CK_TRUE;
-        memset(session->decryptingContext.contextPin, 0xFF, sizeof(session->decryptingContext.contextPin));
-        memcpy(session->decryptingContext.contextPin, pPin, ulPinLen);
-        session->decryptingContext.contextPinLen = ulPinLen;
-      }
+      cnk_mutex_unlock(&session->token->lock);
     }
     return rv;
   } else if (userType == CKU_USER) {
@@ -871,6 +917,13 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
 
   // Send the logout APDU only for user PIN sessions. Management-key
   // authentication is per-card transaction and has no matching logout APDU.
+  CK_RV revokeRv = cnk_token_revoke_private_operations(session->token);
+  if (revokeRv != CKR_OK) {
+    cnk_mutex_lock(&session->token->lock);
+    session->token->logoutPending = CK_FALSE;
+    cnk_mutex_unlock(&session->token->lock);
+    return revokeRv;
+  }
   CK_RV logoutRv = hasPin ? cnk_logout_piv_pin_with_session(session->slotId) : CKR_OK;
 
   cnk_mutex_lock(&session->token->lock);
