@@ -178,8 +178,8 @@ CK_RV C_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CK_BYTE objectId, pivSlot;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   if (session->encryptingContext.hKey != 0)
     CNK_RETURN(CKR_OPERATION_ACTIVE, "encrypt operation is already active");
   CNK_ENSURE_OK(CNK_ValidateObject(hKey, session, CKO_PUBLIC_KEY, &objectId));
@@ -218,8 +218,8 @@ CK_RV C_Encrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLe
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pulEncryptedDataLen);
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   if (session->encryptingContext.hKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_EncryptInit not called");
   if (pData == NULL && ulDataLen > 0) {
@@ -329,8 +329,8 @@ CK_RV C_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   CK_BYTE objId;
   CK_BYTE pivTag;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   if (session->decryptingContext.hKey != 0)
     CNK_RETURN(CKR_OPERATION_ACTIVE, "decrypt operation is already active");
   CNK_ENSURE_OK(CNK_ValidateObject(hKey, session, CKO_PRIVATE_KEY, &objId));
@@ -380,8 +380,8 @@ CK_RV C_Decrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pEncryptedData, CK_ULONG
 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
 
   if (session->decryptingContext.hKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_DecryptInit not called");

@@ -637,8 +637,8 @@ CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
     return CKR_FUNCTION_NOT_SUPPORTED;
   if (!g_cnk_is_initialized || g_cnk_pcsc_context == 0)
     return CKR_CRYPTOKI_NOT_INITIALIZED;
-  CNK_PKCS11_MUTEX *eventLock CNK_MUTEX_GUARD = &g_cnk_slot_event_mutex;
-  CNK_ENSURE_OK(cnk_mutex_lock(eventLock));
+  CNK_PKCS11_MUTEX_GUARD eventLock CNK_MUTEX_GUARD = {.mutex = &g_cnk_slot_event_mutex};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&eventLock));
   if (popSlotEvent(slot))
     return CKR_OK;
 

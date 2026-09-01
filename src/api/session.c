@@ -742,8 +742,8 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
   CK_RV rv = CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   if (userType == CKU_CONTEXT_SPECIFIC) {
-    CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-    CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+    CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+    CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
     cnk_mutex_lock(&session->token->lock);
     CK_BBOOL logoutPending = session->token->logoutPending;
     cnk_mutex_unlock(&session->token->lock);
@@ -760,6 +760,8 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
         session->decryptingContext.hKey != 0 && session->decryptingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS;
     if (!signAlways && !decryptAlways)
       CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "No PIN-always private-key operation is active");
+    if (signAlways && decryptAlways)
+      CNK_RETURN(CKR_OPERATION_ACTIVE, "Context-specific login is ambiguous with two PIN-always operations");
     rv = cnk_verify_piv_pin_for_context(session->slotId, pPin, ulPinLen, pPinTries);
     if (rv == CKR_OK) {
       cnk_mutex_lock(&session->token->lock);

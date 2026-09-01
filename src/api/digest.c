@@ -56,8 +56,8 @@ CK_RV C_DigestInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism) {
 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   if (session->digestingContext.mechanismType != 0)
     CNK_RETURN(CKR_OPERATION_ACTIVE, "digest operation is already active");
 
@@ -90,8 +90,8 @@ CK_RV C_Digest(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen
 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   if (session->digestingContext.mechanismType == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_DigestInit not called");
   if (pData == NULL && ulDataLen > 0) {
@@ -125,8 +125,8 @@ CK_RV C_DigestUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart, CK_ULONG ulP
 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
 
   return digestUpdate(session, pPart, ulPartLen);
 }
@@ -137,8 +137,8 @@ CK_RV C_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey) {
 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   if (session->digestingContext.mechanismType == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_DigestInit not called");
 
@@ -162,7 +162,7 @@ CK_RV C_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest, CK_ULONG_PT
 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   return digestFinal(session, pDigest, pulDigestLen);
 }

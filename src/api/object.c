@@ -343,8 +343,8 @@ CK_RV CNK_GetSessionSecretKey(CNK_PKCS11_SESSION *session, CK_OBJECT_HANDLE obje
 CK_RV CNK_CreateSessionSecretKey(CNK_PKCS11_SESSION *session, const CNK_PKCS11_SECRET_KEY_OBJECT *prototype,
                                  CK_OBJECT_HANDLE_PTR object) {
   CNK_ENSURE_NONNULL(session, prototype, object);
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   if (prototype->token || prototype->valueLen == 0 || prototype->valueLen > sizeof(prototype->value) ||
       prototype->labelLen > sizeof(prototype->label))
     CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "Invalid session secret-key prototype");
@@ -1080,8 +1080,8 @@ CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
   if (isSessionSecretHandle(session, hObject, &secret)) {
     if (!secret->destroyable)
@@ -1220,8 +1220,8 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CK_OBJECT_CLASS requestedClass;
   extractObjectInfo(hObject, NULL, &requestedClass, NULL);
   if (requestedClass == OBJECT_CLASS_SECRET_KEY_HANDLE) {
-    CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-    CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+    CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+    CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
     CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
     if (!isSessionSecretHandle(session, hObject, &secret))
       CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid session secret-key handle");
@@ -1451,8 +1451,8 @@ CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CK_OBJECT_CLASS requestedClass;
   extractObjectInfo(hObject, NULL, &requestedClass, NULL);
   if (requestedClass == OBJECT_CLASS_SECRET_KEY_HANDLE) {
-    CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-    CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+    CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+    CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
     CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
     if (!isSessionSecretHandle(session, hObject, &secret))
       CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid session secret-key handle");

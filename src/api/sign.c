@@ -378,8 +378,8 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   CK_BYTE objId;
   CK_BYTE pivTag;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   if (session->signingContext.hKey != 0)
     CNK_RETURN(CKR_OPERATION_ACTIVE, "sign operation is already active");
   CNK_ENSURE_OK(CNK_ValidateObject(hKey, session, CKO_PRIVATE_KEY, &objId));
@@ -533,8 +533,8 @@ CK_RV C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, 
   // Validate the session, and check if we have an active key
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   if (session->signingContext.hKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_SignInit not called - no active key");
   if (pData == NULL && ulDataLen > 0) {
@@ -585,8 +585,8 @@ CK_RV C_SignUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart, CK_ULONG ulPar
   // Validate the session, check if we have an active key, and check if we have a mechanism
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   return signUpdate(session, pPart, ulPartLen);
 }
 
@@ -598,8 +598,8 @@ CK_RV C_SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG_P
   // Validate the session, check if we have an active key, and check if we have a mechanism
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   return signFinal(session, pSignature, pulSignatureLen);
 }
 
@@ -805,8 +805,8 @@ CK_RV C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_O
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CK_BYTE objectId, pivSlot;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   if (session->verifyingContext.hKey != 0)
     CNK_RETURN(CKR_OPERATION_ACTIVE, "verify operation is already active");
   CNK_ENSURE_OK(CNK_ValidateObject(hKey, session, CKO_PUBLIC_KEY, &objectId));
@@ -932,8 +932,8 @@ CK_RV C_Verify(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen
   CNK_ENSURE_INITIALIZED();
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   if (session->verifyingContext.hKey == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_VerifyInit not called");
   if ((pData == NULL && ulDataLen > 0) || pSignature == NULL) {
@@ -962,8 +962,8 @@ CK_RV C_VerifyUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart, CK_ULONG ulP
     CNK_RETURN(CKR_ARGUMENTS_BAD, "invalid verify part");
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   return verifyUpdate(session, pPart, ulPartLen);
 }
 
@@ -972,8 +972,8 @@ CK_RV C_VerifyFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG
   CNK_ENSURE_INITIALIZED();
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  CNK_PKCS11_MUTEX *sessionLock CNK_MUTEX_GUARD = &session->lock;
-  CNK_ENSURE_OK(cnk_mutex_lock(sessionLock));
+  CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
+  CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   return verifyFinal(session, pSignature, ulSignatureLen);
 }
 

@@ -225,7 +225,9 @@ Write-path notes:
 - PIV PIN-always maps to `CKA_ALWAYS_AUTHENTICATE` and requires
   `C_Login(CKU_CONTEXT_SPECIFIC)` after operation init. The context PIN is
   operation-local, must not enter the token USER cache, and is consumed and
-  zeroized after one operation or cancellation.
+  zeroized after one operation or cancellation. If a session has simultaneous
+  PIN-always signing and decrypt operations, reject the ambiguous context login
+  rather than authorizing both operations with one PIN entry.
 - Every PKCS#11 3.2 function-list entry must be non-NULL. Unsupported 3.x APIs
   use type-correct stubs returning `CKR_FUNCTION_NOT_SUPPORTED`. RSA/ECDSA/
   ML-DSA Verify and RSA public-key Encrypt are host-side implementations; do

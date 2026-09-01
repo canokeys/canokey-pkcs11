@@ -109,7 +109,6 @@ CK_RV cnk_mutex_create(CNK_PKCS11_MUTEX *mutex) {
     mutex->unlock = os_unlock_mutex;
   }
 
-  mutex->is_locked = CK_FALSE;
   // Create the actual mutex
   return mutex->create(&mutex->mutex_handle);
 }
@@ -125,8 +124,6 @@ CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex) {
   CNK_LOG_FUNC(": mutex: %p", mutex);
   CNK_ENSURE_NONNULL(mutex, mutex->mutex_handle, mutex->lock);
   CK_RV rv = mutex->lock(mutex->mutex_handle);
-  if (rv == CKR_OK)
-    mutex->is_locked = CK_TRUE;
   return rv;
 }
 
@@ -135,14 +132,20 @@ CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex) {
   CNK_LOG_FUNC(": mutex: %p", mutex);
   CNK_ENSURE_NONNULL(mutex, mutex->mutex_handle, mutex->unlock);
   CK_RV rv = mutex->unlock(mutex->mutex_handle);
-  if (rv == CKR_OK)
-    mutex->is_locked = CK_FALSE;
   return rv;
 }
 
-void cnk_mutex_unlock_guard(CNK_PKCS11_MUTEX **mutex) {
-  if (mutex != NULL && *mutex != NULL && (*mutex)->is_locked) {
-    cnk_mutex_unlock(*mutex);
-    *mutex = NULL;
+CK_RV cnk_mutex_lock_guard(CNK_PKCS11_MUTEX_GUARD *guard) {
+  CNK_ENSURE_NONNULL(guard, guard->mutex);
+  CK_RV rv = cnk_mutex_lock(guard->mutex);
+  if (rv == CKR_OK)
+    guard->acquired = CK_TRUE;
+  return rv;
+}
+
+void cnk_mutex_unlock_guard(CNK_PKCS11_MUTEX_GUARD *guard) {
+  if (guard != NULL && guard->mutex != NULL && guard->acquired) {
+    cnk_mutex_unlock(guard->mutex);
+    guard->acquired = CK_FALSE;
   }
 }
