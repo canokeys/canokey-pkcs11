@@ -1445,8 +1445,11 @@ static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESS
     tlv_data[tlv_len++] = 0x82;                               // Two-byte length marker
     tlv_data[tlv_len++] = (CK_BYTE)((cbDataLen >> 8) & 0xFF); // Length high byte
     tlv_data[tlv_len++] = (CK_BYTE)(cbDataLen & 0xFF);        // Length low byte
+  } else if (cbDataLen >= 0x80) {
+    tlv_data[tlv_len++] = 0x81;
+    tlv_data[tlv_len++] = (CK_BYTE)cbDataLen;
   } else {
-    // Use one-byte length encoding for lengths <= 255
+    // DER short form is valid only below 128 bytes.
     tlv_data[tlv_len++] = (CK_BYTE)cbDataLen;
   }
 
@@ -1458,13 +1461,12 @@ static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESS
 
   // Now fill in the length of the outer template
   // The length needs to be updated based on the total length of the contents
-  if (tlv_len - len_pos - 1 > 0xFF) {
+  CK_ULONG content_len = tlv_len - len_pos - 1;
+  if (content_len > 0xFF) {
     // Need to shift everything to make room for 3-byte length
     memmove(tlv_data + len_pos + 3, tlv_data + len_pos + 1, tlv_len - len_pos - 1);
 
     // Store the original calculated length before modification
-    CK_ULONG content_len = tlv_len - len_pos - 1;
-
     // Update positions sequentially to avoid undefined behavior
     tlv_data[len_pos] = 0x82; // Two-byte length marker
     len_pos++;
@@ -1475,8 +1477,13 @@ static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESS
     tlv_data[len_pos] = (CK_BYTE)(content_len & 0xFF); // Length low byte
 
     tlv_len += 2; // Adjust total length for the extra length bytes
+  } else if (content_len >= 0x80) {
+    memmove(tlv_data + len_pos + 2, tlv_data + len_pos + 1, content_len);
+    tlv_data[len_pos] = 0x81;
+    tlv_data[len_pos + 1] = (CK_BYTE)content_len;
+    tlv_len += 1;
   } else {
-    tlv_data[len_pos] = (CK_BYTE)(tlv_len - len_pos - 1);
+    tlv_data[len_pos] = (CK_BYTE)content_len;
   }
 
   // Build the GENERAL AUTHENTICATE APDU
@@ -1695,8 +1702,11 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
     tlv_data[tlv_len++] = 0x82;                               // Two-byte length marker
     tlv_data[tlv_len++] = (CK_BYTE)((cbDataLen >> 8) & 0xFF); // Length high byte
     tlv_data[tlv_len++] = (CK_BYTE)(cbDataLen & 0xFF);        // Length low byte
+  } else if (cbDataLen >= 0x80) {
+    tlv_data[tlv_len++] = 0x81;
+    tlv_data[tlv_len++] = (CK_BYTE)cbDataLen;
   } else {
-    // Use one-byte length encoding for lengths <= 255
+    // DER short form is valid only below 128 bytes.
     tlv_data[tlv_len++] = (CK_BYTE)cbDataLen;
   }
 
@@ -1706,13 +1716,12 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
 
   // Now fill in the length of the outer template
   // The length needs to be updated based on the total length of the contents
-  if (tlv_len - len_pos - 1 > 0xFF) {
+  CK_ULONG content_len = tlv_len - len_pos - 1;
+  if (content_len > 0xFF) {
     // Need to shift everything to make room for 3-byte length
     memmove(tlv_data + len_pos + 3, tlv_data + len_pos + 1, tlv_len - len_pos - 1);
 
     // Store the original calculated length before modification
-    CK_ULONG content_len = tlv_len - len_pos - 1;
-
     // Update positions sequentially to avoid undefined behavior
     tlv_data[len_pos] = 0x82; // Two-byte length marker
     len_pos++;
@@ -1723,8 +1732,13 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
     tlv_data[len_pos] = (CK_BYTE)(content_len & 0xFF); // Length low byte
 
     tlv_len += 2; // Adjust total length for the extra length bytes
+  } else if (content_len >= 0x80) {
+    memmove(tlv_data + len_pos + 2, tlv_data + len_pos + 1, content_len);
+    tlv_data[len_pos] = 0x81;
+    tlv_data[len_pos + 1] = (CK_BYTE)content_len;
+    tlv_len += 1;
   } else {
-    tlv_data[len_pos] = (CK_BYTE)(tlv_len - len_pos - 1);
+    tlv_data[len_pos] = (CK_BYTE)content_len;
   }
 
   // Build the GENERAL AUTHENTICATE APDU
