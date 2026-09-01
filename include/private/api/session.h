@@ -77,6 +77,7 @@ typedef struct {
   CK_BYTE pivSlot;
   CK_BYTE algorithmType;
   CK_BYTE pinPolicy;
+  mbedtls_md_type_t mdType;
   CK_BYTE abModulus[512];
   CK_ULONG cbSignature;
   CK_BYTE_PTR message;
@@ -98,6 +99,27 @@ typedef struct {
   CK_BYTE contextPin[8];
   CK_ULONG contextPinLen;
 } CNK_PKCS11_DECRYPTING_CONTEXT;
+
+typedef struct {
+  CK_OBJECT_HANDLE hKey;
+  CK_MECHANISM mechanism;
+  CK_BYTE algorithmType;
+  mbedtls_md_type_t mdType;
+  CK_BBOOL ownsDigestContext;
+  CK_BYTE publicKey[2048];
+  CK_ULONG publicKeyLen;
+  CK_BYTE_PTR message;
+  CK_ULONG messageLen;
+  CK_ULONG messageCapacity;
+} CNK_PKCS11_VERIFYING_CONTEXT;
+
+typedef struct {
+  CK_OBJECT_HANDLE hKey;
+  CK_MECHANISM mechanism;
+  CK_BYTE publicKey[2048];
+  CK_ULONG publicKeyLen;
+  CK_ULONG modulusLen;
+} CNK_PKCS11_ENCRYPTING_CONTEXT;
 
 typedef struct {
   CK_MECHANISM_TYPE mechanismType;
@@ -130,6 +152,8 @@ typedef struct CNK_PKCS11_SESSION {
 
   // Cryptographic operation fields
   CNK_PKCS11_SIGNING_CONTEXT signingContext;
+  CNK_PKCS11_VERIFYING_CONTEXT verifyingContext;
+  CNK_PKCS11_ENCRYPTING_CONTEXT encryptingContext;
   CNK_PKCS11_DECRYPTING_CONTEXT decryptingContext;
   CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
   CNK_PKCS11_SECRET_KEY_OBJECT secretKeys[MAX_SESSION_SECRET_KEYS];

@@ -737,10 +737,6 @@ static CK_RV decrypt_with_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HAN
   }
 
   *pPlaintextLen = queryLen;
-  rv = pFunctionList->C_DecryptInit(hSession, pMechanism, hKey);
-  if (rv != CKR_OK)
-    return rv;
-
   return pFunctionList->C_Decrypt(hSession, ciphertext, ciphertextLen, plaintext, pPlaintextLen);
 }
 

@@ -9,7 +9,35 @@
 #include <mbedtls/private/bignum.h>
 #include <mbedtls/private/ctr_drbg.h>
 #include <mbedtls/private/entropy.h>
+#include <mbedtls/private/rsa.h>
+#include <psa/crypto.h>
 #include <string.h>
+
+CK_RV cnk_rsa_public(const CK_BYTE *modulus, CK_ULONG modulusLen, const CK_BYTE *exponent, CK_ULONG exponentLen,
+                     const CK_BYTE *input, CK_ULONG inputLen, CK_BYTE *output) {
+  CNK_ENSURE_NONNULL(modulus, exponent, input, output);
+  if (inputLen != modulusLen)
+    return CKR_DATA_LEN_RANGE;
+
+  mbedtls_rsa_context rsa;
+  mbedtls_rsa_init(&rsa);
+  CK_RV rv = CKR_FUNCTION_FAILED;
+  if (mbedtls_mpi_read_binary(&rsa.MBEDTLS_PRIVATE(N), modulus, modulusLen) != 0 ||
+      mbedtls_mpi_read_binary(&rsa.MBEDTLS_PRIVATE(E), exponent, exponentLen) != 0) {
+    rv = CKR_KEY_HANDLE_INVALID;
+    goto cleanup;
+  }
+  rsa.MBEDTLS_PRIVATE(len) = mbedtls_mpi_size(&rsa.MBEDTLS_PRIVATE(N));
+  if (rsa.MBEDTLS_PRIVATE(len) != modulusLen || mbedtls_rsa_check_pubkey(&rsa) != 0) {
+    rv = CKR_KEY_HANDLE_INVALID;
+    goto cleanup;
+  }
+  rv = mbedtls_rsa_public(&rsa, input, output) == 0 ? CKR_OK : CKR_DATA_INVALID;
+
+cleanup:
+  mbedtls_rsa_free(&rsa);
+  return rv;
+}
 
 // PKCS#1 v1.5 padding for signature
 CK_RV pkcs1_v1_5_pad(CK_BYTE_PTR pbInput, CK_ULONG cbInput, CK_BYTE_PTR pbOutput, CK_ULONG cbOutput,
@@ -334,6 +362,173 @@ static CK_RV mgf1(const CK_BYTE *seed, CK_ULONG seed_len, CK_BYTE *mask, CK_ULON
 
   mbedtls_platform_zeroize(digest, sizeof(digest));
   return CKR_OK;
+}
+
+CK_RV pkcs1_v1_5_encrypt_pad(const CK_BYTE *input, CK_ULONG inputLen, CK_BYTE *output, CK_ULONG outputLen) {
+  CNK_ENSURE_NONNULL(output);
+  if (input == NULL && inputLen > 0)
+    return CKR_ARGUMENTS_BAD;
+  if (outputLen < 11 || inputLen > outputLen - 11)
+    return CKR_DATA_LEN_RANGE;
+
+  CK_ULONG paddingLen = outputLen - inputLen - 3;
+  output[0] = 0;
+  output[1] = 2;
+  if (psa_generate_random(output + 2, paddingLen) != PSA_SUCCESS)
+    return CKR_RANDOM_NO_RNG;
+  for (CK_ULONG i = 0; i < paddingLen; i++) {
+    while (output[2 + i] == 0) {
+      if (psa_generate_random(output + 2 + i, 1) != PSA_SUCCESS) {
+        mbedtls_platform_zeroize(output, outputLen);
+        return CKR_RANDOM_NO_RNG;
+      }
+    }
+  }
+  output[2 + paddingLen] = 0;
+  if (inputLen > 0)
+    memcpy(output + outputLen - inputLen, input, inputLen);
+  return CKR_OK;
+}
+
+CK_RV oaep_pad(const CK_BYTE *input, CK_ULONG inputLen, CK_BYTE *output, CK_ULONG outputLen, mbedtls_md_type_t mdType,
+               mbedtls_md_type_t mgfMdType, const CK_BYTE *label, CK_ULONG labelLen) {
+  CNK_ENSURE_NONNULL(output);
+  if ((input == NULL && inputLen > 0) || (label == NULL && labelLen > 0))
+    return CKR_ARGUMENTS_BAD;
+
+  const mbedtls_md_info_t *mdInfo = mbedtls_md_info_from_type(mdType);
+  const mbedtls_md_info_t *mgfInfo = mbedtls_md_info_from_type(mgfMdType);
+  if (mdInfo == NULL || mgfInfo == NULL)
+    return CKR_MECHANISM_PARAM_INVALID;
+  CK_ULONG hashLen = mbedtls_md_get_size(mdInfo);
+  if (outputLen < 2 * hashLen + 2 || inputLen > outputLen - 2 * hashLen - 2)
+    return CKR_DATA_LEN_RANGE;
+
+  CK_ULONG dbLen = outputLen - hashLen - 1;
+  CK_BYTE *seed = output + 1;
+  CK_BYTE *db = output + 1 + hashLen;
+  CK_BYTE *mask = ck_malloc(dbLen > hashLen ? dbLen : hashLen);
+  if (mask == NULL)
+    return CKR_HOST_MEMORY;
+
+  CK_RV rv = CKR_OK;
+  output[0] = 0;
+  if (mbedtls_md(mdInfo, label, labelLen, db) != 0) {
+    rv = CKR_FUNCTION_FAILED;
+    goto cleanup;
+  }
+  CK_ULONG paddingLen = dbLen - hashLen - inputLen - 1;
+  memset(db + hashLen, 0, paddingLen);
+  db[hashLen + paddingLen] = 1;
+  if (inputLen > 0)
+    memcpy(db + dbLen - inputLen, input, inputLen);
+  if (psa_generate_random(seed, hashLen) != PSA_SUCCESS) {
+    rv = CKR_RANDOM_NO_RNG;
+    goto cleanup;
+  }
+
+  rv = mgf1(seed, hashLen, mask, dbLen, mgfMdType);
+  if (rv != CKR_OK)
+    goto cleanup;
+  for (CK_ULONG i = 0; i < dbLen; i++)
+    db[i] ^= mask[i];
+
+  rv = mgf1(db, dbLen, mask, hashLen, mgfMdType);
+  if (rv != CKR_OK)
+    goto cleanup;
+  for (CK_ULONG i = 0; i < hashLen; i++)
+    seed[i] ^= mask[i];
+
+cleanup:
+  mbedtls_platform_zeroize(mask, dbLen > hashLen ? dbLen : hashLen);
+  ck_free(mask);
+  if (rv != CKR_OK)
+    mbedtls_platform_zeroize(output, outputLen);
+  return rv;
+}
+
+CK_RV pss_verify(const CK_BYTE *hash, CK_ULONG hashLen, const CK_BYTE *modulus, CK_ULONG modulusLen, CK_ULONG saltLen,
+                 mbedtls_md_type_t mdType, const CK_BYTE *encoded, CK_ULONG encodedLen) {
+  CNK_ENSURE_NONNULL(hash, modulus, encoded);
+  const mbedtls_md_info_t *mdInfo = mbedtls_md_info_from_type(mdType);
+  if (mdInfo == NULL)
+    return CKR_MECHANISM_PARAM_INVALID;
+  CK_ULONG expectedHashLen = mbedtls_md_get_size(mdInfo);
+  if (hashLen != expectedHashLen)
+    return CKR_DATA_LEN_RANGE;
+
+  mbedtls_mpi modulusMpi;
+  mbedtls_mpi_init(&modulusMpi);
+  if (mbedtls_mpi_read_binary(&modulusMpi, modulus, modulusLen) != 0) {
+    mbedtls_mpi_free(&modulusMpi);
+    return CKR_KEY_HANDLE_INVALID;
+  }
+  CK_ULONG modulusBits = mbedtls_mpi_bitlen(&modulusMpi);
+  mbedtls_mpi_free(&modulusMpi);
+  CK_ULONG encodedBits = modulusBits - 1;
+  CK_ULONG expectedEncodedLen = (encodedBits + 7) / 8;
+  if (encodedLen != expectedEncodedLen || encodedLen < expectedHashLen + saltLen + 2)
+    return CKR_SIGNATURE_LEN_RANGE;
+  if (encoded[encodedLen - 1] != 0xBC)
+    return CKR_SIGNATURE_INVALID;
+
+  CK_ULONG dbLen = encodedLen - expectedHashLen - 1;
+  CK_BYTE *db = ck_malloc(dbLen);
+  CK_BYTE *mask = ck_malloc(dbLen);
+  if (db == NULL || mask == NULL) {
+    ck_free(db);
+    ck_free(mask);
+    return CKR_HOST_MEMORY;
+  }
+  const CK_BYTE *encodedHash = encoded + dbLen;
+  CK_RV rv = mgf1(encodedHash, expectedHashLen, mask, dbLen, mdType);
+  if (rv != CKR_OK)
+    goto cleanup;
+  for (CK_ULONG i = 0; i < dbLen; i++)
+    db[i] = encoded[i] ^ mask[i];
+
+  unsigned unusedBits = (unsigned)(8 * expectedEncodedLen - encodedBits);
+  CK_BYTE highMask = (CK_BYTE)(0xFFu << (8 - unusedBits));
+  if ((encoded[0] & highMask) != 0) {
+    rv = CKR_SIGNATURE_INVALID;
+    goto cleanup;
+  }
+  db[0] &= (CK_BYTE)~highMask;
+
+  CK_ULONG separator = dbLen - saltLen - 1;
+  for (CK_ULONG i = 0; i < separator; i++) {
+    if (db[i] != 0) {
+      rv = CKR_SIGNATURE_INVALID;
+      goto cleanup;
+    }
+  }
+  if (db[separator] != 1) {
+    rv = CKR_SIGNATURE_INVALID;
+    goto cleanup;
+  }
+
+  CK_BYTE recomputed[MBEDTLS_MD_MAX_SIZE];
+  CK_BYTE zeros[8] = {0};
+  mbedtls_md_context_t context;
+  mbedtls_md_init(&context);
+  if (mbedtls_md_setup(&context, mdInfo, 0) != 0 || mbedtls_md_starts(&context) != 0 ||
+      mbedtls_md_update(&context, zeros, sizeof(zeros)) != 0 || mbedtls_md_update(&context, hash, hashLen) != 0 ||
+      mbedtls_md_update(&context, db + separator + 1, saltLen) != 0 || mbedtls_md_finish(&context, recomputed) != 0) {
+    rv = CKR_FUNCTION_FAILED;
+  } else if (memcmp(recomputed, encodedHash, expectedHashLen) != 0) {
+    rv = CKR_SIGNATURE_INVALID;
+  } else {
+    rv = CKR_OK;
+  }
+  mbedtls_md_free(&context);
+  mbedtls_platform_zeroize(recomputed, sizeof(recomputed));
+
+cleanup:
+  mbedtls_platform_zeroize(db, dbLen);
+  mbedtls_platform_zeroize(mask, dbLen);
+  ck_free(db);
+  ck_free(mask);
+  return rv;
 }
 
 CK_RV pkcs1_v1_5_unpad(CK_BYTE_PTR pbInput, CK_ULONG cbInput, CK_BYTE_PTR pbOutput, CK_ULONG_PTR pcbOutput) {

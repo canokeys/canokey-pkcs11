@@ -145,6 +145,13 @@ destroyed, digested when non-sensitive, and updated through a restricted set of
 label and usage attributes. PIV token objects remain non-copyable,
 non-destroyable, and read-only.
 
+Public-key verification runs on the host for RSA PKCS#1 v1.5, RSA-PSS,
+ECDSA, and ML-DSA-65. RSA, ECDSA, and ML-DSA support both single-part and
+`C_VerifyUpdate`/`C_VerifyFinal` flows. RSA public-key encryption also runs on
+the host for `CKM_RSA_X_509`, `CKM_RSA_PKCS`, and `CKM_RSA_PKCS_OAEP`;
+encryption is single-part. Mixed host/card mechanisms omit `CKF_HW` because not
+every advertised operation is performed by the token.
+
 ## Post-Quantum Keys
 
 Firmware 5.7 or newer exposes a versioned PIV metadata directory and runtime
@@ -155,10 +162,10 @@ metadata path and does not advertise post-quantum mechanisms.
 
 The PKCS#11 3.2 interface currently supports:
 
-- ML-DSA-65 key generation and signing with `CKM_ML_DSA_KEY_PAIR_GEN` and
-  `CKM_ML_DSA`. Both single-part and `C_SignUpdate`/`C_SignFinal` input are
-  supported. PIV currently signs with an empty ML-DSA context, so additional
-  signing contexts are rejected.
+- ML-DSA-65 key generation, signing, and host-side verification with
+  `CKM_ML_DSA_KEY_PAIR_GEN` and `CKM_ML_DSA`. Both single-part and streaming
+  input are supported. PIV currently signs with an empty ML-DSA context, so
+  additional signing contexts are rejected.
 - ML-KEM-768 key generation, host-side encapsulation, and on-card
   decapsulation with `CKM_ML_KEM_KEY_PAIR_GEN`, `CKM_ML_KEM`,
   `C_EncapsulateKey`, and `C_DecapsulateKey`. Shared secrets are returned as

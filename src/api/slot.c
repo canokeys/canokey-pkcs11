@@ -305,13 +305,13 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
 
   case CKM_RSA_X_509:
   case CKM_RSA_PKCS:
-    pInfo->flags = CKF_HW | CKF_DECRYPT | CKF_SIGN;
+    pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT | CKF_SIGN | CKF_VERIFY;
     pInfo->ulMinKeySize = 2048;
     pInfo->ulMaxKeySize = 4096;
     break;
 
   case CKM_RSA_PKCS_OAEP:
-    pInfo->flags = CKF_HW | CKF_DECRYPT;
+    pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT;
     pInfo->ulMinKeySize = 2048;
     pInfo->ulMaxKeySize = 4096;
     break;
@@ -335,7 +335,7 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   case CKM_SHA3_256_RSA_PKCS_PSS:
   case CKM_SHA3_384_RSA_PKCS_PSS:
   case CKM_SHA3_512_RSA_PKCS_PSS:
-    pInfo->flags = CKF_HW | CKF_SIGN;
+    pInfo->flags = CKF_SIGN | CKF_VERIFY;
     pInfo->ulMinKeySize = 2048;
     pInfo->ulMaxKeySize = 4096;
     break;
@@ -356,7 +356,7 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   case CKM_ECDSA_SHA3_256:
   case CKM_ECDSA_SHA3_384:
   case CKM_ECDSA_SHA3_512:
-    pInfo->flags = CKF_HW | CKF_SIGN | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_NAMEDCURVE;
+    pInfo->flags = CKF_SIGN | CKF_VERIFY | CKF_EC_F_P | CKF_EC_NAMEDCURVE;
     pInfo->ulMinKeySize = 256;
     pInfo->ulMaxKeySize = 384;
     break;
@@ -386,7 +386,7 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
     break;
 
   case CKM_ML_DSA:
-    pInfo->flags = CKF_HW | CKF_SIGN;
+    pInfo->flags = CKF_SIGN | CKF_VERIFY;
     pInfo->ulMinKeySize = 1952;
     pInfo->ulMaxKeySize = 1952;
     break;

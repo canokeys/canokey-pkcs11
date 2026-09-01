@@ -14,7 +14,7 @@
   do {                                                                                                                 \
     CK_RV checkRv = (call);                                                                                            \
     if (checkRv != CKR_OK) {                                                                                           \
-      fprintf(stderr, "%s failed: 0x%lx\n", #call, checkRv);                                                           \
+      fprintf(stderr, "%s:%d: %s failed: 0x%lx\n", __FILE__, __LINE__, #call, checkRv);                                \
       return 1;                                                                                                        \
     }                                                                                                                  \
   } while (0)
@@ -41,8 +41,9 @@ static void makeKeyTemplates(CK_BYTE *id, CK_KEY_TYPE *keyType, CK_ULONG *parame
 }
 
 static int exercisePqcPrivateOperations(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE session,
-                                        CK_OBJECT_HANDLE mldsaPrivate, CK_OBJECT_HANDLE mlkemPublic,
-                                        CK_OBJECT_HANDLE mlkemPrivate, const char *pin, CK_BBOOL contextSpecific) {
+                                        CK_OBJECT_HANDLE mldsaPublic, CK_OBJECT_HANDLE mldsaPrivate,
+                                        CK_OBJECT_HANDLE mlkemPublic, CK_OBJECT_HANDLE mlkemPrivate, const char *pin,
+                                        CK_BBOOL contextSpecific) {
   CK_MECHANISM mechanism = {CKM_ML_DSA, NULL, 0};
   CK_BYTE message[] = "CanoKey PKCS11 3.2 ML-DSA streaming test";
   CK_BYTE signature[3309];
@@ -75,6 +76,25 @@ static int exercisePqcPrivateOperations(CK_FUNCTION_LIST_3_2_PTR functions, CK_S
     CHECK(functions->C_SignFinal(session, signature, &signatureLen));
   }
   if (signatureLen != sizeof(signature))
+    return 1;
+
+  CHECK(functions->C_VerifyInit(session, &mechanism, mldsaPublic));
+  CHECK(functions->C_VerifyUpdate(session, message, 11));
+  CHECK(functions->C_VerifyUpdate(session, message + 11, sizeof(message) - 1 - 11));
+  CHECK(functions->C_VerifyFinal(session, signature, signatureLen));
+  CHECK(functions->C_VerifyInit(session, &mechanism, mldsaPublic));
+  CHECK(functions->C_VerifyUpdate(session, message, sizeof(message) - 1));
+  CHECK(functions->C_SessionCancel(session, CKF_VERIFY));
+  if (functions->C_VerifyFinal(session, signature, signatureLen) != CKR_OPERATION_NOT_INITIALIZED)
+    return 1;
+  signature[0] ^= 1;
+  CHECK(functions->C_VerifyInit(session, &mechanism, mldsaPublic));
+  if (functions->C_Verify(session, message, sizeof(message) - 1, signature, signatureLen) != CKR_SIGNATURE_INVALID)
+    return 1;
+  signature[0] ^= 1;
+  CHECK(functions->C_VerifyInit(session, &mechanism, mldsaPublic));
+  if (functions->C_Verify(session, message, sizeof(message) - 1, signature, signatureLen - 1) !=
+      CKR_SIGNATURE_LEN_RANGE)
     return 1;
 
   CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
@@ -198,6 +218,189 @@ static int testSessionSecretLifecycle(CK_FUNCTION_LIST_3_2_PTR functions, CK_SES
   if (functions->C_GetAttributeValue(session, generated, &destroyedAttribute, 1) != CKR_OBJECT_HANDLE_INVALID)
     return 1;
   return 0;
+}
+
+static CK_RV findKeyPair(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE session, CK_KEY_TYPE keyType,
+                         CK_ATTRIBUTE_TYPE usage, CK_OBJECT_HANDLE_PTR publicKey, CK_OBJECT_HANDLE_PTR privateKey) {
+  CK_OBJECT_CLASS privateClass = CKO_PRIVATE_KEY;
+  CK_BBOOL trueValue = CK_TRUE;
+  CK_ATTRIBUTE privateTemplate[] = {
+      {CKA_CLASS, &privateClass, sizeof(privateClass)},
+      {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
+      {usage, &trueValue, sizeof(trueValue)},
+  };
+  CK_RV rv = functions->C_FindObjectsInit(session, privateTemplate, 3);
+  if (rv != CKR_OK)
+    return rv;
+  CK_ULONG count = 0;
+  rv = functions->C_FindObjects(session, privateKey, 1, &count);
+  CK_RV finalRv = functions->C_FindObjectsFinal(session);
+  if (rv != CKR_OK)
+    return rv;
+  if (finalRv != CKR_OK)
+    return finalRv;
+  if (count == 0)
+    return CKR_KEY_HANDLE_INVALID;
+
+  CK_BYTE id;
+  CK_ATTRIBUTE idAttribute = {CKA_ID, &id, sizeof(id)};
+  rv = functions->C_GetAttributeValue(session, *privateKey, &idAttribute, 1);
+  if (rv != CKR_OK)
+    return rv;
+  CK_OBJECT_CLASS publicClass = CKO_PUBLIC_KEY;
+  CK_ATTRIBUTE publicTemplate[] = {
+      {CKA_CLASS, &publicClass, sizeof(publicClass)},
+      {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
+      {CKA_ID, &id, sizeof(id)},
+  };
+  rv = functions->C_FindObjectsInit(session, publicTemplate, 3);
+  if (rv != CKR_OK)
+    return rv;
+  count = 0;
+  rv = functions->C_FindObjects(session, publicKey, 1, &count);
+  finalRv = functions->C_FindObjectsFinal(session);
+  if (rv != CKR_OK)
+    return rv;
+  if (finalRv != CKR_OK)
+    return finalRv;
+  return count == 1 ? CKR_OK : CKR_KEY_HANDLE_INVALID;
+}
+
+static int exerciseVerify(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE session) {
+  CK_OBJECT_HANDLE rsaPublic, rsaPrivate;
+  CHECK(findKeyPair(functions, session, CKK_RSA, CKA_SIGN, &rsaPublic, &rsaPrivate));
+  CK_BYTE message[] = "host verify regression";
+  CK_BYTE signature[512];
+  CK_ULONG signatureLen = sizeof(signature);
+  CK_MECHANISM mechanism = {CKM_SHA256_RSA_PKCS, NULL, 0};
+  CHECK(functions->C_SignInit(session, &mechanism, rsaPrivate));
+  CHECK(functions->C_Sign(session, message, sizeof(message) - 1, signature, &signatureLen));
+  CHECK(functions->C_VerifyInit(session, &mechanism, rsaPublic));
+  CHECK(functions->C_Verify(session, message, sizeof(message) - 1, signature, signatureLen));
+
+  CHECK(functions->C_VerifyInit(session, &mechanism, rsaPublic));
+  CHECK(functions->C_VerifyUpdate(session, message, 5));
+  CHECK(functions->C_VerifyUpdate(session, message + 5, sizeof(message) - 1 - 5));
+  CHECK(functions->C_VerifyFinal(session, signature, signatureLen));
+  signature[signatureLen - 1] ^= 1;
+  CHECK(functions->C_VerifyInit(session, &mechanism, rsaPublic));
+  if (functions->C_Verify(session, message, sizeof(message) - 1, signature, signatureLen) != CKR_SIGNATURE_INVALID)
+    return 1;
+  signature[signatureLen - 1] ^= 1;
+
+  CK_RSA_PKCS_PSS_PARAMS pss = {CKM_SHA256, CKG_MGF1_SHA256, 32};
+  mechanism = (CK_MECHANISM){CKM_SHA256_RSA_PKCS_PSS, &pss, sizeof(pss)};
+  signatureLen = sizeof(signature);
+  CHECK(functions->C_SignInit(session, &mechanism, rsaPrivate));
+  CHECK(functions->C_Sign(session, message, sizeof(message) - 1, signature, &signatureLen));
+  CHECK(functions->C_VerifyInit(session, &mechanism, rsaPublic));
+  CHECK(functions->C_Verify(session, message, sizeof(message) - 1, signature, signatureLen));
+
+  mechanism = (CK_MECHANISM){CKM_RSA_PKCS, NULL, 0};
+  signatureLen = sizeof(signature);
+  CHECK(functions->C_SignInit(session, &mechanism, rsaPrivate));
+  CHECK(functions->C_Sign(session, message, sizeof(message) - 1, signature, &signatureLen));
+  CHECK(functions->C_VerifyInit(session, &mechanism, rsaPublic));
+  CHECK(functions->C_Verify(session, message, sizeof(message) - 1, signature, signatureLen));
+
+  CK_MECHANISM digestMechanism = {CKM_SHA256, NULL, 0};
+  CHECK(functions->C_DigestInit(session, &digestMechanism));
+  CHECK(functions->C_VerifyInit(session, &mechanism, rsaPublic));
+  CHECK(functions->C_Verify(session, message, sizeof(message) - 1, signature, signatureLen));
+  CK_BYTE digest[32];
+  CK_ULONG digestLen = sizeof(digest);
+  CHECK(functions->C_DigestFinal(session, digest, &digestLen));
+
+  digestLen = sizeof(digest);
+  CHECK(functions->C_DigestInit(session, &digestMechanism));
+  CHECK(functions->C_Digest(session, message, sizeof(message) - 1, digest, &digestLen));
+  mechanism = (CK_MECHANISM){CKM_RSA_PKCS_PSS, &pss, sizeof(pss)};
+  signatureLen = sizeof(signature);
+  CHECK(functions->C_SignInit(session, &mechanism, rsaPrivate));
+  CHECK(functions->C_Sign(session, digest, digestLen, signature, &signatureLen));
+  CHECK(functions->C_VerifyInit(session, &mechanism, rsaPublic));
+  CHECK(functions->C_Verify(session, digest, digestLen, signature, signatureLen));
+
+  CK_OBJECT_HANDLE ecPublic, ecPrivate;
+  CHECK(findKeyPair(functions, session, CKK_EC, CKA_SIGN, &ecPublic, &ecPrivate));
+  mechanism = (CK_MECHANISM){CKM_ECDSA_SHA256, NULL, 0};
+  signatureLen = sizeof(signature);
+  CHECK(functions->C_SignInit(session, &mechanism, ecPrivate));
+  CHECK(functions->C_Sign(session, message, sizeof(message) - 1, signature, &signatureLen));
+  CHECK(functions->C_VerifyInit(session, &mechanism, ecPublic));
+  CHECK(functions->C_VerifyUpdate(session, message, 7));
+  CHECK(functions->C_VerifyUpdate(session, message + 7, sizeof(message) - 1 - 7));
+  CHECK(functions->C_VerifyFinal(session, signature, signatureLen));
+  signature[0] ^= 1;
+  CHECK(functions->C_VerifyInit(session, &mechanism, ecPublic));
+  if (functions->C_Verify(session, message, sizeof(message) - 1, signature, signatureLen) != CKR_SIGNATURE_INVALID)
+    return 1;
+  mechanism = (CK_MECHANISM){CKM_ECDSA, NULL, 0};
+  signatureLen = sizeof(signature);
+  CHECK(functions->C_SignInit(session, &mechanism, ecPrivate));
+  CHECK(functions->C_Sign(session, digest, digestLen, signature, &signatureLen));
+  CHECK(functions->C_VerifyInit(session, &mechanism, ecPublic));
+  CHECK(functions->C_Verify(session, digest, digestLen, signature, signatureLen));
+  return 0;
+}
+
+static int encryptDecryptRoundTrip(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE session,
+                                   CK_OBJECT_HANDLE publicKey, CK_OBJECT_HANDLE privateKey, CK_MECHANISM *mechanism,
+                                   CK_BYTE *plaintext, CK_ULONG plaintextLen) {
+  CK_BYTE ciphertext[512], recovered[512];
+  CK_ULONG ciphertextLen = 0;
+  CHECK(functions->C_EncryptInit(session, mechanism, publicKey));
+  CHECK(functions->C_Encrypt(session, plaintext, plaintextLen, NULL, &ciphertextLen));
+  CK_ULONG smallLen = 1;
+  if (functions->C_Encrypt(session, plaintext, plaintextLen, ciphertext, &smallLen) != CKR_BUFFER_TOO_SMALL ||
+      smallLen != ciphertextLen)
+    return 1;
+  CHECK(functions->C_Encrypt(session, plaintext, plaintextLen, ciphertext, &ciphertextLen));
+
+  CHECK(functions->C_DecryptInit(session, mechanism, privateKey));
+  CK_ULONG recoveredLen = 0;
+  CHECK(functions->C_Decrypt(session, ciphertext, ciphertextLen, NULL, &recoveredLen));
+  if (recoveredLen > sizeof(recovered))
+    return 1;
+  CHECK(functions->C_Decrypt(session, ciphertext, ciphertextLen, recovered, &recoveredLen));
+  return recoveredLen == plaintextLen && memcmp(recovered, plaintext, plaintextLen) == 0 ? 0 : 1;
+}
+
+static int exerciseEncrypt(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE session) {
+  CK_OBJECT_HANDLE publicKey, privateKey;
+  CHECK(findKeyPair(functions, session, CKK_RSA, CKA_DECRYPT, &publicKey, &privateKey));
+  CK_BYTE plaintext[] = "host encrypt regression";
+  CK_MECHANISM mechanism = {CKM_RSA_PKCS, NULL, 0};
+  if (encryptDecryptRoundTrip(functions, session, publicKey, privateKey, &mechanism, plaintext,
+                              sizeof(plaintext) - 1) != 0)
+    return 1;
+
+  CK_BYTE label[] = "oaep-label";
+  CK_RSA_PKCS_OAEP_PARAMS oaep = {CKM_SHA256, CKG_MGF1_SHA256, CKZ_DATA_SPECIFIED, label, sizeof(label) - 1};
+  mechanism = (CK_MECHANISM){CKM_RSA_PKCS_OAEP, &oaep, sizeof(oaep)};
+  CHECK(functions->C_EncryptInit(session, &mechanism, publicKey));
+  CK_BYTE originalFirst = label[0];
+  label[0] ^= 1;
+  CK_BYTE ciphertext[512], recovered[512];
+  CK_ULONG ciphertextLen = sizeof(ciphertext);
+  CHECK(functions->C_Encrypt(session, plaintext, sizeof(plaintext) - 1, ciphertext, &ciphertextLen));
+  label[0] = originalFirst;
+  CHECK(functions->C_DecryptInit(session, &mechanism, privateKey));
+  CK_ULONG recoveredLen = sizeof(recovered);
+  CHECK(functions->C_Decrypt(session, ciphertext, ciphertextLen, recovered, &recoveredLen));
+  if (recoveredLen != sizeof(plaintext) - 1 || memcmp(recovered, plaintext, recoveredLen) != 0)
+    return 1;
+
+  CK_ULONG modulusLen = 0;
+  CK_ATTRIBUTE modulus = {CKA_MODULUS, NULL, 0};
+  CHECK(functions->C_GetAttributeValue(session, publicKey, &modulus, 1));
+  modulusLen = modulus.ulValueLen;
+  if (modulusLen > sizeof(recovered))
+    return 1;
+  memset(recovered, 0, modulusLen);
+  memcpy(recovered + modulusLen - sizeof(plaintext) + 1, plaintext, sizeof(plaintext) - 1);
+  mechanism = (CK_MECHANISM){CKM_RSA_X_509, NULL, 0};
+  return encryptDecryptRoundTrip(functions, session, publicKey, privateKey, &mechanism, recovered, modulusLen);
 }
 
 static int testFunctionListAndSessions(CK_FUNCTION_LIST_3_2_PTR functions, CK_SLOT_ID slot, const char *pin) {
@@ -376,7 +579,8 @@ int main(int argc, char **argv) {
   CHECK(functions->C_Logout(session));
   CHECK(functions->C_Login(session, CKU_USER, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin)));
 
-  if (exercisePqcPrivateOperations(functions, session, mldsaPrivate, mlkemPublic, mlkemPrivate, pin, CK_TRUE) != 0)
+  if (exercisePqcPrivateOperations(functions, session, mldsaPublic, mldsaPrivate, mlkemPublic, mlkemPrivate, pin,
+                                   CK_TRUE) != 0)
     return 1;
 
   CHECK(functions->C_CloseSession(session));
@@ -428,7 +632,12 @@ int main(int argc, char **argv) {
 
   CHECK(functions->C_Logout(session));
   CHECK(functions->C_Login(session, CKU_USER, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin)));
-  if (exercisePqcPrivateOperations(functions, session, mldsaPrivate, mlkemPublic, mlkemPrivate, pin, CK_FALSE) != 0)
+  if (exercisePqcPrivateOperations(functions, session, mldsaPublic, mldsaPrivate, mlkemPublic, mlkemPrivate, pin,
+                                   CK_FALSE) != 0)
+    return 1;
+  if (exerciseVerify(functions, session) != 0)
+    return 1;
+  if (exerciseEncrypt(functions, session) != 0)
     return 1;
 
   printf("PKCS#11 3.2 ML-DSA-65 and ML-KEM-768 generation/import hardware test passed\n");

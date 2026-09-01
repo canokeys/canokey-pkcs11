@@ -193,8 +193,13 @@ Write-path notes:
   operation-local, must not enter the token USER cache, and is consumed and
   zeroized after one operation or cancellation.
 - Every PKCS#11 3.2 function-list entry must be non-NULL. Unsupported 3.x APIs
-  use type-correct stubs returning `CKR_FUNCTION_NOT_SUPPORTED`; do not add
-  host-side Verify or public-key Encrypt merely to increase API coverage.
+  use type-correct stubs returning `CKR_FUNCTION_NOT_SUPPORTED`. RSA/ECDSA/
+  ML-DSA Verify and RSA public-key Encrypt are host-side implementations; do
+  not mark mixed host/card mechanism capabilities with `CKF_HW`.
+- Host Verify supports RSA PKCS#1 v1.5/PSS, ECDSA, and ML-DSA-65 in single-part
+  and streaming forms. Host Encrypt supports single-part RSA X.509, PKCS#1
+  v1.5, and OAEP. OAEP mechanism copies must deep-copy `pSourceData` so caller
+  label lifetime does not leak into an active operation.
 - Standalone `C_WaitForSlotEvent` uses PC/SC status-change notifications and
   the PnP pseudo-reader. `CKF_DONT_BLOCK` returns `CKR_NO_EVENT` when nothing
   changed, and `C_Finalize` cancels a blocking wait. Managed mode returns
@@ -325,15 +330,14 @@ PIV object IDs map to slots as:
 
 ## Known Gaps
 
-- Verify, random generation, wrap/unwrap, token-object delete/set-attribute,
-  and init PIN are mostly stubs returning `CKR_FUNCTION_NOT_SUPPORTED` or the
+- Random generation, wrap/unwrap, multipart encrypt/decrypt, token-object
+  delete/set-attribute, and init PIN remain unsupported or return the
   corresponding object-policy error.
 - `C_GetObjectSize` is implemented as an approximate PKCS#11 object size based
   on readable attributes. `C_SetAttributeValue` validates object handles but
-  treats PIV token attributes as read-only. `C_CopyObject` is intentionally
-  unsupported because PIV token objects do not have stable copy semantics in
-  this module.
-- `C_DestroyObject` is intentionally not wired up yet. CanoKey PIV supports
+  treats PIV token attributes as read-only. `C_CopyObject` supports session
+  secret keys; PIV token objects do not have stable copy semantics.
+- `C_DestroyObject` securely clears session secret keys. CanoKey PIV supports
   PUT DATA (`00 DB`) for certificate writes and a special `53 00` certificate
   delete case, but there is no standard PIV APDU that deletes both certificates
   and asymmetric keys with matching PKCS#11 object semantics.

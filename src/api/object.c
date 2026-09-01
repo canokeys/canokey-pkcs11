@@ -2148,8 +2148,7 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
     break;
 
   case CKA_VERIFY: {
-    // Public-key verification is not implemented by this module.
-    CK_BBOOL value = CK_FALSE;
+    CK_BBOOL value = keyType == CKK_RSA || keyType == CKK_EC || keyType == CKK_ML_DSA ? CK_TRUE : CK_FALSE;
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -2167,8 +2166,7 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
   }
 
   case CKA_ENCRYPT: {
-    // Public-key encryption is not implemented by this module.
-    CK_BBOOL value = CK_FALSE;
+    CK_BBOOL value = keyType == CKK_RSA ? CK_TRUE : CK_FALSE;
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }

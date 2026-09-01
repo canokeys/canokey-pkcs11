@@ -66,6 +66,14 @@ static void free_session(CNK_PKCS11_SESSION *session) {
     mbedtls_platform_zeroize(session->signingContext.message, session->signingContext.messageCapacity);
     ck_free(session->signingContext.message);
   }
+  if (session->digestingContext.mechanismType != 0)
+    mbedtls_md_free(&session->digestingContext.context);
+  ck_free(session->verifyingContext.mechanism.pParameter);
+  if (session->verifyingContext.message != NULL) {
+    mbedtls_platform_zeroize(session->verifyingContext.message, session->verifyingContext.messageCapacity);
+    ck_free(session->verifyingContext.message);
+  }
+  ck_free(session->encryptingContext.mechanism.pParameter);
   ck_free(session->decryptingContext.mechanism.pParameter);
   for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
     if (session->secretKeys[i].active)
@@ -306,6 +314,24 @@ CK_RV cnk_session_cancel_operations(CNK_PKCS11_SESSION *session, CK_FLAGS flags)
     }
     memset(&session->signingContext, 0, sizeof(session->signingContext));
   }
+  if ((flags & CKF_VERIFY) != 0 && session->verifyingContext.hKey != 0) {
+    CK_BBOOL ownsDigestContext = session->verifyingContext.ownsDigestContext;
+    ck_free(session->verifyingContext.mechanism.pParameter);
+    if (session->verifyingContext.message != NULL) {
+      mbedtls_platform_zeroize(session->verifyingContext.message, session->verifyingContext.messageCapacity);
+      ck_free(session->verifyingContext.message);
+    }
+    memset(&session->verifyingContext, 0, sizeof(session->verifyingContext));
+    if (ownsDigestContext) {
+      if (session->digestingContext.mechanismType != 0)
+        mbedtls_md_free(&session->digestingContext.context);
+      memset(&session->digestingContext, 0, sizeof(session->digestingContext));
+    }
+  }
+  if ((flags & CKF_ENCRYPT) != 0 && session->encryptingContext.hKey != 0) {
+    ck_free(session->encryptingContext.mechanism.pParameter);
+    memset(&session->encryptingContext, 0, sizeof(session->encryptingContext));
+  }
   if ((flags & CKF_DECRYPT) != 0 && session->decryptingContext.hKey != 0) {
     ck_free(session->decryptingContext.mechanism.pParameter);
     memset(&session->decryptingContext, 0, sizeof(session->decryptingContext));
@@ -465,6 +491,7 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
   session_table[index] = NULL;
   session_count--;
   session->isOpen = CK_FALSE;
+  cnk_session_cancel_operations(session, ~(CK_FLAGS)0);
   cnk_mutex_lock(&session->token->lock);
   session->token->openSessions--;
   if (!(session->flags & CKF_RW_SESSION))
@@ -498,6 +525,7 @@ CK_RV C_CloseAllSessions(CK_SLOT_ID slotID) {
       session_table[i] = NULL;
       session_count--;
       session->isOpen = CK_FALSE;
+      cnk_session_cancel_operations(session, ~(CK_FLAGS)0);
       cnk_mutex_lock(&session->token->lock);
       session->token->openSessions--;
       if (!(session->flags & CKF_RW_SESSION))
