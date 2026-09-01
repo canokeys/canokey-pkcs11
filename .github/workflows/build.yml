@@ -78,7 +78,7 @@ jobs:
           if not defined VSINSTALL exit /b 1
           call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
           for /f "delims=" %%i in ('python -c "import sys; print(sys.executable)"') do set "PYTHON=%%i"
-          cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=Debug -DPython3_EXECUTABLE="%PYTHON%"
+          cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=Debug -DBUILD_REAL_TESTING=ON -DBUILD_UNIT_TESTING=OFF -DPython3_EXECUTABLE="%PYTHON%"
           cmake --build build -v
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
