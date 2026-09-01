@@ -351,6 +351,22 @@ CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session,
   return rv;
 }
 
+void cnk_token_get_session_counts(CK_SLOT_ID slotId, CK_ULONG_PTR openSessions, CK_ULONG_PTR readOnlySessions) {
+  if (openSessions == NULL || readOnlySessions == NULL)
+    return;
+  *openSessions = 0;
+  *readOnlySessions = 0;
+  cnk_mutex_lock(&session_mutex);
+  CNK_PKCS11_TOKEN_STATE *token = find_token_state(slotId);
+  if (token != NULL) {
+    cnk_mutex_lock(&token->lock);
+    *openSessions = token->openSessions;
+    *readOnlySessions = token->readOnlySessions;
+    cnk_mutex_unlock(&token->lock);
+  }
+  cnk_mutex_unlock(&session_mutex);
+}
+
 CK_RV cnk_session_cancel_operations(CNK_PKCS11_SESSION *session, CK_FLAGS flags) {
   CNK_ENSURE_NONNULL(session);
   cnk_mutex_lock(&session->lock);

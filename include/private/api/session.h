@@ -204,5 +204,6 @@ CK_RV cnk_token_copy_management_key(CNK_PKCS11_SESSION *session, CK_BYTE key[24]
 CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session, CK_BYTE_PTR key, CK_ULONG keyLen,
                                                     CK_RV verificationRv);
+void cnk_token_get_session_counts(CK_SLOT_ID slotId, CK_ULONG_PTR openSessions, CK_ULONG_PTR readOnlySessions);
 
 #endif /* CNK_API_SESSION_H */

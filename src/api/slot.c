@@ -144,11 +144,10 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   if (cnk_piv_random_supported(slotID, &randomSupported) == CKR_OK && randomSupported)
     pInfo->flags |= CKF_RNG;
 
-  // Set session counts
+  // Session counts are token-wide, not tied to the caller's session.
   pInfo->ulMaxSessionCount = CK_EFFECTIVELY_INFINITE;
-  pInfo->ulSessionCount = 0; // Will be updated if we implement session tracking
   pInfo->ulMaxRwSessionCount = CK_EFFECTIVELY_INFINITE;
-  pInfo->ulRwSessionCount = 0; // Will be updated if we implement session tracking
+  cnk_token_get_session_counts(slotID, &pInfo->ulSessionCount, &pInfo->ulRwSessionCount);
 
   // Set PIN constraints
   pInfo->ulMaxPinLen = 8; // PIV PIN is 8 digits max
