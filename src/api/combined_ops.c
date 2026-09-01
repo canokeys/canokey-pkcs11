@@ -309,6 +309,25 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
     break;
   }
 
+  case CKM_EC_EDWARDS_KEY_PAIR_GEN:
+  case CKM_EC_MONTGOMERY_KEY_PAIR_GEN: {
+    CK_ATTRIBUTE_PTR paramsAttr;
+    CNK_ENSURE_OK(
+        cnk_template_get_attribute(pPublicKeyTemplate, ulPublicKeyAttributeCount, CKA_EC_PARAMS, &paramsAttr));
+    CK_BYTE namedAlgorithm;
+    CNK_ENSURE_OK(
+        cnk_ec_params_to_piv_algorithm((CK_BYTE_PTR)paramsAttr->pValue, paramsAttr->ulValueLen, &namedAlgorithm));
+    if (pMechanism->mechanism == CKM_EC_EDWARDS_KEY_PAIR_GEN && namedAlgorithm == PIV_ALG_ED25519)
+      algorithmType = session->ed25519Algorithm;
+    else if (pMechanism->mechanism == CKM_EC_MONTGOMERY_KEY_PAIR_GEN && namedAlgorithm == PIV_ALG_X25519)
+      algorithmType = session->x25519Algorithm;
+    else
+      CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "curve does not match key-pair generation mechanism");
+    if (algorithmType == 0)
+      CNK_RETURN(CKR_MECHANISM_INVALID, "requested firmware algorithm is disabled");
+    break;
+  }
+
   case CKM_ML_DSA_KEY_PAIR_GEN:
   case CKM_ML_KEM_KEY_PAIR_GEN: {
     CK_ATTRIBUTE_PTR parameterSetAttr;
@@ -407,7 +426,8 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
 
-  if (!CNK_PivPrivateKeyCanDerive(algorithmType))
+  CK_BBOOL x25519 = algorithmType == session->x25519Algorithm;
+  if (!CNK_PivPrivateKeyCanDerive(algorithmType) && !x25519)
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for ECDH derive");
 
   CK_ULONG expectedSecretLen = 0;
@@ -423,11 +443,18 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
     expectedSecretLen = 66;
     break;
   default:
-    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "base key is not a supported EC key");
+    if (x25519)
+      expectedSecretLen = 32;
+    else
+      CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "base key is not a supported EC key");
   }
 
-  if (params->ulPublicDataLen != 1 + expectedSecretLen * 2 || params->pPublicData[0] != 0x04)
+  if (x25519) {
+    if (params->ulPublicDataLen != expectedSecretLen)
+      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "X25519 peer public key must be 32 bytes");
+  } else if (params->ulPublicDataLen != 1 + expectedSecretLen * 2 || params->pPublicData[0] != 0x04) {
     CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "peer public key must be an uncompressed EC point");
+  }
 
   CK_OBJECT_CLASS objectClass = CKO_SECRET_KEY;
   CK_KEY_TYPE keyType = CKK_GENERIC_SECRET;
@@ -558,10 +585,27 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   // it; the X9.63 KDF variants expand it before constructing the session key.
   CK_BYTE sharedSecret[CNK_MAX_ECDH_SECRET_LEN] = {0};
   CK_ULONG sharedSecretLen = sizeof(sharedSecret);
-  CK_RV rv = cnk_piv_ecdh(session->slotId, session, algorithmType, pivTag, pinPolicy, params->pPublicData,
+  CK_BYTE peerPublic[CNK_MAX_ECDH_PUBLIC_DATA];
+  const CK_BYTE *cardPublic = params->pPublicData;
+  if (x25519) {
+    // PKCS#11 follows RFC 7748 little-endian encoding, while CanoKey's PIV
+    // extension carries X25519 integers in big-endian form.
+    for (CK_ULONG i = 0; i < expectedSecretLen; i++)
+      peerPublic[i] = params->pPublicData[expectedSecretLen - 1 - i];
+    cardPublic = peerPublic;
+  }
+  CK_RV rv = cnk_piv_ecdh(session->slotId, session, algorithmType, pivTag, pinPolicy, (CK_BYTE_PTR)cardPublic,
                           params->ulPublicDataLen, sharedSecret, &sharedSecretLen);
+  mbedtls_platform_zeroize(peerPublic, sizeof(peerPublic));
   if (rv != CKR_OK)
     CNK_RETURN(rv, "PIV ECDH failed");
+  if (x25519) {
+    for (CK_ULONG i = 0; i < sharedSecretLen / 2; i++) {
+      CK_BYTE tmp = sharedSecret[i];
+      sharedSecret[i] = sharedSecret[sharedSecretLen - 1 - i];
+      sharedSecret[sharedSecretLen - 1 - i] = tmp;
+    }
+  }
   if (params->kdf == CKD_NULL && sharedSecretLen < requestedValueLen) {
     mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
     CNK_RETURN(CKR_DEVICE_ERROR, "ECDH secret shorter than requested key");

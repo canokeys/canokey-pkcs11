@@ -203,6 +203,10 @@ static CK_KEY_TYPE algoType2KeyType(const CNK_PKCS11_SESSION *session, CK_BYTE a
     return CKK_ML_DSA;
   if (session->mlkem768Algorithm != 0 && algorithmType == session->mlkem768Algorithm)
     return CKK_ML_KEM;
+  if (session->ed25519Algorithm != 0 && algorithmType == session->ed25519Algorithm)
+    return CKK_EC_EDWARDS;
+  if (session->x25519Algorithm != 0 && algorithmType == session->x25519Algorithm)
+    return CKK_EC_MONTGOMERY;
   switch (algorithmType) {
   case PIV_ALG_RSA_2048:
   case PIV_ALG_RSA_3072:
@@ -215,12 +219,6 @@ static CK_KEY_TYPE algoType2KeyType(const CNK_PKCS11_SESSION *session, CK_BYTE a
   case PIV_ALG_SECP256K1:
   case PIV_ALG_SM2:
     return CKK_EC;
-
-  case PIV_ALG_ED25519:
-    return CKK_EC_EDWARDS;
-
-  case PIV_ALG_X25519:
-    return CKK_EC_MONTGOMERY;
 
   default:
     CNK_WARN("Unknown algorithm type: 0x%02X", algorithmType);
@@ -955,6 +953,11 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
     case CKK_EC:
       CNK_ENSURE_OK(cnk_build_piv_ec_import(pTemplate, ulCount, objId, importData, sizeof(importData), &importDataLen,
                                             &algorithmType));
+      break;
+    case CKK_EC_EDWARDS:
+    case CKK_EC_MONTGOMERY:
+      CNK_ENSURE_OK(cnk_build_piv_25519_import(session, pTemplate, ulCount, objId, keyType, importData,
+                                               sizeof(importData), &importDataLen, &algorithmType));
       break;
     case CKK_ML_DSA:
     case CKK_ML_KEM:
@@ -1758,6 +1761,52 @@ static CK_RV handleDataAttribute(CK_ATTRIBUTE_PTR attribute, const PivDataObject
   }
 }
 
+static CK_RV setEcParamsAttribute(const CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attribute,
+                                  CK_BYTE algorithmType) {
+  const char *oid = NULL;
+  size_t oidLen = 0;
+  CK_BYTE encoded[16];
+
+  if (algorithmType == session->ed25519Algorithm) {
+    oid = "\x2B\x65\x70"; // id-Ed25519, 1.3.101.112
+    oidLen = 3;
+  } else if (algorithmType == session->x25519Algorithm) {
+    oid = "\x2B\x65\x6E"; // id-X25519, 1.3.101.110
+    oidLen = 3;
+  } else {
+    switch (algorithmType) {
+    case PIV_ALG_ECC_256:
+      oid = "\x2A\x86\x48\xCE\x3D\x03\x01\x07";
+      oidLen = 8;
+      break;
+    case PIV_ALG_ECC_384:
+      oid = "\x2B\x81\x04\x00\x22";
+      oidLen = 5;
+      break;
+    case PIV_ALG_ECC_521:
+      oid = "\x2B\x81\x04\x00\x23";
+      oidLen = 5;
+      break;
+    case PIV_ALG_SECP256K1:
+      oid = "\x2B\x81\x04\x00\x0A";
+      oidLen = 5;
+      break;
+    case PIV_ALG_SM2:
+      oid = "\x2A\x81\x1C\xCF\x55\x01\x82\x2D";
+      oidLen = 8;
+      break;
+    default:
+      return CKR_ATTRIBUTE_VALUE_INVALID;
+    }
+  }
+
+  CK_BYTE_PTR output = encoded + sizeof(encoded);
+  int encodedLen = mbedtls_asn1_write_oid(&output, encoded, oid, oidLen);
+  if (encodedLen < 0)
+    return CKR_FUNCTION_FAILED;
+  return setSingleAttributeValue(attribute, output, (CK_ULONG)encodedLen);
+}
+
 // Handle public key specific attributes
 static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithm_type,
                                       CK_BYTE_PTR pbPublicKey, CK_ULONG cbPublicKey) {
@@ -1772,8 +1821,6 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
   CK_ULONG cbPublicExponent = 0;
   CK_BYTE_PTR pbPublicPoint = NULL;
   CK_ULONG cbPublicPoint = 0;
-  CK_BYTE abEcParams[16];
-  CK_ULONG cbEcParams = 0;
 
   // Parse the public key data. The public key data is encoded in TLV.
   CK_ULONG vpos = 0; /* cursor inside the value buffer   */
@@ -1815,7 +1862,7 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
     break;
 
   case CKA_VERIFY: {
-    CK_BBOOL value = keyType == CKK_RSA || keyType == CKK_EC || keyType == CKK_ML_DSA ? CK_TRUE : CK_FALSE;
+    CK_BBOOL value = CNK_PivPrivateKeyCanSign(algorithm_type) || algorithm_type == session->mldsa65Algorithm;
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -1845,7 +1892,7 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
   }
 
   case CKA_DERIVE: {
-    CK_BBOOL value = CK_FALSE;
+    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type) || algorithm_type == session->x25519Algorithm;
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -1915,7 +1962,7 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
     break;
 
   case CKA_EC_POINT:
-    if (keyType == CKK_EC) {
+    if (keyType == CKK_EC || keyType == CKK_EC_EDWARDS || keyType == CKK_EC_MONTGOMERY) {
       rv = setSingleAttributeValue(attribute, pbPublicPoint, cbPublicPoint);
     } else {
       // Not applicable for non-ECC keys
@@ -1924,37 +1971,8 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
     break;
 
   case CKA_EC_PARAMS:
-    if (keyType == CKK_EC || keyType == CKK_EC_EDWARDS) {
-      const char *oid = NULL;
-      size_t cbOid = 0;
-      switch (algorithm_type) {
-      case PIV_ALG_ECC_256:
-        oid = "\x2A\x86\x48\xCE\x3D\x03\x01\x07";
-        cbOid = 8;
-        break;
-      case PIV_ALG_ECC_384:
-        oid = "\x2B\x81\x04\x00\x22";
-        cbOid = 5;
-        break;
-      case PIV_ALG_ECC_521:
-        oid = "\x2B\x81\x04\x00\x23";
-        cbOid = 5;
-        break;
-      case PIV_ALG_SECP256K1:
-        oid = "\x2B\x81\x04\x00\x0A";
-        cbOid = 5;
-        break;
-      default:
-        CNK_ERROR("Should not be reached");
-        break;
-      }
-      if (oid == NULL) {
-        rv = CKR_ATTRIBUTE_VALUE_INVALID;
-        break;
-      }
-      CK_BYTE_PTR pbEcParams = abEcParams + sizeof(abEcParams);
-      cbEcParams = mbedtls_asn1_write_oid(&pbEcParams, abEcParams, oid, cbOid);
-      rv = setSingleAttributeValue(attribute, pbEcParams, cbEcParams);
+    if (keyType == CKK_EC || keyType == CKK_EC_EDWARDS || keyType == CKK_EC_MONTGOMERY) {
+      rv = setEcParamsAttribute(session, attribute, algorithm_type);
     } else {
       // Not applicable for non-ECC keys
       rv = CKR_ATTRIBUTE_TYPE_INVALID;
@@ -2036,7 +2054,8 @@ static CK_RV handlePrivateKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE
     break;
 
   case CKA_SIGN: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanSign(algorithm_type) || algorithm_type == session->mldsa65Algorithm;
+    CK_BBOOL value = CNK_PivPrivateKeyCanSign(algorithm_type) || algorithm_type == session->mldsa65Algorithm ||
+                     algorithm_type == session->ed25519Algorithm;
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -2128,10 +2147,15 @@ static CK_RV handlePrivateKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE
   }
 
   case CKA_DERIVE: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type);
+    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type) || algorithm_type == session->x25519Algorithm;
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
+
+  case CKA_EC_PARAMS:
+    if (key_type == CKK_EC || key_type == CKK_EC_EDWARDS || key_type == CKK_EC_MONTGOMERY)
+      rv = setEcParamsAttribute(session, attribute, algorithm_type);
+    break;
 
   default:
     rv = CKR_ATTRIBUTE_TYPE_INVALID;

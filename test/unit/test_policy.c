@@ -142,6 +142,18 @@ static void test_p521_named_curve_parameters(void **state) {
   assert_int_equal(algorithmType, PIV_ALG_ECC_521);
 }
 
+static void test_25519_named_curve_parameters(void **state) {
+  (void)state;
+  static const CK_BYTE ed25519[] = {0x06, 0x03, 0x2B, 0x65, 0x70};
+  static const CK_BYTE x25519[] = {0x06, 0x03, 0x2B, 0x65, 0x6E};
+  CK_BYTE algorithmType = 0;
+
+  assert_int_equal(cnk_ec_params_to_piv_algorithm(ed25519, sizeof(ed25519), &algorithmType), CKR_OK);
+  assert_int_equal(algorithmType, PIV_ALG_ED25519);
+  assert_int_equal(cnk_ec_params_to_piv_algorithm(x25519, sizeof(x25519), &algorithmType), CKR_OK);
+  assert_int_equal(algorithmType, PIV_ALG_X25519);
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test(test_default_policy_for_slots),
@@ -153,6 +165,7 @@ int main(void) {
       cmocka_unit_test(test_reject_invalid_touch_policy),
       cmocka_unit_test(test_key_capabilities_by_algorithm),
       cmocka_unit_test(test_p521_named_curve_parameters),
+      cmocka_unit_test(test_25519_named_curve_parameters),
   };
 
   return cmocka_run_group_tests(tests, NULL, NULL);

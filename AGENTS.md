@@ -224,6 +224,13 @@ Write-path notes:
   use type-correct stubs returning `CKR_FUNCTION_NOT_SUPPORTED`. RSA/ECDSA/
   ML-DSA Verify and RSA public-key Encrypt are host-side implementations; do
   not mark mixed host/card mechanism capabilities with `CKF_HW`.
+- P-521 is a standard `CKK_EC` curve and is supported for generation, import,
+  ECDSA sign/verify, and ECDH. Ed25519 and X25519 use
+  `CKK_EC_EDWARDS`/`CKK_EC_MONTGOMERY` with RFC 8410 OIDs. Ed25519 currently
+  advertises pure `CKM_EDDSA` signing only; do not claim host verification
+  until the bundled crypto provider supplies a compatible primitive. PKCS#11
+  3.2 has no SM2 mechanism, so expose the SM2 object identity without mapping
+  it to `CKM_ECDSA`.
 - Host Verify supports RSA PKCS#1 v1.5/PSS, ECDSA, and ML-DSA-65 in single-part
   and streaming forms. Host Encrypt supports single-part RSA X.509, PKCS#1
   v1.5, and OAEP. OAEP mechanism copies must deep-copy `pSourceData` so caller

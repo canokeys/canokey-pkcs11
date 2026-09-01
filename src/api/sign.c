@@ -188,6 +188,22 @@ static CK_RV validateEcMech(CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) 
   return CKR_OK;
 }
 
+static CK_RV validateEdDsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *mechanism, CK_BYTE algorithmType) {
+  if (algorithmType != session->ed25519Algorithm)
+    CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not Ed25519");
+  if (mechanism->pParameter == NULL && mechanism->ulParameterLen == 0) {
+    session->signingContext.cbSignature = 64;
+    return CKR_OK;
+  }
+  if (mechanism->pParameter == NULL || mechanism->ulParameterLen != sizeof(CK_EDDSA_PARAMS))
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad EdDSA parameters");
+  const CK_EDDSA_PARAMS *params = mechanism->pParameter;
+  if (params->phFlag || params->ulContextDataLen != 0 || params->pContextData != NULL)
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "only pure Ed25519 without context is supported");
+  session->signingContext.cbSignature = 64;
+  return CKR_OK;
+}
+
 static CK_RV initDigestingContext(CNK_PKCS11_DIGESTING_CONTEXT *context, CK_MECHANISM_TYPE mechanism) {
   if (context->mechanismType != 0)
     CNK_RETURN(CKR_OPERATION_ACTIVE, "digest context is already active");
@@ -217,8 +233,9 @@ static CK_RV appendSigningMessage(CNK_PKCS11_SESSION *session, const CK_BYTE *pa
   if (partLen == 0)
     return CKR_OK;
   CNK_ENSURE_NONNULL(part);
-  if (partLen > 65520 - session->signingContext.messageLen)
-    CNK_RETURN(CKR_DATA_LEN_RANGE, "ML-DSA message exceeds firmware limit");
+  CK_ULONG messageLimit = session->signingContext.mechanism.mechanism == CKM_EDDSA ? 512 : 65520;
+  if (partLen > messageLimit - session->signingContext.messageLen)
+    CNK_RETURN(CKR_DATA_LEN_RANGE, "signing message exceeds firmware limit");
 
   CK_ULONG required = session->signingContext.messageLen + partLen;
   if (required > session->signingContext.messageCapacity) {
@@ -262,8 +279,15 @@ static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData
   CK_BYTE_PTR pbSignRawData = NULL_PTR;
   CK_ULONG cbSignRawData;
 
-  if (pSession->signingContext.mechanism.mechanism == CKM_ML_DSA) {
-    return cnk_piv_sign(pSession->slotId, pSession, pInputData, cbInputData, pSignature, pulSignatureLen);
+  if (pSession->signingContext.mechanism.mechanism == CKM_ML_DSA ||
+      pSession->signingContext.mechanism.mechanism == CKM_EDDSA) {
+    rv = cnk_piv_sign(pSession->slotId, pSession, pInputData, cbInputData, pSignature, pulSignatureLen);
+    if (rv != CKR_BUFFER_TOO_SMALL) {
+      pSession->signingContext.contextAuthenticated = CK_FALSE;
+      mbedtls_platform_zeroize(pSession->signingContext.contextPin, sizeof(pSession->signingContext.contextPin));
+      pSession->signingContext.contextPinLen = 0;
+    }
+    return rv;
   } else if (isMechRSA(pSession->signingContext.mechanism.mechanism)) {
     pbSignRawData = ck_malloc(pSession->signingContext.cbSignature);
     if (!pbSignRawData)
@@ -354,7 +378,8 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
 
-  if (!CNK_PivPrivateKeyCanSign(algorithmType) && algorithmType != session->mldsa65Algorithm)
+  if (!CNK_PivPrivateKeyCanSign(algorithmType) && algorithmType != session->mldsa65Algorithm &&
+      algorithmType != session->ed25519Algorithm)
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for signing");
 
   if (pMechanism->mechanism == CKM_ML_DSA) {
@@ -363,6 +388,8 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
     if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "ML-DSA context is not supported by PIV");
     session->signingContext.cbSignature = CNK_MLDSA65_SIGNATURE_BYTES;
+  } else if (pMechanism->mechanism == CKM_EDDSA) {
+    CNK_ENSURE_OK(validateEdDsaMech(session, pMechanism, algorithmType));
   } else if (isMechRSA(pMechanism->mechanism)) {
     CNK_ENSURE_OK(validateRsaMech(session, pMechanism, algorithmType, abPublicKey, cbPublicKey));
   } else if (isMechEC(pMechanism->mechanism)) {
@@ -414,9 +441,11 @@ static CK_RV signUpdate(CNK_PKCS11_SESSION *session, CK_BYTE_PTR part, CK_ULONG 
   if (session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS && !session->signingContext.contextAuthenticated)
     return CKR_USER_NOT_LOGGED_IN;
   if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism) &&
-      session->signingContext.mechanism.mechanism != CKM_ML_DSA)
+      session->signingContext.mechanism.mechanism != CKM_ML_DSA &&
+      session->signingContext.mechanism.mechanism != CKM_EDDSA)
     return CKR_ARGUMENTS_BAD;
-  if (session->signingContext.mechanism.mechanism == CKM_ML_DSA)
+  if (session->signingContext.mechanism.mechanism == CKM_ML_DSA ||
+      session->signingContext.mechanism.mechanism == CKM_EDDSA)
     return appendSigningMessage(session, part, partLen);
   if (session->signingContext.digestingContext.mechanismType == 0)
     return CKR_OPERATION_NOT_INITIALIZED;
@@ -431,9 +460,11 @@ static CK_RV signFinal(CNK_PKCS11_SESSION *session, CK_BYTE_PTR signature, CK_UL
   if (session->signingContext.hKey == 0)
     return CKR_OPERATION_NOT_INITIALIZED;
   if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism) &&
-      session->signingContext.mechanism.mechanism != CKM_ML_DSA)
+      session->signingContext.mechanism.mechanism != CKM_ML_DSA &&
+      session->signingContext.mechanism.mechanism != CKM_EDDSA)
     return CKR_ARGUMENTS_BAD;
-  if (session->signingContext.mechanism.mechanism == CKM_ML_DSA) {
+  if (session->signingContext.mechanism.mechanism == CKM_ML_DSA ||
+      session->signingContext.mechanism.mechanism == CKM_EDDSA) {
     if (signature == NULL) {
       *signatureLen = session->signingContext.cbSignature;
       return CKR_OK;

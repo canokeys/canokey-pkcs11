@@ -209,7 +209,7 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
   PKCS11_VALIDATE(pulCount, slotID);
 
   // Define the supported mechanisms
-  static const CK_MECHANISM_TYPE supported_mechanisms[] = {
+  static const CK_MECHANISM_TYPE baseMechanisms[] = {
       CKM_RSA_PKCS_KEY_PAIR_GEN, // RSA key pair generation
       CKM_RSA_PKCS,              // RSA PKCS #1 v1.5
       CKM_RSA_X_509,             // Raw RSA
@@ -256,37 +256,45 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
       CKM_SHA3_512,
       CKM_GENERIC_SECRET_KEY_GEN,
       CKM_AES_KEY_GEN,
-      CKM_ML_DSA_KEY_PAIR_GEN,
-      CKM_ML_DSA,
-      CKM_ML_KEM_KEY_PAIR_GEN,
-      CKM_ML_KEM,
   };
 
-  // Keep the four firmware-dependent PQC mechanisms last: older firmware uses
-  // the same table with that suffix removed after extension discovery fails.
-  CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig;
-  CK_BBOOL pqcSupported = cnk_get_piv_algorithm_extension(slotID, &algorithmConfig) == CKR_OK &&
-                          algorithmConfig.enabled && algorithmConfig.mldsa65 != 0 && algorithmConfig.mlkem768 != 0;
-  const CK_ULONG allMechanisms = sizeof(supported_mechanisms) / sizeof(supported_mechanisms[0]);
-  const CK_ULONG num_mechanisms = pqcSupported ? allMechanisms : allMechanisms - 4;
+  CK_MECHANISM_TYPE supportedMechanisms[sizeof(baseMechanisms) / sizeof(baseMechanisms[0]) + 7];
+  CK_ULONG numMechanisms = sizeof(baseMechanisms) / sizeof(baseMechanisms[0]);
+  memcpy(supportedMechanisms, baseMechanisms, sizeof(baseMechanisms));
+
+  CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig = {0};
+  CK_BBOOL extensionsSupported =
+      cnk_get_piv_algorithm_extension(slotID, &algorithmConfig) == CKR_OK && algorithmConfig.enabled;
+  if (extensionsSupported && algorithmConfig.ed25519 != 0) {
+    supportedMechanisms[numMechanisms++] = CKM_EC_EDWARDS_KEY_PAIR_GEN;
+    supportedMechanisms[numMechanisms++] = CKM_EDDSA;
+  }
+  if (extensionsSupported && algorithmConfig.x25519 != 0)
+    supportedMechanisms[numMechanisms++] = CKM_EC_MONTGOMERY_KEY_PAIR_GEN;
+  if (extensionsSupported && algorithmConfig.mldsa65 != 0 && algorithmConfig.mlkem768 != 0) {
+    supportedMechanisms[numMechanisms++] = CKM_ML_DSA_KEY_PAIR_GEN;
+    supportedMechanisms[numMechanisms++] = CKM_ML_DSA;
+    supportedMechanisms[numMechanisms++] = CKM_ML_KEM_KEY_PAIR_GEN;
+    supportedMechanisms[numMechanisms++] = CKM_ML_KEM;
+  }
 
   // If pMechanismList is NULL, just return the number of mechanisms
   if (pMechanismList == NULL) {
-    *pulCount = num_mechanisms;
+    *pulCount = numMechanisms;
     CNK_RET_OK;
   }
 
   // Check if the provided buffer is large enough
-  if (*pulCount < num_mechanisms) {
-    *pulCount = num_mechanisms;
+  if (*pulCount < numMechanisms) {
+    *pulCount = numMechanisms;
     CNK_RETURN(CKR_BUFFER_TOO_SMALL, "pulCount too small");
   }
 
   // Copy the mechanism list to the provided buffer
-  memcpy(pMechanismList, supported_mechanisms, num_mechanisms * sizeof(*supported_mechanisms));
-  *pulCount = num_mechanisms;
+  memcpy(pMechanismList, supportedMechanisms, numMechanisms * sizeof(*supportedMechanisms));
+  *pulCount = numMechanisms;
 
-  CNK_DEBUG("Returned %lu mechanisms", num_mechanisms);
+  CNK_DEBUG("Returned %lu mechanisms", numMechanisms);
   CNK_RET_OK;
 }
 
@@ -303,6 +311,15 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
     CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
     if (cnk_get_piv_algorithm_extension(slotID, &config) != CKR_OK || !config.enabled || config.mldsa65 == 0 ||
         config.mlkem768 == 0)
+      return CKR_MECHANISM_INVALID;
+  }
+  if (type == CKM_EC_EDWARDS_KEY_PAIR_GEN || type == CKM_EDDSA || type == CKM_EC_MONTGOMERY_KEY_PAIR_GEN) {
+    CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
+    if (cnk_get_piv_algorithm_extension(slotID, &config) != CKR_OK || !config.enabled)
+      return CKR_MECHANISM_INVALID;
+    if ((type == CKM_EC_EDWARDS_KEY_PAIR_GEN || type == CKM_EDDSA) && config.ed25519 == 0)
+      return CKR_MECHANISM_INVALID;
+    if (type == CKM_EC_MONTGOMERY_KEY_PAIR_GEN && config.x25519 == 0)
       return CKR_MECHANISM_INVALID;
   }
 
@@ -357,6 +374,26 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
     pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_NAMEDCURVE;
     pInfo->ulMinKeySize = 256;
     pInfo->ulMaxKeySize = 521;
+    break;
+
+  case CKM_EC_EDWARDS_KEY_PAIR_GEN:
+    pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR | CKF_EC_NAMEDCURVE;
+    pInfo->ulMinKeySize = 255;
+    pInfo->ulMaxKeySize = 255;
+    break;
+
+  case CKM_EDDSA:
+    // Signing is card-side. Host verification is not advertised until the
+    // bundled crypto provider has a compatible pure-Ed25519 primitive.
+    pInfo->flags = CKF_HW | CKF_SIGN | CKF_EC_NAMEDCURVE;
+    pInfo->ulMinKeySize = 255;
+    pInfo->ulMaxKeySize = 255;
+    break;
+
+  case CKM_EC_MONTGOMERY_KEY_PAIR_GEN:
+    pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR | CKF_EC_NAMEDCURVE;
+    pInfo->ulMinKeySize = 255;
+    pInfo->ulMaxKeySize = 255;
     break;
 
   case CKM_ECDSA:

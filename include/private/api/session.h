@@ -146,7 +146,9 @@ typedef struct CNK_PKCS11_SESSION {
   CNK_PKCS11_TOKEN_STATE *token;
   CK_BYTE mldsa65Algorithm;  // Runtime PIV algorithm-extension ID
   CK_BYTE mlkem768Algorithm; // Runtime PIV algorithm-extension ID
-  CNK_PKCS11_MUTEX lock;     // Session lock using abstract mutex
+  CK_BYTE ed25519Algorithm;
+  CK_BYTE x25519Algorithm;
+  CNK_PKCS11_MUTEX lock; // Session lock using abstract mutex
 
   // Object finding fields
   CK_BBOOL findActive;                            // Whether a find operation is active

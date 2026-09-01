@@ -152,6 +152,21 @@ destroyed, digested when non-sensitive, and updated through a restricted set of
 label and usage attributes. PIV token objects remain non-copyable,
 non-destroyable, and read-only.
 
+Firmware algorithm extensions are also exposed through their standard
+PKCS#11 key types and named-curve encodings. P-521 supports key generation,
+private-key import, ECDSA sign/verify, and ECDH. Ed25519 supports
+`CKM_EC_EDWARDS_KEY_PAIR_GEN`, private-key import, and pure `CKM_EDDSA`
+signing without a context. X25519 supports
+`CKM_EC_MONTGOMERY_KEY_PAIR_GEN`, private-key import, and
+`CKM_ECDH1_DERIVE`; RFC 7748 values are converted at the PIV boundary because
+PKCS#11 uses little-endian bytes while the CanoKey PIV extension uses
+big-endian integers. SM2 keys expose their correct curve OID but no signing or
+derivation mechanism, because PKCS#11 3.2 defines no SM2 mechanism.
+
+`CKM_EDDSA` currently advertises card-side signing only. The bundled host
+crypto provider has no compatible pure-Ed25519 verification primitive, so the
+module does not claim `CKF_VERIFY` or set `CKA_VERIFY` for these keys.
+
 Public-key verification runs on the host for RSA PKCS#1 v1.5, RSA-PSS,
 ECDSA, and ML-DSA-65. RSA, ECDSA, and ML-DSA support both single-part and
 `C_VerifyUpdate`/`C_VerifyFinal` flows. RSA public-key encryption also runs on

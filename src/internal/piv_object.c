@@ -187,6 +187,54 @@ CK_RV cnk_build_piv_ec_import(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCou
   return rv;
 }
 
+CK_RV cnk_build_piv_25519_import(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount,
+                                 CK_BYTE objectId, CK_KEY_TYPE keyType, CK_BYTE *output, CK_ULONG outputLen,
+                                 CK_ULONG_PTR written, CK_BYTE *algorithmType) {
+  CNK_ENSURE_NONNULL(session, output, written, algorithmType);
+  if (keyType != CKK_EC_EDWARDS && keyType != CKK_EC_MONTGOMERY)
+    return CKR_KEY_TYPE_INCONSISTENT;
+
+  CK_ATTRIBUTE_PTR valueAttribute;
+  CK_ATTRIBUTE_PTR paramsAttribute;
+  CNK_ENSURE_OK(cnk_template_get_attribute(attributes, attributeCount, CKA_VALUE, &valueAttribute));
+  CNK_ENSURE_OK(cnk_template_get_attribute(attributes, attributeCount, CKA_EC_PARAMS, &paramsAttribute));
+  if (valueAttribute->pValue == NULL || valueAttribute->ulValueLen != 32)
+    return CKR_ATTRIBUTE_VALUE_INVALID;
+
+  CK_BYTE namedAlgorithm;
+  CNK_ENSURE_OK(cnk_ec_params_to_piv_algorithm(paramsAttribute->pValue, paramsAttribute->ulValueLen, &namedAlgorithm));
+  if (keyType == CKK_EC_EDWARDS && namedAlgorithm == PIV_ALG_ED25519)
+    *algorithmType = session->ed25519Algorithm;
+  else if (keyType == CKK_EC_MONTGOMERY && namedAlgorithm == PIV_ALG_X25519)
+    *algorithmType = session->x25519Algorithm;
+  else
+    return CKR_TEMPLATE_INCONSISTENT;
+  if (*algorithmType == 0)
+    return CKR_MECHANISM_INVALID;
+
+  CK_BYTE privateValue[32];
+  memcpy(privateValue, valueAttribute->pValue, sizeof(privateValue));
+  CK_BYTE tag = keyType == CKK_EC_EDWARDS ? 0x07 : 0x08;
+  if (keyType == CKK_EC_MONTGOMERY) {
+    // PKCS#11 stores RFC 7748 private values little-endian; the PIV import
+    // extension uses a big-endian integer before firmware converts internally.
+    for (CK_ULONG i = 0; i < sizeof(privateValue) / 2; i++) {
+      CK_BYTE tmp = privateValue[i];
+      privateValue[i] = privateValue[sizeof(privateValue) - 1 - i];
+      privateValue[sizeof(privateValue) - 1 - i] = tmp;
+    }
+  }
+
+  CK_ULONG offset = 0;
+  CK_RV rv = appendTlv(output, outputLen, &offset, tag, privateValue, sizeof(privateValue));
+  if (rv == CKR_OK)
+    rv = appendPolicies(attributes, attributeCount, objectId, output, outputLen, &offset);
+  mbedtls_platform_zeroize(privateValue, sizeof(privateValue));
+  if (rv == CKR_OK)
+    *written = offset;
+  return rv;
+}
+
 CK_RV cnk_build_piv_pqc_import(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount,
                                CK_BYTE objectId, CK_KEY_TYPE keyType, CK_BYTE *output, CK_ULONG outputLen,
                                CK_ULONG_PTR written, CK_BYTE *algorithmType) {

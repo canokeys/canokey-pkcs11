@@ -421,10 +421,14 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
   }
   session->mldsa65Algorithm = PIV_ALG_MLDSA65;
   session->mlkem768Algorithm = PIV_ALG_MLKEM768;
+  session->ed25519Algorithm = PIV_ALG_ED25519;
+  session->x25519Algorithm = PIV_ALG_X25519;
   CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig;
   if (cnk_get_piv_algorithm_extension(slotID, &algorithmConfig) == CKR_OK && algorithmConfig.enabled) {
     session->mldsa65Algorithm = algorithmConfig.mldsa65;
     session->mlkem768Algorithm = algorithmConfig.mlkem768;
+    session->ed25519Algorithm = algorithmConfig.ed25519;
+    session->x25519Algorithm = algorithmConfig.x25519;
   }
   session->nextSecretKeyId = CNK_SESSION_SECRET_KEY_FIRST_ID;
 
