@@ -114,7 +114,8 @@ cmake --build build-real-ninja-clangcl-x64
 `test_real.exe` covers established classic PIV paths. `test_pqc.exe` covers
 function-table completeness, sessions/login, session-secret lifecycle, random
 generation, PQ operations, host Verify/Encrypt, and retry/cancellation behavior
-on current hardware.
+on current hardware. It requires an explicit slot ID and serial; destructive
+key writes additionally require `CNK_RUN_DESTRUCTIVE_REAL_TESTS=1`.
 
 ## Remaining Structural Work
 

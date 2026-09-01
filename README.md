@@ -134,7 +134,13 @@ For an already prepared development card,
 `scripts/finalize-pin-managed.ps1` calls the destructive
 `C_CNK_FinalizePinManaged()` extension to authenticate USER and the protected
 management key, permanently block the PUK, and confirm zero retries. It requires
-an explicit acknowledgement switch.
+an explicit acknowledgement switch plus the stable PKCS#11 slot ID and expected
+token serial. The script verifies both before mutation.
+
+```powershell
+.\scripts\finalize-pin-managed.ps1 -SlotId 0 -ExpectedSerial 4294967295 `
+  -AcknowledgePermanentPukBlock
+```
 
 Standard PIV data objects are exposed as `CKO_DATA` token objects when the card
 reports that they exist. Enumeration probes a fixed table of common PIV data
@@ -203,3 +209,15 @@ The PKCS#11 3.2 interface currently supports:
 
 Only `CKP_ML_DSA_65` and `CKP_ML_KEM_768` are accepted. Encapsulation uses the
 same pinned `mlkem-native` implementation as CanoKey firmware.
+
+The downloadable `test_pqc.exe` requires explicit token identity. It runs
+non-destructive checks by default; enable the write matrix only when overwriting
+IDs 08, 09, 23, and 24 is intended:
+
+```powershell
+$env:CNK_PIV_PIN = '<PIN>'
+$env:CNK_PIV_SLOT_ID = '0'
+$env:CNK_PIV_SERIAL = '4294967295'
+$env:CNK_RUN_DESTRUCTIVE_REAL_TESTS = '1'
+.\test_pqc.exe .\canokey-pkcs11.dll
+```

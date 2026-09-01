@@ -239,8 +239,9 @@ Write-path notes:
   v1.5, and OAEP. OAEP mechanism copies must deep-copy `pSourceData` so caller
   label lifetime does not leak into an active operation.
 - Standalone `C_WaitForSlotEvent` uses PC/SC status-change notifications and
-  the PnP pseudo-reader. `CKF_DONT_BLOCK` returns `CKR_NO_EVENT` when nothing
-  changed, and `C_Finalize` cancels a blocking wait. Managed mode returns
+  the PnP pseudo-reader. Its baseline and pending-event queue persist across
+  calls so between-call and simultaneous events are not lost. `CKF_DONT_BLOCK`
+  returns `CKR_NO_EVENT` when nothing changed, and `C_Finalize` cancels a blocking wait. Managed mode returns
   `CKR_FUNCTION_NOT_SUPPORTED` because the host owns its PC/SC lifecycle.
 - `C_CNK_SetPIN()` maps to the standard PIV Change Reference Data APDU. Pass
   `CNK_PIV_PIN_TYPE_PIN` (`0x80`) to change the PIN or
@@ -259,8 +260,10 @@ Write-path notes:
   never receive the raw management key.
 - `C_CNK_FinalizePinManaged()` is an explicitly destructive provisioning
   operation. It authenticates USER and the protected management key before
-  permanently blocking the PUK and confirming zero retries. Do not hide this
-  mutation in ordinary login or initialization paths.
+  permanently blocking the PUK with failing CHANGE REFERENCE DATA commands and
+  confirming zero retries. The provisioning script requires an explicit stable
+  slot ID and expected token serial. Do not hide this mutation in ordinary login
+  or initialization paths.
 - PIV version 6.0+ exposes unauthenticated token randomness through `00 84`.
   Advertise `CKF_RNG` only after that version check. `C_GenerateRandom` chunks
   requests at 256 bytes; `C_SeedRandom` returns
@@ -407,8 +410,9 @@ PIV object IDs map to slots as:
   `C_CreateObject(CKO_PRIVATE_KEY)` against ID 06 / slot 83. These tests
   intentionally separate SO-authenticated write sessions from USER-authenticated
   signing sessions.
-- `test_pqc.exe` is an explicitly destructive full-matrix hardware test. It
-  overwrites IDs 08/09 with Ed25519/X25519 generation and import vectors and
-  IDs 23/24 with ML-DSA-65/ML-KEM-768 vectors. Windows CI artifacts include
-  this executable so it can be run against the downloaded DLL without a local
-  build.
+- `test_pqc.exe` runs only its non-destructive checks unless
+  `CNK_RUN_DESTRUCTIVE_REAL_TESTS=1` is set. Every run requires
+  `CNK_PIV_SLOT_ID` and `CNK_PIV_SERIAL`; the destructive matrix verifies both,
+  then overwrites IDs 08/09 with Ed25519/X25519 vectors and IDs 23/24 with
+  ML-DSA-65/ML-KEM-768 vectors. Windows CI artifacts include this executable so
+  it can be run against the downloaded DLL without a local build.

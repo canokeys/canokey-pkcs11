@@ -19,6 +19,10 @@
     }                                                                                                                  \
   } while (0)
 
+#define CNK_REAL_WRITE_TEST_ENV "CNK_RUN_DESTRUCTIVE_REAL_TESTS"
+#define CNK_REAL_SLOT_ENV "CNK_PIV_SLOT_ID"
+#define CNK_REAL_SERIAL_ENV "CNK_PIV_SERIAL"
+
 typedef CK_RV (*CNK_LOGIN_PIN_MANAGED)(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen);
 
 static void makeKeyTemplates(CK_BYTE *id, CK_KEY_TYPE *keyType, CK_ULONG *parameterSet, CK_ATTRIBUTE publicTemplate[5],
@@ -652,6 +656,70 @@ static int exercise25519(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_HANDLE s
   return 0;
 }
 
+static int envEnabled(const char *name) {
+  const char *value = getenv(name);
+  return value != NULL && (strcmp(value, "1") == 0 || strcmp(value, "true") == 0 || strcmp(value, "TRUE") == 0 ||
+                           strcmp(value, "yes") == 0 || strcmp(value, "YES") == 0);
+}
+
+static int selectConfiguredSlot(CK_FUNCTION_LIST_3_2_PTR functions, CK_SLOT_ID_PTR selectedSlot) {
+  const char *slotText = getenv(CNK_REAL_SLOT_ENV);
+  const char *expectedSerial = getenv(CNK_REAL_SERIAL_ENV);
+  if (slotText == NULL || expectedSerial == NULL || expectedSerial[0] == '\0') {
+    fprintf(stderr, "%s and %s are required to select the hardware token explicitly\n", CNK_REAL_SLOT_ENV,
+            CNK_REAL_SERIAL_ENV);
+    return 1;
+  }
+  char *end = NULL;
+  unsigned long requested = strtoul(slotText, &end, 0);
+  if (end == slotText || *end != '\0') {
+    fprintf(stderr, "Invalid %s value: %s\n", CNK_REAL_SLOT_ENV, slotText);
+    return 1;
+  }
+
+  CK_ULONG slotCount = 0;
+  CHECK(functions->C_GetSlotList(CK_TRUE, NULL, &slotCount));
+  if (slotCount == 0)
+    return 1;
+  CK_SLOT_ID *slots = calloc(slotCount, sizeof(*slots));
+  if (slots == NULL)
+    return 1;
+  CK_ULONG capacity = slotCount;
+  CK_RV rv = functions->C_GetSlotList(CK_TRUE, slots, &capacity);
+  if (rv != CKR_OK) {
+    free(slots);
+    fprintf(stderr, "C_GetSlotList failed: 0x%lx\n", rv);
+    return 1;
+  }
+
+  int found = 0;
+  for (CK_ULONG i = 0; i < capacity; i++) {
+    if (slots[i] != (CK_SLOT_ID)requested)
+      continue;
+    CK_TOKEN_INFO info;
+    rv = functions->C_GetTokenInfo(slots[i], &info);
+    if (rv != CKR_OK)
+      break;
+    char serial[sizeof(info.serialNumber) + 1];
+    memcpy(serial, info.serialNumber, sizeof(info.serialNumber));
+    serial[sizeof(info.serialNumber)] = '\0';
+    for (size_t j = sizeof(info.serialNumber); j > 0 && (serial[j - 1] == ' ' || serial[j - 1] == '\0'); j--)
+      serial[j - 1] = '\0';
+    if (strcmp(serial, expectedSerial) != 0) {
+      fprintf(stderr, "Slot %lu serial mismatch: expected %s, found %s\n", slots[i], expectedSerial, serial);
+      break;
+    }
+    *selectedSlot = slots[i];
+    found = 1;
+    printf("Selected slot %lu with serial %s\n", slots[i], serial);
+    break;
+  }
+  free(slots);
+  if (!found)
+    fprintf(stderr, "Requested slot %lu with serial %s is not present\n", requested, expectedSerial);
+  return found ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
   if (argc != 2) {
     fprintf(stderr, "usage: test_pqc <pkcs11-library>\n");
@@ -694,10 +762,8 @@ int main(int argc, char **argv) {
   if (functions->C_WaitForSlotEvent(CKF_DONT_BLOCK, &eventSlot, &eventSlot) != CKR_ARGUMENTS_BAD)
     return 1;
 
-  CK_ULONG slotCount = 1;
   CK_SLOT_ID slot;
-  CHECK(functions->C_GetSlotList(CK_TRUE, &slot, &slotCount));
-  if (slotCount == 0)
+  if (selectConfiguredSlot(functions, &slot) != 0)
     return 1;
   CK_SESSION_HANDLE pinManagedSession;
   CHECK(functions->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &pinManagedSession));
@@ -716,6 +782,12 @@ int main(int argc, char **argv) {
   CHECK(functions->C_CloseSession(pinManagedSession));
   if (testFunctionListAndSessions(functions, slot, pin) != 0)
     return 1;
+  if (!envEnabled(CNK_REAL_WRITE_TEST_ENV)) {
+    printf("Non-destructive PKCS#11 3.2 checks passed; set %s=1 to run the explicitly selected write matrix\n",
+           CNK_REAL_WRITE_TEST_ENV);
+    CHECK(functions->C_Finalize(NULL));
+    return 0;
+  }
   CK_SESSION_HANDLE session;
   CHECK(functions->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session));
   CK_BYTE managementKey[] = {1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8};
