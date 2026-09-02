@@ -37,6 +37,8 @@ Session lookup acquires an active-call reference protected by the global
 session-table mutex. Close waits for those references to drain, removes the
 handle, then cancels operations, zeroizes session secrets, and frees the session
 immediately. Close never acquires a session lock while holding the global lock.
+Closing the last session and `C_Finalize` also zero the USER PIN and
+management-key caches owned by `CNK_PKCS11_TOKEN_STATE`.
 
 Digest, Sign, Verify, Encrypt, and Decrypt state is protected by the per-session
 lock for the complete API call. Cancellation uses the same lock. Combined-hash
@@ -114,8 +116,11 @@ cmake --build build-real-ninja-clangcl-x64
 `test_real.exe` covers established classic PIV paths. `test_pqc.exe` covers
 function-table completeness, sessions/login, session-secret lifecycle, random
 generation, PQ operations, host Verify/Encrypt, and retry/cancellation behavior
-on current hardware. It requires an explicit slot ID and serial; destructive
-key writes additionally require `CNK_RUN_DESTRUCTIVE_REAL_TESTS=1`.
+on current hardware. Its function-table check requires every
+`CK_FUNCTION_LIST_3_2` entry declared by `pkcs11f.h` to be non-NULL; unsupported
+entries are populated by `core.c` with type-correct stubs. It requires an
+explicit slot ID and serial; destructive key writes additionally require
+`CNK_RUN_DESTRUCTIVE_REAL_TESTS=1`.
 
 ## Remaining Structural Work
 

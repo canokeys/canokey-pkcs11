@@ -2078,7 +2078,7 @@ static CK_RV handleSecretKeyAttribute(CK_ATTRIBUTE_PTR attribute, const CNK_PKCS
     return setSingleAttributeValue(attribute, &secret->keyType, sizeof(secret->keyType));
 
   case CKA_VALUE:
-    if (secret->sensitive)
+    if (secret->sensitive || !secret->extractable)
       return CKR_ATTRIBUTE_SENSITIVE;
     return setSingleAttributeValue(attribute, secret->value, secret->valueLen);
 

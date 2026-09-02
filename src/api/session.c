@@ -238,6 +238,25 @@ CK_RV cnk_session_manager_cleanup(void) {
   return CKR_OK;
 }
 
+CK_RV cnk_session_wait_for_active_calls(void) {
+  for (;;) {
+    CK_BBOOL active = CK_FALSE;
+    CK_RV rv = cnk_mutex_lock(&session_mutex);
+    if (rv != CKR_OK)
+      return rv;
+    for (CK_LONG i = 0; i < session_table_size; i++) {
+      if (session_table[i] != NULL && atomic_load(&session_table[i]->activeCalls) != 0) {
+        active = CK_TRUE;
+        break;
+      }
+    }
+    cnk_mutex_unlock(&session_mutex);
+    if (!active)
+      return CKR_OK;
+    yield_session_close();
+  }
+}
+
 // Find a session by handle
 CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session) {
 
@@ -245,11 +264,16 @@ CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session)
 
   CNK_ENSURE_OK(cnk_mutex_lock(&session_mutex));
 
+  if (!g_cnk_is_initialized) {
+    cnk_mutex_unlock(&session_mutex);
+    CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki finalization is in progress");
+  }
+
   // Find the session
   CK_BBOOL found = CK_FALSE;
 
   for (CK_LONG i = 0; i < session_table_size; i++) {
-    if (session_table[i] != NULL && session_table[i]->handle == hSession) {
+    if (session_table[i] != NULL && session_table[i]->handle == hSession && !session_table[i]->closing) {
       *session = session_table[i];
       atomic_fetch_add(&(*session)->activeCalls, 1);
       found = CK_TRUE;
@@ -320,6 +344,8 @@ CK_RV cnk_token_cache_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pin, CK_U
 CK_RV cnk_token_update_cached_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR oldPin, CK_ULONG oldPinLen,
                                   CK_UTF8CHAR_PTR newPin, CK_ULONG newPinLen) {
   CNK_ENSURE_NONNULL(session, oldPin, newPin);
+  if (newPinLen > sizeof(session->token->pin))
+    return CKR_PIN_LEN_RANGE;
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
   if (session->token->logoutPending) {
     cnk_mutex_unlock(&session->token->lock);
@@ -563,15 +589,13 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
                Notify, phSession);
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(phSession);
 
-  CNK_ENSURE_OK(cnk_mutex_lock(&session_mutex));
-
+  // Validate the slot and read the firmware extension before taking the
+  // session-table lock. Both operations may perform a PC/SC round trip and
+  // must not stall unrelated session lookups.
   if (!g_cnk_is_managed_mode) {
     CK_RV readerLockRv = cnk_mutex_lock(&g_cnk_readers_mutex);
-    if (readerLockRv != CKR_OK) {
-      cnk_mutex_unlock(&session_mutex);
+    if (readerLockRv != CKR_OK)
       return readerLockRv;
-    }
-    // Check if the slot ID is valid
     CK_BBOOL slot_found = CK_FALSE;
     for (CK_LONG i = 0; i < g_cnk_num_readers; i++) {
       if (g_cnk_readers[i].slot_id == slotID) {
@@ -580,20 +604,24 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
       }
     }
     cnk_mutex_unlock(&g_cnk_readers_mutex);
-
-    if (!slot_found) {
-      cnk_mutex_unlock(&session_mutex);
+    if (!slot_found)
       CNK_RETURN(CKR_SLOT_ID_INVALID, "Invalid slot ID");
-    }
   } else if (slotID != 0) {
-    cnk_mutex_unlock(&session_mutex);
     CNK_RETURN(CKR_SLOT_ID_INVALID, "Managed mode exposes canonical slot 0 only");
   }
 
-  // Check if the flags are valid
-  if (!(flags & CKF_SERIAL_SESSION)) {
-    cnk_mutex_unlock(&session_mutex);
+  if (!(flags & CKF_SERIAL_SESSION))
     CNK_RETURN(CKR_SESSION_PARALLEL_NOT_SUPPORTED, "Invalid session flags");
+
+  CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig = {0};
+  CK_BBOOL extensionEnabled =
+      cnk_get_piv_algorithm_extension(slotID, &algorithmConfig) == CKR_OK && algorithmConfig.enabled;
+
+  CNK_ENSURE_OK(cnk_mutex_lock(&session_mutex));
+
+  if (!g_cnk_is_initialized) {
+    cnk_mutex_unlock(&session_mutex);
+    CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki finalization is in progress");
   }
 
   // C_Initialize creates the session table before publishing the initialized
@@ -642,8 +670,8 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
     cnk_mutex_unlock(&session_mutex);
     return rv;
   }
-  // PQC exists only behind the firmware algorithm-extension contract. Keep
-  // IDs unavailable until that contract is read successfully.
+  // PQC and other extended algorithms remain unavailable unless the firmware
+  // extension was read successfully and explicitly enabled.
   session->mldsa65Algorithm = 0;
   session->mlkem768Algorithm = 0;
   session->ed25519Algorithm = 0;
@@ -653,8 +681,7 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
   session->secp256k1Algorithm = 0;
   session->secp521r1Algorithm = 0;
   session->sm2Algorithm = 0;
-  CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig;
-  if (cnk_get_piv_algorithm_extension(slotID, &algorithmConfig) == CKR_OK && algorithmConfig.enabled) {
+  if (extensionEnabled) {
     session->mldsa65Algorithm = algorithmConfig.mldsa65;
     session->mlkem768Algorithm = algorithmConfig.mlkem768;
     session->ed25519Algorithm = algorithmConfig.ed25519;
@@ -716,6 +743,10 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
   CNK_PKCS11_SESSION *session = NULL;
   CK_LONG index = -1;
   CNK_ENSURE_OK(cnk_mutex_lock(&session_mutex));
+  if (!g_cnk_is_initialized) {
+    cnk_mutex_unlock(&session_mutex);
+    CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki finalization is in progress");
+  }
   for (;;) {
     for (CK_LONG i = 0; i < session_table_size; i++) {
       if (session_table[i] != NULL && session_table[i]->handle == hSession) {
@@ -730,13 +761,16 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
     }
     if (atomic_load(&session->activeCalls) == 0)
       break;
+    session->closing = CK_TRUE;
     // Existing calls retain a reference after leaving session_mutex. Wait for
     // those calls to finish before removing and freeing the session.
     cnk_mutex_unlock(&session_mutex);
     yield_session_close();
     CK_RV lockRv = cnk_mutex_lock(&session_mutex);
-    if (lockRv != CKR_OK)
+    if (lockRv != CKR_OK) {
+      atomic_store(&session->closing, CK_FALSE);
       return lockRv;
+    }
     session = NULL;
     index = -1;
   }
@@ -746,6 +780,7 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
   // fully usable and the token counters remain unchanged.
   CK_RV tokenLockRv = cnk_mutex_lock(&session->token->lock);
   if (tokenLockRv != CKR_OK) {
+    session->closing = CK_FALSE;
     cnk_mutex_unlock(&session_mutex);
     return tokenLockRv;
   }
@@ -825,7 +860,7 @@ CK_RV C_GetSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo) {
   CK_BBOOL found = CK_FALSE;
 
   for (CK_LONG i = 0; i < session_table_size; i++) {
-    if (session_table[i] != NULL && session_table[i]->handle == hSession) {
+    if (session_table[i] != NULL && session_table[i]->handle == hSession && !session_table[i]->closing) {
       session = session_table[i];
       found = CK_TRUE;
       break;

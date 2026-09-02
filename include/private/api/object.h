@@ -28,6 +28,7 @@ CK_OBJECT_HANDLE CNK_MakeObjectHandle(CK_SLOT_ID slot_id, CK_OBJECT_CLASS object
 CK_RV CNK_GetSessionSecretKey(CNK_PKCS11_SESSION *session, CK_OBJECT_HANDLE object,
                               CNK_PKCS11_SECRET_KEY_OBJECT **secret);
 
+// This function acquires session->lock internally. The caller must not hold it.
 CK_RV CNK_CreateSessionSecretKey(CNK_PKCS11_SESSION *session, const CNK_PKCS11_SECRET_KEY_OBJECT *prototype,
                                  CK_OBJECT_HANDLE_PTR object);
 

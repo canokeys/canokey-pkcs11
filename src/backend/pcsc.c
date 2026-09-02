@@ -12,6 +12,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sched.h>
+#endif
+
 #define CNK_PIV_MAX_PUBLIC_KEY_RESPONSE 4096
 #define CNK_PIV_MAX_GENERAL_AUTH_INPUT 65520
 #define CNK_PIV_MAX_GENERAL_AUTH_RESPONSE 4096
@@ -28,6 +34,7 @@
 ReaderInfo *g_cnk_readers = NULL; // Array of reader info structs
 CK_LONG g_cnk_num_readers = 0;
 _Atomic CK_BBOOL g_cnk_is_initialized = CK_FALSE;
+_Atomic CK_ULONG g_cnk_pcsc_operations = 0;
 CNK_PKCS11_MUTEX g_cnk_readers_mutex;
 static ReaderInfo *known_readers = NULL;
 static CK_LONG known_reader_count = 0;
@@ -439,6 +446,7 @@ CK_RV cnk_cleanup_pcsc(void) {
   }
 
   g_cnk_num_readers = 0;
+  atomic_store(&g_cnk_pcsc_operations, 0);
   freeSlotEventReaders(slot_event_readers, slot_event_reader_count);
   slot_event_readers = NULL;
   slot_event_reader_count = 0;
@@ -451,6 +459,51 @@ CK_RV cnk_cleanup_pcsc(void) {
   cnk_mutex_unlock(&g_cnk_readers_mutex);
   cnk_mutex_unlock(&g_cnk_slot_event_mutex);
   return CKR_OK;
+}
+
+CK_RV cnk_wait_for_pcsc_operations(void) {
+  // Finalization disables new API admission before reaching this barrier.
+  // Existing card calls keep the count until cnk_disconnect_card completes,
+  // so releasing the PC/SC context cannot race an in-flight SCardTransmit.
+  while (atomic_load(&g_cnk_pcsc_operations) != 0) {
+#ifdef _WIN32
+    Sleep(0);
+#else
+    sched_yield();
+#endif
+  }
+  return CKR_OK;
+}
+
+void cnk_pcsc_operation_end(void) {
+  CK_ULONG count = atomic_load(&g_cnk_pcsc_operations);
+  while (count != 0 && !atomic_compare_exchange_weak(&g_cnk_pcsc_operations, &count, count - 1))
+    ;
+}
+
+CK_RV cnk_pcsc_operation_begin(void) {
+  // Pair the counter with the initialized admission flag. If finalization
+  // wins before the increment, the second check removes the provisional
+  // count without touching the PC/SC context. If it wins afterward, finalize
+  // observes the count and waits for this operation.
+  if (!g_cnk_is_initialized)
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  atomic_fetch_add(&g_cnk_pcsc_operations, 1);
+  if (!g_cnk_is_initialized) {
+    cnk_pcsc_operation_end();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  return CKR_OK;
+}
+
+static void release_pcsc_operation_guard(CK_BBOOL *active) {
+  if (active != NULL && *active)
+    cnk_pcsc_operation_end();
+}
+
+void cnk_cancel_pcsc_operations(void) {
+  if (g_cnk_pcsc_context != 0)
+    SCardCancel(g_cnk_pcsc_context);
 }
 
 static void freeSlotEventReaders(CNK_SLOT_EVENT_READER *readers, CK_ULONG count) {
@@ -715,6 +768,17 @@ CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
 
 // Helper function to connect to a card
 CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
+  CNK_ENSURE_NONNULL(phCard);
+  CK_RV operationRv = cnk_pcsc_operation_begin();
+  if (operationRv != CKR_OK)
+    return operationRv;
+
+#if defined(__clang__) || defined(__GNUC__)
+  CK_BBOOL releaseOperation __attribute__((cleanup(release_pcsc_operation_guard))) = CK_TRUE;
+#else
+#error "CanoKey PC/SC lifetime guards require compiler cleanup support"
+#endif
+
   // In managed mode, use the provided card handle
   if (g_cnk_is_managed_mode) {
     *phCard = g_cnk_scard;
@@ -726,6 +790,7 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
       CNK_RETURN(CKR_DEVICE_ERROR, "SCardBeginTransaction failed");
     }
 
+    releaseOperation = CK_FALSE;
     CNK_RET_OK;
   }
 
@@ -796,6 +861,7 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
   // Note: We don't end the transaction here to allow for subsequent operations
   // The caller is responsible for calling cnk_disconnect_card when done
 
+  releaseOperation = CK_FALSE;
   CNK_RET_OK;
 }
 
@@ -810,11 +876,13 @@ void cnk_disconnect_card(SCARDHANDLE hCard) {
 
   // In managed mode, don't disconnect the card
   if (g_cnk_is_managed_mode) {
+    cnk_pcsc_operation_end();
     return;
   }
 
   // In standalone mode, disconnect the card
   SCardDisconnect(hCard, SCARD_LEAVE_CARD);
+  cnk_pcsc_operation_end();
 }
 
 // Helper function to transmit APDU commands and log both command and response
@@ -2101,15 +2169,17 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
     CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: missing 7C tag");
   }
 
-  // Find the signature data
-  size_t offset = 0;
-
-  // Skip the outer TLV header
-  if (response[1] == 0x82) { // Extended length (2 bytes)
-    offset = 4;              // Skip 7C 82 xx xx
-  } else {
-    offset = 2; // Skip 7C xx
+  // Decode the outer 7C length, including the 0x81 form used when a P-521
+  // DER signature makes the template larger than 127 bytes.
+  CK_ULONG offset = 1;
+  CK_LONG outerFail = 0;
+  CK_ULONG outerLengthSize = 0;
+  CK_ULONG outerLength = tlvGetLengthSafe(response + offset, cbResponse - offset, &outerFail, &outerLengthSize);
+  if (outerFail || outerLengthSize > cbResponse - offset || outerLength > cbResponse - offset - outerLengthSize) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: bad outer length");
   }
+  offset += outerLengthSize;
 
   // Check for the inner 82 tag (signature response)
   if (offset < cbResponse && response[offset] != 0x82) {
@@ -2124,8 +2194,8 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
   if (offset < cbResponse) {
     CK_LONG fail = 0;
     CK_ULONG bcLength = 0;
-    tlvGetLengthSafe(&response[offset], cbResponse - offset, &fail, &bcLength);
-    if (!fail) {
+    CK_ULONG signatureLength = tlvGetLengthSafe(&response[offset], cbResponse - offset, &fail, &bcLength);
+    if (!fail && bcLength <= cbResponse - offset && signatureLength <= cbResponse - offset - bcLength) {
       offset += bcLength; // Skip length bytes
     } else {
       cnk_disconnect_card(hCard);

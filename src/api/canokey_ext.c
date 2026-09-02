@@ -233,7 +233,7 @@ CK_RV C_CNK_GetPivData(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pTag, CK_ULONG ul
 }
 
 static CK_RV loginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,
-                             CK_BBOOL requireBlockedPuk) {
+                             CK_BBOOL requireBlockedPuk, CK_BBOOL *establishedUserLoginOut) {
   // Keep USER login active while GET DATA reads PRINTED. The management-key
   // cache is separate, allowing managed callers to retain normal USER state.
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
@@ -243,6 +243,8 @@ static CK_RV loginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, C
   if (rv != CKR_OK && rv != CKR_USER_ALREADY_LOGGED_IN)
     return rv;
   CK_BBOOL establishedUserLogin = rv == CKR_OK;
+  if (establishedUserLoginOut != NULL)
+    *establishedUserLoginOut = establishedUserLogin;
 
   CK_BYTE adminData[CNK_ADMIN_DATA_MAX_LEN];
   CK_BYTE protectedData[CNK_PIN_PROTECTED_DATA_MAX_LEN];
@@ -288,6 +290,8 @@ cleanup:
     CK_RV logoutRv = C_Logout(hSession);
     if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
       CNK_WARN("Failed to roll back USER login after PIN-managed failure: 0x%lx", logoutRv);
+    if (establishedUserLoginOut != NULL)
+      *establishedUserLoginOut = CK_FALSE;
   }
   return rv;
 }
@@ -296,7 +300,7 @@ CK_RV C_CNK_LoginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK
   CNK_LOG_FUNC(": hSession: %lu, pPin: %p, ulPinLen: %lu", hSession, pPin, ulPinLen);
   CNK_ENSURE_INITIALIZED();
   CNK_ENSURE_NONNULL(pPin);
-  return loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE);
+  return loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE, NULL);
 }
 
 CK_RV C_CNK_FinalizePinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
@@ -312,26 +316,31 @@ CK_RV C_CNK_FinalizePinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin,
   // Reserve before publishing USER or management-key credentials. The owner
   // session is allowed to complete this composite login; other sessions and
   // Logout observe the reservation and are blocked until final confirmation.
+  CK_BBOOL establishedUserLogin = CK_FALSE;
   CK_RV rv = cnk_token_begin_card_operation(session);
   if (rv != CKR_OK)
     return rv;
-  rv = loginPinManaged(hSession, pPin, ulPinLen, CK_FALSE);
+  rv = loginPinManaged(hSession, pPin, ulPinLen, CK_FALSE, &establishedUserLogin);
   if (rv != CKR_OK) {
     cnk_token_end_management_operation(session);
-    CK_RV logoutRv = C_Logout(hSession);
-    if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
-      CNK_WARN("Failed to roll back PIN-managed authorization after login failure: 0x%lx", logoutRv);
+    if (establishedUserLogin) {
+      CK_RV logoutRv = C_Logout(hSession);
+      if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
+        CNK_WARN("Failed to roll back PIN-managed authorization after login failure: 0x%lx", logoutRv);
+    }
     return rv;
   }
   rv = cnk_block_piv_puk(session->slotId);
   if (rv != CKR_OK) {
     cnk_token_end_management_operation(session);
-    CK_RV logoutRv = C_Logout(hSession);
-    if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
-      CNK_WARN("Failed to roll back PIN-managed authorization after PUK block failure: 0x%lx", logoutRv);
+    if (establishedUserLogin) {
+      CK_RV logoutRv = C_Logout(hSession);
+      if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
+        CNK_WARN("Failed to roll back PIN-managed authorization after PUK block failure: 0x%lx", logoutRv);
+    }
     return rv;
   }
-  rv = loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE);
+  rv = loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE, NULL);
   cnk_token_end_management_operation(session);
   return rv;
 }

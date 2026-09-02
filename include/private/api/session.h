@@ -149,6 +149,7 @@ typedef struct CNK_PKCS11_SESSION {
   CK_VOID_PTR application;  // Application pointer
   CK_NOTIFY notify;         // Notification callback
   CK_BBOOL isOpen;          // Flag indicating if the session is open
+  _Atomic CK_BBOOL closing; // Close has started; reject new session references
   CNK_PKCS11_TOKEN_STATE *token;
   CK_BYTE mldsa65Algorithm;  // Runtime PIV algorithm-extension ID
   CK_BYTE mlkem768Algorithm; // Runtime PIV algorithm-extension ID
@@ -197,6 +198,10 @@ CK_RV cnk_session_manager_init(void);
 
 // Clean up the session manager
 CK_RV cnk_session_manager_cleanup(void);
+
+// Wait until API calls that already hold session references have released
+// them. Finalization calls this before tearing down backend resources.
+CK_RV cnk_session_wait_for_active_calls(void);
 
 // Find a session by handle
 CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session);

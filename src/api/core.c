@@ -209,9 +209,28 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   }
 
   // Stop admitting new API calls while the final session/backend teardown is
-  // in progress. Calls that already hold a session reference are drained by
-  // cnk_session_manager_cleanup.
+  // in progress. Calls that already hold references or card transactions are
+  // drained before the PC/SC context is released.
   g_cnk_is_initialized = CK_FALSE;
+
+  // Wake a blocking C_WaitForSlotEvent before waiting for the operation
+  // counter. cnk_cleanup_pcsc performs the same cancellation later, but the
+  // lifetime barrier must cancel first to avoid waiting forever.
+  if (!g_cnk_is_managed_mode)
+    cnk_cancel_pcsc_operations();
+
+  CK_RV activeRv = cnk_session_wait_for_active_calls();
+  if (activeRv != CKR_OK) {
+    g_cnk_is_initialized = CK_TRUE;
+    atomic_fetch_add(&g_ref_count, 1);
+    return activeRv;
+  }
+  activeRv = cnk_wait_for_pcsc_operations();
+  if (activeRv != CKR_OK) {
+    g_cnk_is_initialized = CK_TRUE;
+    atomic_fetch_add(&g_ref_count, 1);
+    return activeRv;
+  }
 
   // PC/SC cleanup must complete before backend mutexes are destroyed. A
   // failed callback leaves the initialized state intact for a later retry.

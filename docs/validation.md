@@ -56,6 +56,8 @@ permanent failure. Assert all of the following after each failure:
 - backend mutexes and PC/SC state are either fully alive or fully released;
 - a subsequent initialize/finalize retry has a deterministic result.
 - finalization does not free a session or token while `activeCalls` is nonzero.
+- finalization waits for the PC/SC operation counter to reach zero before
+  releasing the context used by `SCardTransmit`.
 
 ## Cross-Repository Checks
 

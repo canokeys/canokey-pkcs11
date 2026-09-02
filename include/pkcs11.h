@@ -16,8 +16,10 @@
 extern "C" {
 #endif
 
+#if defined(__clang__)
 #pragma clang diagnostic ignored "-Wreserved-macro-identifier"
 #pragma clang diagnostic ignored "-Wreserved-identifier"
+#endif
 
 #if defined(_WIN32) || defined(CRYPTOKI_FORCE_WIN32)
 #pragma pack(push, cryptoki, 1)

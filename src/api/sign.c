@@ -184,11 +184,13 @@ static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m,
 }
 
 static CK_ULONG getEcSignatureLength(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
-  if (algorithmType == PIV_ALG_ECC_256 || algorithmType == CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1))
+  CK_BYTE secp256k1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1);
+  CK_BYTE secp521r1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521);
+  if (algorithmType == PIV_ALG_ECC_256 || (secp256k1 != 0 && algorithmType == secp256k1))
     return 64;
   if (algorithmType == PIV_ALG_ECC_384)
     return 96;
-  if (algorithmType == CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521))
+  if (secp521r1 != 0 && algorithmType == secp521r1)
     return 132;
   return 0;
 }
@@ -732,16 +734,18 @@ static CK_RV verifyEcSignature(CNK_PKCS11_SESSION *session, const CK_BYTE *data,
   mbedtls_ecp_group_id groupId;
   CK_ULONG coordinateLen;
   CK_BYTE algorithmType = session->verifyingContext.algorithmType;
+  CK_BYTE secp521r1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521);
+  CK_BYTE secp256k1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1);
   if (algorithmType == PIV_ALG_ECC_256) {
     groupId = MBEDTLS_ECP_DP_SECP256R1;
     coordinateLen = 32;
   } else if (algorithmType == PIV_ALG_ECC_384) {
     groupId = MBEDTLS_ECP_DP_SECP384R1;
     coordinateLen = 48;
-  } else if (algorithmType == CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521)) {
+  } else if (secp521r1 != 0 && algorithmType == secp521r1) {
     groupId = MBEDTLS_ECP_DP_SECP521R1;
     coordinateLen = 66;
-  } else if (algorithmType == CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1)) {
+  } else if (secp256k1 != 0 && algorithmType == secp256k1) {
     groupId = MBEDTLS_ECP_DP_SECP256K1;
     coordinateLen = 32;
   } else {

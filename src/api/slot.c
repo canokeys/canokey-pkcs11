@@ -194,7 +194,12 @@ CK_RV C_WaitForSlotEvent(CK_FLAGS flags, CK_SLOT_ID_PTR pSlot, CK_VOID_PTR pRese
   CNK_ENSURE_NULL(pReserved);
   if ((flags & ~CKF_DONT_BLOCK) != 0)
     return CKR_ARGUMENTS_BAD;
-  return cnk_wait_for_slot_event(flags, pSlot);
+  CK_RV beginRv = cnk_pcsc_operation_begin();
+  if (beginRv != CKR_OK)
+    return beginRv;
+  CK_RV rv = cnk_wait_for_slot_event(flags, pSlot);
+  cnk_pcsc_operation_end();
+  return rv;
 }
 
 CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList, CK_ULONG_PTR pulCount) {
@@ -295,16 +300,65 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
   CNK_RET_OK;
 }
 
-static CK_ULONG piv_rsa_max_bits(CK_SLOT_ID slotID) {
+static CK_ULONG piv_rsa_max_bits(const CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config, CK_BBOOL enabled) {
   CK_ULONG maxBits = 2048;
-  CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
-  if (cnk_get_piv_algorithm_extension(slotID, &config) == CKR_OK && config.enabled) {
-    if (config.rsa3072 != 0)
+  if (enabled) {
+    if (config->rsa3072 != 0)
       maxBits = 3072;
-    if (config.rsa4096 != 0)
+    if (config->rsa4096 != 0)
       maxBits = 4096;
   }
   return maxBits;
+}
+
+static CK_BBOOL mechanism_uses_algorithm_extension(CK_MECHANISM_TYPE type) {
+  switch (type) {
+  case CKM_RSA_PKCS_KEY_PAIR_GEN:
+  case CKM_RSA_X_509:
+  case CKM_RSA_PKCS:
+  case CKM_RSA_PKCS_OAEP:
+  case CKM_RSA_PKCS_PSS:
+  case CKM_SHA1_RSA_PKCS:
+  case CKM_SHA1_RSA_PKCS_PSS:
+  case CKM_SHA256_RSA_PKCS:
+  case CKM_SHA256_RSA_PKCS_PSS:
+  case CKM_SHA384_RSA_PKCS:
+  case CKM_SHA384_RSA_PKCS_PSS:
+  case CKM_SHA512_RSA_PKCS:
+  case CKM_SHA512_RSA_PKCS_PSS:
+  case CKM_SHA224_RSA_PKCS:
+  case CKM_SHA224_RSA_PKCS_PSS:
+  case CKM_SHA3_256_RSA_PKCS:
+  case CKM_SHA3_384_RSA_PKCS:
+  case CKM_SHA3_512_RSA_PKCS:
+  case CKM_SHA3_224_RSA_PKCS:
+  case CKM_SHA3_224_RSA_PKCS_PSS:
+  case CKM_SHA3_256_RSA_PKCS_PSS:
+  case CKM_SHA3_384_RSA_PKCS_PSS:
+  case CKM_SHA3_512_RSA_PKCS_PSS:
+  case CKM_ECDSA_KEY_PAIR_GEN:
+  case CKM_ECDSA:
+  case CKM_ECDSA_SHA1:
+  case CKM_ECDSA_SHA224:
+  case CKM_ECDSA_SHA256:
+  case CKM_ECDSA_SHA384:
+  case CKM_ECDSA_SHA512:
+  case CKM_ECDSA_SHA3_224:
+  case CKM_ECDSA_SHA3_256:
+  case CKM_ECDSA_SHA3_384:
+  case CKM_ECDSA_SHA3_512:
+  case CKM_ECDH1_DERIVE:
+  case CKM_EC_EDWARDS_KEY_PAIR_GEN:
+  case CKM_EDDSA:
+  case CKM_EC_MONTGOMERY_KEY_PAIR_GEN:
+  case CKM_ML_DSA_KEY_PAIR_GEN:
+  case CKM_ML_DSA:
+  case CKM_ML_KEM_KEY_PAIR_GEN:
+  case CKM_ML_KEM:
+    return CK_TRUE;
+  default:
+    return CK_FALSE;
+  }
 }
 
 CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM_INFO_PTR pInfo) {
@@ -316,15 +370,18 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   // Clear the mechanism info structure
   memset(pInfo, 0, sizeof(CK_MECHANISM_INFO));
 
+  CNK_PIV_ALGORITHM_EXTENSION_CONFIG config = {0};
+  CK_BBOOL extensionEnabled = CK_FALSE;
+  if (mechanism_uses_algorithm_extension(type))
+    extensionEnabled = cnk_get_piv_algorithm_extension(slotID, &config) == CKR_OK && config.enabled;
+
   if (type == CKM_ML_DSA_KEY_PAIR_GEN || type == CKM_ML_DSA || type == CKM_ML_KEM_KEY_PAIR_GEN || type == CKM_ML_KEM) {
-    CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
-    if (cnk_get_piv_algorithm_extension(slotID, &config) != CKR_OK || !config.enabled ||
+    if (!extensionEnabled ||
         ((type == CKM_ML_DSA_KEY_PAIR_GEN || type == CKM_ML_DSA) ? config.mldsa65 == 0 : config.mlkem768 == 0))
       return CKR_MECHANISM_INVALID;
   }
   if (type == CKM_EC_EDWARDS_KEY_PAIR_GEN || type == CKM_EDDSA || type == CKM_EC_MONTGOMERY_KEY_PAIR_GEN) {
-    CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
-    if (cnk_get_piv_algorithm_extension(slotID, &config) != CKR_OK || !config.enabled)
+    if (!extensionEnabled)
       return CKR_MECHANISM_INVALID;
     if ((type == CKM_EC_EDWARDS_KEY_PAIR_GEN || type == CKM_EDDSA) && config.ed25519 == 0)
       return CKR_MECHANISM_INVALID;
@@ -337,7 +394,7 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   case CKM_RSA_PKCS_KEY_PAIR_GEN:
     pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR;
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = piv_rsa_max_bits(slotID);
+    pInfo->ulMaxKeySize = piv_rsa_max_bits(&config, extensionEnabled);
     break;
 
   case CKM_RSA_X_509:
@@ -346,13 +403,13 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
     // would incorrectly claim every advertised operation is hardware-backed.
     pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT | CKF_SIGN | CKF_VERIFY;
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = piv_rsa_max_bits(slotID);
+    pInfo->ulMaxKeySize = piv_rsa_max_bits(&config, extensionEnabled);
     break;
 
   case CKM_RSA_PKCS_OAEP:
     pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT;
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = piv_rsa_max_bits(slotID);
+    pInfo->ulMaxKeySize = piv_rsa_max_bits(&config, extensionEnabled);
     break;
 
   case CKM_RSA_PKCS_PSS:
@@ -376,18 +433,15 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   case CKM_SHA3_512_RSA_PKCS_PSS:
     pInfo->flags = CKF_SIGN | CKF_VERIFY;
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = piv_rsa_max_bits(slotID);
+    pInfo->ulMaxKeySize = piv_rsa_max_bits(&config, extensionEnabled);
     break;
 
   case CKM_ECDSA_KEY_PAIR_GEN:
-    pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_NAMEDCURVE;
+    pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR | CKF_EC_F_P | CKF_EC_NAMEDCURVE;
     pInfo->ulMinKeySize = 256;
     pInfo->ulMaxKeySize = 384;
-    {
-      CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
-      if (cnk_get_piv_algorithm_extension(slotID, &config) == CKR_OK && config.enabled && config.secp521r1 != 0)
-        pInfo->ulMaxKeySize = 521;
-    }
+    if (extensionEnabled && config.secp521r1 != 0)
+      pInfo->ulMaxKeySize = 521;
     break;
 
   case CKM_EC_EDWARDS_KEY_PAIR_GEN:
@@ -423,27 +477,16 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
     pInfo->flags = CKF_SIGN | CKF_VERIFY | CKF_EC_F_P | CKF_EC_NAMEDCURVE;
     pInfo->ulMinKeySize = 256;
     pInfo->ulMaxKeySize = 384;
-    {
-      CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
-      if (cnk_get_piv_algorithm_extension(slotID, &config) == CKR_OK && config.enabled && config.secp521r1 != 0)
-        pInfo->ulMaxKeySize = 521;
-    }
+    if (extensionEnabled && config.secp521r1 != 0)
+      pInfo->ulMaxKeySize = 521;
     break;
 
   case CKM_ECDH1_DERIVE:
     pInfo->flags = CKF_HW | CKF_DERIVE | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_UNCOMPRESS;
-    {
-      CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
-      CK_BBOOL x25519Supported =
-          cnk_get_piv_algorithm_extension(slotID, &config) == CKR_OK && config.enabled && config.x25519 != 0;
-      pInfo->ulMinKeySize = x25519Supported ? 255 : 256;
-    }
+    pInfo->ulMinKeySize = extensionEnabled && config.x25519 != 0 ? 255 : 256;
     pInfo->ulMaxKeySize = 384;
-    {
-      CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
-      if (cnk_get_piv_algorithm_extension(slotID, &config) == CKR_OK && config.enabled && config.secp521r1 != 0)
-        pInfo->ulMaxKeySize = 521;
-    }
+    if (extensionEnabled && config.secp521r1 != 0)
+      pInfo->ulMaxKeySize = 521;
     break;
 
   case CKM_GENERIC_SECRET_KEY_GEN:

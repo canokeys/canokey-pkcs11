@@ -1,6 +1,7 @@
 #ifndef CNK_INTERNAL_MACROS_H
 #define CNK_INTERNAL_MACROS_H
 
+#include "backend/pcsc.h"
 #include "internal/logging.h"
 #include "internal/util.h"
 #include "pkcs11.h"

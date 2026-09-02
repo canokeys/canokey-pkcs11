@@ -32,6 +32,7 @@ extern _Atomic CK_BBOOL g_cnk_is_initialized;
 extern _Atomic CK_BBOOL g_cnk_is_managed_mode; // true for managed mode, false for standalone mode
 extern SCARDCONTEXT g_cnk_pcsc_context;
 extern SCARDHANDLE g_cnk_scard;
+extern _Atomic CK_ULONG g_cnk_pcsc_operations;
 extern CNK_PKCS11_MUTEX g_cnk_readers_mutex;
 
 // Memory management functions
@@ -125,6 +126,10 @@ CK_RV cnk_slot_exists(CK_SLOT_ID slotID, CK_BBOOL *exists);
 
 // Clean up PC/SC resources
 CK_RV cnk_cleanup_pcsc(void);
+CK_RV cnk_wait_for_pcsc_operations(void);
+void cnk_cancel_pcsc_operations(void);
+CK_RV cnk_pcsc_operation_begin(void);
+void cnk_pcsc_operation_end(void);
 
 // PIV application functions
 CK_RV cnk_select_piv_application(SCARDHANDLE hCard);

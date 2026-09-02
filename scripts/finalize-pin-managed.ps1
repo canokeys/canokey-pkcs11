@@ -84,12 +84,12 @@ namespace CanokeyPkcs11 {
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool FreeLibrary(IntPtr module);
 
-        private static T LoadFunction<T>(IntPtr module, string name) where T : Delegate {
+        private static T LoadFunction<T>(IntPtr module, string name) where T : class {
             IntPtr address = GetProcAddress(module, name);
             if (address == IntPtr.Zero) {
                 throw new InvalidOperationException("Missing PKCS#11 export " + name);
             }
-            return Marshal.GetDelegateForFunctionPointer<T>(address);
+            return (T)(object)Marshal.GetDelegateForFunctionPointer(address, typeof(T));
         }
 
         private static void Check(uint status, string operation) {

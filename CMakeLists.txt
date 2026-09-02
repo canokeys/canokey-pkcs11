@@ -37,7 +37,6 @@ endif()
 # Include project directory
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include/private)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/mlkem)
 
 option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -122,7 +121,9 @@ file(GLOB_RECURSE CNK_PKCS_HEADERS include/*.h)
 
 add_library(${CNK_PKCS_TARGET} ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
 target_include_directories(${CNK_PKCS_TARGET}
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/external/tf-psa-crypto/drivers/pqcp/mldsa-native/mldsa)
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/tf-psa-crypto/drivers/pqcp/mldsa-native/mldsa
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/mlkem)
 set_default_visibility(${CNK_PKCS_TARGET})
 if(USE_GNU_COMPILERS)
   target_compile_options(${CNK_PKCS_TARGET} PRIVATE "-Wextra" "-Wpedantic" "-Wall")
@@ -197,7 +198,9 @@ if(BUILD_UNIT_TESTING)
   # for test only, expose all symbols
   add_library(${CNK_PKCS_TARGET}-test SHARED ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
   target_include_directories(${CNK_PKCS_TARGET}-test
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/external/tf-psa-crypto/drivers/pqcp/mldsa-native/mldsa)
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/external/tf-psa-crypto/drivers/pqcp/mldsa-native/mldsa
+      ${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/mlkem)
   target_compile_definitions(${CNK_PKCS_TARGET}-test PRIVATE "CNK_LIB_STATIC" "CNK_VERBOSE" "MBEDTLS_ALLOW_PRIVATE_ACCESS")
   target_link_libraries(${CNK_PKCS_TARGET}-test PRIVATE ${CNK_PKCS_LIBS})
   add_subdirectory(test/unit)
