@@ -1001,6 +1001,10 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
 
   CK_RV clearRv = cnk_mutex_lock(&session->token->lock);
   if (clearRv != CKR_OK) {
+    // The card logout already completed. No caller can pass the pending gate
+    // while this callback keeps refusing the token lock, so clear local
+    // credentials before publishing the flag reset.
+    clear_token_auth(session->token);
     atomic_store(&session->token->logoutPending, CK_FALSE);
     return clearRv;
   }
