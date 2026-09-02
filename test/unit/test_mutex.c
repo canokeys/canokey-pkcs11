@@ -13,6 +13,8 @@
 #include <stdlib.h>
 
 static CK_ULONG unlockCalls;
+static CK_ULONG destroyCalls;
+static CK_ULONG failDestroyCall;
 
 static CK_RV createMutex(void **mutex) {
   *mutex = (void *)0x1;
@@ -21,12 +23,25 @@ static CK_RV createMutex(void **mutex) {
 
 static CK_RV destroyMutex(void *mutex) {
   (void)mutex;
+  destroyCalls++;
+  if (failDestroyCall != 0 && destroyCalls == failDestroyCall)
+    return CKR_GENERAL_ERROR;
   return CKR_OK;
 }
 
 static CK_RV failLock(void *mutex) {
   (void)mutex;
   return CKR_GENERAL_ERROR;
+}
+
+static CK_RV okLock(void *mutex) {
+  (void)mutex;
+  return CKR_OK;
+}
+
+static CK_RV okUnlock(void *mutex) {
+  (void)mutex;
+  return CKR_OK;
 }
 
 static CK_RV countUnlock(void *mutex) {
@@ -110,6 +125,47 @@ static void test_uninitialized_managed_binding_can_be_reset(void **state) {
   assert_int_equal(C_CNK_ResetManagedMode(), CKR_OK);
 }
 
+static void test_backend_cleanup_retries_only_failed_mutex(void **state) {
+  (void)state;
+  CK_C_INITIALIZE_ARGS args = {
+      .CreateMutex = createMutex,
+      .DestroyMutex = destroyMutex,
+      .LockMutex = okLock,
+      .UnlockMutex = okUnlock,
+  };
+  destroyCalls = 0;
+  failDestroyCall = 0;
+  assert_int_equal(cnk_mutex_system_init(&args), CKR_OK);
+  assert_int_equal(cnk_initialize_backend(), CKR_OK);
+  failDestroyCall = 2;
+  assert_int_equal(cnk_cleanup_backend(), CKR_GENERAL_ERROR);
+  assert_int_equal(destroyCalls, 2);
+  failDestroyCall = 0;
+  assert_int_equal(cnk_cleanup_backend(), CKR_OK);
+  assert_int_equal(destroyCalls, 3);
+  cnk_mutex_system_cleanup();
+}
+
+static void test_session_manager_cleanup_retries_mutex_destroy(void **state) {
+  (void)state;
+  destroyCalls = 0;
+  failDestroyCall = 0;
+  CK_C_INITIALIZE_ARGS args = {
+      .CreateMutex = createMutex,
+      .DestroyMutex = destroyMutex,
+      .LockMutex = okLock,
+      .UnlockMutex = okUnlock,
+  };
+  // The manager must be usable with callbacks that can later fail destroy.
+  assert_int_equal(cnk_mutex_system_init(&args), CKR_OK);
+  assert_int_equal(cnk_session_manager_init(), CKR_OK);
+  failDestroyCall = 1;
+  assert_int_equal(cnk_session_manager_cleanup(), CKR_GENERAL_ERROR);
+  failDestroyCall = 0;
+  assert_int_equal(cnk_session_manager_cleanup(), CKR_OK);
+  cnk_mutex_system_cleanup();
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test(test_failed_application_lock_does_not_unlock),
@@ -118,6 +174,8 @@ int main(void) {
       cmocka_unit_test(test_managed_mode_rejects_different_card_binding),
       cmocka_unit_test(test_managed_mode_cannot_replace_initialized_standalone),
       cmocka_unit_test(test_uninitialized_managed_binding_can_be_reset),
+      cmocka_unit_test(test_backend_cleanup_retries_only_failed_mutex),
+      cmocka_unit_test(test_session_manager_cleanup_retries_mutex_destroy),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

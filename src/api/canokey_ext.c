@@ -150,6 +150,14 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
   cnk_lifecycle_lock();
 
   CK_RV rv = CKR_OK;
+  // A pending cleanup still owns the previous allocator and card binding.
+  // Standalone callers must let C_Initialize retry that cleanup before a
+  // managed binding can be installed; an existing managed binding may be
+  // reaffirmed with the same handles so that retry can proceed.
+  if (cnk_cleanup_is_pending() && !g_cnk_is_managed_mode) {
+    rv = CKR_OPERATION_ACTIVE;
+    goto done;
+  }
   if (pInitArgs->malloc_func == NULL || pInitArgs->free_func == NULL || pInitArgs->hSCardCtx == 0 ||
       pInitArgs->hScard == 0) {
     rv = CKR_ARGUMENTS_BAD;
@@ -199,6 +207,10 @@ CK_RV C_CNK_ResetManagedMode(void) {
     return CKR_OK;
   }
   if (g_cnk_is_initialized) {
+    cnk_lifecycle_unlock();
+    return CKR_OPERATION_ACTIVE;
+  }
+  if (cnk_cleanup_is_pending()) {
     cnk_lifecycle_unlock();
     return CKR_OPERATION_ACTIVE;
   }

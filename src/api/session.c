@@ -24,6 +24,7 @@ static CNK_PKCS11_MUTEX session_mutex;
 // Close removes a session only after activeCalls reaches zero, so a concurrent
 // lookup cannot observe freed storage after releasing the table lock.
 static CNK_PKCS11_TOKEN_STATE *token_states = NULL;
+static CNK_PKCS11_SESSION *retired_sessions = NULL;
 
 static void yield_session_close(void) {
 #ifdef _WIN32
@@ -73,9 +74,9 @@ static CK_LONG find_free_slot(void) {
   return -1; // No free slot found
 }
 
-static void free_session(CNK_PKCS11_SESSION *session) {
+static CK_RV free_session(CNK_PKCS11_SESSION *session) {
   if (session == NULL)
-    return;
+    return CKR_OK;
 
   // Operation contexts can own copied parameters, buffered messages, and key
   // material independently of whether the operation reached its final call.
@@ -88,9 +89,12 @@ static void free_session(CNK_PKCS11_SESSION *session) {
     if (session->secretKeys[i].active)
       mbedtls_platform_zeroize(session->secretKeys[i].value, sizeof(session->secretKeys[i].value));
   }
-  cnk_mutex_destroy(&session->lock);
+  CK_RV rv = cnk_mutex_destroy(&session->lock);
+  if (rv != CKR_OK)
+    return rv;
   mbedtls_platform_zeroize(session, sizeof(*session));
   ck_free(session);
+  return CKR_OK;
 }
 
 static void clear_token_auth(CNK_PKCS11_TOKEN_STATE *token) {
@@ -205,12 +209,17 @@ CK_RV cnk_session_manager_cleanup(void) {
     CNK_ERROR("Failed to lock session manager during cleanup");
     return rv;
   }
+  CK_RV cleanupRv = CKR_OK;
 
   if (session_table != NULL) {
     // Free all session structures
     for (CK_LONG i = 0; i < session_table_size; i++) {
       if (session_table[i] != NULL) {
-        free_session(session_table[i]);
+        CK_RV freeRv = free_session(session_table[i]);
+        if (freeRv != CKR_OK) {
+          cleanupRv = freeRv;
+          goto unlock_cleanup;
+        }
         session_table[i] = NULL;
       }
     }
@@ -223,19 +232,39 @@ CK_RV cnk_session_manager_cleanup(void) {
     next_handle = 1;
   }
 
+  while (retired_sessions != NULL) {
+    CNK_PKCS11_SESSION *retired = retired_sessions;
+    CNK_PKCS11_SESSION *nextRetired = retired->retiredNext;
+    CK_RV freeRv = free_session(retired);
+    if (freeRv != CKR_OK) {
+      cleanupRv = freeRv;
+      goto unlock_cleanup;
+    }
+    retired_sessions = nextRetired;
+  }
+
   while (token_states != NULL) {
     CNK_PKCS11_TOKEN_STATE *token = token_states;
-    token_states = token->next;
     clear_token_auth(token);
-    cnk_mutex_destroy(&token->lock);
+    CK_RV destroyRv = cnk_mutex_destroy(&token->lock);
+    if (destroyRv != CKR_OK) {
+      cleanupRv = destroyRv;
+      goto unlock_cleanup;
+    }
+    token_states = token->next;
     ck_free(token);
   }
 
+unlock_cleanup:
   cnk_mutex_unlock(&session_mutex);
+  if (cleanupRv != CKR_OK)
+    return cleanupRv;
 
   // Destroy the session manager mutex
-  cnk_mutex_destroy(&session_mutex);
-  return CKR_OK;
+  CK_RV destroyRv = cnk_mutex_destroy(&session_mutex);
+  if (destroyRv == CKR_OK)
+    memset(&session_mutex, 0, sizeof(session_mutex));
+  return destroyRv;
 }
 
 CK_RV cnk_session_wait_for_active_calls(void) {
@@ -753,50 +782,50 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
 
   CNK_PKCS11_SESSION *session = NULL;
   CK_LONG index = -1;
-  CK_BBOOL closeOwned = CK_FALSE;
   CNK_ENSURE_OK(cnk_mutex_lock(&session_mutex));
   if (!g_cnk_is_initialized) {
     cnk_mutex_unlock(&session_mutex);
     CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki finalization is in progress");
   }
-  for (;;) {
-    if (!closeOwned) {
-      for (CK_LONG i = 0; i < session_table_size; i++) {
-        // Only one C_CloseSession may own a session. A concurrent close must
-        // not select an entry already being drained by another caller.
-        if (session_table[i] != NULL && session_table[i]->handle == hSession && !session_table[i]->closing) {
-          session = session_table[i];
-          index = i;
-          break;
-        }
-      }
-      if (session == NULL) {
-        cnk_mutex_unlock(&session_mutex);
-        CNK_RETURN(CKR_SESSION_HANDLE_INVALID, "Session not found");
-      }
-    }
-    if (atomic_load(&session->activeCalls) == 0)
+  for (CK_LONG i = 0; i < session_table_size; i++) {
+    // Only one C_CloseSession may own a session. A concurrent close must not
+    // select an entry already being drained by another caller.
+    if (session_table[i] != NULL && session_table[i]->handle == hSession && !session_table[i]->closing) {
+      session = session_table[i];
+      index = i;
       break;
-    session->closing = CK_TRUE;
-    closeOwned = CK_TRUE;
-    // Existing calls retain a reference after leaving session_mutex. Wait for
-    // those calls to finish before removing and freeing the session.
-    cnk_mutex_unlock(&session_mutex);
-    yield_session_close();
-    CK_RV lockRv = cnk_mutex_lock(&session_mutex);
-    if (lockRv != CKR_OK) {
-      atomic_store(&session->closing, CK_FALSE);
-      return lockRv;
     }
   }
+  if (session == NULL) {
+    cnk_mutex_unlock(&session_mutex);
+    CNK_RETURN(CKR_SESSION_HANDLE_INVALID, "Session not found");
+  }
+
+  // Keep the closing session visible to C_Finalize while its token state is
+  // still in use. The extra reference belongs to this close operation and is
+  // released only after the session has been removed from the table.
+  atomic_store(&session->closing, CK_TRUE);
+  atomic_fetch_add(&session->activeCalls, 1);
+  cnk_mutex_unlock(&session_mutex);
+
+  // Existing calls retain references after leaving session_mutex. Wait until
+  // this close operation is the sole remaining owner before mutating state.
+  while (atomic_load(&session->activeCalls) > 1)
+    yield_session_close();
 
   // Reserve the token-wide state change before making the session unreachable.
   // If the application mutex callback fails, the still-open session remains
   // fully usable and the token counters remain unchanged.
   CK_RV tokenLockRv = cnk_mutex_lock(&session->token->lock);
   if (tokenLockRv != CKR_OK) {
-    session->closing = CK_FALSE;
-    cnk_mutex_unlock(&session_mutex);
+    CK_RV tableLockRv = cnk_mutex_lock(&session_mutex);
+    if (tableLockRv == CKR_OK) {
+      atomic_store(&session->closing, CK_FALSE);
+      cnk_mutex_unlock(&session_mutex);
+    }
+    cnk_session_release_ref(&session);
+    if (tableLockRv != CKR_OK)
+      return tableLockRv;
     return tokenLockRv;
   }
   session->token->openSessions--;
@@ -809,11 +838,7 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
     clear_token_auth(session->token);
   }
 
-  session_table[index] = NULL;
-  session_count--;
-  session->isOpen = CK_FALSE;
   cnk_mutex_unlock(&session->token->lock);
-  cnk_mutex_unlock(&session_mutex);
 
   // Never acquire the per-session lock while holding session_mutex. This is
   // the global lock-order boundary used by object enumeration and cancellation.
@@ -825,13 +850,48 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
     tokenLockRv = cnk_mutex_lock(&session->token->lock);
     if (tokenLockRv != CKR_OK) {
       atomic_store(&session->token->logoutPending, CK_FALSE);
-      free_session(session);
+      CK_RV tableLockRv = cnk_mutex_lock(&session_mutex);
+      if (tableLockRv == CKR_OK) {
+        atomic_store(&session->closing, CK_FALSE);
+        cnk_mutex_unlock(&session_mutex);
+      }
+      cnk_session_release_ref(&session);
+      if (tableLockRv != CKR_OK)
+        return tableLockRv;
       return tokenLockRv;
     }
     session->token->logoutPending = CK_FALSE;
     cnk_mutex_unlock(&session->token->lock);
   }
-  free_session(session);
+
+  // Remove the tombstone only after every post-close access to session->token
+  // has completed. C_Finalize sees the active close reference until this point.
+  CK_RV tableLockRv = cnk_mutex_lock(&session_mutex);
+  if (tableLockRv != CKR_OK) {
+    cnk_session_release_ref(&session);
+    return tableLockRv;
+  }
+  if (session_table[index] == session) {
+    session_table[index] = NULL;
+    session_count--;
+    session->isOpen = CK_FALSE;
+  }
+  cnk_mutex_unlock(&session_mutex);
+
+  CNK_PKCS11_SESSION *closedSession = session;
+  cnk_session_release_ref(&session);
+  CK_RV freeRv = free_session(closedSession);
+  if (freeRv != CKR_OK) {
+    // The handle is already invalid, but retain the zeroized session until a
+    // later manager cleanup can retry the application destroy callback.
+    CK_RV retiredLockRv = cnk_mutex_lock(&session_mutex);
+    if (retiredLockRv == CKR_OK) {
+      closedSession->retiredNext = retired_sessions;
+      retired_sessions = closedSession;
+      cnk_mutex_unlock(&session_mutex);
+    }
+    return retiredLockRv != CKR_OK ? retiredLockRv : freeRv;
+  }
 
   return cleanupRv != CKR_OK ? cleanupRv : logoutRv;
 }

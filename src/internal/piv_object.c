@@ -190,8 +190,14 @@ CK_RV cnk_build_piv_rsa_import(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCo
   }
   if (componentWidth == 0 || maxPrimeLen > componentWidth)
     return CKR_KEY_SIZE_RANGE;
-  if (components[0]->ulValueLen < componentWidth / 2 || components[1]->ulValueLen < componentWidth / 2)
-    return CKR_KEY_SIZE_RANGE;
+  CK_ULONG primeWidth = componentWidth;
+  // Firmware accepts fixed-width CRT values with at most one omitted leading
+  // zero byte. Reject shorter primes instead of silently padding malformed
+  // RSA components into a supported slot size.
+  for (CK_ULONG i = 0; i < 2; i++) {
+    if (components[i]->ulValueLen != primeWidth && (primeWidth == 0 || components[i]->ulValueLen != primeWidth - 1))
+      return CKR_KEY_SIZE_RANGE;
+  }
   CK_RV rv = rsaComponentSizeToAlgorithm(componentWidth, algorithmType);
   CK_ULONG offset = 0;
   for (CK_ULONG i = 0; rv == CKR_OK && i < 5; i++)

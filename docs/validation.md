@@ -48,6 +48,12 @@ PIN-always PIV ECDH key therefore fails closed with `CKR_USER_NOT_LOGGED_IN`
 until a dedicated context-authentication channel is defined; it must never use
 the token-wide USER PIN cache as a substitute.
 
+The same fail-closed rule applies to ML-KEM decapsulation. One-shot ECDH and
+ML-KEM private operations reserve the token operation slot until the card call
+and session-secret commit complete, so logout cannot clear authorization or
+release the card transaction underneath them. Private session secrets are
+hidden unless a USER login is currently cached.
+
 ## Failure Injection
 
 Application mutex callbacks must be tested with failure injected at every lock

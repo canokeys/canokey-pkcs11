@@ -9,6 +9,7 @@
 #include <cmocka.h>
 // clang-format on
 
+#include "api/object.h"
 #include "api/session.h"
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
@@ -377,6 +378,48 @@ static void test_managed_slot_list_is_canonical(void **state) {
   assert_int_equal(slot, 0);
 }
 
+static void test_private_session_secret_is_hidden_after_logout(void **state) {
+  (void)state;
+  CK_SESSION_HANDLE session;
+  assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session), CKR_OK);
+
+  CNK_PKCS11_SESSION *internal = NULL;
+  assert_int_equal(cnk_session_find(session, &internal), CKR_OK);
+  cnk_mutex_lock(&internal->token->lock);
+  internal->token->loginState = TOKEN_LOGIN_USER;
+  internal->token->cbPin = 1;
+  internal->token->pin[0] = '1';
+  cnk_mutex_unlock(&internal->token->lock);
+
+  CNK_PKCS11_SECRET_KEY_OBJECT prototype = {0};
+  prototype.keyType = CKK_GENERIC_SECRET;
+  prototype.valueLen = 16;
+  prototype.private = CK_TRUE;
+  prototype.extractable = CK_TRUE;
+  prototype.sensitive = CK_FALSE;
+  memset(prototype.value, 0xA5, prototype.valueLen);
+  CK_OBJECT_HANDLE object;
+  assert_int_equal(CNK_CreateSessionSecretKey(internal, &prototype, &object), CKR_OK);
+  cnk_session_release_ref(&internal);
+
+  CK_RV logoutRv = C_Logout(session);
+  assert_true(logoutRv == CKR_OK || logoutRv == CKR_DEVICE_ERROR);
+
+  CK_BYTE value[16] = {0};
+  CK_ATTRIBUTE valueAttribute = {CKA_VALUE, value, sizeof(value)};
+  assert_int_equal(C_GetAttributeValue(session, object, &valueAttribute, 1), CKR_OBJECT_HANDLE_INVALID);
+
+  CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
+  CK_ATTRIBUTE findTemplate = {CKA_CLASS, &secretClass, sizeof(secretClass)};
+  assert_int_equal(C_FindObjectsInit(session, &findTemplate, 1), CKR_OK);
+  CK_OBJECT_HANDLE found;
+  CK_ULONG foundCount = 0;
+  assert_int_equal(C_FindObjects(session, &found, 1, &foundCount), CKR_OK);
+  assert_int_equal(foundCount, 0);
+  assert_int_equal(C_FindObjectsFinal(session), CKR_OK);
+  assert_int_equal(C_CloseSession(session), CKR_OK);
+}
+
 static CK_RV failTokenLock(void *mutex) {
   (void)mutex;
   return CKR_GENERAL_ERROR;
@@ -450,6 +493,7 @@ int main(void) {
       cmocka_unit_test_setup_teardown(test_encapsulation_query_validates_session, setup, teardown),
       cmocka_unit_test_setup_teardown(test_invalid_finalize_does_not_consume_reference, setup, teardown),
       cmocka_unit_test_setup_teardown(test_managed_slot_list_is_canonical, setup, teardown),
+      cmocka_unit_test_setup_teardown(test_private_session_secret_is_hidden_after_logout, setup, teardown),
       cmocka_unit_test_setup_teardown(test_cached_auth_check_propagates_lock_failure, setup, teardown),
       cmocka_unit_test_setup_teardown(test_data_object_template_rejects_null_object_id, setup, teardown),
       cmocka_unit_test_setup_teardown(test_digest_key_rejects_non_extractable_secret, setup, teardown),

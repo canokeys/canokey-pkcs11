@@ -206,6 +206,10 @@ CK_RV C_DecapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivSlot, &algorithmType, NULL, NULL, &pinPolicy, NULL));
   if (session->mlkem768Algorithm == 0 || algorithmType != session->mlkem768Algorithm)
     return CKR_KEY_TYPE_INCONSISTENT;
+  // C_DecapsulateKey has no context-specific PIN parameter. Do not satisfy a
+  // PIN-always policy with the token-wide USER PIN cache.
+  if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS)
+    return CKR_USER_NOT_LOGGED_IN;
   CNK_PKCS11_SECRET_KEY_OBJECT prototype;
   CK_RV rv = buildSharedSecretPrototype(session, attributes, attributeCount, &prototype);
   if (rv != CKR_OK)
@@ -213,6 +217,11 @@ CK_RV C_DecapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
 
   CK_BYTE sharedSecret[CNK_MLKEM768_SHARED_SECRET_BYTES];
   CK_ULONG sharedSecretLen = sizeof(sharedSecret);
+  CK_BBOOL operationReserved = CK_FALSE;
+  rv = cnk_token_begin_card_operation(session);
+  if (rv != CKR_OK)
+    goto cleanup;
+  operationReserved = CK_TRUE;
   rv = cnk_piv_mlkem_decapsulate(session->slotId, session, algorithmType, pivSlot, pinPolicy, ciphertext, ciphertextLen,
                                  sharedSecret, &sharedSecretLen);
   if (rv == CKR_OK && sharedSecretLen != sizeof(sharedSecret))
@@ -221,6 +230,9 @@ CK_RV C_DecapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
     memcpy(prototype.value, sharedSecret, sizeof(sharedSecret));
     rv = CNK_CreateSessionSecretKey(session, &prototype, key);
   }
+cleanup:
+  if (operationReserved)
+    cnk_token_end_management_operation(session);
   mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
   mbedtls_platform_zeroize(&prototype, sizeof(prototype));
   return rv;

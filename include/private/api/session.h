@@ -183,6 +183,7 @@ typedef struct CNK_PKCS11_SESSION {
   // Protected by the global session-table mutex. Close removes the session
   // only after every API call that acquired this pointer has released it.
   _Atomic CK_ULONG activeCalls;
+  struct CNK_PKCS11_SESSION *retiredNext;
 } CNK_PKCS11_SESSION;
 
 void cnk_session_release_ref(CNK_PKCS11_SESSION **session);

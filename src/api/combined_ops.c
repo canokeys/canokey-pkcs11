@@ -604,6 +604,11 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   CK_ULONG sharedSecretLen = sizeof(sharedSecret);
   CK_BYTE derivedSecret[sizeof(session->secretKeys[0].value)] = {0};
   CNK_PKCS11_SECRET_KEY_OBJECT prototype = {0};
+  CK_BBOOL operationReserved = CK_FALSE;
+  CK_RV reservationRv = cnk_token_begin_card_operation(session);
+  if (reservationRv != CKR_OK)
+    return reservationRv;
+  operationReserved = CK_TRUE;
   // The CanoKey PIV X25519 extension follows RFC 7748 little-endian wire
   // encoding, matching PKCS#11. Firmware converts only its internal key form.
   CK_RV rv = cnk_piv_ecdh(session->slotId, session, algorithmType, pivTag, pinPolicy, params->pPublicData,
@@ -659,6 +664,8 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
 
 cleanup:
   // Neither the raw agreement nor the KDF output may outlive this call.
+  if (operationReserved)
+    cnk_token_end_management_operation(session);
   mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
   mbedtls_platform_zeroize(derivedSecret, sizeof(derivedSecret));
   mbedtls_platform_zeroize(&prototype, sizeof(prototype));

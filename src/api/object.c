@@ -329,11 +329,23 @@ static CK_BBOOL isSessionSecretHandle(CNK_PKCS11_SESSION *session, CK_OBJECT_HAN
   return CK_TRUE;
 }
 
+static CK_RV ensure_session_secret_visible(CNK_PKCS11_SESSION *session, const CNK_PKCS11_SECRET_KEY_OBJECT *secret) {
+  CNK_ENSURE_NONNULL(session, secret);
+  if (!secret->private)
+    return CKR_OK;
+  CK_BBOOL pinCached = CK_FALSE;
+  CK_RV rv = cnk_token_pin_is_cached(session, &pinCached);
+  if (rv != CKR_OK)
+    return rv;
+  return pinCached ? CKR_OK : CKR_OBJECT_HANDLE_INVALID;
+}
+
 CK_RV CNK_GetSessionSecretKey(CNK_PKCS11_SESSION *session, CK_OBJECT_HANDLE object,
                               CNK_PKCS11_SECRET_KEY_OBJECT **secret) {
   CNK_ENSURE_NONNULL(session, secret);
   if (!isSessionSecretHandle(session, object, secret))
     CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid session secret-key handle");
+  CNK_ENSURE_OK(ensure_session_secret_visible(session, *secret));
   CNK_RET_OK;
 }
 
@@ -712,8 +724,14 @@ static CK_RV appendMatchingPivDataObjects(CNK_PKCS11_SESSION *session, CK_SESSIO
 }
 
 static CK_RV appendMatchingSecretObjects(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
+  CK_BBOOL pinCached = CK_FALSE;
+  CK_RV rv = cnk_token_pin_is_cached(session, &pinCached);
+  if (rv != CKR_OK)
+    return rv;
   for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
     if (!session->secretKeys[i].active)
+      continue;
+    if (session->secretKeys[i].private && !pinCached)
       continue;
 
     CK_BYTE id = session->secretKeys[i].id;
@@ -1095,6 +1113,7 @@ CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
   CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
   if (isSessionSecretHandle(session, hObject, &secret)) {
+    CNK_ENSURE_OK(ensure_session_secret_visible(session, secret));
     if (!secret->destroyable)
       CNK_RETURN(CKR_ACTION_PROHIBITED, "Session secret key is not destroyable");
     mbedtls_platform_zeroize(secret, sizeof(*secret));
@@ -1236,6 +1255,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
     CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
     if (!isSessionSecretHandle(session, hObject, &secret))
       CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid session secret-key handle");
+    CNK_ENSURE_OK(ensure_session_secret_visible(session, secret));
     CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
     CK_RV rvReturn = CKR_OK;
 
@@ -1467,6 +1487,7 @@ CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
     CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
     if (!isSessionSecretHandle(session, hObject, &secret))
       CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid session secret-key handle");
+    CNK_ENSURE_OK(ensure_session_secret_visible(session, secret));
     if (ulCount == 0)
       CNK_RET_OK;
     if (!secret->modifiable)
