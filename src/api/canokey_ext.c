@@ -172,13 +172,13 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
     goto done;
   }
 
-  // Managed mode currently uses one process-wide card/allocator binding.
-  // Refuse a second, different binding instead of silently routing one
-  // minidriver context to another reader or freeing memory through the
-  // wrong CSP heap.
+  // Windows may create several CARD_DATA instances for one physical card.
+  // Their PC/SC handles are different and may rotate during the card's
+  // lifetime, so handle identity is not a safe managed-mode compatibility
+  // check. Allocators are process-wide, however, and changing them would make
+  // existing PKCS#11 allocations invalid.
   if (g_cnk_is_managed_mode &&
-      (g_cnk_pcsc_context != pInitArgs->hSCardCtx || g_cnk_scard != pInitArgs->hScard ||
-       g_cnk_malloc_func != pInitArgs->malloc_func || g_cnk_free_func != pInitArgs->free_func)) {
+      (g_cnk_malloc_func != pInitArgs->malloc_func || g_cnk_free_func != pInitArgs->free_func)) {
     rv = CKR_OPERATION_ACTIVE;
     goto done;
   }
@@ -191,6 +191,9 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
   // tell nsync to use the same malloc/free functions
   nsync_malloc_ptr_ = g_cnk_malloc_func;
   nsync_free_ptr_ = g_cnk_free_func;
+  // The current caller owns the live handle for this operation. Minidriver
+  // entry points reassert this binding before using the PKCS#11 session, so a
+  // CARD_DATA whose handle was deleted is never retained indefinitely.
   g_cnk_pcsc_context = pInitArgs->hSCardCtx;
   g_cnk_scard = pInitArgs->hScard;
   rv = CKR_OK;

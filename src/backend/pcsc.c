@@ -2596,8 +2596,6 @@ CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey) {
   CNK_ENSURE_OK(cnk_begin_piv_transaction(session->slotId, &hCard));
 
   rv = authenticateManagementKeyOnCard(hCard, pKey);
-
-cleanup:
   cnk_disconnect_card(hCard);
   CNK_RETURN(rv, "");
 }

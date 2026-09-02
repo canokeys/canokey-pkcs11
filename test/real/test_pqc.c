@@ -575,7 +575,10 @@ static int generate25519KeyPair(CK_FUNCTION_LIST_3_2_PTR functions, CK_SESSION_H
   CK_OBJECT_CLASS publicClass = CKO_PUBLIC_KEY;
   CK_OBJECT_CLASS privateClass = CKO_PRIVATE_KEY;
   CK_BBOOL trueValue = CK_TRUE;
-  CK_BYTE pinPolicy = keyType == CKK_EC_MONTGOMERY ? CNK_PIV_PIN_POLICY_ALWAYS : CNK_PIV_PIN_POLICY_ONCE;
+  // C_DeriveKey has no Init/context-PIN boundary. Keep the destructive
+  // X25519 vector PIN-never so this test can exercise the actual hardware
+  // derive path; PIN-always ECDH is covered by the fail-closed API contract.
+  CK_BYTE pinPolicy = keyType == CKK_EC_MONTGOMERY ? CNK_PIV_PIN_POLICY_NEVER : CNK_PIV_PIN_POLICY_ONCE;
   CK_ATTRIBUTE publicTemplate[] = {
       {CKA_CLASS, &publicClass, sizeof(publicClass)},      {CKA_TOKEN, &trueValue, sizeof(trueValue)},
       {CKA_KEY_TYPE, &keyType, sizeof(keyType)},           {CKA_ID, &id, sizeof(id)},
@@ -870,7 +873,9 @@ int main(int argc, char **argv) {
 
   id = 9;
   keyType = CKK_EC_MONTGOMERY;
-  CK_BYTE xPinPolicy = CNK_PIV_PIN_POLICY_ALWAYS;
+  // Match the generated X25519 vector above: one-shot C_DeriveKey cannot
+  // perform context-specific authentication, so use PIN-never here too.
+  CK_BYTE xPinPolicy = CNK_PIV_PIN_POLICY_NEVER;
   CK_ATTRIBUTE xImportTemplate[] = {
       {CKA_CLASS, &privateClass, sizeof(privateClass)},
       {CKA_TOKEN, &trueValue, sizeof(trueValue)},

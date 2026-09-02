@@ -28,7 +28,8 @@ Review the token state as a state machine. The relevant states are `PUBLIC`,
 - Every session reference is released even when an application mutex callback
   fails. Every operation context and secret buffer is cleared on close/cancel.
 - Managed mode cannot replace an initialized standalone binding or silently
-  switch card/allocator bindings.
+  switch allocator bindings. Same-card Windows contexts may rotate PC/SC
+  handles; each API must reassert the current caller's handle before card I/O.
 
 Before editing, write the affected transitions down and identify the operation
 that owns each reservation. Do not infer authorization from a single enum or
