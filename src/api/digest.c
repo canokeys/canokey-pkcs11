@@ -148,8 +148,12 @@ CK_RV C_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey) {
   // treat it as indigestible even though the bytes are resident on the host.
   if (secret->sensitive)
     CNK_RETURN(CKR_KEY_INDIGESTIBLE, "Sensitive session key cannot be digested");
-  if (secret->private && !cnk_token_pin_is_cached(session))
-    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "Private session key requires USER login");
+  if (secret->private) {
+    CK_BBOOL pinCached = CK_FALSE;
+    CNK_ENSURE_OK(cnk_token_pin_is_cached(session, &pinCached));
+    if (!pinCached)
+      CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "Private session key requires USER login");
+  }
 
   if (mbedtls_md_update(&session->digestingContext.context, secret->value, secret->valueLen) != 0)
     CNK_RETURN(CKR_FUNCTION_FAILED, "md update failed");

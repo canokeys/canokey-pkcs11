@@ -192,24 +192,24 @@ void cnk_session_release_ref(CNK_PKCS11_SESSION **session);
 CK_RV cnk_session_manager_init(void);
 
 // Clean up the session manager
-void cnk_session_manager_cleanup(void);
+CK_RV cnk_session_manager_cleanup(void);
 
 // Find a session by handle
 CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session);
 
 CK_RV cnk_session_cancel_operations(CNK_PKCS11_SESSION *session, CK_FLAGS flags);
 
-CK_BBOOL cnk_token_pin_is_cached(CNK_PKCS11_SESSION *session);
+CK_RV cnk_token_pin_is_cached(CNK_PKCS11_SESSION *session, CK_BBOOL *cached);
 CK_RV cnk_token_copy_pin(CNK_PKCS11_SESSION *session, CK_BYTE pin[8], CK_ULONG_PTR pinLen);
 CK_RV cnk_token_cache_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pin, CK_ULONG pinLen);
 CK_RV cnk_token_update_cached_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR oldPin, CK_ULONG oldPinLen,
                                   CK_UTF8CHAR_PTR newPin, CK_ULONG newPinLen);
-CK_BBOOL cnk_token_management_key_is_cached(CNK_PKCS11_SESSION *session);
+CK_RV cnk_token_management_key_is_cached(CNK_PKCS11_SESSION *session, CK_BBOOL *cached);
 CK_RV cnk_token_copy_management_key(CNK_PKCS11_SESSION *session, CK_BYTE key[24]);
 CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session, CK_BYTE_PTR key, CK_ULONG keyLen,
                                                     CK_RV verificationRv);
-void cnk_token_get_session_counts(CK_SLOT_ID slotId, CK_ULONG_PTR openSessions, CK_ULONG_PTR readOnlySessions);
+CK_RV cnk_token_get_session_counts(CK_SLOT_ID slotId, CK_ULONG_PTR openSessions, CK_ULONG_PTR readOnlySessions);
 CK_RV cnk_token_revoke_private_operations(CNK_PKCS11_TOKEN_STATE *token);
 
 #endif /* CNK_API_SESSION_H */

@@ -208,8 +208,12 @@ static CK_RV loginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, C
       rv = CKR_ACTION_PROHIBITED;
   }
 
-  if (rv == CKR_OK && cnk_token_management_key_is_cached(session))
-    goto cleanup;
+  if (rv == CKR_OK) {
+    CK_BBOOL managementKeyCached = CK_FALSE;
+    rv = cnk_token_management_key_is_cached(session, &managementKeyCached);
+    if (rv == CKR_OK && managementKeyCached)
+      goto cleanup;
+  }
 
   if (rv == CKR_OK) {
     dataLen = sizeof(protectedData);

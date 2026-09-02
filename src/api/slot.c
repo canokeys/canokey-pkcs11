@@ -17,7 +17,7 @@ CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PT
   // List readers
   CNK_ENSURE_OK(cnk_list_readers());
 
-  cnk_mutex_lock(&g_cnk_readers_mutex);
+  CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
 
   // If pSlotList is NULL, just return the number of slots
   if (!pSlotList) {
@@ -100,7 +100,7 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   // session_mutex first, so taking the locks in the reverse order can deadlock.
   CK_ULONG openSessions = 0;
   CK_ULONG readOnlySessions = 0;
-  cnk_token_get_session_counts(slotID, &openSessions, &readOnlySessions);
+  CNK_ENSURE_OK(cnk_token_get_session_counts(slotID, &openSessions, &readOnlySessions));
 
   // Get the serial number
   CK_ULONG serial_number;

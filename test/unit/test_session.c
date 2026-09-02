@@ -18,7 +18,7 @@
 #include <windows.h>
 #else
 #include <pthread.h>
-#include <sched.h>
+#include <time.h>
 #endif
 
 typedef struct {
@@ -90,7 +90,8 @@ static void waitForWorker(atomic_bool *entered) {
 #ifdef _WIN32
     Sleep(1);
 #else
-    sched_yield();
+    struct timespec delay = {.tv_sec = 0, .tv_nsec = 1000000};
+    nanosleep(&delay, NULL);
 #endif
   }
   assert_true(atomic_load(entered));
@@ -225,7 +226,9 @@ static void test_logout_cannot_race_protected_management_login(void **state) {
   CK_BYTE managementKey[24] = {0};
   assert_int_equal(
       cnk_token_complete_protected_management_login(internal, managementKey, sizeof(managementKey), CKR_OK), CKR_OK);
-  assert_true(cnk_token_management_key_is_cached(internal));
+  CK_BBOOL managementKeyCached = CK_FALSE;
+  assert_int_equal(cnk_token_management_key_is_cached(internal, &managementKeyCached), CKR_OK);
+  assert_true(managementKeyCached);
   cnk_mutex_lock(&internal->token->lock);
   memset(internal->token->pin, 0xFF, sizeof(internal->token->pin));
   internal->token->cbPin = 0;
@@ -280,6 +283,42 @@ static void test_context_login_rejects_two_pin_always_operations(void **state) {
   assert_int_equal(C_CloseSession(session), CKR_OK);
 }
 
+static void test_encapsulation_query_validates_session(void **state) {
+  (void)state;
+  CK_MECHANISM mechanism = {CKM_ML_KEM, NULL, 0};
+  CK_ULONG ciphertextLen = 0;
+  CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+  assert_int_equal(C_EncapsulateKey(CK_INVALID_HANDLE, &mechanism, 1, NULL, 0, NULL, &ciphertextLen, &key),
+                   CKR_SESSION_HANDLE_INVALID);
+}
+
+static void test_invalid_finalize_does_not_consume_reference(void **state) {
+  (void)state;
+  CK_INFO info;
+  assert_int_equal(C_Finalize((void *)1), CKR_ARGUMENTS_BAD);
+  assert_int_equal(C_GetInfo(&info), CKR_OK);
+}
+
+static CK_RV failTokenLock(void *mutex) {
+  (void)mutex;
+  return CKR_GENERAL_ERROR;
+}
+
+static void test_cached_auth_check_propagates_lock_failure(void **state) {
+  (void)state;
+  CK_SESSION_HANDLE session;
+  assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session), CKR_OK);
+  CNK_PKCS11_SESSION *internal = NULL;
+  assert_int_equal(cnk_session_find(session, &internal), CKR_OK);
+  CK_RV (*savedLock)(void *) = internal->token->lock.lock;
+  internal->token->lock.lock = failTokenLock;
+  CK_BBOOL cached = CK_TRUE;
+  assert_int_equal(cnk_token_pin_is_cached(internal, &cached), CKR_GENERAL_ERROR);
+  internal->token->lock.lock = savedLock;
+  cnk_session_release_ref(&internal);
+  assert_int_equal(C_CloseSession(session), CKR_OK);
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test_setup_teardown(test_close_does_not_deadlock_template_find, setup, teardown),
@@ -288,6 +327,9 @@ int main(void) {
       cmocka_unit_test_setup_teardown(test_logout_cannot_race_protected_management_login, setup, teardown),
       cmocka_unit_test_setup_teardown(test_logout_revokes_context_specific_authorization, setup, teardown),
       cmocka_unit_test_setup_teardown(test_context_login_rejects_two_pin_always_operations, setup, teardown),
+      cmocka_unit_test_setup_teardown(test_encapsulation_query_validates_session, setup, teardown),
+      cmocka_unit_test_setup_teardown(test_invalid_finalize_does_not_consume_reference, setup, teardown),
+      cmocka_unit_test_setup_teardown(test_cached_auth_check_propagates_lock_failure, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

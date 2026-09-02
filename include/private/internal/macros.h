@@ -24,7 +24,9 @@
  */
 #define PKCS11_CHECK_SLOT_ID_VALID(id)                                                                                 \
   do {                                                                                                                 \
-    if (!cnk_slot_exists(id)) {                                                                                        \
+    CK_BBOOL _slot_exists = CK_FALSE;                                                                                  \
+    CNK_ENSURE_OK(cnk_slot_exists((id), &_slot_exists));                                                               \
+    if (!_slot_exists) {                                                                                               \
       CNK_RETURN(CKR_SLOT_ID_INVALID, "Invalid slot ID");                                                              \
     }                                                                                                                  \
   } while (0)

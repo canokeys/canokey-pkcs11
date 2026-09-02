@@ -711,8 +711,7 @@ static CK_RV appendMatchingPivDataObjects(CNK_PKCS11_SESSION *session, CK_SESSIO
   return CKR_OK;
 }
 
-static CK_RV appendMatchingSecretObjects(CNK_PKCS11_SESSION *session, CK_SESSION_HANDLE hSession,
-                                         CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
+static CK_RV appendMatchingSecretObjects(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
   for (CK_ULONG i = 0; i < MAX_SESSION_SECRET_KEYS; i++) {
     if (!session->secretKeys[i].active)
       continue;
@@ -918,7 +917,9 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
 
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
-  if (!cnk_token_management_key_is_cached(session))
+  CK_BBOOL managementKeyCached = CK_FALSE;
+  CNK_ENSURE_OK(cnk_token_management_key_is_cached(session, &managementKeyCached));
+  if (!managementKeyCached)
     CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "CKU_SO login is required");
 
   CK_OBJECT_CLASS objectClass;
@@ -1045,7 +1046,7 @@ CK_RV C_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTR
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   CNK_PKCS11_SECRET_KEY_OBJECT copy = {0};
   CK_RV rv;
-  cnk_mutex_lock(&session->lock);
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->lock));
   CNK_PKCS11_SECRET_KEY_OBJECT *source = NULL;
   rv = CNK_GetSessionSecretKey(session, hObject, &source);
   if (rv == CKR_OK) {
@@ -1488,7 +1489,7 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
   CK_RV rv = CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   // Lock the session
-  cnk_mutex_lock(&session->lock);
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->lock));
 
   // Check if a find operation is already active
   if (session->findActive) {
@@ -1546,7 +1547,7 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
 
   if (session->findClassSpecified) {
     if (session->findObjectClass == CKO_SECRET_KEY) {
-      rv = appendMatchingSecretObjects(session, hSession, pTemplate, ulCount);
+      rv = appendMatchingSecretObjects(session, pTemplate, ulCount);
     } else if (session->findObjectClass == CKO_DATA) {
       rv = appendMatchingPivDataObjects(session, hSession, pTemplate, ulCount);
     } else {
@@ -1573,7 +1574,7 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
       }
     }
     if (rv == CKR_OK)
-      rv = appendMatchingSecretObjects(session, hSession, pTemplate, ulCount);
+      rv = appendMatchingSecretObjects(session, pTemplate, ulCount);
   }
 
   if (rv != CKR_OK) {
@@ -1600,7 +1601,7 @@ CK_RV C_FindObjects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject, C
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   // Lock the session
-  cnk_mutex_lock(&session->lock);
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->lock));
 
   // Check if a find operation is active
   if (!session->findActive) {
@@ -1636,7 +1637,7 @@ CK_RV C_FindObjectsFinal(CK_SESSION_HANDLE hSession) {
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   // Lock the session
-  cnk_mutex_lock(&session->lock);
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->lock));
 
   // Check if a find operation is active
   if (!session->findActive) {

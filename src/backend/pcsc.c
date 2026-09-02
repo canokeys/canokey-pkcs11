@@ -40,6 +40,7 @@ typedef struct {
 } CNK_SLOT_EVENT_READER;
 
 static CNK_PKCS11_MUTEX g_cnk_slot_event_mutex;
+static CK_BBOOL backend_mutexes_initialized = CK_FALSE;
 static CNK_SLOT_EVENT_READER *slot_event_readers = NULL;
 static CK_ULONG slot_event_reader_count = 0;
 static CK_BBOOL slot_event_initialized = CK_FALSE;
@@ -122,7 +123,7 @@ static CK_RV connectForPrivateKeyOperation(CK_SLOT_ID slotId, CNK_PKCS11_SESSION
                                            const char *operationName) {
   CNK_ENSURE_NONNULL(session, hCard);
 
-  cnk_mutex_lock(&session->token->lock);
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
   CK_BBOOL logoutPending = session->token->logoutPending;
   cnk_mutex_unlock(&session->token->lock);
   if (logoutPending)
@@ -157,7 +158,7 @@ static CK_RV connectForPrivateKeyOperation(CK_SLOT_ID slotId, CNK_PKCS11_SESSION
   CK_ULONG pinLen = 0;
   CK_RV rv = cnk_token_copy_pin(session, pin, &pinLen);
   if (rv != CKR_OK)
-    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN verification required before private-key operation");
+    CNK_RETURN(rv, "PIN verification required before private-key operation");
   rv = cnk_verify_piv_pin_with_session_ex(slotId, session, pin, pinLen, NULL, hCard);
   mbedtls_platform_zeroize(pin, sizeof(pin));
   if (rv != CKR_OK) {
@@ -217,10 +218,6 @@ static CK_RV handle_pin_status(CK_BYTE sw1, CK_BYTE sw2, CK_BYTE_PTR pPinTries, 
   CNK_RETURN(CKR_DEVICE_ERROR, operationName);
 }
 
-static void cache_piv_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
-  cnk_token_cache_pin(session, pPin, ulPinLen);
-}
-
 CK_RV cnk_initialize_backend(void) {
   CNK_ENSURE_OK(cnk_mutex_create(&g_cnk_readers_mutex));
   CK_RV rv = cnk_mutex_create(&g_cnk_slot_event_mutex);
@@ -228,25 +225,38 @@ CK_RV cnk_initialize_backend(void) {
     cnk_mutex_destroy(&g_cnk_readers_mutex);
     return rv;
   }
+  backend_mutexes_initialized = CK_TRUE;
   CNK_RET_OK;
 }
 
-CK_BBOOL cnk_slot_exists(CK_SLOT_ID slotID) {
-  CK_BBOOL found = CK_FALSE;
-  cnk_mutex_lock(&g_cnk_readers_mutex);
+CK_RV cnk_cleanup_backend(void) {
+  if (!backend_mutexes_initialized)
+    return CKR_OK;
+  CK_RV readersRv = cnk_mutex_destroy(&g_cnk_readers_mutex);
+  CK_RV eventRv = cnk_mutex_destroy(&g_cnk_slot_event_mutex);
+  memset(&g_cnk_readers_mutex, 0, sizeof(g_cnk_readers_mutex));
+  memset(&g_cnk_slot_event_mutex, 0, sizeof(g_cnk_slot_event_mutex));
+  backend_mutexes_initialized = CK_FALSE;
+  return readersRv != CKR_OK ? readersRv : eventRv;
+}
+
+CK_RV cnk_slot_exists(CK_SLOT_ID slotID, CK_BBOOL *exists) {
+  CNK_ENSURE_NONNULL(exists);
+  *exists = CK_FALSE;
+  CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
   for (CK_LONG i = 0; i < g_cnk_num_readers; i++) {
     if (g_cnk_readers[i].slot_id == slotID) {
-      found = CK_TRUE;
+      *exists = CK_TRUE;
       break;
     }
   }
   cnk_mutex_unlock(&g_cnk_readers_mutex);
-  return found;
+  return CKR_OK;
 }
 
 // Initialize PC/SC context only
 CK_RV cnk_initialize_pcsc(void) {
-  if (g_cnk_is_initialized)
+  if (g_cnk_pcsc_context != 0)
     CNK_RET_OK;
 
   LONG rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &g_cnk_pcsc_context);
@@ -255,8 +265,6 @@ CK_RV cnk_initialize_pcsc(void) {
     return CKR_DEVICE_ERROR;
   }
 
-  g_cnk_is_initialized = CK_TRUE;
-
   CNK_RET_OK;
 }
 
@@ -264,7 +272,7 @@ CK_RV cnk_initialize_pcsc(void) {
 CK_RV cnk_list_readers(void) {
   CNK_LOG_FUNC();
 
-  cnk_mutex_lock(&g_cnk_readers_mutex);
+  CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
   if (!g_cnk_is_initialized) {
     cnk_mutex_unlock(&g_cnk_readers_mutex);
     return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -383,16 +391,29 @@ CK_RV cnk_list_readers(void) {
 }
 
 // Clean up PC/SC resources
-void cnk_cleanup_pcsc(void) {
-  if (!g_cnk_is_initialized) {
-    return;
+CK_RV cnk_cleanup_pcsc(void) {
+  if (!backend_mutexes_initialized) {
+    if (g_cnk_pcsc_context != 0) {
+      SCardReleaseContext(g_cnk_pcsc_context);
+      g_cnk_pcsc_context = 0;
+    }
+    return CKR_OK;
   }
 
   // Wake a blocked waiter before taking its serialization mutex.
   if (g_cnk_pcsc_context)
     SCardCancel(g_cnk_pcsc_context);
-  cnk_mutex_lock(&g_cnk_slot_event_mutex);
-  cnk_mutex_lock(&g_cnk_readers_mutex);
+  CK_RV rv = cnk_mutex_lock(&g_cnk_slot_event_mutex);
+  if (rv != CKR_OK) {
+    CNK_ERROR("Failed to lock slot-event state during PC/SC cleanup");
+    return rv;
+  }
+  rv = cnk_mutex_lock(&g_cnk_readers_mutex);
+  if (rv != CKR_OK) {
+    CNK_ERROR("Failed to lock reader state during PC/SC cleanup");
+    cnk_mutex_unlock(&g_cnk_slot_event_mutex);
+    return rv;
+  }
 
   if (g_cnk_readers) {
     for (CK_LONG i = 0; i < g_cnk_num_readers; i++) {
@@ -414,7 +435,6 @@ void cnk_cleanup_pcsc(void) {
   }
 
   g_cnk_num_readers = 0;
-  g_cnk_is_initialized = CK_FALSE;
   freeSlotEventReaders(slot_event_readers, slot_event_reader_count);
   slot_event_readers = NULL;
   slot_event_reader_count = 0;
@@ -426,27 +446,7 @@ void cnk_cleanup_pcsc(void) {
   pending_slot_event_capacity = 0;
   cnk_mutex_unlock(&g_cnk_readers_mutex);
   cnk_mutex_unlock(&g_cnk_slot_event_mutex);
-  cnk_mutex_destroy(&g_cnk_readers_mutex);
-  cnk_mutex_destroy(&g_cnk_slot_event_mutex);
-}
-
-// Get the number of readers
-CK_ULONG cnk_get_num_readers(void) {
-  cnk_mutex_lock(&g_cnk_readers_mutex);
-  CK_ULONG num = g_cnk_num_readers;
-  cnk_mutex_unlock(&g_cnk_readers_mutex);
-  return num;
-}
-
-// Get the slot ID for a reader at the given index
-CK_SLOT_ID cnk_get_reader_slot_id(CK_ULONG index) {
-  CK_SLOT_ID slot = (CK_SLOT_ID)-1;
-  cnk_mutex_lock(&g_cnk_readers_mutex);
-  if (index < (CK_ULONG)g_cnk_num_readers) {
-    slot = g_cnk_readers[index].slot_id;
-  }
-  cnk_mutex_unlock(&g_cnk_readers_mutex);
-  return slot;
+  return CKR_OK;
 }
 
 static void freeSlotEventReaders(CNK_SLOT_EVENT_READER *readers, CK_ULONG count) {
@@ -502,7 +502,7 @@ static CK_LONG findSlotEventReaderByName(const CNK_SLOT_EVENT_READER *readers, C
 // their PC/SC baseline; additions and removals are queued by stable slot ID.
 static CK_RV refreshSlotEventReaders(CK_BBOOL queueChanges) {
   CNK_ENSURE_OK(cnk_list_readers());
-  cnk_mutex_lock(&g_cnk_readers_mutex);
+  CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
   CK_ULONG newCount = (CK_ULONG)g_cnk_num_readers;
   CNK_SLOT_EVENT_READER *replacement = ck_calloc(newCount, sizeof(*replacement));
   if (newCount > 0 && replacement == NULL) {
@@ -689,9 +689,14 @@ CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
       // names without absorbing another PnP transition.
       if (rv == CKR_OK)
         rv = synchronizeSlotEventReadersAfterPnp();
-      for (CK_ULONG i = 0; i < oldReaderCount; i++)
-        if (rv == CKR_OK && (states[i].dwEventState & SCARD_STATE_CHANGED) != 0 && cnk_slot_exists(slotIds[i]))
+      for (CK_ULONG i = 0; i < oldReaderCount && rv == CKR_OK; i++) {
+        if ((states[i].dwEventState & SCARD_STATE_CHANGED) == 0)
+          continue;
+        CK_BBOOL stillPresent = CK_FALSE;
+        rv = cnk_slot_exists(slotIds[i], &stillPresent);
+        if (rv == CKR_OK && stillPresent)
           rv = enqueueSlotEvent(slotIds[i]);
+      }
     }
     freeSlotEventStates(states, slotIds, oldReaderCount);
     if (rv != CKR_OK)
@@ -731,7 +736,7 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
 
   // If readers haven't been listed yet, list them now. Read the globals under
   // the same lock used by the PnP refresh path.
-  cnk_mutex_lock(&g_cnk_readers_mutex);
+  CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
   CK_BBOOL readersMissing = g_cnk_num_readers == 0 || g_cnk_readers == NULL;
   cnk_mutex_unlock(&g_cnk_readers_mutex);
   if (readersMissing) {
@@ -746,7 +751,7 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
   // replaces and frees the global reader array asynchronously.
   char *readerName = NULL;
   CK_BBOOL readerFound = CK_FALSE;
-  cnk_mutex_lock(&g_cnk_readers_mutex);
+  CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
   for (CK_LONG i = 0; i < g_cnk_num_readers; i++) {
     if (g_cnk_readers[i].slot_id == slotID) {
       readerFound = CK_TRUE;
@@ -1105,7 +1110,7 @@ static CK_RV change_pin_card_operation(SCARDHANDLE hCard, void *context) {
   CK_RV rv = cnk_update_piv_pin(hCard, 0x24, ctx->pin_reference, ctx->old_pin, ctx->old_pin_len, ctx->new_pin,
                                 ctx->new_pin_len, ctx->pin_tries, operationName);
   if (rv == CKR_OK && ctx->pin_reference == CNK_PIV_PIN_TYPE_PIN)
-    cnk_token_update_cached_pin(ctx->session, ctx->old_pin, ctx->old_pin_len, ctx->new_pin, ctx->new_pin_len);
+    rv = cnk_token_update_cached_pin(ctx->session, ctx->old_pin, ctx->old_pin_len, ctx->new_pin, ctx->new_pin_len);
   return rv;
 }
 
@@ -1143,8 +1148,8 @@ static CK_RV unblock_pin_card_operation(SCARDHANDLE hCard, void *context) {
   CK_RV rv = cnk_update_piv_pin(hCard, 0x2C, CNK_PIV_PIN_TYPE_PIN, ctx->puk, ctx->puk_len, ctx->new_pin,
                                 ctx->new_pin_len, ctx->pin_tries, "PIV PIN unblock failed");
   if (rv == CKR_OK) {
-    cache_piv_pin(ctx->session, ctx->new_pin, ctx->new_pin_len);
-    cnk_mutex_lock(&ctx->session->token->lock);
+    CNK_ENSURE_OK(cnk_token_cache_pin(ctx->session, ctx->new_pin, ctx->new_pin_len));
+    CNK_ENSURE_OK(cnk_mutex_lock(&ctx->session->token->lock));
     ctx->session->token->loginState = TOKEN_LOGIN_USER;
     cnk_mutex_unlock(&ctx->session->token->lock);
   }
@@ -1254,14 +1259,16 @@ CK_RV cnk_get_piv_data_by_tag_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION
   CK_RV rv;
   CK_BYTE pin[PIV_PADDED_PIN_LEN];
   CK_ULONG pinLen = 0;
-  if (cnk_token_copy_pin(session, pin, &pinLen) == CKR_OK) {
+  CK_RV pinRv = cnk_token_copy_pin(session, pin, &pinLen);
+  if (pinRv == CKR_OK) {
     rv = cnk_verify_piv_pin_with_session_ex(slotID, session, pin, pinLen, NULL, &hCard);
     mbedtls_platform_zeroize(pin, sizeof(pin));
-  } else {
+  } else if (pinRv == CKR_USER_NOT_LOGGED_IN) {
     rv = cnk_connect_and_select_canokey(slotID, &hCard);
     if (rv == CKR_OK)
       rv = cnk_select_piv_application(hCard);
-  }
+  } else
+    return pinRv;
   if (rv == CKR_OK)
     rv = cnk_get_piv_data_on_card(hCard, tag, tag_len, data, data_len, fetch_data);
 
@@ -1869,7 +1876,7 @@ CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algo
   if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS) {
     CK_RV rv = cnk_token_copy_pin(pSession, pin, &pinLen);
     if (rv != CKR_OK)
-      return CKR_USER_NOT_LOGGED_IN;
+      return rv;
   }
   // Derive is a one-shot PKCS#11 operation with no Init boundary for a
   // context-specific login, so PIN-always consumes the token USER PIN here.
@@ -1888,7 +1895,7 @@ CK_RV cnk_piv_mlkem_decapsulate(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession,
   if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS) {
     CK_RV rv = cnk_token_copy_pin(pSession, pin, &pinLen);
     if (rv != CKR_OK)
-      return CKR_USER_NOT_LOGGED_IN;
+      return rv;
   }
   CK_RV rv = cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, pinPolicy, 0x81, pCiphertext,
                                               cbCiphertext, pSharedSecret, pcbSharedSecret, pinLen == 0 ? NULL : pin,
@@ -2391,7 +2398,7 @@ static CK_RV verify_pin_card_operation(SCARDHANDLE hCard, void *context) {
   // Verify the PIN
   CNK_ENSURE_OK(cnk_verify_piv_pin(hCard, ctx->pin, ctx->pin_len, ctx->pin_tries));
 
-  cache_piv_pin(ctx->session, ctx->pin, ctx->pin_len);
+  CNK_ENSURE_OK(cnk_token_cache_pin(ctx->session, ctx->pin, ctx->pin_len));
 
   CNK_RET_OK;
 }

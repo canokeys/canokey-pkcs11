@@ -109,16 +109,17 @@ static __attribute__((unused)) void ck_free(void *ptr) { g_cnk_free_func(ptr); }
 
 // Initialize PC/SC backend
 CK_RV cnk_initialize_backend(void);
+CK_RV cnk_cleanup_backend(void);
 
 // Initialize PC/SC context only
 CK_RV cnk_initialize_pcsc(void);
 
 // List readers and populate g_readers
 CK_RV cnk_list_readers(void);
-CK_BBOOL cnk_slot_exists(CK_SLOT_ID slotID);
+CK_RV cnk_slot_exists(CK_SLOT_ID slotID, CK_BBOOL *exists);
 
 // Clean up PC/SC resources
-void cnk_cleanup_pcsc(void);
+CK_RV cnk_cleanup_pcsc(void);
 
 // PIV application functions
 CK_RV cnk_select_piv_application(SCARDHANDLE hCard);
@@ -146,12 +147,6 @@ CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
 
 // Function to logout PIV PIN with session
 CK_RV cnk_logout_piv_pin_with_session(CK_SLOT_ID slotID);
-
-// Get the number of readers
-CK_ULONG cnk_get_num_readers(void);
-
-// Get the slot ID for a reader at the given index
-CK_SLOT_ID cnk_get_reader_slot_id(CK_ULONG index);
 
 CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot);
 

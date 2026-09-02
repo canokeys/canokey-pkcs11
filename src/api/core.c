@@ -41,9 +41,6 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
     CNK_RETURN(CKR_CRYPTOKI_ALREADY_INITIALIZED, "already initialized");
   }
 
-  if (psa_crypto_init() != PSA_SUCCESS)
-    CNK_RETURN(CKR_FUNCTION_FAILED, "cannot initialize TF-PSA-Crypto");
-
   // Process the initialization arguments
   CK_RV mutex_rv;
 
@@ -86,7 +83,9 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
         // Case 1:
         // the application won't be accessing the Cryptoki library from multiple
         // threads simultaneously
-        mutex_rv = CKR_OK; // no need to do anything
+        // Internal synchronization objects are still required for state
+        // ownership and cleanup, even when the caller promises serialization.
+        mutex_rv = cnk_mutex_system_init(NULL);
       }
     } else { // all_supplied
       if (can_use_os_locking) {
@@ -110,15 +109,25 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
     }
   }
 
-  if (!g_cnk_is_managed_mode) {
-    // Standalone mode: Initialize the PC/SC subsystem
-    CNK_ENSURE_OK(cnk_initialize_pcsc());
+  if (psa_crypto_init() != PSA_SUCCESS) {
+    cnk_mutex_system_cleanup();
+    CNK_RETURN(CKR_FUNCTION_FAILED, "cannot initialize TF-PSA-Crypto");
   }
 
-  cnk_initialize_backend();
+  CK_RV rv = cnk_initialize_backend();
+  if (rv != CKR_OK)
+    goto initialization_failed;
 
-  // Initialize the session manager
-  CNK_ENSURE_OK(cnk_session_manager_init());
+  if (!g_cnk_is_managed_mode) {
+    // Standalone mode: Initialize the PC/SC subsystem.
+    rv = cnk_initialize_pcsc();
+    if (rv != CKR_OK)
+      goto initialization_failed;
+  }
+
+  rv = cnk_session_manager_init();
+  if (rv != CKR_OK)
+    goto initialization_failed;
 
   // Mark the library as initialized
   g_cnk_is_initialized = CK_TRUE;
@@ -127,10 +136,23 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   CNK_ENSURE_EQUAL_REASON(last_ref_count, 0, "library has been initialized. Invalid state");
 
   CNK_RET_OK;
+
+initialization_failed:
+  if (!g_cnk_is_managed_mode)
+    cnk_cleanup_pcsc();
+  cnk_cleanup_backend();
+  mbedtls_psa_crypto_free();
+  cnk_mutex_system_cleanup();
+  return rv;
 }
 
 CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   CNK_LOG_FUNC(": pReserved: %p", pReserved);
+
+  CNK_ENSURE_INITIALIZED();
+
+  // Invalid calls must not consume a managed-mode reference.
+  CNK_ENSURE_NULL(pReserved);
 
   if (!g_cnk_is_managed_mode && atomic_load(&g_ref_count) > 1) {
     CNK_RETURN(CKR_MUTEX_BAD, "g_ref_count > 1 in standalone mode");
@@ -139,31 +161,29 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
     CNK_RETURN(CKR_OK, "library still in use");
   }
 
-  // According to PKCS#11, pReserved must be NULL_PTR
-  CNK_ENSURE_NULL(pReserved);
-
-  // Clean up session manager
-  cnk_session_manager_cleanup();
-
-  mbedtls_psa_crypto_free();
-
-  // Clean up mutex system
-  cnk_mutex_system_cleanup();
-
-  // In managed mode, we don't clean up PC/SC resources
-  if (g_cnk_is_managed_mode) {
-    // Reset managed mode variables
-    g_cnk_is_managed_mode = CK_FALSE;
-    g_cnk_scard = 0;
-    g_cnk_is_initialized = CK_FALSE;
-    CNK_RET_OK;
+  // Do not publish a partially finalized state if an application-supplied
+  // mutex refuses the session-table lock.
+  CK_RV rv = cnk_session_manager_cleanup();
+  if (rv != CKR_OK) {
+    atomic_fetch_add(&g_ref_count, 1);
+    return rv;
   }
 
-  // Clean up PC/SC resources in standalone mode
-  cnk_cleanup_pcsc();
+  // Managed mode owns no PC/SC context, but it still owns the backend mutexes.
+  CK_RV pcscCleanupRv = g_cnk_is_managed_mode ? CKR_OK : cnk_cleanup_pcsc();
+  CK_RV backendCleanupRv = cnk_cleanup_backend();
+
+  if (g_cnk_is_managed_mode)
+    g_cnk_is_managed_mode = CK_FALSE;
+  g_cnk_scard = 0;
   g_cnk_is_initialized = CK_FALSE;
 
-  CNK_RET_OK;
+  mbedtls_psa_crypto_free();
+  cnk_mutex_system_cleanup();
+
+  if (pcscCleanupRv != CKR_OK)
+    return pcscCleanupRv;
+  return backendCleanupRv;
 }
 
 CK_RV C_GetInfo(CK_INFO_PTR pInfo) {

@@ -220,8 +220,12 @@ CK_RV C_GenerateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
     CNK_RETURN(CKR_KEY_SIZE_RANGE, "generated key length is out of range");
   if (expectedKeyType == CKK_AES && prototype.valueLen != 16 && prototype.valueLen != 24 && prototype.valueLen != 32)
     CNK_RETURN(CKR_KEY_SIZE_RANGE, "AES key length must be 16, 24, or 32 bytes");
-  if (prototype.private && !cnk_token_pin_is_cached(session))
-    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "private session key requires USER login");
+  if (prototype.private) {
+    CK_BBOOL pinCached = CK_FALSE;
+    CNK_ENSURE_OK(cnk_token_pin_is_cached(session, &pinCached));
+    if (!pinCached)
+      CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "private session key requires USER login");
+  }
 
   if (!labelSpecified) {
     const char *defaultLabel = expectedKeyType == CKK_AES ? "Generated AES Key" : "Generated Generic Secret";
@@ -261,7 +265,9 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
-  if (!cnk_token_management_key_is_cached(session))
+  CK_BBOOL managementKeyCached = CK_FALSE;
+  CNK_ENSURE_OK(cnk_token_management_key_is_cached(session, &managementKeyCached));
+  if (!managementKeyCached)
     CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "CKU_SO login is required");
 
   CK_OBJECT_CLASS publicClass;
