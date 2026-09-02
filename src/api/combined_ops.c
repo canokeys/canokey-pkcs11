@@ -375,8 +375,11 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 
   CK_BYTE publicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
   CK_ULONG publicKeyLen = sizeof(publicKey);
-  CNK_ENSURE_OK(cnk_piv_generate_keypair(session->slotId, session, algorithmType, pivTag, pinPolicy, touchPolicy,
-                                         publicKey, &publicKeyLen));
+  CNK_ENSURE_OK(cnk_token_begin_management_operation(session));
+  CK_RV generateRv = cnk_piv_generate_keypair(session->slotId, session, algorithmType, pivTag, pinPolicy, touchPolicy,
+                                              publicKey, &publicKeyLen);
+  cnk_token_end_management_operation(session);
+  CNK_ENSURE_OK(generateRv);
 
   *phPublicKey = CNK_MakeObjectHandle(session->slotId, CKO_PUBLIC_KEY, publicId);
   *phPrivateKey = CNK_MakeObjectHandle(session->slotId, CKO_PRIVATE_KEY, privateId);
