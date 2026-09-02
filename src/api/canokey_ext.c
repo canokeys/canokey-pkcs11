@@ -193,6 +193,25 @@ done:
   return rv;
 }
 
+CK_RV C_CNK_ResetManagedMode(void) {
+  while (atomic_flag_test_and_set(&g_managed_binding_lock))
+    ;
+  if (g_cnk_is_initialized) {
+    atomic_flag_clear(&g_managed_binding_lock);
+    return CKR_OPERATION_ACTIVE;
+  }
+  g_cnk_is_managed_mode = CK_FALSE;
+  g_cnk_pcsc_context = 0;
+  g_cnk_scard = 0;
+  g_cnk_malloc_func = malloc;
+  g_cnk_free_func = free;
+  mbedtls_platform_set_calloc_free(calloc, free);
+  nsync_malloc_ptr_ = malloc;
+  nsync_free_ptr_ = free;
+  atomic_flag_clear(&g_managed_binding_lock);
+  return CKR_OK;
+}
+
 CK_RV C_CNK_ConfigLogging(int level, FILE *file, CK_BBOOL unsafe_log_apdu) {
   return cnk_config_logging(level, file, unsafe_log_apdu);
 }

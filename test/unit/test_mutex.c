@@ -100,6 +100,16 @@ static void test_managed_mode_cannot_replace_initialized_standalone(void **state
   g_cnk_is_managed_mode = savedManaged;
 }
 
+static void test_uninitialized_managed_binding_can_be_reset(void **state) {
+  (void)state;
+  CNK_MANAGED_MODE_INIT_ARGS first = {.malloc_func = malloc, .free_func = free, .hSCardCtx = 11, .hScard = 11};
+  CNK_MANAGED_MODE_INIT_ARGS second = {.malloc_func = malloc, .free_func = free, .hSCardCtx = 22, .hScard = 22};
+  assert_int_equal(C_CNK_EnableManagedMode(&first), CKR_OK);
+  assert_int_equal(C_CNK_ResetManagedMode(), CKR_OK);
+  assert_int_equal(C_CNK_EnableManagedMode(&second), CKR_OK);
+  assert_int_equal(C_CNK_ResetManagedMode(), CKR_OK);
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test(test_failed_application_lock_does_not_unlock),
@@ -107,6 +117,7 @@ int main(void) {
       cmocka_unit_test(test_serialized_initialize_args_still_create_internal_mutexes),
       cmocka_unit_test(test_managed_mode_rejects_different_card_binding),
       cmocka_unit_test(test_managed_mode_cannot_replace_initialized_standalone),
+      cmocka_unit_test(test_uninitialized_managed_binding_can_be_reset),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

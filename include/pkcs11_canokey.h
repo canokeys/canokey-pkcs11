@@ -49,6 +49,10 @@ typedef CNK_MANAGED_MODE_INIT_ARGS *CNK_MANAGED_MODE_INIT_ARGS_PTR;
 // pInitArgs: non-NULL pointer to CNK_MANAGED_MODE_INIT_ARGS
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_EnableManagedMode)(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs);
 
+// Roll back a managed-mode binding when C_Initialize fails before publishing
+// the Cryptoki initialized state. Returns CKR_OPERATION_ACTIVE once initialized.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_ResetManagedMode)(void);
+
 // Extension API to configure logging
 // level: must be CNK_LOG_LEVEL_*, -1 for unchanged (default: CNK_LOG_LEVEL_WARN)
 // file: a valid FILE pointer, NULL for unchanged (default: stderr)
