@@ -173,24 +173,19 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
   }
 
   // Windows may create several CARD_DATA instances for one physical card.
-  // Their PC/SC handles are different and may rotate during the card's
-  // lifetime, so handle identity is not a safe managed-mode compatibility
-  // check. Allocators are process-wide, however, and changing them would make
-  // existing PKCS#11 allocations invalid.
-  if (g_cnk_is_managed_mode &&
-      (g_cnk_malloc_func != pInitArgs->malloc_func || g_cnk_free_func != pInitArgs->free_func)) {
-    rv = CKR_OPERATION_ACTIVE;
-    goto done;
-  }
+  // Their PC/SC handles and CSP allocator callbacks can differ. Keep all
+  // process-wide PKCS#11 state on the DLL allocator instead of mixing blocks
+  // from unrelated CARD_DATA heaps; minidriver-owned output buffers continue
+  // to use the callback belonging to the CARD_DATA that returned them.
 
   g_cnk_is_managed_mode = CK_TRUE;
-  g_cnk_malloc_func = pInitArgs->malloc_func;
-  g_cnk_free_func = pInitArgs->free_func;
+  g_cnk_malloc_func = malloc;
+  g_cnk_free_func = free;
   // call mbedtls hook to use the same malloc/free functions
   mbedtls_platform_set_calloc_free(ck_calloc, ck_free);
   // tell nsync to use the same malloc/free functions
-  nsync_malloc_ptr_ = g_cnk_malloc_func;
-  nsync_free_ptr_ = g_cnk_free_func;
+  nsync_malloc_ptr_ = malloc;
+  nsync_free_ptr_ = free;
   // The current caller owns the live handle for this operation. Minidriver
   // entry points reassert this binding before using the PKCS#11 session, so a
   // CARD_DATA whose handle was deleted is never retained indefinitely.
