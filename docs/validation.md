@@ -15,6 +15,8 @@ Review the token state as a state machine. The relevant states are `PUBLIC`,
   write authorizations.
 - Logout must block new login, private operations, management writes, and
   destructive provisioning until card logout and local cache cleanup finish.
+- PIN change/unblock and PIN-managed finalize are card mutations too; they must
+  reserve the token operation and cannot repopulate credentials after logout.
 - Every pending flag has a success, card-error, and mutex-error exit that
   returns the token to a usable, non-authorized state.
 - Every session reference is released even when an application mutex callback
@@ -38,7 +40,8 @@ For every changed authorization or card-write path, cover these combinations:
 | PIN-managed finalize | reject | pass with reservation | pass only if explicitly supported | reject unless specified | serialized |
 
 Also test session close during each operation, multiple sessions on one token,
-and concurrent operations of different types.
+concurrent operations of different types, and managed sessions using any slot
+ID other than canonical slot 0.
 
 ## Failure Injection
 
@@ -52,6 +55,7 @@ permanent failure. Assert all of the following after each failure:
 - no stale PIN or management key remains usable;
 - backend mutexes and PC/SC state are either fully alive or fully released;
 - a subsequent initialize/finalize retry has a deterministic result.
+- finalization does not free a session or token while `activeCalls` is nonzero.
 
 ## Cross-Repository Checks
 

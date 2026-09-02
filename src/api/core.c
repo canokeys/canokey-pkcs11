@@ -23,12 +23,27 @@ static CK_INTERFACE ck_interface_3_2 = {ck_interface_name, &ck_function_list_3_2
 // Global variables
 static atomic_int g_ref_count = 0;
 static CK_BBOOL g_initialization_cleanup_pending = CK_FALSE;
+static atomic_flag g_lifecycle_lock = ATOMIC_FLAG_INIT;
+
+static void release_lifecycle_lock(atomic_flag **lock) {
+  if (lock != NULL && *lock != NULL)
+    atomic_flag_clear(*lock);
+}
+
+#if defined(__clang__) || defined(__GNUC__)
+#define CNK_LIFECYCLE_GUARD __attribute__((cleanup(release_lifecycle_lock)))
+#else
+#error "CanoKey lifecycle serialization requires compiler cleanup support"
+#endif
 
 CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   if (!g_cnk_is_managed_mode)
     cnk_config_logging_from_env();
 
   CNK_LOG_FUNC(": pInitArgs: %p", pInitArgs);
+  atomic_flag *lifecycleLock CNK_LIFECYCLE_GUARD = &g_lifecycle_lock;
+  while (atomic_flag_test_and_set(lifecycleLock))
+    ;
 
   // A failed callback during rollback can leave the PC/SC/backend objects
   // alive while Cryptoki remains uninitialized. Finish that rollback before
@@ -169,6 +184,9 @@ initialization_failed:
 
 CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   CNK_LOG_FUNC(": pReserved: %p", pReserved);
+  atomic_flag *lifecycleLock CNK_LIFECYCLE_GUARD = &g_lifecycle_lock;
+  while (atomic_flag_test_and_set(lifecycleLock))
+    ;
 
   CNK_ENSURE_INITIALIZED();
 
@@ -182,10 +200,16 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
     CNK_RETURN(CKR_OK, "library still in use");
   }
 
+  // Stop admitting new API calls while the final session/backend teardown is
+  // in progress. Calls that already hold a session reference are drained by
+  // cnk_session_manager_cleanup.
+  g_cnk_is_initialized = CK_FALSE;
+
   // PC/SC cleanup must complete before backend mutexes are destroyed. A
   // failed callback leaves the initialized state intact for a later retry.
   CK_RV pcscCleanupRv = g_cnk_is_managed_mode ? CKR_OK : cnk_cleanup_pcsc();
   if (pcscCleanupRv != CKR_OK) {
+    g_cnk_is_initialized = CK_TRUE;
     atomic_fetch_add(&g_ref_count, 1);
     return pcscCleanupRv;
   }
@@ -198,10 +222,12 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
       CK_RV restoreRv = cnk_initialize_pcsc();
       if (restoreRv != CKR_OK) {
         atomic_fetch_add(&g_ref_count, 1);
+        g_cnk_is_initialized = CK_TRUE;
         return restoreRv;
       }
     }
     atomic_fetch_add(&g_ref_count, 1);
+    g_cnk_is_initialized = CK_TRUE;
     return rv;
   }
 
@@ -210,6 +236,7 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
 
   if (g_cnk_is_managed_mode)
     g_cnk_is_managed_mode = CK_FALSE;
+  g_cnk_pcsc_context = 0;
   g_cnk_scard = 0;
   g_cnk_is_initialized = CK_FALSE;
 

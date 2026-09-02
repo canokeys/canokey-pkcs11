@@ -243,6 +243,10 @@ CK_RV cnk_cleanup_backend(void) {
 CK_RV cnk_slot_exists(CK_SLOT_ID slotID, CK_BBOOL *exists) {
   CNK_ENSURE_NONNULL(exists);
   *exists = CK_FALSE;
+  if (g_cnk_is_managed_mode) {
+    *exists = slotID == 0;
+    return CKR_OK;
+  }
   CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
   for (CK_LONG i = 0; i < g_cnk_num_readers; i++) {
     if (g_cnk_readers[i].slot_id == slotID) {

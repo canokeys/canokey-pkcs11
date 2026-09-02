@@ -9,6 +9,7 @@
 #include <mbedtls/platform.h>
 #include <mbedtls/platform_util.h>
 #include <nsync_malloc.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -135,47 +136,61 @@ CNK_FREE_FUNC g_cnk_free_func = free;
 CK_BBOOL g_cnk_is_managed_mode = CK_FALSE; // False for standalone mode, True for managed mode
 SCARDCONTEXT g_cnk_pcsc_context = 0L;
 SCARDHANDLE g_cnk_scard = 0L;
+static atomic_flag g_managed_binding_lock = ATOMIC_FLAG_INIT;
 
 CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
   CNK_LOG_FUNC(": pInitArgs: %p", pInitArgs);
 
-  // Check if initialization arguments are provided
-  if (pInitArgs != NULL_PTR) {
-    if (pInitArgs->malloc_func == NULL || pInitArgs->free_func == NULL || pInitArgs->hSCardCtx == 0 ||
-        pInitArgs->hScard == 0) {
-      return CKR_ARGUMENTS_BAD;
-    }
+  if (pInitArgs == NULL_PTR)
+    return CKR_ARGUMENTS_BAD;
 
-    // An initialized standalone module owns its PC/SC context and allocator;
-    // switching it to managed mode would invalidate existing allocations and
-    // make Finalize skip the standalone cleanup path.
-    if (g_cnk_is_initialized && !g_cnk_is_managed_mode)
-      return CKR_OPERATION_ACTIVE;
+  // Serialize the process-wide binding transition. Without this barrier two
+  // simultaneous first acquisitions can both pass validation and publish
+  // different card handles/allocators.
+  while (atomic_flag_test_and_set(&g_managed_binding_lock))
+    ;
 
-    // Managed mode currently uses one process-wide card/allocator binding.
-    // Refuse a second, different binding instead of silently routing one
-    // minidriver context to another reader or freeing memory through the
-    // wrong CSP heap.
-    if (g_cnk_is_managed_mode &&
-        (g_cnk_pcsc_context != pInitArgs->hSCardCtx || g_cnk_scard != pInitArgs->hScard ||
-         g_cnk_malloc_func != pInitArgs->malloc_func || g_cnk_free_func != pInitArgs->free_func)) {
-      return CKR_OPERATION_ACTIVE;
-    }
-
-    g_cnk_is_managed_mode = CK_TRUE;
-    g_cnk_malloc_func = pInitArgs->malloc_func;
-    g_cnk_free_func = pInitArgs->free_func;
-    // call mbedtls hook to use the same malloc/free functions
-    mbedtls_platform_set_calloc_free(ck_calloc, ck_free);
-    // tell nsync to use the same malloc/free functions
-    nsync_malloc_ptr_ = g_cnk_malloc_func;
-    nsync_free_ptr_ = g_cnk_free_func;
-    g_cnk_pcsc_context = pInitArgs->hSCardCtx;
-    g_cnk_scard = pInitArgs->hScard;
-    return CKR_OK;
+  CK_RV rv = CKR_OK;
+  if (pInitArgs->malloc_func == NULL || pInitArgs->free_func == NULL || pInitArgs->hSCardCtx == 0 ||
+      pInitArgs->hScard == 0) {
+    rv = CKR_ARGUMENTS_BAD;
+    goto done;
   }
 
-  return CKR_ARGUMENTS_BAD;
+  // An initialized standalone module owns its PC/SC context and allocator;
+  // switching it to managed mode would invalidate existing allocations and
+  // make Finalize skip the standalone cleanup path.
+  if (g_cnk_is_initialized && !g_cnk_is_managed_mode) {
+    rv = CKR_OPERATION_ACTIVE;
+    goto done;
+  }
+
+  // Managed mode currently uses one process-wide card/allocator binding.
+  // Refuse a second, different binding instead of silently routing one
+  // minidriver context to another reader or freeing memory through the
+  // wrong CSP heap.
+  if (g_cnk_is_managed_mode &&
+      (g_cnk_pcsc_context != pInitArgs->hSCardCtx || g_cnk_scard != pInitArgs->hScard ||
+       g_cnk_malloc_func != pInitArgs->malloc_func || g_cnk_free_func != pInitArgs->free_func)) {
+    rv = CKR_OPERATION_ACTIVE;
+    goto done;
+  }
+
+  g_cnk_is_managed_mode = CK_TRUE;
+  g_cnk_malloc_func = pInitArgs->malloc_func;
+  g_cnk_free_func = pInitArgs->free_func;
+  // call mbedtls hook to use the same malloc/free functions
+  mbedtls_platform_set_calloc_free(ck_calloc, ck_free);
+  // tell nsync to use the same malloc/free functions
+  nsync_malloc_ptr_ = g_cnk_malloc_func;
+  nsync_free_ptr_ = g_cnk_free_func;
+  g_cnk_pcsc_context = pInitArgs->hSCardCtx;
+  g_cnk_scard = pInitArgs->hScard;
+  rv = CKR_OK;
+
+done:
+  atomic_flag_clear(&g_managed_binding_lock);
+  return rv;
 }
 
 CK_RV C_CNK_ConfigLogging(int level, FILE *file, CK_BBOOL unsafe_log_apdu) {
@@ -282,6 +297,9 @@ CK_RV C_CNK_FinalizePinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin,
   rv = cnk_block_piv_puk(session->slotId);
   if (rv != CKR_OK) {
     cnk_token_end_management_operation(session);
+    CK_RV logoutRv = C_Logout(hSession);
+    if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
+      CNK_WARN("Failed to roll back PIN-managed authorization after PUK block failure: 0x%lx", logoutRv);
     return rv;
   }
   rv = loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE);
@@ -303,8 +321,14 @@ CK_RV C_CNK_SetPIN(CK_SESSION_HANDLE hSession, CK_BYTE pinType, CK_UTF8CHAR_PTR 
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
 
-  return cnk_change_piv_secret_with_session(session->slotId, session, pinType, pOldPin, ulOldLen, pNewPin, ulNewLen,
-                                            pPinTries);
+  CK_RV beginRv = pinType == CNK_PIV_PIN_TYPE_PIN ? cnk_token_begin_user_operation(session)
+                                                  : cnk_token_begin_card_operation(session);
+  if (beginRv != CKR_OK)
+    return beginRv;
+  CK_RV rv = cnk_change_piv_secret_with_session(session->slotId, session, pinType, pOldPin, ulOldLen, pNewPin, ulNewLen,
+                                                pPinTries);
+  cnk_token_end_management_operation(session);
+  return rv;
 }
 
 CK_RV C_CNK_UnblockPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULONG ulPukLen, CK_UTF8CHAR_PTR pNewPin,
@@ -334,5 +358,11 @@ CK_RV C_CNK_UnblockPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULON
   if (policyRv != CKR_DATA_INVALID)
     return policyRv;
 
-  return cnk_unblock_piv_pin_with_session(session->slotId, session, pPuk, ulPukLen, pNewPin, ulNewPinLen, pPinTries);
+  CK_RV beginRv = cnk_token_begin_card_operation(session);
+  if (beginRv != CKR_OK)
+    return beginRv;
+  CK_RV rv =
+      cnk_unblock_piv_pin_with_session(session->slotId, session, pPuk, ulPukLen, pNewPin, ulNewPinLen, pPinTries);
+  cnk_token_end_management_operation(session);
+  return rv;
 }
