@@ -83,6 +83,12 @@ hold a PC/SC transaction open. A session can span multiple card transactions;
 only the API call that transmits PIV APDUs owns the connect-to-disconnect card
 critical section.
 
+Managed-mode integration currently has a one-physical-card-per-process limit.
+Test multiple contexts and rotating handles for the same card, then verify
+that a different card identity is rejected and cannot inherit the first card's
+token login or metadata. The final context must be the only one that finalizes
+PKCS#11 and resets the managed binding.
+
 Do not use PC/SC serialization as a substitute for host synchronization. Token
 login/logout, cached credentials, management reservations, session operation
 contexts, and finalization still require their documented locks and admission

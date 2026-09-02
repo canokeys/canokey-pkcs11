@@ -86,7 +86,10 @@ standard because it also captures this module's internal safety invariants.
 
 ### PC/SC Card Critical Section
 
-Card-backed PIV operations must hold one reader transaction from connection
+Managed mode supports one physical card per process. Multiple sessions and
+Windows contexts may refer to that card, but a second card must not be routed
+through the same process-wide token state. Card-backed PIV operations must hold
+one reader transaction from connection
 through the final dependent APDU. The required sequence is `connect`,
 `SCardBeginTransaction`, `SELECT PIV`, all dependent APDUs, result
 parse/commit, `SCardEndTransaction`, and disconnect. No helper may release the
@@ -107,6 +110,13 @@ PKCS#11 session lifetime is a separate host concern: `C_OpenSession`,
 `C_CloseSession`, and host-only operation setup/update calls must not keep a
 reader transaction open. A session may span multiple card transactions, and
 only the call that transmits the dependent PIV APDUs owns this critical section.
+
+The target minidriver integration will reference-count managed contexts above
+the PKCS#11 session: each `CARD_DATA` owns one session and one context
+reference, while the final context performs `C_Finalize` and restores the
+default binding. The current bridge already keeps allocator callbacks
+process-wide and immutable, but its explicit context registry is still pending;
+until then callers must not assume multi-card support.
 
 ## Profiles
 
