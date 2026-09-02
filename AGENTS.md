@@ -59,6 +59,11 @@ TF-PSA-Crypto migration.
 
 ## Development Hygiene
 
+- Before reviewing or implementing non-trivial behavior, follow
+  `docs/validation.md`. Treat its state-machine, authorization matrix, failure
+  injection, cross-repository, and reviewer checks as required workflow, not
+  optional suggestions.
+
 - English is the project language. Write source comments, documentation,
   diagnostic text, commit messages, and pull-request content in English.
   Other languages are allowed only in explicitly identified localization
