@@ -78,6 +78,19 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
       return cleanupRv;
     mbedtls_psa_crypto_free();
     cnk_mutex_system_cleanup();
+    // A successfully retried cleanup releases the old managed binding. A
+    // caller that still owns a card handle must explicitly bind it again via
+    // C_CNK_EnableManagedMode before the next C_Initialize call.
+    if (g_cnk_is_managed_mode) {
+      g_cnk_is_managed_mode = CK_FALSE;
+      g_cnk_pcsc_context = 0;
+      g_cnk_scard = 0;
+      g_cnk_malloc_func = malloc;
+      g_cnk_free_func = free;
+      mbedtls_platform_set_calloc_free(calloc, free);
+      nsync_malloc_ptr_ = malloc;
+      nsync_free_ptr_ = free;
+    }
     g_initialization_cleanup_pending = CK_FALSE;
     g_backend_cleanup_pending = CK_FALSE;
   }

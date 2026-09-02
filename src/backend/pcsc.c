@@ -48,6 +48,8 @@ typedef struct {
 
 static CNK_PKCS11_MUTEX g_cnk_slot_event_mutex;
 static CK_BBOOL backend_mutexes_initialized = CK_FALSE;
+static CK_BBOOL readers_mutex_initialized = CK_FALSE;
+static CK_BBOOL slot_event_mutex_initialized = CK_FALSE;
 static CNK_SLOT_EVENT_READER *slot_event_readers = NULL;
 static CK_ULONG slot_event_reader_count = 0;
 static CK_BBOOL slot_event_initialized = CK_FALSE;
@@ -227,11 +229,18 @@ static CK_RV handle_pin_status(CK_BYTE sw1, CK_BYTE sw2, CK_BYTE_PTR pPinTries, 
 
 CK_RV cnk_initialize_backend(void) {
   CNK_ENSURE_OK(cnk_mutex_create(&g_cnk_readers_mutex));
+  readers_mutex_initialized = CK_TRUE;
   CK_RV rv = cnk_mutex_create(&g_cnk_slot_event_mutex);
   if (rv != CKR_OK) {
-    cnk_mutex_destroy(&g_cnk_readers_mutex);
+    CK_RV destroyRv = cnk_mutex_destroy(&g_cnk_readers_mutex);
+    if (destroyRv == CKR_OK) {
+      memset(&g_cnk_readers_mutex, 0, sizeof(g_cnk_readers_mutex));
+      readers_mutex_initialized = CK_FALSE;
+    }
+    backend_mutexes_initialized = readers_mutex_initialized;
     return rv;
   }
+  slot_event_mutex_initialized = CK_TRUE;
   backend_mutexes_initialized = CK_TRUE;
   CNK_RET_OK;
 }
@@ -239,14 +248,29 @@ CK_RV cnk_initialize_backend(void) {
 CK_RV cnk_cleanup_backend(void) {
   if (!backend_mutexes_initialized)
     return CKR_OK;
-  CK_RV readersRv = cnk_mutex_destroy(&g_cnk_readers_mutex);
-  CK_RV eventRv = cnk_mutex_destroy(&g_cnk_slot_event_mutex);
-  // Keep the mutex descriptors and initialized marker on failure so the
-  // caller can retry cleanup while its callback infrastructure is alive.
-  if (readersRv == CKR_OK && eventRv == CKR_OK) {
+  CK_RV readersRv = CKR_OK;
+  CK_RV eventRv = CKR_OK;
+  if (readers_mutex_initialized) {
+    readersRv = cnk_mutex_destroy(&g_cnk_readers_mutex);
+    if (readersRv == CKR_OK) {
+      memset(&g_cnk_readers_mutex, 0, sizeof(g_cnk_readers_mutex));
+      readers_mutex_initialized = CK_FALSE;
+    }
+  }
+  if (slot_event_mutex_initialized) {
+    eventRv = cnk_mutex_destroy(&g_cnk_slot_event_mutex);
+    if (eventRv == CKR_OK) {
+      memset(&g_cnk_slot_event_mutex, 0, sizeof(g_cnk_slot_event_mutex));
+      slot_event_mutex_initialized = CK_FALSE;
+    }
+  }
+  // Keep failed mutex descriptors and their initialized markers so a later
+  // C_Initialize/C_Finalize retry can invoke the destroy callback exactly once
+  // more, without double-destroying a mutex that already succeeded.
+  backend_mutexes_initialized = readers_mutex_initialized || slot_event_mutex_initialized;
+  if (!backend_mutexes_initialized) {
     memset(&g_cnk_readers_mutex, 0, sizeof(g_cnk_readers_mutex));
     memset(&g_cnk_slot_event_mutex, 0, sizeof(g_cnk_slot_event_mutex));
-    backend_mutexes_initialized = CK_FALSE;
   }
   return readersRv != CKR_OK ? readersRv : eventRv;
 }
@@ -1947,22 +1971,12 @@ CK_RV cnk_piv_decrypt(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_P
 CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
                    CK_BYTE pinPolicy, CK_BYTE_PTR pPublicData, CK_ULONG cbPublicData, CK_BYTE_PTR pSharedSecret,
                    CK_ULONG_PTR pcbSharedSecret) {
+  // C_DeriveKey has no context-specific authentication parameter. Refuse
+  // PIN-always keys rather than silently reusing the token-wide USER PIN.
   if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS)
     CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always ECDH requires context-specific authentication");
-  CK_BYTE pin[PIV_PADDED_PIN_LEN] = {0};
-  CK_ULONG pinLen = 0;
-  if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS) {
-    CK_RV rv = cnk_token_copy_pin(pSession, pin, &pinLen);
-    if (rv != CKR_OK)
-      return rv;
-  }
-  // Derive is a one-shot PKCS#11 operation with no Init boundary for a
-  // context-specific login, so PIN-always consumes the token USER PIN here.
-  CK_RV rv = cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, pinPolicy, 0x85, pPublicData,
-                                              cbPublicData, pSharedSecret, pcbSharedSecret, pinLen == 0 ? NULL : pin,
-                                              pinLen, "ECDH");
-  mbedtls_platform_zeroize(pin, sizeof(pin));
-  return rv;
+  return cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, pinPolicy, 0x85, pPublicData,
+                                          cbPublicData, pSharedSecret, pcbSharedSecret, NULL, 0, "ECDH");
 }
 
 CK_RV cnk_piv_mlkem_decapsulate(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,

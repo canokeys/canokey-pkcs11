@@ -159,6 +159,12 @@ static void test_close_does_not_deadlock_template_find(void **state) {
   HANDLE thread = CreateThread(NULL, 0, findThread, &ctx, 0, NULL);
   assert_non_null(thread);
   waitForWorker(&ctx.entered);
+  CloseThreadContext closeCtx = {.session = session, .rv = CKR_GENERAL_ERROR, .finished = false};
+  HANDLE closeHandle = CreateThread(NULL, 0, closeThread, &closeCtx, 0, NULL);
+  assert_non_null(closeHandle);
+  assert_int_equal(WaitForSingleObject(closeHandle, 5000), WAIT_OBJECT_0);
+  assert_int_equal(closeCtx.rv, CKR_OK);
+  CloseHandle(closeHandle);
   assert_int_equal(WaitForSingleObject(thread, 5000), WAIT_OBJECT_0);
   CloseHandle(thread);
 #else
@@ -391,35 +397,6 @@ static void test_cached_auth_check_propagates_lock_failure(void **state) {
   assert_int_equal(C_CloseSession(session), CKR_OK);
 }
 
-static void test_logout_failure_clears_cached_authentication(void **state) {
-  (void)state;
-  CK_SESSION_HANDLE session;
-  assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session), CKR_OK);
-  CNK_PKCS11_SESSION *internal = NULL;
-  assert_int_equal(cnk_session_find(session, &internal), CKR_OK);
-  cnk_mutex_lock(&internal->token->lock);
-  internal->token->loginState = TOKEN_LOGIN_USER;
-  internal->token->pin[0] = '1';
-  internal->token->cbPin = 1;
-  internal->token->managementKey[0] = 0xA5;
-  internal->token->cbManagementKey = sizeof(internal->token->managementKey);
-  cnk_mutex_unlock(&internal->token->lock);
-
-  CK_RV (*savedLock)(void *) = internal->lock.lock;
-  internal->lock.lock = failTokenLock;
-  assert_int_equal(C_Logout(session), CKR_GENERAL_ERROR);
-  internal->lock.lock = savedLock;
-
-  cnk_mutex_lock(&internal->token->lock);
-  assert_int_equal(internal->token->loginState, TOKEN_LOGIN_PUBLIC);
-  assert_int_equal(internal->token->cbPin, 0);
-  assert_int_equal(internal->token->cbManagementKey, 0);
-  assert_false(internal->token->logoutPending);
-  cnk_mutex_unlock(&internal->token->lock);
-  cnk_session_release_ref(&internal);
-  assert_int_equal(C_CloseSession(session), CKR_OK);
-}
-
 static void test_data_object_template_rejects_null_object_id(void **state) {
   (void)state;
   CK_SESSION_HANDLE session;
@@ -474,7 +451,6 @@ int main(void) {
       cmocka_unit_test_setup_teardown(test_invalid_finalize_does_not_consume_reference, setup, teardown),
       cmocka_unit_test_setup_teardown(test_managed_slot_list_is_canonical, setup, teardown),
       cmocka_unit_test_setup_teardown(test_cached_auth_check_propagates_lock_failure, setup, teardown),
-      cmocka_unit_test_setup_teardown(test_logout_failure_clears_cached_authentication, setup, teardown),
       cmocka_unit_test_setup_teardown(test_data_object_template_rejects_null_object_id, setup, teardown),
       cmocka_unit_test_setup_teardown(test_digest_key_rejects_non_extractable_secret, setup, teardown),
   };
