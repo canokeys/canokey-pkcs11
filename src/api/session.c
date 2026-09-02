@@ -108,6 +108,7 @@ static void clear_token_auth(CNK_PKCS11_TOKEN_STATE *token) {
   token->managementOperationPending = CK_FALSE;
   token->managementOperationOwner = CK_INVALID_HANDLE;
   token->logoutRecoveryPending = CK_FALSE;
+  token->logoutCardPending = CK_FALSE;
   token->loginState = TOKEN_LOGIN_PUBLIC;
 }
 
@@ -583,6 +584,12 @@ CK_RV cnk_token_revoke_private_operations(CNK_PKCS11_TOKEN_STATE *token) {
       ck_free(sessions);
       return lockRv;
     }
+    // Logout revokes private-object enumeration results as well as crypto
+    // authorization, so a pre-fetched private handle cannot be returned after
+    // the USER PIN cache is cleared.
+    session->findActive = CK_FALSE;
+    session->findObjectsCount = 0;
+    session->findObjectsPosition = 0;
     cnk_reset_signing_context(session);
     cnk_reset_decrypting_context(session);
     cnk_mutex_unlock(&session->lock);
@@ -838,36 +845,31 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
     clear_token_auth(session->token);
   }
 
-  cnk_mutex_unlock(&session->token->lock);
-
-  // Never acquire the per-session lock while holding session_mutex. This is
-  // the global lock-order boundary used by object enumeration and cancellation.
+  // Keep the token lock through cancellation and card logout. This makes the
+  // counter update and logout-pending transition one atomic close decision and
+  // avoids a second callback-sensitive lock acquisition during rollback.
   CK_RV cleanupRv = cnk_session_cancel_operations(session, ~(CK_FLAGS)0);
   CK_RV logoutRv = CKR_OK;
   if (lastSession && hadPin)
     logoutRv = cnk_logout_piv_pin_with_session(session->slotId);
   if (lastSession) {
-    tokenLockRv = cnk_mutex_lock(&session->token->lock);
-    if (tokenLockRv != CKR_OK) {
-      atomic_store(&session->token->logoutPending, CK_FALSE);
-      CK_RV tableLockRv = cnk_mutex_lock(&session_mutex);
-      if (tableLockRv == CKR_OK) {
-        atomic_store(&session->closing, CK_FALSE);
-        cnk_mutex_unlock(&session_mutex);
-      }
-      cnk_session_release_ref(&session);
-      if (tableLockRv != CKR_OK)
-        return tableLockRv;
-      return tokenLockRv;
-    }
-    session->token->logoutPending = CK_FALSE;
-    cnk_mutex_unlock(&session->token->lock);
+    session->token->logoutPending = logoutRv == CKR_OK ? CK_FALSE : CK_TRUE;
+    session->token->logoutCardPending = logoutRv == CKR_OK ? CK_FALSE : CK_TRUE;
   }
+  cnk_mutex_unlock(&session->token->lock);
 
   // Remove the tombstone only after every post-close access to session->token
   // has completed. C_Finalize sees the active close reference until this point.
   CK_RV tableLockRv = cnk_mutex_lock(&session_mutex);
   if (tableLockRv != CKR_OK) {
+    // The counters are atomic so a failed application session lock can still
+    // roll back this close decision without another callback-sensitive lock.
+    atomic_fetch_add(&session->token->openSessions, 1);
+    if (!(session->flags & CKF_RW_SESSION))
+      atomic_fetch_add(&session->token->readOnlySessions, 1);
+    if (lastSession)
+      atomic_store(&session->token->logoutPending, CK_FALSE);
+    atomic_store(&session->closing, CK_FALSE);
     cnk_session_release_ref(&session);
     return tableLockRv;
   }
@@ -1190,15 +1192,23 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
 
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
   if (session->token->logoutPending && session->token->logoutRecoveryPending) {
+    CK_BBOOL cardLogoutPending = session->token->logoutCardPending;
     cnk_mutex_unlock(&session->token->lock);
     // A prior revoke failed before all session operation contexts were
     // cleared. Retry that drain before releasing the fail-closed barrier.
     CK_RV retryRv = cnk_token_revoke_private_operations(session->token);
     if (retryRv != CKR_OK)
       return retryRv;
+    if (cardLogoutPending) {
+      retryRv = cnk_logout_piv_pin_with_session(session->slotId);
+      if (retryRv != CKR_OK)
+        return retryRv;
+    }
     CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
     clear_token_auth(session->token);
     session->token->logoutPending = CK_FALSE;
+    session->token->logoutRecoveryPending = CK_FALSE;
+    session->token->logoutCardPending = CK_FALSE;
     cnk_mutex_unlock(&session->token->lock);
     return CKR_OK;
   }
@@ -1219,6 +1229,7 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
       return clearRv;
     }
     session->token->logoutPending = CK_FALSE;
+    session->token->logoutCardPending = CK_FALSE;
     cnk_mutex_unlock(&session->token->lock);
     return CKR_USER_NOT_LOGGED_IN;
   }
@@ -1232,11 +1243,13 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
       // Keep logoutPending set when the callback refuses the recovery lock;
       // stale credentials must remain unusable until a later retry.
       atomic_store(&session->token->logoutRecoveryPending, CK_TRUE);
+      atomic_store(&session->token->logoutCardPending, hasPin);
       return clearRv;
     }
     clear_token_auth(session->token);
     session->token->logoutPending = CK_TRUE;
     session->token->logoutRecoveryPending = CK_TRUE;
+    session->token->logoutCardPending = hasPin;
     cnk_mutex_unlock(&session->token->lock);
     return revokeRv;
   }
@@ -1248,10 +1261,13 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
     // blocks stale credentials from being used after the card logout; a later
     // finalize/retry can safely clear the protected cache under token->lock.
     atomic_store(&session->token->logoutRecoveryPending, CK_TRUE);
+    atomic_store(&session->token->logoutCardPending, logoutRv != CKR_OK && hasPin);
     return clearRv;
   }
   clear_token_auth(session->token);
-  session->token->logoutPending = CK_FALSE;
+  session->token->logoutPending = logoutRv == CKR_OK ? CK_FALSE : CK_TRUE;
+  session->token->logoutRecoveryPending = logoutRv == CKR_OK ? CK_FALSE : CK_TRUE;
+  session->token->logoutCardPending = logoutRv == CKR_OK ? CK_FALSE : hasPin;
   cnk_mutex_unlock(&session->token->lock);
 
   return logoutRv;

@@ -37,9 +37,10 @@ typedef struct CNK_PKCS11_TOKEN_STATE {
   _Atomic CK_BBOOL managementOperationPending;
   _Atomic CK_SESSION_HANDLE managementOperationOwner;
   _Atomic CK_BBOOL logoutRecoveryPending;
+  _Atomic CK_BBOOL logoutCardPending;
   _Atomic CK_BBOOL logoutPending;
-  CK_ULONG openSessions;
-  CK_ULONG readOnlySessions;
+  _Atomic CK_ULONG openSessions;
+  _Atomic CK_ULONG readOnlySessions;
   CNK_PKCS11_MUTEX lock;
   struct CNK_PKCS11_TOKEN_STATE *next;
 } CNK_PKCS11_TOKEN_STATE;

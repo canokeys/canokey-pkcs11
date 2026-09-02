@@ -1634,6 +1634,24 @@ CK_RV C_FindObjects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject, C
   // Lock the session
   CNK_ENSURE_OK(cnk_mutex_lock(&session->lock));
 
+  // Logout invalidates any results prefetched by C_FindObjectsInit. Check the
+  // token barrier before returning a queued handle, even if revoke cleanup
+  // previously failed to acquire another session lock.
+  CK_RV tokenLockRv = cnk_mutex_lock(&session->token->lock);
+  if (tokenLockRv != CKR_OK) {
+    cnk_mutex_unlock(&session->lock);
+    return tokenLockRv;
+  }
+  CK_BBOOL logoutPending = session->token->logoutPending;
+  cnk_mutex_unlock(&session->token->lock);
+  if (logoutPending) {
+    session->findActive = CK_FALSE;
+    session->findObjectsCount = 0;
+    session->findObjectsPosition = 0;
+    cnk_mutex_unlock(&session->lock);
+    return CKR_OPERATION_ACTIVE;
+  }
+
   // Check if a find operation is active
   if (!session->findActive) {
     cnk_mutex_unlock(&session->lock);
