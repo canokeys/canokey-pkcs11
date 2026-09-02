@@ -70,8 +70,7 @@ static void freeScopedBuffer(CK_BYTE **buffer) {
 // Verify a PIN after the caller has selected PIV in the same card transaction.
 // CanoKey's PIV SELECT resets PIN/admin status, so this variant must not select
 // the applet again after a preceding SELECT.
-static CK_RV verify_piv_pin_selected(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,
-                                     CK_BYTE_PTR pPinTries);
+static CK_RV verify_piv_pin_selected(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
 
 // Reader indexes can change after PnP refresh. Keep a name-to-slot registry for
 // the initialized lifetime so existing sessions and removal events stay stable.
@@ -105,7 +104,8 @@ static CK_RV getStableReaderSlot(const char *name, CK_SLOT_ID *slotId) {
 // Function pointer type for card operations
 typedef CK_RV (*CardOperationFunc)(SCARDHANDLE hCard, void *context);
 
-// Utility function to handle card connection, operation, and disconnection
+// Utility for operations that choose their own applet. The callback owns
+// applet selection; the card transaction remains held until it returns.
 static CK_RV cnk_with_card(CK_SLOT_ID slotID, CardOperationFunc operation, void *context, SCARDHANDLE *out_card) {
   if (!operation)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "operation is NULL");
@@ -113,7 +113,7 @@ static CK_RV cnk_with_card(CK_SLOT_ID slotID, CardOperationFunc operation, void 
   SCARDHANDLE hCard;
 
   // Connect to card
-  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
+  CK_RV rv = cnk_begin_card_transaction(slotID, &hCard);
   if (rv != CKR_OK)
     CNK_RETURN(rv, "Failed to connect to card");
 
@@ -145,23 +145,15 @@ static CK_RV connectForPrivateKeyOperation(CK_SLOT_ID slotId, CNK_PKCS11_SESSION
     CNK_RETURN(CKR_OPERATION_ACTIVE, "Token logout is in progress");
 
   if (pinPolicy == CNK_PIV_PIN_POLICY_NEVER) {
-    CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotId, hCard));
-    CK_RV rv = cnk_select_piv_application(*hCard);
-    if (rv != CKR_OK) {
-      cnk_disconnect_card(*hCard);
-      *hCard = 0;
-      return rv;
-    }
+    CNK_ENSURE_OK(cnk_begin_piv_transaction(slotId, hCard));
     CNK_RET_OK;
   }
 
   if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS) {
     if (contextPin == NULL || contextPinLen == 0)
       CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "context-specific PIN verification required");
-    CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotId, hCard));
-    CK_RV rv = cnk_select_piv_application(*hCard);
-    if (rv == CKR_OK)
-      rv = verify_piv_pin_selected(*hCard, (CK_UTF8CHAR_PTR)contextPin, contextPinLen, NULL);
+    CNK_ENSURE_OK(cnk_begin_piv_transaction(slotId, hCard));
+    CK_RV rv = verify_piv_pin_selected(*hCard, (CK_UTF8CHAR_PTR)contextPin, contextPinLen, NULL);
     if (rv != CKR_OK) {
       cnk_disconnect_card(*hCard);
       *hCard = 0;
@@ -800,8 +792,9 @@ CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
   }
 }
 
-// Helper function to connect to a card
-CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
+// Begin a PC/SC transaction. This helper deliberately does not SELECT an
+// applet; callers performing PIV work should use cnk_begin_piv_transaction.
+CK_RV cnk_begin_card_transaction(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
   CNK_ENSURE_NONNULL(phCard);
   CK_RV operationRv = cnk_pcsc_operation_begin();
   if (operationRv != CKR_OK)
@@ -899,7 +892,25 @@ CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
   CNK_RET_OK;
 }
 
-// Disconnect from a card and end any active transaction
+// Begin a card transaction and select PIV before any dependent APDU.
+// The returned handle remains in the transaction until cnk_disconnect_card;
+// callers must not select another applet before completing their operation.
+CK_RV cnk_begin_piv_transaction(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
+  CNK_ENSURE_NONNULL(phCard);
+  *phCard = 0;
+  CK_RV rv = cnk_begin_card_transaction(slotID, phCard);
+  if (rv != CKR_OK)
+    return rv;
+  rv = cnk_select_piv_application(*phCard);
+  if (rv != CKR_OK) {
+    cnk_disconnect_card(*phCard);
+    *phCard = 0;
+  }
+  return rv;
+}
+
+// Disconnect from a card and end any active transaction.
+// In managed mode the caller-owned card handle remains connected.
 void cnk_disconnect_card(SCARDHANDLE hCard) {
   if (hCard == 0) {
     return;
@@ -1354,11 +1365,9 @@ CK_RV cnk_get_piv_data_by_tag(CK_SLOT_ID slotID, const CK_BYTE *tag, CK_ULONG ta
                data, data_len, fetch_data);
 
   SCARDHANDLE hCard;
-  CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotID, &hCard));
+  CNK_ENSURE_OK(cnk_begin_piv_transaction(slotID, &hCard));
 
-  CK_RV rv = cnk_select_piv_application(hCard);
-  if (rv == CKR_OK)
-    rv = cnk_get_piv_data_on_card(hCard, tag, tag_len, data, data_len, fetch_data);
+  CK_RV rv = cnk_get_piv_data_on_card(hCard, tag, tag_len, data, data_len, fetch_data);
 
   cnk_disconnect_card(hCard);
   CNK_RETURN(rv, "GET DATA");
@@ -1381,9 +1390,7 @@ CK_RV cnk_get_piv_data_by_tag_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION
     rv = cnk_verify_piv_pin_with_session_ex(slotID, session, pin, pinLen, NULL, &hCard);
     mbedtls_platform_zeroize(pin, sizeof(pin));
   } else if (pinRv == CKR_USER_NOT_LOGGED_IN) {
-    rv = cnk_connect_and_select_canokey(slotID, &hCard);
-    if (rv == CKR_OK)
-      rv = cnk_select_piv_application(hCard);
+    rv = cnk_begin_piv_transaction(slotID, &hCard);
   } else
     return pinRv;
   if (rv == CKR_OK)
@@ -1526,13 +1533,10 @@ static CK_RV authenticateAdminForWrite(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *se
     rv = CKR_USER_NOT_LOGGED_IN;
     goto cleanup;
   }
-  rv = cnk_connect_and_select_canokey(slotID, hCard);
+  rv = cnk_begin_piv_transaction(slotID, hCard);
   if (rv != CKR_OK)
     goto cleanup;
   connected = CK_TRUE;
-  rv = cnk_select_piv_application(*hCard);
-  if (rv != CKR_OK)
-    goto cleanup;
   rv = authenticateManagementKeyOnCard(*hCard, managementKey);
 
 cleanup:
@@ -1592,7 +1596,7 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, c
   char local_hw_name[256] = {0}; // Local buffer for hardware name
 
   // Connect to the card for this operation
-  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
+  CK_RV rv = cnk_begin_card_transaction(slotID, &hCard);
   if (rv != CKR_OK) {
     return rv;
   }
@@ -1690,7 +1694,7 @@ CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
   SCARDHANDLE hCard;
 
   // Connect to the card for this operation
-  CK_RV rv = cnk_connect_and_select_canokey(slotID, &hCard);
+  CK_RV rv = cnk_begin_card_transaction(slotID, &hCard);
   if (rv != CKR_OK) {
     return rv;
   }
@@ -2587,13 +2591,9 @@ CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey) {
   SCARDHANDLE hCard;
   CK_RV rv;
 
-  // Connect to the card
-  CNK_ENSURE_OK(cnk_connect_and_select_canokey(session->slotId, &hCard));
-
-  // Select the PIV application
-  rv = cnk_select_piv_application(hCard);
-  if (rv != CKR_OK)
-    goto cleanup;
+  // Select PIV before management authentication and keep the same transaction
+  // through the challenge-response APDUs.
+  CNK_ENSURE_OK(cnk_begin_piv_transaction(session->slotId, &hCard));
 
   rv = authenticateManagementKeyOnCard(hCard, pKey);
 

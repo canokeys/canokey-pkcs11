@@ -133,6 +133,7 @@ void cnk_pcsc_operation_end(void);
 
 // PIV application functions
 CK_RV cnk_select_piv_application(SCARDHANDLE hCard);
+CK_RV cnk_begin_piv_transaction(CK_SLOT_ID slotID, SCARDHANDLE *phCard);
 CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
 CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard);
 CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey);
@@ -160,8 +161,8 @@ CK_RV cnk_logout_piv_pin_with_session(CK_SLOT_ID slotID);
 
 CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot);
 
-// Connect to a card, select the CanoKey AID, and begin a transaction
-CK_RV cnk_connect_and_select_canokey(CK_SLOT_ID slotID, SCARDHANDLE *phCard);
+// Connect to a card and begin a transaction without selecting an applet.
+CK_RV cnk_begin_card_transaction(CK_SLOT_ID slotID, SCARDHANDLE *phCard);
 
 // Disconnect from a card and end any active transaction
 void cnk_disconnect_card(SCARDHANDLE hCard);

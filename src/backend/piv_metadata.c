@@ -25,15 +25,7 @@ static CK_RV readPivVersionOnCard(SCARDHANDLE hCard, CK_BYTE version[3]) {
   return CKR_OK;
 }
 
-static CK_RV connectPiv(CK_SLOT_ID slotId, SCARDHANDLE *card) {
-  CK_RV rv = cnk_connect_and_select_canokey(slotId, card);
-  if (rv != CKR_OK)
-    return rv;
-  rv = cnk_select_piv_application(*card);
-  if (rv != CKR_OK)
-    cnk_disconnect_card(*card);
-  return rv;
-}
+static CK_RV connectPiv(CK_SLOT_ID slotId, SCARDHANDLE *card) { return cnk_begin_piv_transaction(slotId, card); }
 
 static CK_RV readPivPinRetriesOnCard(SCARDHANDLE card, CK_BYTE pinReference, CK_BYTE_PTR pinTries) {
   CNK_ENSURE_NONNULL(pinTries);

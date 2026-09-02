@@ -53,7 +53,7 @@ CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PT
     CK_BBOOL present = CK_TRUE;
     if (tokenPresent) {
       SCARDHANDLE hCard = 0;
-      present = cnk_connect_and_select_canokey(slotIds[i], &hCard) == CKR_OK;
+      present = cnk_begin_card_transaction(slotIds[i], &hCard) == CKR_OK;
       if (present)
         cnk_disconnect_card(hCard);
     }
