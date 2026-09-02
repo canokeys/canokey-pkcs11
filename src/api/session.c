@@ -102,6 +102,7 @@ static void clear_token_auth(CNK_PKCS11_TOKEN_STATE *token) {
   token->cbManagementKey = 0;
   token->managementLoginPending = CK_FALSE;
   token->managementOperationPending = CK_FALSE;
+  token->managementOperationOwner = CK_INVALID_HANDLE;
   token->logoutRecoveryPending = CK_FALSE;
   token->loginState = TOKEN_LOGIN_PUBLIC;
 }
@@ -337,7 +338,9 @@ CK_RV cnk_token_update_cached_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR o
 CK_RV cnk_token_management_key_is_cached(CNK_PKCS11_SESSION *session, CK_BBOOL *cached) {
   CNK_ENSURE_NONNULL(session, session->token, cached);
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
-  *cached = !session->token->logoutPending && session->token->cbManagementKey == sizeof(session->token->managementKey);
+  *cached = !session->token->logoutPending &&
+            (session->token->loginState == TOKEN_LOGIN_SO || session->token->loginState == TOKEN_LOGIN_USER) &&
+            session->token->cbManagementKey == sizeof(session->token->managementKey);
   cnk_mutex_unlock(&session->token->lock);
   return CKR_OK;
 }
@@ -345,7 +348,10 @@ CK_RV cnk_token_management_key_is_cached(CNK_PKCS11_SESSION *session, CK_BBOOL *
 CK_RV cnk_token_copy_management_key(CNK_PKCS11_SESSION *session, CK_BYTE key[24]) {
   CNK_ENSURE_NONNULL(session, key);
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
-  if (session->token->logoutPending || session->token->cbManagementKey != sizeof(session->token->managementKey)) {
+  CK_BBOOL authorized =
+      (session->token->loginState == TOKEN_LOGIN_SO || session->token->loginState == TOKEN_LOGIN_USER) &&
+      session->token->cbManagementKey == sizeof(session->token->managementKey);
+  if (session->token->logoutPending || !authorized) {
     cnk_mutex_unlock(&session->token->lock);
     return CKR_USER_NOT_LOGGED_IN;
   }
@@ -357,6 +363,10 @@ CK_RV cnk_token_copy_management_key(CNK_PKCS11_SESSION *session, CK_BYTE key[24]
 CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session) {
   CNK_ENSURE_NONNULL(session, session->token);
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  if (session->token->managementOperationPending && session->token->managementOperationOwner != session->handle) {
+    cnk_mutex_unlock(&session->token->lock);
+    return CKR_OPERATION_ACTIVE;
+  }
   if (session->token->logoutPending || session->token->loginState != TOKEN_LOGIN_USER || session->token->cbPin == 0) {
     cnk_mutex_unlock(&session->token->lock);
     return CKR_USER_NOT_LOGGED_IN;
@@ -405,6 +415,12 @@ static CK_RV begin_token_operation(CNK_PKCS11_SESSION *session, CK_BBOOL require
   CK_BBOOL managementAuthorized =
       (session->token->loginState == TOKEN_LOGIN_SO || session->token->loginState == TOKEN_LOGIN_USER) &&
       session->token->cbManagementKey == sizeof(session->token->managementKey);
+  if ((session->token->loginState == TOKEN_LOGIN_PENDING_USER ||
+       session->token->loginState == TOKEN_LOGIN_PENDING_SO) &&
+      session->token->managementOperationOwner != session->handle) {
+    cnk_mutex_unlock(&session->token->lock);
+    return CKR_OPERATION_ACTIVE;
+  }
   if (session->token->logoutPending || (requireManagement && !managementAuthorized) ||
       (requireUser && session->token->loginState != TOKEN_LOGIN_USER)) {
     cnk_mutex_unlock(&session->token->lock);
@@ -415,6 +431,7 @@ static CK_RV begin_token_operation(CNK_PKCS11_SESSION *session, CK_BBOOL require
     return CKR_OPERATION_ACTIVE;
   }
   session->token->managementOperationPending = CK_TRUE;
+  session->token->managementOperationOwner = session->handle;
   cnk_mutex_unlock(&session->token->lock);
   return CKR_OK;
 }
@@ -432,6 +449,8 @@ CK_RV cnk_token_begin_card_operation(CNK_PKCS11_SESSION *session) {
 }
 
 void cnk_token_end_management_operation(CNK_PKCS11_SESSION *session) {
+  if (session != NULL && session->token != NULL)
+    atomic_store(&session->token->managementOperationOwner, CK_INVALID_HANDLE);
   if (session != NULL && session->token != NULL)
     atomic_store(&session->token->managementOperationPending, CK_FALSE);
 }
@@ -922,6 +941,10 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
       cnk_mutex_unlock(&session->token->lock);
       CNK_RETURN(CKR_OPERATION_ACTIVE, "Token logout is in progress");
     }
+    if (session->token->managementOperationPending && session->token->managementOperationOwner != session->handle) {
+      cnk_mutex_unlock(&session->token->lock);
+      CNK_RETURN(CKR_OPERATION_ACTIVE, "Another token operation is in progress");
+    }
     if (loginState == TOKEN_LOGIN_USER) {
       cnk_mutex_unlock(&session->token->lock);
       CNK_RETURN(CKR_USER_ALREADY_LOGGED_IN, "User already logged in");
@@ -958,6 +981,10 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
     if (session->token->logoutPending) {
       cnk_mutex_unlock(&session->token->lock);
       CNK_RETURN(CKR_OPERATION_ACTIVE, "Token logout is in progress");
+    }
+    if (session->token->managementOperationPending && session->token->managementOperationOwner != session->handle) {
+      cnk_mutex_unlock(&session->token->lock);
+      CNK_RETURN(CKR_OPERATION_ACTIVE, "Another token operation is in progress");
     }
     CK_ULONG readOnlySessions = session->token->readOnlySessions;
     if (readOnlySessions > 0) {

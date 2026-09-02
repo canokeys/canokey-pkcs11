@@ -1,5 +1,6 @@
 #include "api/session.h"
 #include "backend/pcsc.h"
+#include "internal/lifecycle.h"
 #include "internal/logging.h"
 #include "internal/macros.h"
 #include "internal/mutex.h"
@@ -11,6 +12,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <mbedtls/platform.h>
+#include <nsync_malloc.h>
 #include <psa/crypto.h>
 #include <psa/crypto_extra.h>
 
@@ -24,6 +27,13 @@ static CK_INTERFACE ck_interface_3_2 = {ck_interface_name, &ck_function_list_3_2
 static atomic_int g_ref_count = 0;
 static CK_BBOOL g_initialization_cleanup_pending = CK_FALSE;
 static atomic_flag g_lifecycle_lock = ATOMIC_FLAG_INIT;
+
+void cnk_lifecycle_lock(void) {
+  while (atomic_flag_test_and_set(&g_lifecycle_lock))
+    ;
+}
+
+void cnk_lifecycle_unlock(void) { atomic_flag_clear(&g_lifecycle_lock); }
 
 static void release_lifecycle_lock(atomic_flag **lock) {
   if (lock != NULL && *lock != NULL)
@@ -42,8 +52,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
 
   CNK_LOG_FUNC(": pInitArgs: %p", pInitArgs);
   atomic_flag *lifecycleLock CNK_LIFECYCLE_GUARD = &g_lifecycle_lock;
-  while (atomic_flag_test_and_set(lifecycleLock))
-    ;
+  cnk_lifecycle_lock();
 
   // A failed callback during rollback can leave the PC/SC/backend objects
   // alive while Cryptoki remains uninitialized. Finish that rollback before
@@ -185,8 +194,7 @@ initialization_failed:
 CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   CNK_LOG_FUNC(": pReserved: %p", pReserved);
   atomic_flag *lifecycleLock CNK_LIFECYCLE_GUARD = &g_lifecycle_lock;
-  while (atomic_flag_test_and_set(lifecycleLock))
-    ;
+  cnk_lifecycle_lock();
 
   CNK_ENSURE_INITIALIZED();
 
@@ -238,6 +246,11 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
     g_cnk_is_managed_mode = CK_FALSE;
   g_cnk_pcsc_context = 0;
   g_cnk_scard = 0;
+  g_cnk_malloc_func = malloc;
+  g_cnk_free_func = free;
+  mbedtls_platform_set_calloc_free(calloc, free);
+  nsync_malloc_ptr_ = malloc;
+  nsync_free_ptr_ = free;
   g_cnk_is_initialized = CK_FALSE;
 
   mbedtls_psa_crypto_free();

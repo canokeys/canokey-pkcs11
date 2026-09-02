@@ -27,7 +27,7 @@
 // Global variables for reader management
 ReaderInfo *g_cnk_readers = NULL; // Array of reader info structs
 CK_LONG g_cnk_num_readers = 0;
-CK_BBOOL g_cnk_is_initialized = CK_FALSE;
+_Atomic CK_BBOOL g_cnk_is_initialized = CK_FALSE;
 CNK_PKCS11_MUTEX g_cnk_readers_mutex;
 static ReaderInfo *known_readers = NULL;
 static CK_LONG known_reader_count = 0;

@@ -1,5 +1,6 @@
 #include "api/session.h"
 #include "backend/pcsc.h"
+#include "internal/lifecycle.h"
 #include "internal/logging.h"
 #include "internal/macros.h"
 #include "internal/util.h"
@@ -133,10 +134,9 @@ static CK_RV parsePinProtectedManagementKey(const CK_BYTE *data, CK_ULONG dataLe
 CNK_MALLOC_FUNC g_cnk_malloc_func = malloc;
 CNK_FREE_FUNC g_cnk_free_func = free;
 
-CK_BBOOL g_cnk_is_managed_mode = CK_FALSE; // False for standalone mode, True for managed mode
+_Atomic CK_BBOOL g_cnk_is_managed_mode = CK_FALSE; // False for standalone mode, True for managed mode
 SCARDCONTEXT g_cnk_pcsc_context = 0L;
 SCARDHANDLE g_cnk_scard = 0L;
-static atomic_flag g_managed_binding_lock = ATOMIC_FLAG_INIT;
 
 CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
   CNK_LOG_FUNC(": pInitArgs: %p", pInitArgs);
@@ -147,8 +147,7 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
   // Serialize the process-wide binding transition. Without this barrier two
   // simultaneous first acquisitions can both pass validation and publish
   // different card handles/allocators.
-  while (atomic_flag_test_and_set(&g_managed_binding_lock))
-    ;
+  cnk_lifecycle_lock();
 
   CK_RV rv = CKR_OK;
   if (pInitArgs->malloc_func == NULL || pInitArgs->free_func == NULL || pInitArgs->hSCardCtx == 0 ||
@@ -189,15 +188,18 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
   rv = CKR_OK;
 
 done:
-  atomic_flag_clear(&g_managed_binding_lock);
+  cnk_lifecycle_unlock();
   return rv;
 }
 
 CK_RV C_CNK_ResetManagedMode(void) {
-  while (atomic_flag_test_and_set(&g_managed_binding_lock))
-    ;
+  cnk_lifecycle_lock();
+  if (!g_cnk_is_managed_mode) {
+    cnk_lifecycle_unlock();
+    return CKR_OK;
+  }
   if (g_cnk_is_initialized) {
-    atomic_flag_clear(&g_managed_binding_lock);
+    cnk_lifecycle_unlock();
     return CKR_OPERATION_ACTIVE;
   }
   g_cnk_is_managed_mode = CK_FALSE;
@@ -208,7 +210,7 @@ CK_RV C_CNK_ResetManagedMode(void) {
   mbedtls_platform_set_calloc_free(calloc, free);
   nsync_malloc_ptr_ = malloc;
   nsync_free_ptr_ = free;
-  atomic_flag_clear(&g_managed_binding_lock);
+  cnk_lifecycle_unlock();
   return CKR_OK;
 }
 
@@ -307,12 +309,20 @@ CK_RV C_CNK_FinalizePinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin,
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
 
-  CK_RV rv = loginPinManaged(hSession, pPin, ulPinLen, CK_FALSE);
+  // Reserve before publishing USER or management-key credentials. The owner
+  // session is allowed to complete this composite login; other sessions and
+  // Logout observe the reservation and are blocked until final confirmation.
+  CK_RV rv = cnk_token_begin_card_operation(session);
   if (rv != CKR_OK)
     return rv;
-  rv = cnk_token_begin_management_operation(session);
-  if (rv != CKR_OK)
+  rv = loginPinManaged(hSession, pPin, ulPinLen, CK_FALSE);
+  if (rv != CKR_OK) {
+    cnk_token_end_management_operation(session);
+    CK_RV logoutRv = C_Logout(hSession);
+    if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
+      CNK_WARN("Failed to roll back PIN-managed authorization after login failure: 0x%lx", logoutRv);
     return rv;
+  }
   rv = cnk_block_piv_puk(session->slotId);
   if (rv != CKR_OK) {
     cnk_token_end_management_operation(session);

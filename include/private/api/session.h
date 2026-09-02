@@ -35,6 +35,7 @@ typedef struct CNK_PKCS11_TOKEN_STATE {
   CK_ULONG cbManagementKey;
   _Atomic CK_BBOOL managementLoginPending;
   _Atomic CK_BBOOL managementOperationPending;
+  _Atomic CK_SESSION_HANDLE managementOperationOwner;
   _Atomic CK_BBOOL logoutRecoveryPending;
   _Atomic CK_BBOOL logoutPending;
   CK_ULONG openSessions;
