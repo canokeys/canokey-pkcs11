@@ -319,6 +319,27 @@ static void test_cached_auth_check_propagates_lock_failure(void **state) {
   assert_int_equal(C_CloseSession(session), CKR_OK);
 }
 
+static void test_data_object_template_rejects_null_object_id(void **state) {
+  (void)state;
+  CK_SESSION_HANDLE session;
+  assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session), CKR_OK);
+  CNK_PKCS11_SESSION *internal = NULL;
+  assert_int_equal(cnk_session_find(session, &internal), CKR_OK);
+  cnk_mutex_lock(&internal->token->lock);
+  internal->token->loginState = TOKEN_LOGIN_SO;
+  memset(internal->token->managementKey, 0xA5, sizeof(internal->token->managementKey));
+  internal->token->cbManagementKey = sizeof(internal->token->managementKey);
+  cnk_mutex_unlock(&internal->token->lock);
+
+  CK_OBJECT_CLASS objectClass = CKO_DATA;
+  CK_ATTRIBUTE template[] = {{CKA_CLASS, &objectClass, sizeof(objectClass)}, {CKA_OBJECT_ID, NULL, 3}};
+  CK_OBJECT_HANDLE object = CK_INVALID_HANDLE;
+  assert_int_equal(C_CreateObject(session, template, sizeof(template) / sizeof(template[0]), &object),
+                   CKR_ATTRIBUTE_VALUE_INVALID);
+  cnk_session_release_ref(&internal);
+  assert_int_equal(C_CloseSession(session), CKR_OK);
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test_setup_teardown(test_close_does_not_deadlock_template_find, setup, teardown),
@@ -330,6 +351,7 @@ int main(void) {
       cmocka_unit_test_setup_teardown(test_encapsulation_query_validates_session, setup, teardown),
       cmocka_unit_test_setup_teardown(test_invalid_finalize_does_not_consume_reference, setup, teardown),
       cmocka_unit_test_setup_teardown(test_cached_auth_check_propagates_lock_failure, setup, teardown),
+      cmocka_unit_test_setup_teardown(test_data_object_template_rejects_null_object_id, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

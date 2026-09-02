@@ -146,6 +146,16 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
       return CKR_ARGUMENTS_BAD;
     }
 
+    // Managed mode currently uses one process-wide card/allocator binding.
+    // Refuse a second, different binding instead of silently routing one
+    // minidriver context to another reader or freeing memory through the
+    // wrong CSP heap.
+    if (g_cnk_is_managed_mode &&
+        (g_cnk_pcsc_context != pInitArgs->hSCardCtx || g_cnk_scard != pInitArgs->hScard ||
+         g_cnk_malloc_func != pInitArgs->malloc_func || g_cnk_free_func != pInitArgs->free_func)) {
+      return CKR_OPERATION_ACTIVE;
+    }
+
     g_cnk_is_managed_mode = CK_TRUE;
     g_cnk_malloc_func = pInitArgs->malloc_func;
     g_cnk_free_func = pInitArgs->free_func;

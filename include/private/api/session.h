@@ -28,12 +28,13 @@ typedef enum {
 // PKCS#11. The lock protects state and both sensitive caches.
 typedef struct CNK_PKCS11_TOKEN_STATE {
   CK_SLOT_ID slotId;
-  CNK_TOKEN_LOGIN_STATE loginState;
+  _Atomic CNK_TOKEN_LOGIN_STATE loginState;
   CK_BYTE pin[8];
   CK_ULONG cbPin;
   CK_BYTE managementKey[24];
   CK_ULONG cbManagementKey;
-  CK_BBOOL managementLoginPending;
+  _Atomic CK_BBOOL managementLoginPending;
+  _Atomic CK_BBOOL managementOperationPending;
   _Atomic CK_BBOOL logoutPending;
   CK_ULONG openSessions;
   CK_ULONG readOnlySessions;
@@ -210,6 +211,8 @@ CK_RV cnk_token_copy_management_key(CNK_PKCS11_SESSION *session, CK_BYTE key[24]
 CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session, CK_BYTE_PTR key, CK_ULONG keyLen,
                                                     CK_RV verificationRv);
+CK_RV cnk_token_begin_management_operation(CNK_PKCS11_SESSION *session);
+void cnk_token_end_management_operation(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_get_session_counts(CK_SLOT_ID slotId, CK_ULONG_PTR openSessions, CK_ULONG_PTR readOnlySessions);
 CK_RV cnk_token_revoke_private_operations(CNK_PKCS11_TOKEN_STATE *token);
 

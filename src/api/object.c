@@ -474,6 +474,7 @@ static CK_RV getTemplateDataObject(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
   CK_ATTRIBUTE_PTR attr;
   CK_BYTE dataTag;
   CNK_ENSURE_NONNULL(mapping);
+  *mapping = NULL;
 
   CNK_ENSURE_OK(cnk_template_find_attribute(pTemplate, ulCount, CKA_ID, &attr));
   if (attr != NULL) {
@@ -485,6 +486,8 @@ static CK_RV getTemplateDataObject(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
 
   CNK_ENSURE_OK(cnk_template_find_attribute(pTemplate, ulCount, CKA_OBJECT_ID, &attr));
   if (attr != NULL) {
+    if (attr->pValue == NULL || attr->ulValueLen == 0)
+      CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "PIV data object OID is empty");
     for (CK_ULONG i = 0; i < PIV_DATA_OBJECT_MAPPING_SIZE; i++) {
       if (PIV_DATA_OBJECT_MAPPING[i].objectIdLen == attr->ulValueLen &&
           memcmp(PIV_DATA_OBJECT_MAPPING[i].objectId, attr->pValue, attr->ulValueLen) == 0) {
@@ -923,7 +926,7 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
   CK_BYTE objId;
   CNK_ENSURE_OK(cnk_template_get_object_class(pTemplate, ulCount, CKA_CLASS, &objectClass));
   if (objectClass == CKO_DATA) {
-    const PivDataObjectMapping *mapping;
+    const PivDataObjectMapping *mapping = NULL;
     CNK_ENSURE_OK(getTemplateDataObject(pTemplate, ulCount, &mapping));
     objId = mapping->objId;
   } else {
@@ -942,8 +945,11 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
     if (valueAttr->pValue == NULL || valueAttr->ulValueLen == 0 || valueAttr->ulValueLen > MAX_PIV_DATA_OBJECT_SIZE)
       CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad PIV data object value");
 
-    CNK_ENSURE_OK(cnk_put_piv_data_by_tag(session->slotId, session, mapping->dataTag, mapping->dataTagLen,
-                                          valueAttr->pValue, valueAttr->ulValueLen));
+    CNK_ENSURE_OK(cnk_token_begin_management_operation(session));
+    CK_RV writeRv = cnk_put_piv_data_by_tag(session->slotId, session, mapping->dataTag, mapping->dataTagLen,
+                                            valueAttr->pValue, valueAttr->ulValueLen);
+    cnk_token_end_management_operation(session);
+    CNK_ENSURE_OK(writeRv);
 
     *phObject = makeObjectHandle(session->slotId, CKO_DATA, objId);
     CNK_RET_OK;
@@ -961,7 +967,10 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
     CNK_ENSURE_OK(CNK_ObjectIdToCertificateTag(objId, &certTag));
     CNK_ENSURE_OK(cnk_build_piv_certificate_object((CK_BYTE_PTR)valueAttr->pValue, valueAttr->ulValueLen, certObject,
                                                    sizeof(certObject), &certObjectLen));
-    CNK_ENSURE_OK(cnk_put_piv_data(session->slotId, session, certTag, certObject, certObjectLen));
+    CNK_ENSURE_OK(cnk_token_begin_management_operation(session));
+    CK_RV writeRv = cnk_put_piv_data(session->slotId, session, certTag, certObject, certObjectLen);
+    cnk_token_end_management_operation(session);
+    CNK_ENSURE_OK(writeRv);
 
     *phObject = makeObjectHandle(session->slotId, CKO_CERTIFICATE, objId);
     CNK_RET_OK;
@@ -1015,7 +1024,11 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
       goto cleanup_import;
     }
 
-    rv = cnk_piv_import_key(session->slotId, session, algorithmType, pivTag, importData, importDataLen);
+    rv = cnk_token_begin_management_operation(session);
+    if (rv == CKR_OK) {
+      rv = cnk_piv_import_key(session->slotId, session, algorithmType, pivTag, importData, importDataLen);
+      cnk_token_end_management_operation(session);
+    }
   cleanup_import:
     mbedtls_platform_zeroize(importData, sizeof(importData));
     if (rv != CKR_OK)

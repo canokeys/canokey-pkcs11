@@ -101,6 +101,7 @@ static void clear_token_auth(CNK_PKCS11_TOKEN_STATE *token) {
   mbedtls_platform_zeroize(token->managementKey, sizeof(token->managementKey));
   token->cbManagementKey = 0;
   token->managementLoginPending = CK_FALSE;
+  token->managementOperationPending = CK_FALSE;
   token->loginState = TOKEN_LOGIN_PUBLIC;
 }
 
@@ -349,7 +350,11 @@ CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session,
   CNK_ENSURE_NONNULL(session, session->token, key);
   if (keyLen != sizeof(session->token->managementKey))
     return CKR_PIN_LEN_RANGE;
-  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  CK_RV lockRv = cnk_mutex_lock(&session->token->lock);
+  if (lockRv != CKR_OK) {
+    atomic_store(&session->token->managementLoginPending, CK_FALSE);
+    return lockRv;
+  }
   CK_RV rv = verificationRv;
   if (rv == CKR_OK && session->token->managementLoginPending && session->token->loginState == TOKEN_LOGIN_USER &&
       session->token->cbPin > 0) {
@@ -361,6 +366,28 @@ CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session,
   session->token->managementLoginPending = CK_FALSE;
   cnk_mutex_unlock(&session->token->lock);
   return rv;
+}
+
+CK_RV cnk_token_begin_management_operation(CNK_PKCS11_SESSION *session) {
+  CNK_ENSURE_NONNULL(session, session->token);
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  if (session->token->logoutPending || session->token->loginState != TOKEN_LOGIN_SO ||
+      session->token->cbManagementKey != sizeof(session->token->managementKey)) {
+    cnk_mutex_unlock(&session->token->lock);
+    return CKR_USER_NOT_LOGGED_IN;
+  }
+  if (session->token->managementOperationPending) {
+    cnk_mutex_unlock(&session->token->lock);
+    return CKR_OPERATION_ACTIVE;
+  }
+  session->token->managementOperationPending = CK_TRUE;
+  cnk_mutex_unlock(&session->token->lock);
+  return CKR_OK;
+}
+
+void cnk_token_end_management_operation(CNK_PKCS11_SESSION *session) {
+  if (session != NULL && session->token != NULL)
+    atomic_store(&session->token->managementOperationPending, CK_FALSE);
 }
 
 CK_RV cnk_token_get_session_counts(CK_SLOT_ID slotId, CK_ULONG_PTR openSessions, CK_ULONG_PTR readOnlySessions) {
@@ -862,7 +889,11 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
     cnk_mutex_unlock(&session->token->lock);
 
     rv = cnk_verify_piv_pin_with_session(session->slotId, session, pPin, ulPinLen, pPinTries);
-    CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+    CK_RV lockRv = cnk_mutex_lock(&session->token->lock);
+    if (lockRv != CKR_OK) {
+      atomic_store(&session->token->loginState, TOKEN_LOGIN_PUBLIC);
+      return lockRv;
+    }
     if (session->token->loginState == TOKEN_LOGIN_PENDING_USER)
       session->token->loginState = TOKEN_LOGIN_USER;
     if (rv != CKR_OK)
@@ -905,14 +936,22 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
 
     rv = cnkVerifyManagementKey(session, pPin);
     if (rv != CKR_OK) {
-      CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+      CK_RV lockRv = cnk_mutex_lock(&session->token->lock);
+      if (lockRv != CKR_OK) {
+        atomic_store(&session->token->loginState, TOKEN_LOGIN_PUBLIC);
+        return lockRv;
+      }
       if (session->token->loginState == TOKEN_LOGIN_PENDING_SO)
         session->token->loginState = TOKEN_LOGIN_PUBLIC;
       cnk_mutex_unlock(&session->token->lock);
       CNK_RETURN(rv, "cnkVerifyManagementKey");
     }
 
-    CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+    CK_RV lockRv = cnk_mutex_lock(&session->token->lock);
+    if (lockRv != CKR_OK) {
+      atomic_store(&session->token->loginState, TOKEN_LOGIN_PUBLIC);
+      return lockRv;
+    }
     if (session->token->loginState == TOKEN_LOGIN_PENDING_SO) {
       memcpy(session->token->managementKey, pPin, ulPinLen);
       session->token->cbManagementKey = ulPinLen;
@@ -965,7 +1004,8 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
 
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
   if (session->token->loginState == TOKEN_LOGIN_PENDING_USER || session->token->loginState == TOKEN_LOGIN_PENDING_SO ||
-      session->token->managementLoginPending || session->token->logoutPending) {
+      session->token->managementLoginPending || session->token->managementOperationPending ||
+      session->token->logoutPending) {
     cnk_mutex_unlock(&session->token->lock);
     return CKR_OPERATION_ACTIVE;
   }
@@ -1001,11 +1041,9 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
 
   CK_RV clearRv = cnk_mutex_lock(&session->token->lock);
   if (clearRv != CKR_OK) {
-    // The card logout already completed. No caller can pass the pending gate
-    // while this callback keeps refusing the token lock, so clear local
-    // credentials before publishing the flag reset.
-    clear_token_auth(session->token);
-    atomic_store(&session->token->logoutPending, CK_FALSE);
+    // Keep logoutPending set when the callback refuses the final lock. This
+    // blocks stale credentials from being used after the card logout; a later
+    // finalize/retry can safely clear the protected cache under token->lock.
     return clearRv;
   }
   clear_token_auth(session->token);

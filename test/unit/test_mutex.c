@@ -77,11 +77,22 @@ static void test_serialized_initialize_args_still_create_internal_mutexes(void *
   assert_int_equal(C_Finalize(NULL), CKR_OK);
 }
 
+static void test_managed_mode_rejects_different_card_binding(void **state) {
+  (void)state;
+  CNK_MANAGED_MODE_INIT_ARGS first = {.malloc_func = malloc, .free_func = free, .hSCardCtx = 1, .hScard = 1};
+  CNK_MANAGED_MODE_INIT_ARGS second = {.malloc_func = malloc, .free_func = free, .hSCardCtx = 2, .hScard = 2};
+  assert_int_equal(C_CNK_EnableManagedMode(&first), CKR_OK);
+  assert_int_equal(C_Initialize(NULL), CKR_OK);
+  assert_int_equal(C_CNK_EnableManagedMode(&second), CKR_OPERATION_ACTIVE);
+  assert_int_equal(C_Finalize(NULL), CKR_OK);
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test(test_failed_application_lock_does_not_unlock),
       cmocka_unit_test(test_session_manager_propagates_application_lock_failure),
       cmocka_unit_test(test_serialized_initialize_args_still_create_internal_mutexes),
+      cmocka_unit_test(test_managed_mode_rejects_different_card_binding),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
