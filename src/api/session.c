@@ -229,7 +229,7 @@ CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session)
   for (CK_LONG i = 0; i < session_table_size; i++) {
     if (session_table[i] != NULL && session_table[i]->handle == hSession) {
       *session = session_table[i];
-      (*session)->activeCalls++;
+      atomic_fetch_add(&(*session)->activeCalls, 1);
       found = CK_TRUE;
       CNK_DEBUG("Found session with handle %lu at session idx %ld", hSession, i);
       break;
@@ -248,14 +248,12 @@ CK_RV cnk_session_find(CK_SESSION_HANDLE hSession, CNK_PKCS11_SESSION **session)
 void cnk_session_release_ref(CNK_PKCS11_SESSION **session) {
   if (session == NULL || *session == NULL)
     return;
-  if (cnk_mutex_lock(&session_mutex) != CKR_OK) {
-    CNK_ERROR("Failed to release session reference");
-    *session = NULL;
-    return;
-  }
-  if ((*session)->activeCalls > 0)
-    (*session)->activeCalls--;
-  cnk_mutex_unlock(&session_mutex);
+  // activeCalls is atomic because cleanup callbacks are allowed to fail. A
+  // failed application mutex must never strand a reference and make close
+  // wait forever.
+  CK_ULONG count = atomic_load(&(*session)->activeCalls);
+  while (count != 0 && !atomic_compare_exchange_weak(&(*session)->activeCalls, &count, count - 1))
+    ;
   *session = NULL;
 }
 
@@ -410,7 +408,7 @@ CK_RV cnk_token_revoke_private_operations(CNK_PKCS11_TOKEN_STATE *token) {
   for (CK_LONG i = 0; i < session_table_size; i++) {
     if (session_table[i] != NULL && session_table[i]->token == token) {
       sessions[index] = session_table[i];
-      sessions[index]->activeCalls++;
+      atomic_fetch_add(&sessions[index]->activeCalls, 1);
       index++;
     }
   }
@@ -635,7 +633,7 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
       cnk_mutex_unlock(&session_mutex);
       CNK_RETURN(CKR_SESSION_HANDLE_INVALID, "Session not found");
     }
-    if (session->activeCalls == 0)
+    if (atomic_load(&session->activeCalls) == 0)
       break;
     // Existing calls retain a reference after leaving session_mutex. Wait for
     // those calls to finish before removing and freeing the session.
@@ -681,6 +679,7 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
   if (lastSession) {
     tokenLockRv = cnk_mutex_lock(&session->token->lock);
     if (tokenLockRv != CKR_OK) {
+      atomic_store(&session->token->logoutPending, CK_FALSE);
       free_session(session);
       return tokenLockRv;
     }
@@ -975,7 +974,11 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
   session->token->logoutPending = CK_TRUE;
   cnk_mutex_unlock(&session->token->lock);
   if (!hasPin && !hasManagementKey) {
-    CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+    CK_RV clearRv = cnk_mutex_lock(&session->token->lock);
+    if (clearRv != CKR_OK) {
+      atomic_store(&session->token->logoutPending, CK_FALSE);
+      return clearRv;
+    }
     session->token->logoutPending = CK_FALSE;
     cnk_mutex_unlock(&session->token->lock);
     return CKR_USER_NOT_LOGGED_IN;
@@ -985,14 +988,22 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
   // authentication is per-card transaction and has no matching logout APDU.
   CK_RV revokeRv = cnk_token_revoke_private_operations(session->token);
   if (revokeRv != CKR_OK) {
-    CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+    CK_RV clearRv = cnk_mutex_lock(&session->token->lock);
+    if (clearRv != CKR_OK) {
+      atomic_store(&session->token->logoutPending, CK_FALSE);
+      return clearRv;
+    }
     session->token->logoutPending = CK_FALSE;
     cnk_mutex_unlock(&session->token->lock);
     return revokeRv;
   }
   CK_RV logoutRv = hasPin ? cnk_logout_piv_pin_with_session(session->slotId) : CKR_OK;
 
-  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  CK_RV clearRv = cnk_mutex_lock(&session->token->lock);
+  if (clearRv != CKR_OK) {
+    atomic_store(&session->token->logoutPending, CK_FALSE);
+    return clearRv;
+  }
   clear_token_auth(session->token);
   session->token->logoutPending = CK_FALSE;
   cnk_mutex_unlock(&session->token->lock);

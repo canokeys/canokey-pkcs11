@@ -138,8 +138,11 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   CNK_RET_OK;
 
 initialization_failed:
-  if (!g_cnk_is_managed_mode)
-    cnk_cleanup_pcsc();
+  if (!g_cnk_is_managed_mode) {
+    CK_RV pcscRv = cnk_cleanup_pcsc();
+    if (pcscRv != CKR_OK)
+      return rv;
+  }
   cnk_cleanup_backend();
   mbedtls_psa_crypto_free();
   cnk_mutex_system_cleanup();
@@ -161,8 +164,14 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
     CNK_RETURN(CKR_OK, "library still in use");
   }
 
-  // Do not publish a partially finalized state if an application-supplied
-  // mutex refuses the session-table lock.
+  // PC/SC cleanup must complete before backend mutexes are destroyed. A
+  // failed callback leaves the initialized state intact for a later retry.
+  CK_RV pcscCleanupRv = g_cnk_is_managed_mode ? CKR_OK : cnk_cleanup_pcsc();
+  if (pcscCleanupRv != CKR_OK) {
+    atomic_fetch_add(&g_ref_count, 1);
+    return pcscCleanupRv;
+  }
+
   CK_RV rv = cnk_session_manager_cleanup();
   if (rv != CKR_OK) {
     atomic_fetch_add(&g_ref_count, 1);
@@ -170,7 +179,6 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   }
 
   // Managed mode owns no PC/SC context, but it still owns the backend mutexes.
-  CK_RV pcscCleanupRv = g_cnk_is_managed_mode ? CKR_OK : cnk_cleanup_pcsc();
   CK_RV backendCleanupRv = cnk_cleanup_backend();
 
   if (g_cnk_is_managed_mode)

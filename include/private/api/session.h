@@ -5,6 +5,7 @@
 
 #include "internal/mutex.h"
 #include <mbedtls/md.h>
+#include <stdatomic.h>
 
 // Session states as defined in PKCS#11 standard
 typedef enum {
@@ -33,7 +34,7 @@ typedef struct CNK_PKCS11_TOKEN_STATE {
   CK_BYTE managementKey[24];
   CK_ULONG cbManagementKey;
   CK_BBOOL managementLoginPending;
-  CK_BBOOL logoutPending;
+  _Atomic CK_BBOOL logoutPending;
   CK_ULONG openSessions;
   CK_ULONG readOnlySessions;
   CNK_PKCS11_MUTEX lock;
@@ -177,7 +178,7 @@ typedef struct CNK_PKCS11_SESSION {
   CK_BYTE nextSecretKeyId;
   // Protected by the global session-table mutex. Close removes the session
   // only after every API call that acquired this pointer has released it.
-  CK_ULONG activeCalls;
+  _Atomic CK_ULONG activeCalls;
 } CNK_PKCS11_SESSION;
 
 void cnk_session_release_ref(CNK_PKCS11_SESSION **session);
