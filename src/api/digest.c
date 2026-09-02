@@ -25,7 +25,11 @@ static size_t get_md_size(CK_MECHANISM_TYPE mechanism) {
 static CK_RV digestUpdate(CNK_PKCS11_SESSION *session, CK_BYTE_PTR part, CK_ULONG partLen) {
   if (session->digestingContext.mechanismType == 0)
     return CKR_OPERATION_NOT_INITIALIZED;
-  return mbedtls_md_update(&session->digestingContext.context, part, partLen) == 0 ? CKR_OK : CKR_FUNCTION_FAILED;
+  if (mbedtls_md_update(&session->digestingContext.context, part, partLen) != 0) {
+    cnk_reset_digesting_context(session);
+    return CKR_FUNCTION_FAILED;
+  }
+  return CKR_OK;
 }
 
 static CK_RV digestFinal(CNK_PKCS11_SESSION *session, CK_BYTE_PTR digest, CK_ULONG_PTR digestLen) {
@@ -155,8 +159,10 @@ CK_RV C_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey) {
       CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "Private session key requires USER login");
   }
 
-  if (mbedtls_md_update(&session->digestingContext.context, secret->value, secret->valueLen) != 0)
+  if (mbedtls_md_update(&session->digestingContext.context, secret->value, secret->valueLen) != 0) {
+    cnk_reset_digesting_context(session);
     CNK_RETURN(CKR_FUNCTION_FAILED, "md update failed");
+  }
   CNK_RET_OK;
 }
 

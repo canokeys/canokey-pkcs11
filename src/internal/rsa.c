@@ -432,7 +432,9 @@ CK_RV oaep_pad(const CK_BYTE *input, CK_ULONG inputLen, CK_BYTE *output, CK_ULON
 
   CK_RV rv = CKR_OK;
   output[0] = 0;
-  if (mbedtls_md(mdInfo, label, labelLen, db) != 0) {
+  static const CK_BYTE empty_label[] = {0};
+  const CK_BYTE *effectiveLabel = (labelLen == 0 && label == NULL) ? empty_label : label;
+  if (mbedtls_md(mdInfo, effectiveLabel, labelLen, db) != 0) {
     rv = CKR_FUNCTION_FAILED;
     goto cleanup;
   }

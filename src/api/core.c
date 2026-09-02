@@ -196,8 +196,10 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
     // still-initialized module remains internally coherent for a retry.
     if (!g_cnk_is_managed_mode) {
       CK_RV restoreRv = cnk_initialize_pcsc();
-      if (restoreRv != CKR_OK)
+      if (restoreRv != CKR_OK) {
+        atomic_fetch_add(&g_ref_count, 1);
         return restoreRv;
+      }
     }
     atomic_fetch_add(&g_ref_count, 1);
     return rv;
