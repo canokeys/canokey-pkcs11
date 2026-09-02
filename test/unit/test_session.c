@@ -340,6 +340,27 @@ static void test_data_object_template_rejects_null_object_id(void **state) {
   assert_int_equal(C_CloseSession(session), CKR_OK);
 }
 
+static void test_digest_key_rejects_non_extractable_secret(void **state) {
+  (void)state;
+  CK_SESSION_HANDLE session;
+  assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session), CKR_OK);
+  CK_MECHANISM generateMechanism = {CKM_GENERIC_SECRET_KEY_GEN, NULL, 0};
+  CK_ULONG valueLen = 32;
+  CK_BBOOL privateValue = CK_FALSE;
+  CK_BBOOL extractable = CK_FALSE;
+  CK_ATTRIBUTE keyTemplate[] = {
+      {CKA_VALUE_LEN, &valueLen, sizeof(valueLen)},
+      {CKA_PRIVATE, &privateValue, sizeof(privateValue)},
+      {CKA_EXTRACTABLE, &extractable, sizeof(extractable)},
+  };
+  CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+  assert_int_equal(C_GenerateKey(session, &generateMechanism, keyTemplate, 3, &key), CKR_OK);
+  CK_MECHANISM digestMechanism = {CKM_SHA256, NULL, 0};
+  assert_int_equal(C_DigestInit(session, &digestMechanism), CKR_OK);
+  assert_int_equal(C_DigestKey(session, key), CKR_KEY_INDIGESTIBLE);
+  assert_int_equal(C_CloseSession(session), CKR_OK);
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test_setup_teardown(test_close_does_not_deadlock_template_find, setup, teardown),
@@ -352,6 +373,7 @@ int main(void) {
       cmocka_unit_test_setup_teardown(test_invalid_finalize_does_not_consume_reference, setup, teardown),
       cmocka_unit_test_setup_teardown(test_cached_auth_check_propagates_lock_failure, setup, teardown),
       cmocka_unit_test_setup_teardown(test_data_object_template_rejects_null_object_id, setup, teardown),
+      cmocka_unit_test_setup_teardown(test_digest_key_rejects_non_extractable_secret, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

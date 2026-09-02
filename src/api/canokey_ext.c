@@ -194,13 +194,13 @@ static CK_RV loginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, C
                              CK_BBOOL requireBlockedPuk) {
   // Keep USER login active while GET DATA reads PRINTED. The management-key
   // cache is separate, allowing managed callers to retain normal USER state.
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+
   CK_RV rv = C_CNK_Login(hSession, CKU_USER, pPin, ulPinLen, NULL);
   if (rv != CKR_OK && rv != CKR_USER_ALREADY_LOGGED_IN)
     return rv;
   CK_BBOOL establishedUserLogin = rv == CKR_OK;
-
-  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
-  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
 
   CK_BYTE adminData[CNK_ADMIN_DATA_MAX_LEN];
   CK_BYTE protectedData[CNK_PIN_PROTECTED_DATA_MAX_LEN];

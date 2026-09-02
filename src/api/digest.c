@@ -146,8 +146,8 @@ CK_RV C_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey) {
   CNK_ENSURE_OK(CNK_GetSessionSecretKey(session, hKey, &secret));
   // Digesting a sensitive key would expose a stable value-derived identifier;
   // treat it as indigestible even though the bytes are resident on the host.
-  if (secret->sensitive)
-    CNK_RETURN(CKR_KEY_INDIGESTIBLE, "Sensitive session key cannot be digested");
+  if (secret->sensitive || !secret->extractable)
+    CNK_RETURN(CKR_KEY_INDIGESTIBLE, "Sensitive or non-extractable session key cannot be digested");
   if (secret->private) {
     CK_BBOOL pinCached = CK_FALSE;
     CNK_ENSURE_OK(cnk_token_pin_is_cached(session, &pinCached));
