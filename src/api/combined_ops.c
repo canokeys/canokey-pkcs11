@@ -441,6 +441,13 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objId);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, NULL, NULL, &pinPolicy, NULL));
 
+  // C_DeriveKey has no Init boundary where PKCS#11 can accept a
+  // CKU_CONTEXT_SPECIFIC login. Do not satisfy a PIN-always policy with the
+  // token-wide USER cache; fail closed until a one-shot context-auth channel
+  // is defined.
+  if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS)
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always ECDH requires context-specific authentication");
+
   CK_BBOOL x25519 = session->x25519Algorithm != 0 && algorithmType == session->x25519Algorithm;
   if (!CNK_PivPrivateKeyCanDerive(session, algorithmType) && !x25519)
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for ECDH derive");

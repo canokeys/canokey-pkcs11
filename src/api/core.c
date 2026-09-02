@@ -12,6 +12,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sched.h>
+#endif
+
 #include <mbedtls/platform.h>
 #include <nsync_malloc.h>
 #include <psa/crypto.h>
@@ -26,11 +32,17 @@ static CK_INTERFACE ck_interface_3_2 = {ck_interface_name, &ck_function_list_3_2
 // Global variables
 static atomic_int g_ref_count = 0;
 static CK_BBOOL g_initialization_cleanup_pending = CK_FALSE;
+static CK_BBOOL g_backend_cleanup_pending = CK_FALSE;
 static atomic_flag g_lifecycle_lock = ATOMIC_FLAG_INIT;
 
 void cnk_lifecycle_lock(void) {
-  while (atomic_flag_test_and_set(&g_lifecycle_lock))
-    ;
+  while (atomic_flag_test_and_set(&g_lifecycle_lock)) {
+#ifdef _WIN32
+    Sleep(0);
+#else
+    sched_yield();
+#endif
+  }
 }
 
 void cnk_lifecycle_unlock(void) { atomic_flag_clear(&g_lifecycle_lock); }
@@ -57,16 +69,17 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   // A failed callback during rollback can leave the PC/SC/backend objects
   // alive while Cryptoki remains uninitialized. Finish that rollback before
   // accepting a new initialization attempt.
-  if (g_initialization_cleanup_pending) {
-    CK_RV cleanupRv = cnk_cleanup_pcsc();
+  if (g_initialization_cleanup_pending || g_backend_cleanup_pending) {
+    CK_RV cleanupRv = g_initialization_cleanup_pending ? cnk_cleanup_pcsc() : CKR_OK;
     if (cleanupRv != CKR_OK)
       return cleanupRv;
-    cleanupRv = cnk_cleanup_backend();
+    cleanupRv = g_backend_cleanup_pending ? cnk_cleanup_backend() : CKR_OK;
     if (cleanupRv != CKR_OK)
       return cleanupRv;
     mbedtls_psa_crypto_free();
     cnk_mutex_system_cleanup();
     g_initialization_cleanup_pending = CK_FALSE;
+    g_backend_cleanup_pending = CK_FALSE;
   }
 
   // Check if the library is already initialized
@@ -185,7 +198,12 @@ initialization_failed:
       return rv;
     }
   }
-  cnk_cleanup_backend();
+  CK_RV backendRv = cnk_cleanup_backend();
+  if (backendRv != CKR_OK) {
+    g_backend_cleanup_pending = CK_TRUE;
+    mbedtls_psa_crypto_free();
+    return rv;
+  }
   mbedtls_psa_crypto_free();
   cnk_mutex_system_cleanup();
   return rv;
@@ -260,6 +278,14 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
 
   // Managed mode owns no PC/SC context, but it still owns the backend mutexes.
   CK_RV backendCleanupRv = cnk_cleanup_backend();
+
+  if (backendCleanupRv != CKR_OK) {
+    // Session state is already gone, but retain the backend descriptors and
+    // allocator/mode binding so C_Initialize can retry cnk_cleanup_backend.
+    g_backend_cleanup_pending = CK_TRUE;
+    g_cnk_is_initialized = CK_FALSE;
+    return backendCleanupRv;
+  }
 
   if (g_cnk_is_managed_mode)
     g_cnk_is_managed_mode = CK_FALSE;

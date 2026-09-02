@@ -475,10 +475,21 @@ CK_RV cnk_token_begin_card_operation(CNK_PKCS11_SESSION *session) {
 }
 
 void cnk_token_end_management_operation(CNK_PKCS11_SESSION *session) {
-  if (session != NULL && session->token != NULL)
-    atomic_store(&session->token->managementOperationOwner, CK_INVALID_HANDLE);
-  if (session != NULL && session->token != NULL)
+  if (session == NULL || session->token == NULL)
+    return;
+  CK_RV rv = cnk_mutex_lock(&session->token->lock);
+  if (rv != CKR_OK) {
+    // Fail closed but do not strand the reservation forever when an
+    // application lock callback fails. Clear pending before owner.
     atomic_store(&session->token->managementOperationPending, CK_FALSE);
+    atomic_store(&session->token->managementOperationOwner, CK_INVALID_HANDLE);
+    return;
+  }
+  // Clear the pending bit before the owner. Readers never observe a pending
+  // operation with an invalid owner and reject the releasing session.
+  session->token->managementOperationPending = CK_FALSE;
+  session->token->managementOperationOwner = CK_INVALID_HANDLE;
+  cnk_mutex_unlock(&session->token->lock);
 }
 
 CK_RV cnk_token_get_session_counts(CK_SLOT_ID slotId, CK_ULONG_PTR openSessions, CK_ULONG_PTR readOnlySessions) {
@@ -742,26 +753,32 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
 
   CNK_PKCS11_SESSION *session = NULL;
   CK_LONG index = -1;
+  CK_BBOOL closeOwned = CK_FALSE;
   CNK_ENSURE_OK(cnk_mutex_lock(&session_mutex));
   if (!g_cnk_is_initialized) {
     cnk_mutex_unlock(&session_mutex);
     CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki finalization is in progress");
   }
   for (;;) {
-    for (CK_LONG i = 0; i < session_table_size; i++) {
-      if (session_table[i] != NULL && session_table[i]->handle == hSession) {
-        session = session_table[i];
-        index = i;
-        break;
+    if (!closeOwned) {
+      for (CK_LONG i = 0; i < session_table_size; i++) {
+        // Only one C_CloseSession may own a session. A concurrent close must
+        // not select an entry already being drained by another caller.
+        if (session_table[i] != NULL && session_table[i]->handle == hSession && !session_table[i]->closing) {
+          session = session_table[i];
+          index = i;
+          break;
+        }
       }
-    }
-    if (session == NULL) {
-      cnk_mutex_unlock(&session_mutex);
-      CNK_RETURN(CKR_SESSION_HANDLE_INVALID, "Session not found");
+      if (session == NULL) {
+        cnk_mutex_unlock(&session_mutex);
+        CNK_RETURN(CKR_SESSION_HANDLE_INVALID, "Session not found");
+      }
     }
     if (atomic_load(&session->activeCalls) == 0)
       break;
     session->closing = CK_TRUE;
+    closeOwned = CK_TRUE;
     // Existing calls retain a reference after leaving session_mutex. Wait for
     // those calls to finish before removing and freeing the session.
     cnk_mutex_unlock(&session_mutex);
@@ -771,8 +788,6 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
       atomic_store(&session->closing, CK_FALSE);
       return lockRv;
     }
-    session = NULL;
-    index = -1;
   }
 
   // Reserve the token-wide state change before making the session unreachable.
@@ -1115,9 +1130,15 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
 
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
   if (session->token->logoutPending && session->token->logoutRecoveryPending) {
+    cnk_mutex_unlock(&session->token->lock);
+    // A prior revoke failed before all session operation contexts were
+    // cleared. Retry that drain before releasing the fail-closed barrier.
+    CK_RV retryRv = cnk_token_revoke_private_operations(session->token);
+    if (retryRv != CKR_OK)
+      return retryRv;
+    CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
     clear_token_auth(session->token);
     session->token->logoutPending = CK_FALSE;
-    session->token->logoutRecoveryPending = CK_FALSE;
     cnk_mutex_unlock(&session->token->lock);
     return CKR_OK;
   }
@@ -1148,10 +1169,14 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
   if (revokeRv != CKR_OK) {
     CK_RV clearRv = cnk_mutex_lock(&session->token->lock);
     if (clearRv != CKR_OK) {
-      atomic_store(&session->token->logoutPending, CK_FALSE);
+      // Keep logoutPending set when the callback refuses the recovery lock;
+      // stale credentials must remain unusable until a later retry.
+      atomic_store(&session->token->logoutRecoveryPending, CK_TRUE);
       return clearRv;
     }
-    session->token->logoutPending = CK_FALSE;
+    clear_token_auth(session->token);
+    session->token->logoutPending = CK_TRUE;
+    session->token->logoutRecoveryPending = CK_TRUE;
     cnk_mutex_unlock(&session->token->lock);
     return revokeRv;
   }

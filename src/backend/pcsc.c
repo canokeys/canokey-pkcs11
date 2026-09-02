@@ -241,9 +241,13 @@ CK_RV cnk_cleanup_backend(void) {
     return CKR_OK;
   CK_RV readersRv = cnk_mutex_destroy(&g_cnk_readers_mutex);
   CK_RV eventRv = cnk_mutex_destroy(&g_cnk_slot_event_mutex);
-  memset(&g_cnk_readers_mutex, 0, sizeof(g_cnk_readers_mutex));
-  memset(&g_cnk_slot_event_mutex, 0, sizeof(g_cnk_slot_event_mutex));
-  backend_mutexes_initialized = CK_FALSE;
+  // Keep the mutex descriptors and initialized marker on failure so the
+  // caller can retry cleanup while its callback infrastructure is alive.
+  if (readersRv == CKR_OK && eventRv == CKR_OK) {
+    memset(&g_cnk_readers_mutex, 0, sizeof(g_cnk_readers_mutex));
+    memset(&g_cnk_slot_event_mutex, 0, sizeof(g_cnk_slot_event_mutex));
+    backend_mutexes_initialized = CK_FALSE;
+  }
   return readersRv != CKR_OK ? readersRv : eventRv;
 }
 
@@ -1943,6 +1947,8 @@ CK_RV cnk_piv_decrypt(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_P
 CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
                    CK_BYTE pinPolicy, CK_BYTE_PTR pPublicData, CK_ULONG cbPublicData, CK_BYTE_PTR pSharedSecret,
                    CK_ULONG_PTR pcbSharedSecret) {
+  if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS)
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always ECDH requires context-specific authentication");
   CK_BYTE pin[PIV_PADDED_PIN_LEN] = {0};
   CK_ULONG pinLen = 0;
   if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS) {
@@ -2143,6 +2149,10 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
   }
 
   // Check for success (9000) or more data available (61XX)
+  if (cbResponse < 2) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "GENERAL AUTHENTICATE response is missing status bytes");
+  }
   CK_BYTE sw1 = response[cbResponse - 2];
   CK_BYTE sw2 = response[cbResponse - 1];
   if (sw1 != 0x90 || sw2 != 0x00) {
@@ -2180,22 +2190,33 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
     CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: bad outer length");
   }
   offset += outerLengthSize;
+  CK_ULONG outerEnd = offset + outerLength;
 
   // Check for the inner 82 tag (signature response)
-  if (offset < cbResponse && response[offset] != 0x82) {
+  if (offset >= outerEnd || response[offset] != 0x82) {
     cnk_disconnect_card(hCard);
     CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: missing 82 tag");
   }
 
+  if (offset >= outerEnd) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: empty 7C template");
+  }
+
   // Skip the inner TLV header
   offset++; // Skip the 82 tag
+  if (offset >= outerEnd) {
+    cnk_disconnect_card(hCard);
+    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: missing signature length");
+  }
 
   // Handle the length field
-  if (offset < cbResponse) {
+  CK_ULONG signatureLength = 0;
+  if (offset < outerEnd) {
     CK_LONG fail = 0;
     CK_ULONG bcLength = 0;
-    CK_ULONG signatureLength = tlvGetLengthSafe(&response[offset], cbResponse - offset, &fail, &bcLength);
-    if (!fail && bcLength <= cbResponse - offset && signatureLength <= cbResponse - offset - bcLength) {
+    signatureLength = tlvGetLengthSafe(&response[offset], outerEnd - offset, &fail, &bcLength);
+    if (!fail && bcLength <= outerEnd - offset && signatureLength <= outerEnd - offset - bcLength) {
       offset += bcLength; // Skip length bytes
     } else {
       cnk_disconnect_card(hCard);
@@ -2205,7 +2226,7 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
   }
 
   // Extract ECDSA signature components if needed
-  size_t sig_len = cbResponse - offset;
+  size_t sig_len = signatureLength;
   CNK_DEBUG("Raw signature length: %zu, buffer size: %zu", sig_len, *pcbSignature);
 
   // Check if this is an ECDSA signature

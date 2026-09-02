@@ -286,13 +286,8 @@ cleanup:
   mbedtls_platform_zeroize(managementKey, sizeof(managementKey));
   mbedtls_platform_zeroize(protectedData, sizeof(protectedData));
   mbedtls_platform_zeroize(adminData, sizeof(adminData));
-  if (rv != CKR_OK && establishedUserLogin) {
-    CK_RV logoutRv = C_Logout(hSession);
-    if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
-      CNK_WARN("Failed to roll back USER login after PIN-managed failure: 0x%lx", logoutRv);
-    if (establishedUserLoginOut != NULL)
-      *establishedUserLoginOut = CK_FALSE;
-  }
+  // Rollback belongs to the caller because finalize may hold a token
+  // reservation that C_Logout must not attempt to cross.
   return rv;
 }
 
@@ -300,7 +295,14 @@ CK_RV C_CNK_LoginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK
   CNK_LOG_FUNC(": hSession: %lu, pPin: %p, ulPinLen: %lu", hSession, pPin, ulPinLen);
   CNK_ENSURE_INITIALIZED();
   CNK_ENSURE_NONNULL(pPin);
-  return loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE, NULL);
+  CK_BBOOL establishedUserLogin = CK_FALSE;
+  CK_RV rv = loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE, &establishedUserLogin);
+  if (rv != CKR_OK && establishedUserLogin) {
+    CK_RV logoutRv = C_Logout(hSession);
+    if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
+      CNK_WARN("Failed to roll back USER login after PIN-managed failure: 0x%lx", logoutRv);
+  }
+  return rv;
 }
 
 CK_RV C_CNK_FinalizePinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
@@ -342,6 +344,11 @@ CK_RV C_CNK_FinalizePinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin,
   }
   rv = loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE, NULL);
   cnk_token_end_management_operation(session);
+  if (rv != CKR_OK && establishedUserLogin) {
+    CK_RV logoutRv = C_Logout(hSession);
+    if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
+      CNK_WARN("Failed to roll back PIN-managed authorization after final confirmation failure: 0x%lx", logoutRv);
+  }
   return rv;
 }
 

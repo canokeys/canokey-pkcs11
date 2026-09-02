@@ -40,8 +40,13 @@ For every changed authorization or card-write path, cover these combinations:
 | PIN-managed finalize | reject | pass with reservation | pass only if explicitly supported | reject unless specified | serialized |
 
 Also test session close during each operation, multiple sessions on one token,
-concurrent operations of different types, and managed sessions using any slot
-ID other than canonical slot 0.
+concurrent operations of different types, and that managed sessions reject any
+slot ID other than canonical slot 0 while `C_GetSlotList` returns only slot 0.
+
+`C_DeriveKey` is a one-shot API with no context-specific login boundary. A
+PIN-always PIV ECDH key therefore fails closed with `CKR_USER_NOT_LOGGED_IN`
+until a dedicated context-authentication channel is defined; it must never use
+the token-wide USER PIN cache as a substitute.
 
 ## Failure Injection
 

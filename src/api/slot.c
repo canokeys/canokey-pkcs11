@@ -14,6 +14,23 @@ CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PT
 
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pulCount);
 
+  // Managed mode is bound to one caller-owned card handle and exposes only
+  // the canonical slot 0. Listing the host PC/SC readers here would expose
+  // unrelated readers and make C_OpenSession's slot contract inconsistent.
+  if (g_cnk_is_managed_mode) {
+    if (pSlotList == NULL) {
+      *pulCount = 1;
+      return CKR_OK;
+    }
+    if (*pulCount < 1) {
+      *pulCount = 1;
+      return CKR_BUFFER_TOO_SMALL;
+    }
+    pSlotList[0] = 0;
+    *pulCount = 1;
+    return CKR_OK;
+  }
+
   // List readers
   CNK_ENSURE_OK(cnk_list_readers());
 

@@ -305,6 +305,8 @@ Write-path notes:
 - Runtime private-key operations must honor stored PIN policy. PIN-never keys
   can use GENERAL AUTHENTICATE without `CKU_USER`; PIN-once and PIN-always keys
   require a cached user PIN and must verify it before the operation.
+  `C_DeriveKey` has no Init boundary for `CKU_CONTEXT_SPECIFIC`, so PIN-always
+  ECDH must fail closed rather than consume the token-wide USER cache.
 - PIV data objects should be exposed as `CKO_DATA` token objects. Enumeration
   uses a fixed table of known PIV data-object candidates and returns only
   objects that `GET DATA` reports as present. The current candidate table covers

@@ -1,3 +1,7 @@
+#if defined(__linux__)
+#define _GNU_SOURCE
+#endif
+
 // clang-format off
 #include <stdarg.h>
 #include <stddef.h>
@@ -28,6 +32,7 @@ typedef struct {
   CK_RV rv;
   CNK_PKCS11_SESSION *held;
   atomic_bool entered;
+  atomic_bool updateStarted;
 } DigestThreadContext;
 
 typedef struct {
@@ -36,6 +41,12 @@ typedef struct {
   CNK_PKCS11_SESSION *held;
   atomic_bool entered;
 } FindThreadContext;
+
+typedef struct {
+  CK_SESSION_HANDLE session;
+  CK_RV rv;
+  atomic_bool finished;
+} CloseThreadContext;
 
 #ifdef _WIN32
 static DWORD WINAPI digestThread(void *opaque)
@@ -49,6 +60,7 @@ static void *digestThread(void *opaque)
   if (heldRv != CKR_OK)
     ctx->rv = heldRv;
   else {
+    atomic_store(&ctx->updateStarted, true);
     ctx->rv = C_DigestUpdate(ctx->session, ctx->data, ctx->dataLen);
     cnk_session_release_ref(&ctx->held);
   }
@@ -97,6 +109,22 @@ static void waitForWorker(atomic_bool *entered) {
   assert_true(atomic_load(entered));
 }
 
+#ifdef _WIN32
+static DWORD WINAPI closeThread(void *opaque)
+#else
+static void *closeThread(void *opaque)
+#endif
+{
+  CloseThreadContext *ctx = opaque;
+  ctx->rv = C_CloseSession(ctx->session);
+  atomic_store(&ctx->finished, true);
+#ifdef _WIN32
+  return 0;
+#else
+  return NULL;
+#endif
+}
+
 static int setup(void **state) {
   (void)state;
   CNK_MANAGED_MODE_INIT_ARGS args = {.malloc_func = malloc, .free_func = free, .hSCardCtx = 1, .hScard = 1};
@@ -131,7 +159,6 @@ static void test_close_does_not_deadlock_template_find(void **state) {
   HANDLE thread = CreateThread(NULL, 0, findThread, &ctx, 0, NULL);
   assert_non_null(thread);
   waitForWorker(&ctx.entered);
-  assert_int_equal(C_CloseSession(session), CKR_OK);
   assert_int_equal(WaitForSingleObject(thread, 5000), WAIT_OBJECT_0);
   CloseHandle(thread);
 #else
@@ -156,13 +183,18 @@ static void test_cancel_serializes_with_digest_update(void **state) {
   CK_BYTE *data = malloc(dataLen);
   assert_non_null(data);
   memset(data, 0xA5, dataLen);
-  DigestThreadContext ctx = {
-      .session = session, .data = data, .dataLen = dataLen, .rv = CKR_GENERAL_ERROR, .entered = false};
+  DigestThreadContext ctx = {.session = session,
+                             .data = data,
+                             .dataLen = dataLen,
+                             .rv = CKR_GENERAL_ERROR,
+                             .entered = false,
+                             .updateStarted = false};
 
 #ifdef _WIN32
   HANDLE thread = CreateThread(NULL, 0, digestThread, &ctx, 0, NULL);
   assert_non_null(thread);
   waitForWorker(&ctx.entered);
+  waitForWorker(&ctx.updateStarted);
   assert_int_equal(C_SessionCancel(session, CKF_DIGEST), CKR_OK);
   assert_int_equal(WaitForSingleObject(thread, 5000), WAIT_OBJECT_0);
   CloseHandle(thread);
@@ -189,21 +221,47 @@ static void test_close_waits_for_digest_update(void **state) {
   CK_BYTE *data = malloc(dataLen);
   assert_non_null(data);
   memset(data, 0x5A, dataLen);
-  DigestThreadContext ctx = {
-      .session = session, .data = data, .dataLen = dataLen, .rv = CKR_GENERAL_ERROR, .entered = false};
+  DigestThreadContext ctx = {.session = session,
+                             .data = data,
+                             .dataLen = dataLen,
+                             .rv = CKR_GENERAL_ERROR,
+                             .entered = false,
+                             .updateStarted = false};
 
 #ifdef _WIN32
   HANDLE thread = CreateThread(NULL, 0, digestThread, &ctx, 0, NULL);
   assert_non_null(thread);
   waitForWorker(&ctx.entered);
-  assert_int_equal(C_CloseSession(session), CKR_OK);
+  waitForWorker(&ctx.updateStarted);
+  CloseThreadContext closeCtx = {.session = session, .rv = CKR_GENERAL_ERROR, .finished = false};
+  HANDLE closeHandle = CreateThread(NULL, 0, closeThread, &closeCtx, 0, NULL);
+  assert_non_null(closeHandle);
+  assert_int_equal(WaitForSingleObject(closeHandle, 5000), WAIT_OBJECT_0);
+  assert_int_equal(closeCtx.rv, CKR_OK);
+  CloseHandle(closeHandle);
   assert_int_equal(WaitForSingleObject(thread, 5000), WAIT_OBJECT_0);
   CloseHandle(thread);
 #else
   pthread_t thread;
   assert_int_equal(pthread_create(&thread, NULL, digestThread, &ctx), 0);
   waitForWorker(&ctx.entered);
-  assert_int_equal(C_CloseSession(session), CKR_OK);
+  CloseThreadContext closeCtx = {.session = session, .rv = CKR_GENERAL_ERROR, .finished = false};
+  pthread_t closeThreadId;
+  assert_int_equal(pthread_create(&closeThreadId, NULL, closeThread, &closeCtx), 0);
+#if defined(__linux__)
+  struct timespec deadline;
+  assert_int_equal(clock_gettime(CLOCK_REALTIME, &deadline), 0);
+  deadline.tv_sec += 5;
+  assert_int_equal(pthread_timedjoin_np(closeThreadId, NULL, &deadline), 0);
+#else
+  for (int i = 0; i < 5000 && !atomic_load(&closeCtx.finished); i++) {
+    struct timespec delay = {.tv_sec = 0, .tv_nsec = 1000000};
+    nanosleep(&delay, NULL);
+  }
+  assert_true(atomic_load(&closeCtx.finished));
+  assert_int_equal(pthread_join(closeThreadId, NULL), 0);
+#endif
+  assert_int_equal(closeCtx.rv, CKR_OK);
   assert_int_equal(pthread_join(thread, NULL), 0);
 #endif
   assert_true(ctx.rv == CKR_OK || ctx.rv == CKR_SESSION_HANDLE_INVALID);
@@ -302,6 +360,17 @@ static void test_invalid_finalize_does_not_consume_reference(void **state) {
   assert_int_equal(C_GetInfo(&info), CKR_OK);
 }
 
+static void test_managed_slot_list_is_canonical(void **state) {
+  (void)state;
+  CK_ULONG count = 0;
+  assert_int_equal(C_GetSlotList(CK_TRUE, NULL, &count), CKR_OK);
+  assert_int_equal(count, 1);
+  CK_SLOT_ID slot = (CK_SLOT_ID)-1;
+  assert_int_equal(C_GetSlotList(CK_TRUE, &slot, &count), CKR_OK);
+  assert_int_equal(count, 1);
+  assert_int_equal(slot, 0);
+}
+
 static CK_RV failTokenLock(void *mutex) {
   (void)mutex;
   return CKR_GENERAL_ERROR;
@@ -318,6 +387,35 @@ static void test_cached_auth_check_propagates_lock_failure(void **state) {
   CK_BBOOL cached = CK_TRUE;
   assert_int_equal(cnk_token_pin_is_cached(internal, &cached), CKR_GENERAL_ERROR);
   internal->token->lock.lock = savedLock;
+  cnk_session_release_ref(&internal);
+  assert_int_equal(C_CloseSession(session), CKR_OK);
+}
+
+static void test_logout_failure_clears_cached_authentication(void **state) {
+  (void)state;
+  CK_SESSION_HANDLE session;
+  assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session), CKR_OK);
+  CNK_PKCS11_SESSION *internal = NULL;
+  assert_int_equal(cnk_session_find(session, &internal), CKR_OK);
+  cnk_mutex_lock(&internal->token->lock);
+  internal->token->loginState = TOKEN_LOGIN_USER;
+  internal->token->pin[0] = '1';
+  internal->token->cbPin = 1;
+  internal->token->managementKey[0] = 0xA5;
+  internal->token->cbManagementKey = sizeof(internal->token->managementKey);
+  cnk_mutex_unlock(&internal->token->lock);
+
+  CK_RV (*savedLock)(void *) = internal->lock.lock;
+  internal->lock.lock = failTokenLock;
+  assert_int_equal(C_Logout(session), CKR_GENERAL_ERROR);
+  internal->lock.lock = savedLock;
+
+  cnk_mutex_lock(&internal->token->lock);
+  assert_int_equal(internal->token->loginState, TOKEN_LOGIN_PUBLIC);
+  assert_int_equal(internal->token->cbPin, 0);
+  assert_int_equal(internal->token->cbManagementKey, 0);
+  assert_false(internal->token->logoutPending);
+  cnk_mutex_unlock(&internal->token->lock);
   cnk_session_release_ref(&internal);
   assert_int_equal(C_CloseSession(session), CKR_OK);
 }
@@ -374,7 +472,9 @@ int main(void) {
       cmocka_unit_test_setup_teardown(test_context_login_rejects_two_pin_always_operations, setup, teardown),
       cmocka_unit_test_setup_teardown(test_encapsulation_query_validates_session, setup, teardown),
       cmocka_unit_test_setup_teardown(test_invalid_finalize_does_not_consume_reference, setup, teardown),
+      cmocka_unit_test_setup_teardown(test_managed_slot_list_is_canonical, setup, teardown),
       cmocka_unit_test_setup_teardown(test_cached_auth_check_propagates_lock_failure, setup, teardown),
+      cmocka_unit_test_setup_teardown(test_logout_failure_clears_cached_authentication, setup, teardown),
       cmocka_unit_test_setup_teardown(test_data_object_template_rejects_null_object_id, setup, teardown),
       cmocka_unit_test_setup_teardown(test_digest_key_rejects_non_extractable_secret, setup, teardown),
   };
