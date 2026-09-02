@@ -186,6 +186,7 @@ CK_RV cnk_session_manager_init(void) {
 // Clean up the session manager
 CK_RV cnk_session_manager_cleanup(void) {
   CNK_LOG_FUNC();
+  CNK_DEBUG("session manager cleanup: begin");
 
   // Finalize disables new API entry before calling here. Drain references held
   // by calls that entered before that barrier before destroying session locks.
@@ -214,6 +215,7 @@ CK_RV cnk_session_manager_cleanup(void) {
   CK_RV cleanupRv = CKR_OK;
 
   if (session_table != NULL) {
+    CNK_DEBUG("session manager cleanup: freeing active session table");
     // Free all session structures
     for (CK_LONG i = 0; i < session_table_size; i++) {
       if (session_table[i] != NULL) {
@@ -235,6 +237,7 @@ CK_RV cnk_session_manager_cleanup(void) {
   }
 
   while (retired_sessions != NULL) {
+    CNK_DEBUG("session manager cleanup: freeing retired session");
     CNK_PKCS11_SESSION *retired = retired_sessions;
     CNK_PKCS11_SESSION *nextRetired = retired->retiredNext;
     CK_RV freeRv = free_session(retired);
@@ -246,6 +249,7 @@ CK_RV cnk_session_manager_cleanup(void) {
   }
 
   while (token_states != NULL) {
+    CNK_DEBUG("session manager cleanup: freeing token state");
     CNK_PKCS11_TOKEN_STATE *token = token_states;
     clear_token_auth(token);
     CK_RV destroyRv = cnk_mutex_destroy(&token->lock);
@@ -263,9 +267,11 @@ unlock_cleanup:
     return cleanupRv;
 
   // Destroy the session manager mutex
+  CNK_DEBUG("session manager cleanup: destroying session mutex");
   CK_RV destroyRv = cnk_mutex_destroy(&session_mutex);
   if (destroyRv == CKR_OK)
     memset(&session_mutex, 0, sizeof(session_mutex));
+  CNK_DEBUG("session manager cleanup: complete rv=0x%lx", destroyRv);
   return destroyRv;
 }
 

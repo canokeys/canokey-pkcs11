@@ -292,6 +292,11 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
     return backendCleanupRv;
   }
 
+  // PSA/mbedtls objects were allocated through the active managed allocator.
+  // Release them before restoring the process-default allocator, otherwise
+  // their cleanup would pass CSP-owned blocks to the CRT free implementation.
+  mbedtls_psa_crypto_free();
+
   if (g_cnk_is_managed_mode)
     g_cnk_is_managed_mode = CK_FALSE;
   g_cnk_pcsc_context = 0;
@@ -303,7 +308,6 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   nsync_free_ptr_ = free;
   g_cnk_is_initialized = CK_FALSE;
 
-  mbedtls_psa_crypto_free();
   cnk_reset_logging();
   cnk_mutex_system_cleanup();
 
