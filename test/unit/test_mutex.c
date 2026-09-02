@@ -52,6 +52,9 @@ static CK_RV countUnlock(void *mutex) {
 
 static void test_failed_application_lock_does_not_unlock(void **state) {
   (void)state;
+  CK_INFO info;
+  assert_int_equal(C_GetInfo(&info), CKR_OK);
+  assert_int_equal(C_GetOperationState(CK_INVALID_HANDLE, NULL, NULL), CKR_FUNCTION_NOT_SUPPORTED);
   unlockCalls = 0;
   CK_C_INITIALIZE_ARGS args = {
       .CreateMutex = createMutex,
@@ -90,6 +93,10 @@ static void test_serialized_initialize_args_still_create_internal_mutexes(void *
   CK_C_INITIALIZE_ARGS args = {0};
   assert_int_equal(C_CNK_EnableManagedMode(&managed), CKR_OK);
   assert_int_equal(C_Initialize(&args), CKR_OK);
+  CK_SESSION_HANDLE session;
+  assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION, NULL, NULL, &session), CKR_OK);
+  assert_int_equal(C_GenerateRandom(session, NULL, 0), CKR_OK);
+  assert_int_equal(C_CloseSession(session), CKR_OK);
   assert_int_equal(C_Finalize(NULL), CKR_OK);
 }
 

@@ -103,6 +103,18 @@ CK_RV C_Digest(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pData is NULL but ulDataLen > 0");
   }
 
+  // Check the destination before consuming input so CKR_BUFFER_TOO_SMALL
+  // preserves the exact digest state for a retry.
+  if (pDigest != NULL) {
+    size_t hashLen = get_md_size(session->digestingContext.mechanismType);
+    if (hashLen == 0)
+      CNK_RETURN(CKR_MECHANISM_INVALID, "unsupported mechanism");
+    if (*pulDigestLen < hashLen) {
+      *pulDigestLen = hashLen;
+      return CKR_BUFFER_TOO_SMALL;
+    }
+  }
+
   if (pDigest == NULL) {
     size_t length = get_md_size(session->digestingContext.mechanismType);
     if (length == 0)

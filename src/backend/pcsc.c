@@ -1727,6 +1727,11 @@ CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
   return CKR_OK;
 }
 
+static void zeroize_general_auth_response(CK_BYTE **response) {
+  if (response != NULL && *response != NULL)
+    mbedtls_platform_zeroize(*response, CNK_PIV_MAX_GENERAL_AUTH_RESPONSE);
+}
+
 static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType,
                                               CK_BYTE pivSlot, CK_BYTE pinPolicy, CK_BYTE inputTag, CK_BYTE_PTR pData,
                                               CK_ULONG cbDataLen, CK_BYTE_PTR pOutput, CK_ULONG_PTR pcbOutput,
@@ -1821,7 +1826,12 @@ static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESS
   CK_BYTE abAuthApdu[262];
   CK_ULONG cbAuthApdu = 0;
 
-  CK_BYTE response[CNK_PIV_MAX_GENERAL_AUTH_RESPONSE];
+  CK_BYTE response[CNK_PIV_MAX_GENERAL_AUTH_RESPONSE] = {0};
+#if defined(__clang__) || defined(__GNUC__)
+  CK_BYTE *responseGuard __attribute__((cleanup(zeroize_general_auth_response))) = response;
+#else
+#error "CanoKey GENERAL AUTH response cleanup requires compiler cleanup support"
+#endif
   DWORD cbResponse = sizeof(response); // Use DWORD for PC/SC API compatibility
   LONG pcsc_rv = SCARD_S_SUCCESS;
 

@@ -36,6 +36,7 @@ typedef struct CNK_PKCS11_TOKEN_STATE {
   _Atomic CK_BBOOL managementLoginPending;
   _Atomic CK_BBOOL managementOperationPending;
   _Atomic CK_SESSION_HANDLE managementOperationOwner;
+  _Atomic CK_BBOOL managementOperationAllowsLogin;
   _Atomic CK_BBOOL logoutRecoveryPending;
   _Atomic CK_BBOOL logoutCardPending;
   _Atomic CK_BBOOL logoutPending;
@@ -223,6 +224,7 @@ CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session,
 CK_RV cnk_token_begin_management_operation(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_begin_user_operation(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_begin_card_operation(CNK_PKCS11_SESSION *session);
+CK_RV cnk_token_allow_owner_login(CNK_PKCS11_SESSION *session, CK_BBOOL allow);
 void cnk_token_end_management_operation(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_get_session_counts(CK_SLOT_ID slotId, CK_ULONG_PTR openSessions, CK_ULONG_PTR readOnlySessions);
 CK_RV cnk_token_revoke_private_operations(CNK_PKCS11_TOKEN_STATE *token);

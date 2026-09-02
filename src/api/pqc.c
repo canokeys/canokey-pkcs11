@@ -164,20 +164,37 @@ CK_RV C_EncapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
     mbedtls_platform_zeroize(&prototype, sizeof(prototype));
     return CKR_BUFFER_TOO_SMALL;
   }
+  CK_BBOOL reservationHeld = CK_FALSE;
+  if (prototype.private) {
+    rv = cnk_token_begin_user_operation(session);
+    if (rv != CKR_OK) {
+      mbedtls_platform_zeroize(&prototype, sizeof(prototype));
+      return rv;
+    }
+    reservationHeld = CK_TRUE;
+  }
   CK_BYTE encodedPublicKey[CNK_MLKEM768_PUBLIC_KEY_BYTES];
   CK_ATTRIBUTE valueAttribute = {CKA_VALUE, encodedPublicKey, sizeof(encodedPublicKey)};
   rv = C_GetAttributeValue(hSession, publicKey, &valueAttribute, 1);
   if (rv != CKR_OK || valueAttribute.ulValueLen != sizeof(encodedPublicKey)) {
+    if (reservationHeld)
+      cnk_token_end_management_operation(session);
     mbedtls_platform_zeroize(&prototype, sizeof(prototype));
     return rv == CKR_OK ? CKR_KEY_TYPE_INCONSISTENT : rv;
   }
 
   CK_BYTE sharedSecret[CNK_MLKEM768_SHARED_SECRET_BYTES];
-  rv = cnk_mlkem768_encapsulate(encodedPublicKey, ciphertext, sharedSecret);
+  CK_BYTE temporaryCiphertext[CNK_MLKEM768_CIPHERTEXT_BYTES] = {0};
+  rv = cnk_mlkem768_encapsulate(encodedPublicKey, temporaryCiphertext, sharedSecret);
   if (rv == CKR_OK) {
     memcpy(prototype.value, sharedSecret, sizeof(sharedSecret));
     rv = CNK_CreateSessionSecretKey(session, &prototype, key);
   }
+  if (rv == CKR_OK)
+    memcpy(ciphertext, temporaryCiphertext, sizeof(temporaryCiphertext));
+  if (reservationHeld)
+    cnk_token_end_management_operation(session);
+  mbedtls_platform_zeroize(temporaryCiphertext, sizeof(temporaryCiphertext));
   mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
   mbedtls_platform_zeroize(&prototype, sizeof(prototype));
   if (rv == CKR_OK)

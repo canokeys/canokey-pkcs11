@@ -95,6 +95,14 @@ CK_RV cnk_config_logging(const int level, FILE *file, CK_BBOOL unsafe_log_apdu) 
   return CKR_OK;
 }
 
+void cnk_reset_logging(void) {
+  nsync_mu_lock(&g_cnk_log_mutex);
+  g_cnk_log_file = NULL;
+  nsync_mu_unlock(&g_cnk_log_mutex);
+  atomic_store(&g_cnk_log_level, CNK_LOG_LEVEL_WARN);
+  atomic_store(&g_cnk_unsafe_log_apdu, false);
+}
+
 void cnk_config_logging_from_env(void) {
   atomic_store(&g_cnk_log_level, CNK_LOG_LEVEL_WARN);
   atomic_store(&g_cnk_unsafe_log_apdu, false);

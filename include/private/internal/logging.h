@@ -26,6 +26,7 @@ extern atomic_int g_cnk_log_level;
 extern atomic_bool g_cnk_unsafe_log_apdu;
 
 extern CK_RV cnk_config_logging(const int level, FILE *file, CK_BBOOL unsafe_log_apdu);
+extern void cnk_reset_logging(void);
 extern void cnk_config_logging_from_env(void);
 
 extern void cnk_printlogf(const int level, const char *function, const char *file, const int line, const char *format,

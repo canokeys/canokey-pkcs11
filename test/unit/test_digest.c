@@ -72,7 +72,6 @@ static void test_digest_sha1_buffer_too_small(void **state) {
   CK_BYTE buf[2];
   rv = C_Digest(hSession, (CK_BYTE_PTR)msg, msg_len, buf, &digest_len);
   assert_int_equal(rv, CKR_BUFFER_TOO_SMALL);
-
   rv = C_CloseSession(hSession);
   assert_int_equal(rv, CKR_OK);
   rv = C_Finalize(NULL);
@@ -140,6 +139,14 @@ static void test_digest_sha256_buffer_too_small(void **state) {
   CK_BYTE buf[2];
   rv = C_Digest(hSession, (CK_BYTE_PTR)msg, msg_len, buf, &digest_len);
   assert_int_equal(rv, CKR_BUFFER_TOO_SMALL);
+  CK_BYTE digest[32] = {0};
+  digest_len = sizeof(digest);
+  rv = C_Digest(hSession, (CK_BYTE_PTR)msg, msg_len, digest, &digest_len);
+  assert_int_equal(rv, CKR_OK);
+  static const CK_BYTE expected[32] = {0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40,
+                                       0xde, 0x5d, 0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17,
+                                       0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
+  assert_memory_equal(digest, expected, sizeof(expected));
 
   rv = C_CloseSession(hSession);
   assert_int_equal(rv, CKR_OK);

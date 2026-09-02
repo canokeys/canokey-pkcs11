@@ -233,15 +233,27 @@ CK_RV C_GenerateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
     memcpy(prototype.label, defaultLabel, prototype.labelLen);
   }
 
+  CK_BBOOL reservationHeld = CK_FALSE;
+  if (prototype.private) {
+    CK_RV reservationRv = cnk_token_begin_user_operation(session);
+    if (reservationRv != CKR_OK)
+      CNK_RETURN(reservationRv, "private session-key generation is blocked");
+    reservationHeld = CK_TRUE;
+  }
+
   // Generate directly into the temporary prototype and erase it after the
   // session allocator has copied the value.
   psa_status_t status = psa_generate_random(prototype.value, prototype.valueLen);
   if (status != PSA_SUCCESS) {
+    if (reservationHeld)
+      cnk_token_end_management_operation(session);
     mbedtls_platform_zeroize(&prototype, sizeof(prototype));
     CNK_RETURN(CKR_RANDOM_NO_RNG, "host random generation failed");
   }
 
   CK_RV rv = CNK_CreateSessionSecretKey(session, &prototype, phKey);
+  if (reservationHeld)
+    cnk_token_end_management_operation(session);
   mbedtls_platform_zeroize(&prototype, sizeof(prototype));
   return rv;
 }
@@ -698,6 +710,8 @@ CK_RV C_GenerateRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pRandomData, CK_U
   CNK_ENSURE_INITIALIZED();
   if (pRandomData == NULL && ulRandomLen > 0)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pRandomData is NULL but ulRandomLen > 0");
+  if (ulRandomLen == 0)
+    return CKR_OK;
 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));

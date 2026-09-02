@@ -35,32 +35,47 @@ CK_RV C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList, CK_ULONG_PT
   CNK_ENSURE_OK(cnk_list_readers());
 
   CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
-
-  // If pSlotList is NULL, just return the number of slots
-  if (!pSlotList) {
-    *pulCount = g_cnk_num_readers;
-    cnk_mutex_unlock(&g_cnk_readers_mutex);
-    CNK_RET_OK;
-  }
-
-  // Check if the provided buffer is large enough
-  if (*pulCount < (CK_ULONG)g_cnk_num_readers) {
-    *pulCount = g_cnk_num_readers;
-    cnk_mutex_unlock(&g_cnk_readers_mutex);
-    CNK_RETURN(CKR_BUFFER_TOO_SMALL, "pulCount too small");
-  }
-
-  // Fill the slot list with the stored slot IDs
-  for (CK_LONG i = 0; i < g_cnk_num_readers; i++) {
-    pSlotList[i] = g_cnk_readers[i].slot_id;
-  }
-
   CK_ULONG readerCount = (CK_ULONG)g_cnk_num_readers;
-  *pulCount = readerCount;
-
+  CK_SLOT_ID *slotIds = readerCount == 0 ? NULL : ck_malloc(readerCount * sizeof(*slotIds));
+  if (readerCount != 0 && slotIds == NULL) {
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
+    return CKR_HOST_MEMORY;
+  }
+  for (CK_ULONG i = 0; i < readerCount; i++)
+    slotIds[i] = g_cnk_readers[i].slot_id;
   cnk_mutex_unlock(&g_cnk_readers_mutex);
 
-  CNK_DEBUG("C_GetSlotList: %lu slots", readerCount);
+  // PC/SC lists readers even when no card is inserted. Filter only the
+  // tokenPresent form, using the backend's synchronized connection helper
+  // after releasing the reader lock.
+  CK_ULONG presentCount = 0;
+  for (CK_ULONG i = 0; i < readerCount; i++) {
+    CK_BBOOL present = CK_TRUE;
+    if (tokenPresent) {
+      SCARDHANDLE hCard = 0;
+      present = cnk_connect_and_select_canokey(slotIds[i], &hCard) == CKR_OK;
+      if (present)
+        cnk_disconnect_card(hCard);
+    }
+    if (present) {
+      if (pSlotList != NULL && presentCount < *pulCount)
+        pSlotList[presentCount] = slotIds[i];
+      presentCount++;
+    }
+  }
+  ck_free(slotIds);
+
+  if (pSlotList == NULL) {
+    *pulCount = presentCount;
+    CNK_RET_OK;
+  }
+  if (*pulCount < presentCount) {
+    *pulCount = presentCount;
+    CNK_RETURN(CKR_BUFFER_TOO_SMALL, "pulCount too small");
+  }
+  *pulCount = presentCount;
+
+  CNK_DEBUG("C_GetSlotList: %lu slots", presentCount);
 
   CNK_RET_OK;
 }

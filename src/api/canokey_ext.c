@@ -334,6 +334,11 @@ CK_RV C_CNK_FinalizePinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin,
   CK_RV rv = cnk_token_begin_card_operation(session);
   if (rv != CKR_OK)
     return rv;
+  rv = cnk_token_allow_owner_login(session, CK_TRUE);
+  if (rv != CKR_OK) {
+    cnk_token_end_management_operation(session);
+    return rv;
+  }
   rv = loginPinManaged(hSession, pPin, ulPinLen, CK_FALSE, &establishedUserLogin);
   if (rv != CKR_OK) {
     cnk_token_end_management_operation(session);
@@ -401,6 +406,10 @@ CK_RV C_CNK_UnblockPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULON
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
 
+  CK_RV beginRv = cnk_token_begin_card_operation(session);
+  if (beginRv != CKR_OK)
+    return beginRv;
+
   // Refuse the PUK path once protected management-key recovery is configured.
   // Otherwise the PUK could set a known user PIN and immediately elevate to SO.
   CK_BYTE adminData[CNK_ADMIN_DATA_MAX_LEN];
@@ -410,14 +419,15 @@ CK_RV C_CNK_UnblockPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULON
   if (policyRv == CKR_OK)
     policyRv = checkPinManagedAdminData(adminData, adminDataLen);
   mbedtls_platform_zeroize(adminData, sizeof(adminData));
-  if (policyRv == CKR_OK)
+  if (policyRv == CKR_OK) {
+    cnk_token_end_management_operation(session);
     CNK_RETURN(CKR_ACTION_PROHIBITED, "PUK reset is disabled for PIN-managed management keys");
-  if (policyRv != CKR_DATA_INVALID)
+  }
+  if (policyRv != CKR_DATA_INVALID) {
+    cnk_token_end_management_operation(session);
     return policyRv;
+  }
 
-  CK_RV beginRv = cnk_token_begin_card_operation(session);
-  if (beginRv != CKR_OK)
-    return beginRv;
   CK_RV rv =
       cnk_unblock_piv_pin_with_session(session->slotId, session, pPuk, ulPukLen, pNewPin, ulNewPinLen, pPinTries);
   cnk_token_end_management_operation(session);
