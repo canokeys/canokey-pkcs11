@@ -4,6 +4,12 @@ This document is mandatory for changes that affect PKCS#11 state, card I/O,
 cryptographic operations, or the Windows minidriver integration. A successful
 build is not sufficient evidence of correctness.
 
+Start with the affected rows in `docs/api-contracts.md`. Each exported API row
+defines its pointer lifetime, owned state, synchronization, progress, and exit
+guarantee. If a change cannot be described by the existing row/profile, update
+the contract before changing code. Run `python scripts/check-api-contracts.py`
+to verify that the exported inventory remains complete.
+
 ## State Invariants
 
 Review the token state as a state machine. The relevant states are `PUBLIC`,

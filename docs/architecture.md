@@ -1,5 +1,9 @@
 # CanoKey PKCS#11 Architecture
 
+`docs/api-contracts.md` is the normative ownership, concurrency, progress, and
+exit-state specification for every exported entry point. This document explains
+the larger component boundaries; implementation and review must satisfy both.
+
 ## Layers
 
 The module has four internal layers:
@@ -34,9 +38,11 @@ parameters, bounded multipart buffers, session-only secret keys, and find
 state. It references, but does not own, token authentication state.
 
 Session lookup acquires an active-call reference protected by the global
-session-table mutex. Close waits for those references to drain, removes the
-handle, then cancels operations, zeroizes session secrets, and frees the session
-immediately. Close never acquires a session lock while holding the global lock.
+session-table mutex. Close publishes a tombstone, keeps its own active-call
+reference visible to finalization, drains existing calls, completes token
+accounting and operation cleanup, and only then removes the handle. A session
+whose application mutex destroy callback fails is retained for cleanup retry.
+Close never acquires a session lock while holding the global lock.
 Closing the last session and `C_Finalize` also zero the USER PIN and
 management-key caches owned by `CNK_PKCS11_TOKEN_STATE`.
 

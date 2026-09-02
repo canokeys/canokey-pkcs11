@@ -3,7 +3,9 @@
 This a PKCS#11 module that allows applications to leverage the PIV applet on CanoKeys.
 
 See [docs/architecture.md](docs/architecture.md) for implementation layers,
-state ownership, and host/card responsibility boundaries.
+state ownership, and host/card responsibility boundaries. The normative
+ownership, concurrency, progress, and exit-state rules for every exported API
+are in [docs/api-contracts.md](docs/api-contracts.md).
 
 This module implements the PKCS#11 3.2 interface while retaining the legacy
 2.40 function list for existing applications. The complete 3.2 specification

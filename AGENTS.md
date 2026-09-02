@@ -60,9 +60,14 @@ TF-PSA-Crypto migration.
 ## Development Hygiene
 
 - Before reviewing or implementing non-trivial behavior, follow
-  `docs/validation.md`. Treat its state-machine, authorization matrix, failure
-  injection, cross-repository, and reviewer checks as required workflow, not
-  optional suggestions.
+  `docs/validation.md` and `docs/api-contracts.md`. Treat their state-machine,
+  ownership, lock, authorization, failure-injection, cross-repository, and
+  reviewer checks as required workflow, not optional suggestions.
+- Every function exported through `pkcs11f.h` or `pkcs11_canokey.h` must have
+  exactly one row in `docs/api-contracts.md`. When behavior, lifetime,
+  concurrency, progress, or exit guarantees change, update the row and its
+  tests in the same commit. Run `python scripts/check-api-contracts.py` before
+  committing; CI also runs it through CTest.
 
 - English is the project language. Write source comments, documentation,
   diagnostic text, commit messages, and pull-request content in English.
@@ -78,6 +83,10 @@ TF-PSA-Crypto migration.
   active-call references, but close must release it before acquiring a
   per-session lock. Scoped cleanup must release the session lock before the
   session reference.
+- Do not approve an exported API change until every return after its first
+  state mutation has been classified as committed, retryable, or fully rolled
+  back according to `docs/api-contracts.md`. Check counter/pending/owner/cache
+  consistency together, not one field at a time.
 - Every API path that calls `cnk_session_find()` must declare its pointer with
   `CNK_SESSION_REF`; otherwise concurrent close can either leak or free the
   session too early.
