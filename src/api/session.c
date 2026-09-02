@@ -371,8 +371,10 @@ CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session,
 CK_RV cnk_token_begin_management_operation(CNK_PKCS11_SESSION *session) {
   CNK_ENSURE_NONNULL(session, session->token);
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
-  if (session->token->logoutPending || session->token->loginState != TOKEN_LOGIN_SO ||
-      session->token->cbManagementKey != sizeof(session->token->managementKey)) {
+  CK_BBOOL managementAuthorized =
+      (session->token->loginState == TOKEN_LOGIN_SO || session->token->loginState == TOKEN_LOGIN_USER) &&
+      session->token->cbManagementKey == sizeof(session->token->managementKey);
+  if (session->token->logoutPending || !managementAuthorized) {
     cnk_mutex_unlock(&session->token->lock);
     return CKR_USER_NOT_LOGGED_IN;
   }

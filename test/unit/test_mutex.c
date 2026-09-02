@@ -6,6 +6,7 @@
 // clang-format on
 
 #include "api/session.h"
+#include "backend/pcsc.h"
 #include "internal/mutex.h"
 #include "pkcs11_canokey.h"
 
@@ -87,12 +88,25 @@ static void test_managed_mode_rejects_different_card_binding(void **state) {
   assert_int_equal(C_Finalize(NULL), CKR_OK);
 }
 
+static void test_managed_mode_cannot_replace_initialized_standalone(void **state) {
+  (void)state;
+  CNK_MANAGED_MODE_INIT_ARGS args = {.malloc_func = malloc, .free_func = free, .hSCardCtx = 1, .hScard = 1};
+  CK_BBOOL savedInitialized = g_cnk_is_initialized;
+  CK_BBOOL savedManaged = g_cnk_is_managed_mode;
+  g_cnk_is_initialized = CK_TRUE;
+  g_cnk_is_managed_mode = CK_FALSE;
+  assert_int_equal(C_CNK_EnableManagedMode(&args), CKR_OPERATION_ACTIVE);
+  g_cnk_is_initialized = savedInitialized;
+  g_cnk_is_managed_mode = savedManaged;
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test(test_failed_application_lock_does_not_unlock),
       cmocka_unit_test(test_session_manager_propagates_application_lock_failure),
       cmocka_unit_test(test_serialized_initialize_args_still_create_internal_mutexes),
       cmocka_unit_test(test_managed_mode_rejects_different_card_binding),
+      cmocka_unit_test(test_managed_mode_cannot_replace_initialized_standalone),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

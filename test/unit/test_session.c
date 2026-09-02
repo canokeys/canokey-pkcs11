@@ -229,6 +229,9 @@ static void test_logout_cannot_race_protected_management_login(void **state) {
   CK_BBOOL managementKeyCached = CK_FALSE;
   assert_int_equal(cnk_token_management_key_is_cached(internal, &managementKeyCached), CKR_OK);
   assert_true(managementKeyCached);
+  assert_int_equal(cnk_token_begin_management_operation(internal), CKR_OK);
+  assert_int_equal(C_Logout(session), CKR_OPERATION_ACTIVE);
+  cnk_token_end_management_operation(internal);
   cnk_mutex_lock(&internal->token->lock);
   memset(internal->token->pin, 0xFF, sizeof(internal->token->pin));
   internal->token->cbPin = 0;

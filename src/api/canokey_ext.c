@@ -146,6 +146,12 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
       return CKR_ARGUMENTS_BAD;
     }
 
+    // An initialized standalone module owns its PC/SC context and allocator;
+    // switching it to managed mode would invalidate existing allocations and
+    // make Finalize skip the standalone cleanup path.
+    if (g_cnk_is_initialized && !g_cnk_is_managed_mode)
+      return CKR_OPERATION_ACTIVE;
+
     // Managed mode currently uses one process-wide card/allocator binding.
     // Refuse a second, different binding instead of silently routing one
     // minidriver context to another reader or freeing memory through the
@@ -270,10 +276,17 @@ CK_RV C_CNK_FinalizePinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin,
   CK_RV rv = loginPinManaged(hSession, pPin, ulPinLen, CK_FALSE);
   if (rv != CKR_OK)
     return rv;
-  rv = cnk_block_piv_puk(session->slotId);
+  rv = cnk_token_begin_management_operation(session);
   if (rv != CKR_OK)
     return rv;
-  return loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE);
+  rv = cnk_block_piv_puk(session->slotId);
+  if (rv != CKR_OK) {
+    cnk_token_end_management_operation(session);
+    return rv;
+  }
+  rv = loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE);
+  cnk_token_end_management_operation(session);
+  return rv;
 }
 
 CK_RV C_CNK_SetPIN(CK_SESSION_HANDLE hSession, CK_BYTE pinType, CK_UTF8CHAR_PTR pOldPin, CK_ULONG ulOldLen,

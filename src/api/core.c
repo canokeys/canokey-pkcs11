@@ -22,12 +22,28 @@ static CK_INTERFACE ck_interface_3_2 = {ck_interface_name, &ck_function_list_3_2
 
 // Global variables
 static atomic_int g_ref_count = 0;
+static CK_BBOOL g_initialization_cleanup_pending = CK_FALSE;
 
 CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   if (!g_cnk_is_managed_mode)
     cnk_config_logging_from_env();
 
   CNK_LOG_FUNC(": pInitArgs: %p", pInitArgs);
+
+  // A failed callback during rollback can leave the PC/SC/backend objects
+  // alive while Cryptoki remains uninitialized. Finish that rollback before
+  // accepting a new initialization attempt.
+  if (g_initialization_cleanup_pending) {
+    CK_RV cleanupRv = cnk_cleanup_pcsc();
+    if (cleanupRv != CKR_OK)
+      return cleanupRv;
+    cleanupRv = cnk_cleanup_backend();
+    if (cleanupRv != CKR_OK)
+      return cleanupRv;
+    mbedtls_psa_crypto_free();
+    cnk_mutex_system_cleanup();
+    g_initialization_cleanup_pending = CK_FALSE;
+  }
 
   // Check if the library is already initialized
   if (g_cnk_is_initialized) {
@@ -140,8 +156,10 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
 initialization_failed:
   if (!g_cnk_is_managed_mode) {
     CK_RV pcscRv = cnk_cleanup_pcsc();
-    if (pcscRv != CKR_OK)
+    if (pcscRv != CKR_OK) {
+      g_initialization_cleanup_pending = CK_TRUE;
       return rv;
+    }
   }
   cnk_cleanup_backend();
   mbedtls_psa_crypto_free();
@@ -174,6 +192,13 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
 
   CK_RV rv = cnk_session_manager_cleanup();
   if (rv != CKR_OK) {
+    // PC/SC was already released. Re-establish the standalone context so the
+    // still-initialized module remains internally coherent for a retry.
+    if (!g_cnk_is_managed_mode) {
+      CK_RV restoreRv = cnk_initialize_pcsc();
+      if (restoreRv != CKR_OK)
+        return restoreRv;
+    }
     atomic_fetch_add(&g_ref_count, 1);
     return rv;
   }
