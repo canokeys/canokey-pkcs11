@@ -13,6 +13,12 @@
 #include <mbedtls/platform_util.h>
 #include <string.h>
 
+// 0x81 + three-byte length + 512-byte modulus + 0x82 + length +
+// three-byte public exponent.
+#define CNK_RSA4096_PUBLIC_KEY_METADATA_MIN_SIZE 521
+_Static_assert(CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE >= CNK_RSA4096_PUBLIC_KEY_METADATA_MIN_SIZE,
+               "PIV public-key metadata buffer must hold RSA-4096 components");
+
 static CK_BBOOL isDecryptMechanism(CK_MECHANISM_TYPE mechanism) {
   switch (mechanism) {
   case CKM_RSA_X_509:
@@ -188,7 +194,7 @@ CK_RV C_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   // Encryption is a host public-key operation; metadata supplies the public
   // components while the private key remains on the card for C_Decrypt.
   CK_BYTE algorithmType;
-  CK_BYTE publicKey[2048];
+  CK_BYTE publicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
   CK_ULONG publicKeyLen = sizeof(publicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivSlot, &algorithmType, publicKey, &publicKeyLen, NULL, NULL));
   if (!CNK_PivAlgorithmIsRsa(session, algorithmType))
@@ -338,7 +344,7 @@ CK_RV C_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
 
   CK_BYTE algorithmType;
   CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objId);
-  CK_BYTE abPublicKey[512];
+  CK_BYTE abPublicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
 

@@ -203,9 +203,7 @@ CK_RV C_DecapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
   CNK_ENSURE_OK(CNK_ValidateObject(privateKey, session, CKO_PRIVATE_KEY, &objectId));
   CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objectId, &pivSlot));
   CK_BYTE algorithmType, pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objectId);
-  CK_BYTE publicKey[2048];
-  CK_ULONG publicKeyLen = sizeof(publicKey);
-  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivSlot, &algorithmType, publicKey, &publicKeyLen, &pinPolicy, NULL));
+  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivSlot, &algorithmType, NULL, NULL, &pinPolicy, NULL));
   if (algorithmType != session->mlkem768Algorithm)
     return CKR_KEY_TYPE_INCONSISTENT;
   CNK_PKCS11_SECRET_KEY_OBJECT prototype;

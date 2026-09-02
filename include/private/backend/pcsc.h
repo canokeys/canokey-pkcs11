@@ -60,6 +60,10 @@ extern CNK_FREE_FUNC g_cnk_free_func;
 #define PIV_ALG_MLDSA65 0xE2
 #define PIV_ALG_MLKEM768 0xE3
 
+// Large enough for the encoded public-key value of every supported PIV
+// algorithm, including ML-DSA-65 and RSA-4096 modulus/exponent TLVs.
+#define CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE 2048
+
 #define CNK_PIV_METADATA_DIRECTORY_FLAG_KEY 0x01
 #define CNK_PIV_METADATA_DIRECTORY_FLAG_CERT 0x02
 #define CNK_PIV_METADATA_DIRECTORY_MAX_ENTRIES 24

@@ -373,7 +373,7 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   CNK_ENSURE_OK(CNK_GetPivPolicies(pPrivateKeyTemplate, ulPrivateKeyAttributeCount,
                                    CNK_DefaultPinPolicyForPivObjectId(privateId), &pinPolicy, &touchPolicy));
 
-  CK_BYTE publicKey[2048];
+  CK_BYTE publicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
   CK_ULONG publicKeyLen = sizeof(publicKey);
   CNK_ENSURE_OK(cnk_piv_generate_keypair(session->slotId, session, algorithmType, pivTag, pinPolicy, touchPolicy,
                                          publicKey, &publicKeyLen));
@@ -436,9 +436,7 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
 
   CK_BYTE algorithmType;
   CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objId);
-  CK_BYTE abPublicKey[512];
-  CK_ULONG cbPublicKey = sizeof(abPublicKey);
-  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
+  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, NULL, NULL, &pinPolicy, NULL));
 
   CK_BBOOL x25519 = session->x25519Algorithm != 0 && algorithmType == session->x25519Algorithm;
   if (!CNK_PivPrivateKeyCanDerive(session, algorithmType) && !x25519)

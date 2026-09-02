@@ -25,9 +25,6 @@
 // Maximum size for certificate data buffer
 #define MAX_PIV_CERTIFICATE_OBJECT_SIZE 8192
 
-// Maximum size for public key buffer
-#define MAX_PUBLIC_KEY_SIZE 2048
-
 // Maximum size for PIV asymmetric key import data.
 #define MAX_PIV_IMPORT_KEY_SIZE 1400
 
@@ -555,7 +552,7 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
     }
 
     CK_BYTE algorithmType = 0;
-    CK_BYTE publicKey[MAX_PUBLIC_KEY_SIZE];
+    CK_BYTE publicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
     CK_ULONG publicKeyLen = sizeof(publicKey);
     rv = cnk_get_metadata(slotId, pivTag, &algorithmType, publicKey, &publicKeyLen, NULL, NULL);
     if (rv == CKR_OK) {
@@ -1270,7 +1267,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CK_BYTE bAlgorithmType = 0;
   CK_BYTE bPinPolicy = 0;
   CK_BYTE bTouchPolicy = 0;
-  CK_BYTE abPublicKey[MAX_PUBLIC_KEY_SIZE];
+  CK_BYTE abPublicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
 
   switch (objClass) {

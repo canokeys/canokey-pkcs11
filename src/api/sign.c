@@ -388,7 +388,7 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   // Get metadata
   CK_BYTE algorithmType;
   CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objId);
-  CK_BYTE abPublicKey[2048];
+  CK_BYTE abPublicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
 
@@ -815,7 +815,7 @@ CK_RV C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_O
   // Verification is host-side. Read the immutable public key from PIV metadata
   // once and bind that snapshot to this operation.
   CK_BYTE algorithmType;
-  CK_BYTE publicKey[2048];
+  CK_BYTE publicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
   CK_ULONG publicKeyLen = sizeof(publicKey);
   CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivSlot, &algorithmType, publicKey, &publicKeyLen, NULL, NULL));
   if (pMechanism->mechanism == CKM_ML_DSA) {

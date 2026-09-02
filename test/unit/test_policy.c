@@ -161,6 +161,12 @@ static void test_p521_named_curve_parameters(void **state) {
   assert_int_equal(algorithmType, PIV_ALG_ECC_521);
 }
 
+static void test_public_key_metadata_capacity_includes_rsa4096(void **state) {
+  (void)state;
+  // RSA-4096 metadata contains a 512-byte modulus plus the 0x81/0x82 TLVs.
+  assert_true(CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE >= 521);
+}
+
 static void test_25519_named_curve_parameters(void **state) {
   (void)state;
   static const CK_BYTE ed25519[] = {0x06, 0x03, 0x2B, 0x65, 0x70};
@@ -185,6 +191,7 @@ int main(void) {
       cmocka_unit_test(test_key_capabilities_by_algorithm),
       cmocka_unit_test(test_configured_extension_algorithm_ids),
       cmocka_unit_test(test_p521_named_curve_parameters),
+      cmocka_unit_test(test_public_key_metadata_capacity_includes_rsa4096),
       cmocka_unit_test(test_25519_named_curve_parameters),
   };
 
