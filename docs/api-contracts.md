@@ -84,6 +84,30 @@ standard because it also captures this module's internal safety invariants.
    not change allocator/binding ownership until every cleanup stage succeeds.
    Failed cleanup remains retryable with the original callbacks and allocator.
 
+### PC/SC Card Critical Section
+
+Card-backed PIV operations must hold one reader transaction from connection
+through the final dependent APDU. The required sequence is `connect`,
+`SCardBeginTransaction`, `SELECT PIV`, all dependent APDUs, result
+parse/commit, `SCardEndTransaction`, and disconnect. No helper may release the
+card or select another applet between those steps. This rule covers PIN
+verification plus a private operation, management-key authentication plus a
+write, command chaining, and multi-step responses.
+
+PC/SC serializes complete transactions for one physical reader, so different
+sessions can issue different PIV operations without corrupting card APDUs;
+they will queue at the reader. It does not protect token-wide login state,
+cached PINs, management authorization, session operation contexts, or module
+lifecycle. Those remain protected by the locks and reservations in the rows
+below. Although the PIV standard permits a same-AID SELECT to preserve
+security status, current CanoKey firmware resets PIN, PUK, and management
+status in `piv_select()`. Treat every SELECT as an authorization reset and do
+not select or switch applets after VERIFY until the dependent operation ends.
+PKCS#11 session lifetime is a separate host concern: `C_OpenSession`,
+`C_CloseSession`, and host-only operation setup/update calls must not keep a
+reader transaction open. A session may span multiple card transactions, and
+only the call that transmits the dependent PIV APDUs owns this critical section.
+
 ## Profiles
 
 | Profile | Required behavior |

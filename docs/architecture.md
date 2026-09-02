@@ -27,6 +27,46 @@ PIV auth, data, and private-key commands; future splits should preserve managed
 mode, where the minidriver supplies an existing card handle and every operation
 must balance `SCardBeginTransaction` with `cnk_disconnect_card`.
 
+## PC/SC Transaction Boundary
+
+Every actual card-backed PIV operation is one contiguous critical section. This
+is not the lifetime of a PKCS#11 session:
+
+```text
+connect card -> SCardBeginTransaction -> SELECT PIV -> all dependent APDUs
+-> parse/commit the result -> SCardEndTransaction -> disconnect card
+```
+
+The card must not be released between SELECT and the final APDU. This applies
+to command chaining, PIN verification followed by a private operation, key
+generation/import, management-key authentication, and multi-step PIV responses.
+Internal helpers should make the selected-PIV transaction explicit so callers
+cannot accidentally transmit an operation after returning the card to PC/SC.
+
+PC/SC serializes complete physical card transactions in a reader. Two PKCS#11
+sessions may therefore request a PIV signature and a PIV decrypt concurrently;
+their card transactions queue at the reader, while host-only work and their
+independent session contexts can still run concurrently. This physical
+serialization does not replace `token->lock`, session locks, token
+reservations, or lifecycle admission: login/logout, PIN caches, management
+authorization, operation contexts, and finalization remain shared host state.
+
+`C_OpenSession`, `C_CloseSession`, `C_Login`, and operation `Init`/`Update`
+calls may only change host state and do not reserve a card transaction unless
+their implementation actually needs an APDU. A session may outlive many card
+transactions, and a multipart PKCS#11 operation may buffer data in the host
+until its card-facing final step. Holding a PC/SC transaction from
+`C_OpenSession` to `C_CloseSession` would unnecessarily block other sessions
+and would make reader removal and cancellation harder to recover.
+
+The PIV standard permits selecting the same PIV application again without
+changing PIV security status, but the current CanoKey firmware deliberately
+resets `pin.is_validated`, PUK status, and management status in `piv_select()`.
+Therefore this backend must treat every PIV SELECT as an authorization reset:
+SELECT must precede VERIFY, and no SELECT or applet switch may occur after
+VERIFY before the dependent operation completes. This firmware behavior is
+tested as a product invariant even though it is stricter than the standard.
+
 ## State Ownership
 
 Authentication is token-scoped, not session-scoped. One

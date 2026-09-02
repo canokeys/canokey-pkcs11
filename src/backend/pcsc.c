@@ -67,6 +67,12 @@ static void freeScopedBuffer(CK_BYTE **buffer) {
   }
 }
 
+// Verify a PIN after the caller has selected PIV in the same card transaction.
+// CanoKey's PIV SELECT resets PIN/admin status, so this variant must not select
+// the applet again after a preceding SELECT.
+static CK_RV verify_piv_pin_selected(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,
+                                     CK_BYTE_PTR pPinTries);
+
 // Reader indexes can change after PnP refresh. Keep a name-to-slot registry for
 // the initialized lifetime so existing sessions and removal events stay stable.
 static CK_RV getStableReaderSlot(const char *name, CK_SLOT_ID *slotId) {
@@ -155,7 +161,7 @@ static CK_RV connectForPrivateKeyOperation(CK_SLOT_ID slotId, CNK_PKCS11_SESSION
     CNK_ENSURE_OK(cnk_connect_and_select_canokey(slotId, hCard));
     CK_RV rv = cnk_select_piv_application(*hCard);
     if (rv == CKR_OK)
-      rv = cnk_verify_piv_pin(*hCard, (CK_UTF8CHAR_PTR)contextPin, contextPinLen, NULL);
+      rv = verify_piv_pin_selected(*hCard, (CK_UTF8CHAR_PTR)contextPin, contextPinLen, NULL);
     if (rv != CKR_OK) {
       cnk_disconnect_card(*hCard);
       *hCard = 0;
@@ -1094,6 +1100,17 @@ CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPin
   if (rv != CKR_OK) {
     CNK_RETURN(rv, "Failed to select PIV application");
   }
+
+  return verify_piv_pin_selected(hCard, pPin, ulPinLen, pPinTries);
+}
+
+static CK_RV verify_piv_pin_selected(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,
+                                     CK_BYTE_PTR pPinTries) {
+  if (hCard == 0 || pPin == NULL) {
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "Invalid arguments");
+  }
+
+  CNK_ENSURE_OK(validate_piv_pin_len(ulPinLen));
 
   // Prepare the VERIFY command: 00 20 00 80 08 [PIN padded with 0xFF]
   CK_BYTE verify_apdu[5 + PIV_PADDED_PIN_LEN] = {0x00, 0x20, 0x00, CNK_PIV_PIN_TYPE_PIN, PIV_PADDED_PIN_LEN};

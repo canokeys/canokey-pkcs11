@@ -60,6 +60,38 @@ and session-secret commit complete, so logout cannot clear authorization or
 release the card transaction underneath them. Private session secrets are
 hidden unless a USER login is currently cached.
 
+## Card Transaction Validation
+
+Review every actual card-backed path as a single transaction boundary. Do not
+confuse this with a PKCS#11 session boundary:
+
+```text
+connect -> begin transaction -> SELECT PIV -> dependent APDUs -> commit/parse
+-> end transaction -> disconnect
+```
+
+Add a regression test for each multi-APDU path that proves the card is not
+released between SELECT and its final APDU. Include PIN verification followed
+by sign/decrypt/derive, management-key authentication followed by a write, and
+chained GENERAL AUTHENTICATE. A second session may start a different PIV
+operation, but it must wait for the first physical card transaction; the test
+must also verify that host session state remains independent.
+
+`C_OpenSession`/`C_CloseSession` and host-only `Init`/`Update` calls must not
+hold a PC/SC transaction open. A session can span multiple card transactions;
+only the API call that transmits PIV APDUs owns the connect-to-disconnect card
+critical section.
+
+Do not use PC/SC serialization as a substitute for host synchronization. Token
+login/logout, cached credentials, management reservations, session operation
+contexts, and finalization still require their documented locks and admission
+guards. The PIV standard permits a same-AID reselect to preserve security
+status, but current CanoKey firmware resets PIN/PUK/management status in its
+PIV SELECT handler. Treat SELECT as an authorization reset: test that SELECT
+comes before VERIFY and that no later SELECT/app-switch occurs before the
+dependent operation. Keep a separate internal VERIFY-only path for an already
+selected transaction.
+
 ## Failure Injection
 
 Application mutex callbacks must be tested with failure injected at every lock
