@@ -205,7 +205,8 @@ if(BUILD_UNIT_TESTING)
                                                                "MBEDTLS_ALLOW_PRIVATE_ACCESS")
   # Unit tests intentionally call internal symbols from the test-only shared
   # library. Export them on MSVC/ClangCL just as the Unix test link does.
-  set_target_properties(${CNK_PKCS_TARGET}-test PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
+  set_target_properties(${CNK_PKCS_TARGET}-test PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS TRUE
+                                                            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test/unit")
   target_link_libraries(${CNK_PKCS_TARGET}-test PRIVATE ${CNK_PKCS_LIBS})
   add_subdirectory(test/unit)
 endif()
