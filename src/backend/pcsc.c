@@ -77,7 +77,7 @@ static LONG cnk_test_SCardTransmit(SCARDHANDLE card, LPCSCARD_IO_REQUEST sendPci
                                                receiveLength)
              : SCardTransmit(card, sendPci, sendBuffer, sendLength, receivePci, receiveBuffer, receiveLength);
 }
-static LONG cnk_test_SCardGetStatusChange(SCARDCONTEXT context, DWORD timeout, LPSCARD_READERSTATE states,
+static LONG cnk_test_SCardGetStatusChange(SCARDCONTEXT context, DWORD timeout, SCARD_READERSTATE *states,
                                           DWORD count) {
   return g_cnk_test_transport != NULL && g_cnk_test_transport->get_status_change != NULL
              ? g_cnk_test_transport->get_status_change(context, timeout, states, count)

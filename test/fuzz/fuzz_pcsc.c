@@ -111,7 +111,7 @@ static LONG fakeTransmit(SCARDHANDLE card, LPCSCARD_IO_REQUEST sendPci, LPCBYTE 
   return SCARD_S_SUCCESS;
 }
 
-static LONG fakeStatusChange(SCARDCONTEXT context, DWORD timeout, LPSCARD_READERSTATE states, DWORD count) {
+static LONG fakeStatusChange(SCARDCONTEXT context, DWORD timeout, SCARD_READERSTATE *states, DWORD count) {
   (void)context;
   (void)timeout;
   (void)states;
