@@ -64,12 +64,15 @@ static void release_lifecycle_lock(atomic_flag **lock) {
 #endif
 
 CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
-  if (!g_cnk_is_managed_mode)
-    cnk_config_logging_from_env();
-
-  CNK_LOG_FUNC(": pInitArgs: %p", pInitArgs);
   atomic_flag *lifecycleLock CNK_LIFECYCLE_GUARD = &g_lifecycle_lock;
   cnk_lifecycle_lock();
+
+  // Mode selection and logging configuration are one lifecycle decision. Do
+  // not let a concurrent managed acquisition apply standalone environment
+  // logging (including unsafe APDU output) after the mode has changed.
+  if (!g_cnk_is_managed_mode)
+    cnk_config_logging_from_env();
+  CNK_LOG_FUNC(": pInitArgs: %p", pInitArgs);
 
   // A failed callback during rollback can leave the PC/SC/backend objects
   // alive while Cryptoki remains uninitialized. Finish that rollback before
@@ -200,21 +203,32 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   CNK_RET_OK;
 
 initialization_failed:
-  if (!g_cnk_is_managed_mode) {
-    CK_RV pcscRv = cnk_cleanup_pcsc();
-    if (pcscRv != CKR_OK) {
-      g_initialization_cleanup_pending = CK_TRUE;
-      g_backend_cleanup_pending = CK_TRUE;
-      return rv;
-    }
-  }
+  // Attempt every cleanup stage even when an application callback fails. A
+  // later C_Initialize must be able to retry only the specific failed stage,
+  // rather than inheriting a half-torn-down mutex/backend combination.
+  CK_RV pcscRv = g_cnk_is_managed_mode ? CKR_OK : cnk_cleanup_pcsc();
+  CK_RV sessionRv = cnk_session_manager_cleanup();
   CK_RV backendRv = cnk_cleanup_backend();
-  if (backendRv != CKR_OK) {
-    g_backend_cleanup_pending = CK_TRUE;
-    mbedtls_psa_crypto_free();
-    return rv;
-  }
+  g_initialization_cleanup_pending = pcscRv != CKR_OK;
+  g_session_cleanup_pending = sessionRv != CKR_OK;
+  g_backend_cleanup_pending = backendRv != CKR_OK;
   mbedtls_psa_crypto_free();
+  if (pcscRv != CKR_OK || sessionRv != CKR_OK || backendRv != CKR_OK)
+    return rv;
+  // Initialization never published a usable Cryptoki instance. Once every
+  // cleanup stage succeeded, also roll back an uninitialized managed binding;
+  // otherwise the next CardAcquireContext would inherit stale handles and
+  // allocator callbacks even though C_Finalize cannot be called.
+  if (g_cnk_is_managed_mode) {
+    g_cnk_is_managed_mode = CK_FALSE;
+    g_cnk_pcsc_context = 0;
+    g_cnk_scard = 0;
+    g_cnk_malloc_func = malloc;
+    g_cnk_free_func = free;
+    mbedtls_platform_set_calloc_free(calloc, free);
+    nsync_malloc_ptr_ = malloc;
+    nsync_free_ptr_ = free;
+  }
   cnk_reset_logging();
   cnk_mutex_system_cleanup();
   return rv;
@@ -319,6 +333,7 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
 CK_RV C_GetInfo(CK_INFO_PTR pInfo) {
   CNK_LOG_FUNC(": pInfo: %p", pInfo);
 
+  CNK_ENSURE_INITIALIZED();
   CNK_ENSURE_NONNULL(pInfo);
 
   // Fill in the CK_INFO structure

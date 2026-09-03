@@ -145,7 +145,14 @@ CK_RV cnk_mutex_lock_guard(CNK_PKCS11_MUTEX_GUARD *guard) {
 
 void cnk_mutex_unlock_guard(CNK_PKCS11_MUTEX_GUARD *guard) {
   if (guard != NULL && guard->mutex != NULL && guard->acquired) {
-    cnk_mutex_unlock(guard->mutex);
+    CK_RV rv = cnk_mutex_unlock(guard->mutex);
+    if (rv != CKR_OK) {
+      // Cleanup callbacks cannot return an error to the enclosing API. Keep
+      // the guard marked acquired and log the failure so callers do not
+      // silently treat a potentially held application mutex as released.
+      CNK_WARN("Application mutex unlock failed during scoped cleanup: 0x%lx", rv);
+      return;
+    }
     guard->acquired = CK_FALSE;
   }
 }

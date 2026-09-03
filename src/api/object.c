@@ -340,6 +340,27 @@ static CK_RV ensure_session_secret_visible(CNK_PKCS11_SESSION *session, const CN
   return pinCached ? CKR_OK : CKR_OBJECT_HANDLE_INVALID;
 }
 
+static void end_session_secret_reservation(CNK_PKCS11_SESSION **session) {
+  if (session != NULL && *session != NULL)
+    cnk_token_end_management_operation(*session);
+}
+
+#if defined(__clang__) || defined(__GNUC__)
+#define CNK_SECRET_RESERVATION_GUARD __attribute__((cleanup(end_session_secret_reservation)))
+#endif
+
+static CK_RV begin_session_secret_reservation(CNK_PKCS11_SESSION *session, const CNK_PKCS11_SECRET_KEY_OBJECT *secret,
+                                              CNK_PKCS11_SESSION **reservation) {
+  CNK_ENSURE_NONNULL(session, secret, reservation);
+  *reservation = NULL;
+  if (!secret->private)
+    return CKR_OK;
+  CK_RV rv = cnk_token_begin_user_operation(session);
+  if (rv == CKR_OK)
+    *reservation = session;
+  return rv;
+}
+
 CK_RV CNK_GetSessionSecretKey(CNK_PKCS11_SESSION *session, CK_OBJECT_HANDLE object,
                               CNK_PKCS11_SECRET_KEY_OBJECT **secret) {
   CNK_ENSURE_NONNULL(session, secret);
@@ -1094,6 +1115,12 @@ CK_RV C_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTR
     CNK_RETURN(CKR_ACTION_PROHIBITED, "PIV token objects are not copyable");
   }
 
+  CNK_PKCS11_SESSION *secretReservation CNK_SECRET_RESERVATION_GUARD = NULL;
+  if (copy.private) {
+    CNK_ENSURE_OK(cnk_token_begin_user_operation(session));
+    secretReservation = session;
+  }
+
   // The snapshot linearizes the copy before a concurrent destroy. The new
   // object is allocated separately after releasing the non-recursive lock.
   rv = applyMutableSecretAttributes(&copy, pTemplate, ulCount);
@@ -1113,6 +1140,8 @@ CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
   CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
   if (isSessionSecretHandle(session, hObject, &secret)) {
+    CNK_PKCS11_SESSION *secretReservation CNK_SECRET_RESERVATION_GUARD = NULL;
+    CNK_ENSURE_OK(begin_session_secret_reservation(session, secret, &secretReservation));
     CNK_ENSURE_OK(ensure_session_secret_visible(session, secret));
     if (!secret->destroyable)
       CNK_RETURN(CKR_ACTION_PROHIBITED, "Session secret key is not destroyable");
@@ -1255,6 +1284,8 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
     CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
     if (!isSessionSecretHandle(session, hObject, &secret))
       CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid session secret-key handle");
+    CNK_PKCS11_SESSION *secretReservation CNK_SECRET_RESERVATION_GUARD = NULL;
+    CNK_ENSURE_OK(begin_session_secret_reservation(session, secret, &secretReservation));
     CNK_ENSURE_OK(ensure_session_secret_visible(session, secret));
     CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
     CK_RV rvReturn = CKR_OK;

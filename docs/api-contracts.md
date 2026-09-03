@@ -140,7 +140,7 @@ until then callers must not assume multi-card support.
 | --- | --- | --- | --- |
 | `C_Initialize` | `LIFECYCLE` | Borrows init callbacks; a successful first call installs module-owned mutex/backend/session state. Compatible managed reentry increments one reference. | Pending cleanup is retried first with the original binding. Success publishes initialized state last; failure publishes no partially initialized module and remains retryable. |
 | `C_Finalize` | `LIFECYCLE` | Borrows no state from caller. Last reference blocks new admission, drains sessions/PCSC, and destroys ownership in reverse order. | Non-last managed reference only decrements. Last success leaves fully uninitialized/default allocators. Any cleanup error preserves the original binding and a deterministic retry path. |
-| `C_GetInfo` | `STATIC` | Borrows output for the call; reads immutable version/manufacturer data. | Never changes lifecycle state; returns a complete structure or argument error. |
+| `C_GetInfo` | `STATIC` | Borrows output for the call; reads immutable version/manufacturer data. | Requires initialized Cryptoki; never changes lifecycle state and returns a complete structure or argument error. |
 | `C_GetFunctionList` | `STATIC` | Returns a process-lifetime pointer to immutable 2.40 function-list storage. | Does not require initialization and never returns a partial list. |
 | `C_GetInterfaceList` | `STATIC` | Returns/copies immutable 3.2 interface descriptors; caller owns its array. | NULL is size query; too-small reports required count; no module state changes. |
 | `C_GetInterface` | `STATIC` | Returns a process-lifetime pointer to immutable 3.2 interface storage. | Name/version/flags validation is atomic; failure leaves output unpublished. |
@@ -163,7 +163,7 @@ until then callers must not assume multi-card support.
 | `C_InitPIN` | `UNSUPPORTED` | No PIN retention or card mutation. | Returns not implemented; PIN initialization is outside this module's supported PIV flow. |
 | `C_SetPIN` | `TOKEN-AUTH` | Forwards borrowed old/new PINs to the PIN form of `C_CNK_SetPIN`; no PIN pointer survives. | Holds the user-operation reservation through card change and cached-PIN update. Failure does not publish a new local PIN. |
 | `C_SeedRandom` | `SESSION` | Validates session and firmware RNG capability; seed bytes are borrowed and never stored. | Returns `CKR_RANDOM_SEED_NOT_SUPPORTED`; never changes token RNG state. |
-| `C_GenerateRandom` | `SESSION` | Output belongs to caller; card operation is guarded and chunked. | Zero length is a no-op. Failure reports no fabricated bytes or RNG capability change. |
+| `C_GenerateRandom` | `SESSION` | Output belongs to caller; card operation is guarded and chunked. | Validates the session before treating zero length as a no-op. Failure reports no fabricated bytes or RNG capability change. |
 | `C_WaitForSlotEvent` | `EVENT` | Caller owns output slot; queue/baseline persist between calls. | Nonblocking returns one queued event or `CKR_NO_EVENT`; blocking is cancellable by finalization and never loses already queued events. |
 
 ## Session and Authentication APIs
@@ -201,7 +201,7 @@ until then callers must not assume multi-card support.
 | `C_FindObjects` | `OP(FIND)` | Returns handles from session-owned queue while holding `session->lock`; token logout barrier is rechecked before return. | Returns at most requested count and advances position once. Logout invalidates queued private results; failure does not leak a private handle. |
 | `C_FindObjectsFinal` | `OP(FIND)` | Owns no caller data; clears session find state under lock. | Success/terminal failure leaves no active find operation and no queued handles. |
 | `C_CNK_GetPivData` | `SESSION` | Tag/output are borrowed; returned bytes belong to caller. Private reads may use a copied cached PIN for that card transaction only. | NULL output is size query. Logout/pending auth blocks private access; card/parse failure leaves token state unchanged. |
-| `C_CNK_GetPivMetadataDirectory` | `SLOT-READ` | Entries and count are caller-owned; the directory is a call-local snapshot and no card/session pointer is retained. | Uses one version-gated metadata-directory APDU and one PIV transaction. NULL/too-small follow two-stage rules; firmware before 5.7 returns `CKR_FUNCTION_NOT_SUPPORTED`. |
+| `C_CNK_GetPivMetadataDirectory` | `SLOT-READ` | Entries and count are caller-owned; the directory is a call-local snapshot and no card/session pointer is retained. | Uses one version-gated metadata-directory APDU and one PIV transaction. A NULL entries pointer is always a count query; too-small follows two-stage rules; firmware before 5.7 returns `CKR_FUNCTION_NOT_SUPPORTED`. |
 | `C_CNK_ObjIdToPivTag` | `STATIC` | Pure fixed-table mapping; output belongs to caller. | Valid ID writes exactly one tag; invalid ID leaves no module state and returns object-handle error. |
 
 ## Encrypt and Decrypt APIs

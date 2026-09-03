@@ -34,8 +34,10 @@ CK_RV cnk_mlkem768_encapsulate(const CK_BYTE publicKey[CNK_MLKEM768_PUBLIC_KEY_B
                                CK_BYTE sharedSecret[CNK_MLKEM768_SHARED_SECRET_BYTES]) {
   CK_BYTE coins[32];
   psa_status_t status = psa_generate_random(coins, sizeof(coins));
-  if (status != PSA_SUCCESS)
+  if (status != PSA_SUCCESS) {
+    mbedtls_platform_zeroize(coins, sizeof(coins));
     return CKR_RANDOM_NO_RNG;
+  }
 
   int result = cnk_mlkem768_enc_derand(ciphertext, sharedSecret, publicKey, coins);
   mbedtls_platform_zeroize(coins, sizeof(coins));

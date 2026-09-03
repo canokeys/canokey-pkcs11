@@ -138,8 +138,10 @@ CK_RV C_EncapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
   CNK_ENSURE_NONNULL(ciphertextLen, key);
   if (attributeCount > 0)
     CNK_ENSURE_NONNULL(attributes);
-  if (mechanism->mechanism != CKM_ML_KEM || mechanism->pParameter != NULL || mechanism->ulParameterLen != 0)
+  if (mechanism->mechanism != CKM_ML_KEM)
     return CKR_MECHANISM_INVALID;
+  if (mechanism->pParameter != NULL || mechanism->ulParameterLen != 0)
+    return CKR_MECHANISM_PARAM_INVALID;
 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
@@ -209,8 +211,10 @@ CK_RV C_DecapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
   CNK_ENSURE_NONNULL(ciphertext, key);
   if (attributeCount > 0)
     CNK_ENSURE_NONNULL(attributes);
-  if (mechanism->mechanism != CKM_ML_KEM || mechanism->pParameter != NULL || mechanism->ulParameterLen != 0)
+  if (mechanism->mechanism != CKM_ML_KEM)
     return CKR_MECHANISM_INVALID;
+  if (mechanism->pParameter != NULL || mechanism->ulParameterLen != 0)
+    return CKR_MECHANISM_PARAM_INVALID;
   if (ciphertextLen != CNK_MLKEM768_CIPHERTEXT_BYTES)
     return CKR_ENCRYPTED_DATA_LEN_RANGE;
 

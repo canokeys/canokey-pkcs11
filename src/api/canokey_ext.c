@@ -247,9 +247,6 @@ CK_RV C_CNK_GetPivMetadataDirectory(CK_SESSION_HANDLE hSession, CNK_PIV_METADATA
   CNK_LOG_FUNC(": hSession: %lu, entries: %p, entryCount: %p", hSession, entries, entryCount);
   CNK_ENSURE_INITIALIZED();
   CNK_ENSURE_NONNULL(entryCount);
-  if (entries == NULL && *entryCount != 0)
-    return CKR_ARGUMENTS_BAD;
-
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   return cnk_get_piv_metadata_directory(session->slotId, entries, entryCount);

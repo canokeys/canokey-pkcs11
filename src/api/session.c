@@ -21,6 +21,7 @@ static CK_LONG session_table_size = 0;
 static CK_LONG session_count = 0;
 static CK_SESSION_HANDLE next_handle = 1; // Start from 1, 0 is invalid
 static CNK_PKCS11_MUTEX session_mutex;
+static CK_BBOOL session_mutex_initialized = CK_FALSE;
 // Close removes a session only after activeCalls reaches zero, so a concurrent
 // lookup cannot observe freed storage after releasing the table lock.
 static CNK_PKCS11_TOKEN_STATE *token_states = NULL;
@@ -160,6 +161,7 @@ CK_RV cnk_session_manager_init(void) {
 
   // Initialize the session mutex
   CNK_ENSURE_OK(cnk_mutex_create(&session_mutex));
+  session_mutex_initialized = CK_TRUE;
 
   CK_RV rv = cnk_mutex_lock(&session_mutex);
   if (rv != CKR_OK) {
@@ -187,6 +189,8 @@ CK_RV cnk_session_manager_init(void) {
 CK_RV cnk_session_manager_cleanup(void) {
   CNK_LOG_FUNC();
   CNK_DEBUG("session manager cleanup: begin");
+  if (!session_mutex_initialized)
+    return CKR_OK;
 
   // Finalize disables new API entry before calling here. Drain references held
   // by calls that entered before that barrier before destroying session locks.
@@ -269,6 +273,8 @@ unlock_cleanup:
   // Destroy the session manager mutex
   CNK_DEBUG("session manager cleanup: destroying session mutex");
   CK_RV destroyRv = cnk_mutex_destroy(&session_mutex);
+  if (destroyRv == CKR_OK)
+    session_mutex_initialized = CK_FALSE;
   if (destroyRv == CKR_OK)
     memset(&session_mutex, 0, sizeof(session_mutex));
   CNK_DEBUG("session manager cleanup: complete rv=0x%lx", destroyRv);
@@ -368,7 +374,13 @@ CK_RV cnk_token_cache_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pin, CK_U
     return CKR_PIN_LEN_RANGE;
   CK_RV lockRv = cnk_mutex_lock(&session->token->lock);
   if (lockRv != CKR_OK) {
-    clear_token_auth(session->token);
+    // The token mutex did not serialize us, so do not touch plain secret
+    // buffers here. Atomic PUBLIC state is fail-closed and prevents stale
+    // caches from authorizing a later operation; a normal logout/finalize
+    // performs the zeroization once the lock is available.
+    atomic_store(&session->token->loginState, TOKEN_LOGIN_PUBLIC);
+    atomic_store(&session->token->managementLoginPending, CK_FALSE);
+    atomic_store(&session->token->managementOperationPending, CK_FALSE);
     return lockRv;
   }
   if (session->token->logoutPending) {
@@ -465,7 +477,8 @@ CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session,
   CK_RV lockRv = cnk_mutex_lock(&session->token->lock);
   if (lockRv != CKR_OK) {
     atomic_store(&session->token->managementLoginPending, CK_FALSE);
-    clear_token_auth(session->token);
+    atomic_store(&session->token->loginState, TOKEN_LOGIN_PUBLIC);
+    atomic_store(&session->token->managementOperationPending, CK_FALSE);
     return lockRv;
   }
   CK_RV rv = verificationRv;

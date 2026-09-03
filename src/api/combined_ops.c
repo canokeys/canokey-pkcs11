@@ -710,10 +710,9 @@ CK_RV C_GenerateRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pRandomData, CK_U
   CNK_ENSURE_INITIALIZED();
   if (pRandomData == NULL && ulRandomLen > 0)
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pRandomData is NULL but ulRandomLen > 0");
-  if (ulRandomLen == 0)
-    return CKR_OK;
-
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (ulRandomLen == 0)
+    return CKR_OK;
   return cnk_piv_generate_random(session->slotId, pRandomData, ulRandomLen);
 }

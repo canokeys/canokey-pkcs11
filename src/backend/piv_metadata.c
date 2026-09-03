@@ -267,9 +267,6 @@ cleanup:
 CK_RV cnk_get_piv_metadata_directory(CK_SLOT_ID slotID, CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
                                      CK_ULONG_PTR entryCount) {
   CNK_ENSURE_NONNULL(entryCount);
-  if (entries == NULL && *entryCount != 0)
-    return CKR_ARGUMENTS_BAD;
-
   SCARDHANDLE card = 0;
   CK_RV rv = connectPiv(slotID, &card);
   if (rv != CKR_OK)
@@ -305,7 +302,7 @@ CK_RV cnk_get_piv_metadata_directory(CK_SLOT_ID slotID, CNK_PIV_METADATA_DIRECTO
     goto cleanup;
   }
   CK_ULONG required = response[4] / 6;
-  CK_ULONG capacity = *entryCount;
+  CK_ULONG capacity = entries == NULL ? 0 : *entryCount;
   *entryCount = required;
   if (entries == NULL) {
     rv = CKR_OK;
