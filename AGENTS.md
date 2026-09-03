@@ -75,6 +75,10 @@ TF-PSA-Crypto migration.
   resources.
 - Before committing C source or header changes, run `clang-format` on the
   touched `.c` and `.h` files only. Do not run `clang-format` on CMake files.
+- Windows unit-test configuration must use a native CMake CMocka package
+  (vcpkg or an equivalent MSVC/ClangCL build). Do not introduce MinGW/MSYS2
+  CMocka libraries or make `pkg-config` a Windows test prerequisite; Unix
+  builds may continue to use `pkg-config`.
 - Add succinct comments for non-obvious invariants and boundaries: sensitive
   data ownership/zeroization, operation-state lifetime, two-stage output
   retries, wire encodings, endianness, and host-versus-card responsibilities.
