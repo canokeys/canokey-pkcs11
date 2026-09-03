@@ -191,7 +191,7 @@ option(BUILD_UNIT_TESTING "Build unit test programs" ${BUILD_TESTING})
 option(BUILD_REAL_TESTING "Build real hardware test programs" ${BUILD_TESTING})
 option(RUN_REAL_TESTING "Register real hardware tests with CTest" OFF)
 option(BUILD_FUZZING "Build libFuzzer API and parser targets" OFF)
-if(BUILD_UNIT_TESTING OR BUILD_REAL_TESTING)
+if(BUILD_UNIT_TESTING OR BUILD_REAL_TESTING OR BUILD_FUZZING)
   enable_testing()
 endif()
 
