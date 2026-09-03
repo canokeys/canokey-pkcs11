@@ -618,7 +618,7 @@ static void release_pcsc_operation_guard(CK_BBOOL *active) {
     cnk_pcsc_operation_end();
 }
 
-void cnk_cancel_pcsc_operations(void) {
+CNK_TEST_API void cnk_cancel_pcsc_operations(void) {
   if (g_cnk_pcsc_context != 0)
     SCardCancel(g_cnk_pcsc_context);
 }

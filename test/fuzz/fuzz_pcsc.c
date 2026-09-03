@@ -17,6 +17,7 @@ typedef struct {
   _Atomic CK_ULONG activeTransactions;
   _Atomic LONG beginStatus;
   _Atomic LONG transmitStatus;
+  _Atomic CK_BBOOL shortResponse;
 } CNK_FAKE_PCSC_STATE;
 
 static CNK_FAKE_PCSC_STATE fakeState;
@@ -105,6 +106,11 @@ static LONG fakeTransmit(SCARDHANDLE card, LPCSCARD_IO_REQUEST sendPci, LPCBYTE 
     return status;
   if (*receiveLength < 2)
     return SCARD_E_INSUFFICIENT_BUFFER;
+  if (atomic_load(&fakeState.shortResponse)) {
+    receiveBuffer[0] = 0x6A;
+    *receiveLength = 1;
+    return SCARD_S_SUCCESS;
+  }
   receiveBuffer[0] = 0x90;
   receiveBuffer[1] = 0x00;
   *receiveLength = 2;
@@ -138,6 +144,11 @@ static void initializeFakeTransport(void) {
   fakeTransport.cancel = fakeCancel;
   (void)cnk_pcsc_set_test_transport(&fakeTransport);
 
+  // Expected transport failures are part of this fuzz model. Suppress the
+  // library's diagnostic stream so a bounded campaign records failures in
+  // return values and counters instead of flooding CI logs.
+  (void)C_CNK_ConfigLogging(6, NULL, CK_FALSE);
+
   CNK_MANAGED_MODE_INIT_ARGS managed = {.malloc_func = malloc, .free_func = free, .hSCardCtx = 1, .hScard = 2};
   (void)C_CNK_EnableManagedMode(&managed);
   if (C_Initialize(NULL) == CKR_OK)
@@ -158,6 +169,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   LONG transmitStatus = size > 1 && (data[1] & 1) ? SCARD_E_NOT_TRANSACTED : SCARD_S_SUCCESS;
   atomic_store(&fakeState.beginStatus, beginStatus);
   atomic_store(&fakeState.transmitStatus, transmitStatus);
+  atomic_store(&fakeState.shortResponse, size > 2 && (data[2] & 1));
 
   CK_ULONG count = 0;
   (void)C_GetSlotList(CK_TRUE, NULL, &count);
@@ -168,9 +180,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     CK_BYTE command[] = {0x00, 0xA4, 0x04, 0x00};
     CK_BYTE response[8] = {0};
     DWORD responseLen = sizeof(response);
-    (void)cnk_transceive_apdu(card, command, sizeof(command), response, &responseLen, CK_FALSE);
+    (void)cnk_transceive_apdu(card, command, sizeof(command), response, &responseLen, CK_TRUE);
     cnk_disconnect_card(card);
   }
+
+  // Exercise the cancellation hook even when no transaction is active; the
+  // fake callback is idempotent, matching SCardCancel's expected semantics.
+  cnk_cancel_pcsc_operations();
 
   if (atomic_load(&fakeState.activeTransactions) != 0 || atomic_load(&g_cnk_pcsc_operations) != 0)
     abort();
