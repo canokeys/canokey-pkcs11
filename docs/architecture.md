@@ -22,10 +22,14 @@ template decoding is isolated in `internal/template.c`.
 
 `backend/piv_metadata.c` owns PIV version gates, metadata discovery, algorithm
 extensions, PIN/PUK retry metadata, permanent PUK blocking, and token
-randomness. `backend/pcsc.c` still combines reader/transaction transport with
-PIV auth, data, and private-key commands; future splits should preserve managed
-mode, where the minidriver supplies an existing card handle and every operation
-must balance `SCardBeginTransaction` with `cnk_disconnect_card`.
+randomness. `backend/piv_crypto.c` owns card-backed private-key operations and
+key generation/import. `backend/piv_auth.c` owns PIN, PUK, and management-key
+authentication. `backend/piv_data.c` owns PIV data objects and legacy
+version/serial commands. `backend/pcsc.c` is limited to reader discovery, slot
+events, transaction ownership, and APDU transport. These focused modules share
+transaction helpers so managed mode continues to use the minidriver's card
+handle and every operation balances `SCardBeginTransaction` with
+`cnk_disconnect_card`.
 
 ## PC/SC Transaction Boundary
 
@@ -172,8 +176,6 @@ explicit slot ID and serial; destructive key writes additionally require
 
 The current large files still have identifiable future boundaries:
 
-- `backend/pcsc.c`: separate reader/transaction transport, PIV authentication,
-  PIV data objects, and private-key commands.
 - `api/object.c`: separate enumeration/handle validation from class-specific
   attribute readers. Wire encoding has already moved out.
 - `api/sign.c`: separate Verify after extracting one shared signature-mechanism

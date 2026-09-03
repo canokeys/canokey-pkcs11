@@ -195,6 +195,15 @@ CNK_TEST_API void cnk_disconnect_card(SCARDHANDLE hCard);
 CNK_TEST_API LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, CK_ULONG commandLen, CK_BYTE *response,
                                       DWORD *responseLen, CK_BBOOL autoGetResponse);
 
+// Internal transaction helpers shared by PIV data and private-key modules.
+// The caller owns the returned transaction and must call cnk_disconnect_card.
+CK_RV cnk_connect_for_private_key_operation(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *session, CK_BYTE pinPolicy,
+                                            const CK_BYTE *contextPin, CK_ULONG contextPinLen, SCARDHANDLE *card,
+                                            const char *operationName);
+CK_RV cnk_authenticate_admin_for_write(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, SCARDHANDLE *card);
+CK_RV cnk_transmit_chained_apdu(SCARDHANDLE card, CK_BYTE ins, CK_BYTE p1, CK_BYTE p2, const CK_BYTE *data,
+                                CK_ULONG dataLen, CK_BYTE *response, CK_ULONG_PTR responseLen, CK_BBOOL requestLe);
+
 // Get firmware version and hardware name
 CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, char *hw_name, size_t hw_name_len);
 
