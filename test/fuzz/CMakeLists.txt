@@ -38,18 +38,15 @@ target_compile_options(cnk_fuzz_pcsc PRIVATE ${CNK_FUZZ_FLAGS})
 target_link_options(cnk_fuzz_pcsc PRIVATE ${CNK_FUZZ_FLAGS})
 set_target_properties(cnk_fuzz_pcsc PROPERTIES BUILD_RPATH "$ORIGIN/../..")
 if (WIN32)
+  # All three PKCS#11 fuzzers share one output directory and runtime DLL.
+  # Copy it once, then order the other links after that copy so parallel Ninja
+  # builds cannot race while replacing the same destination file.
   add_custom_command(TARGET cnk_fuzz_api POST_BUILD
                      COMMAND ${CMAKE_COMMAND} -E copy_if_different
                              "$<TARGET_FILE:${CNK_PKCS_TARGET}>"
                              "$<TARGET_FILE_DIR:cnk_fuzz_api>")
-  add_custom_command(TARGET cnk_fuzz_concurrency POST_BUILD
-                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                             "$<TARGET_FILE:${CNK_PKCS_TARGET}>"
-                             "$<TARGET_FILE_DIR:cnk_fuzz_concurrency>")
-  add_custom_command(TARGET cnk_fuzz_pcsc POST_BUILD
-                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                             "$<TARGET_FILE:${CNK_PKCS_TARGET}>"
-                             "$<TARGET_FILE_DIR:cnk_fuzz_pcsc>")
+  add_dependencies(cnk_fuzz_concurrency cnk_fuzz_api)
+  add_dependencies(cnk_fuzz_pcsc cnk_fuzz_api)
 endif()
 
 add_test(NAME fuzz_tlv_smoke COMMAND cnk_fuzz_tlv -runs=100)
