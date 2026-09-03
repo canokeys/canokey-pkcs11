@@ -108,10 +108,15 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1
       - name: Run bounded fuzzers
-        if: runner.os != 'Windows'
+        if: runner.os == 'Linux'
         run: |
           ./build/test/fuzz/cnk_fuzz_tlv -max_total_time=10 -print_final_stats=1
           ./build/test/fuzz/cnk_fuzz_api -max_total_time=10 -print_final_stats=1
+      - name: Run bounded replay fuzzers on macOS
+        if: runner.os == 'macOS'
+        run: |
+          ./build/test/fuzz/cnk_fuzz_tlv -max_total_time=10
+          ./build/test/fuzz/cnk_fuzz_api -max_total_time=10
       - name: Run bounded fuzzers on Windows
         if: runner.os == 'Windows'
         shell: pwsh
