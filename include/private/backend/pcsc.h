@@ -34,16 +34,47 @@ extern CK_LONG g_cnk_num_readers;
 #define CNK_DATA_SPEC
 #endif
 
+#if defined(CNK_TEST_TRANSPORT)
+#if defined(_WIN32)
+#if defined(CRYPTOKI_EXPORTS)
+#define CNK_TEST_API __declspec(dllexport)
+#else
+#define CNK_TEST_API __declspec(dllimport)
+#endif
+#else
+#define CNK_TEST_API __attribute__((visibility("default")))
+#endif
+#else
+#define CNK_TEST_API
+#endif
+
 extern CNK_DATA_SPEC _Atomic CK_BBOOL g_cnk_is_initialized;
 extern CNK_DATA_SPEC _Atomic CK_BBOOL g_cnk_is_managed_mode; // true for managed mode, false for standalone mode
 extern CNK_DATA_SPEC SCARDCONTEXT g_cnk_pcsc_context;
 extern CNK_DATA_SPEC SCARDHANDLE g_cnk_scard;
-extern _Atomic CK_ULONG g_cnk_pcsc_operations;
+extern CNK_TEST_API _Atomic CK_ULONG g_cnk_pcsc_operations;
 extern CNK_PKCS11_MUTEX g_cnk_readers_mutex;
 
 // Memory management functions
 extern CNK_DATA_SPEC CNK_MALLOC_FUNC g_cnk_malloc_func;
 extern CNK_DATA_SPEC CNK_FREE_FUNC g_cnk_free_func;
+
+#if defined(CNK_TEST_TRANSPORT)
+typedef struct {
+  LONG (*establish_context)(DWORD, LPCVOID, LPCVOID, LPSCARDCONTEXT);
+  LONG (*release_context)(SCARDCONTEXT);
+  LONG (*list_readers)(SCARDCONTEXT, LPCSTR, LPSTR, LPDWORD);
+  LONG (*connect)(SCARDCONTEXT, LPCSTR, DWORD, DWORD, LPSCARDHANDLE, LPDWORD);
+  LONG (*disconnect)(SCARDHANDLE, DWORD);
+  LONG (*begin_transaction)(SCARDHANDLE);
+  LONG (*end_transaction)(SCARDHANDLE, DWORD);
+  LONG (*transmit)(SCARDHANDLE, LPCSCARD_IO_REQUEST, LPCBYTE, DWORD, LPSCARD_IO_REQUEST, LPBYTE, LPDWORD);
+  LONG (*get_status_change)(SCARDCONTEXT, DWORD, LPSCARD_READERSTATE, DWORD);
+  LONG (*cancel)(SCARDCONTEXT);
+} CNK_PCSC_TEST_TRANSPORT;
+
+CK_DEFINE_FUNCTION(CK_RV, cnk_pcsc_set_test_transport)(const CNK_PCSC_TEST_TRANSPORT *transport);
+#endif
 
 // PIV slots mapping to CKA_ID values
 #define PIV_SLOT_9A 1
@@ -155,14 +186,14 @@ CK_RV cnk_logout_piv_pin_with_session(CK_SLOT_ID slotID);
 CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot);
 
 // Connect to a card and begin a transaction without selecting an applet.
-CK_RV cnk_begin_card_transaction(CK_SLOT_ID slotID, SCARDHANDLE *phCard);
+CNK_TEST_API CK_RV cnk_begin_card_transaction(CK_SLOT_ID slotID, SCARDHANDLE *phCard);
 
 // Disconnect from a card and end any active transaction
-void cnk_disconnect_card(SCARDHANDLE hCard);
+CNK_TEST_API void cnk_disconnect_card(SCARDHANDLE hCard);
 
 // Internal APDU transport shared by focused PIV backend modules.
-LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, CK_ULONG commandLen, CK_BYTE *response,
-                         DWORD *responseLen, CK_BBOOL autoGetResponse);
+CNK_TEST_API LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, CK_ULONG commandLen, CK_BYTE *response,
+                                      DWORD *responseLen, CK_BBOOL autoGetResponse);
 
 // Get firmware version and hardware name
 CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, char *hw_name, size_t hw_name_len);

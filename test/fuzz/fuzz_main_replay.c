@@ -5,6 +5,9 @@
 #include <time.h>
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+#if defined(CNK_REPLAY_HAS_INITIALIZER)
+int LLVMFuzzerInitialize(int *argc, char ***argv);
+#endif
 
 static uint32_t next_random(uint32_t *state) {
   *state = *state * 1664525u + 1013904223u;
@@ -12,6 +15,9 @@ static uint32_t next_random(uint32_t *state) {
 }
 
 int main(int argc, char **argv) {
+#if defined(CNK_REPLAY_HAS_INITIALIZER)
+  LLVMFuzzerInitialize(&argc, &argv);
+#endif
   unsigned long seconds = 1;
   const char *corpusFile = NULL;
   for (int i = 1; i < argc; i++) {

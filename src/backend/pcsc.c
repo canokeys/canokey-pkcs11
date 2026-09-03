@@ -30,6 +30,92 @@
 #define PIV_MANAGEMENT_KEY_LEN 24
 #define PIV_MAX_MANAGEMENT_CHALLENGE_LEN 16
 
+#if defined(CNK_TEST_TRANSPORT)
+static const CNK_PCSC_TEST_TRANSPORT *g_cnk_test_transport = NULL;
+
+static LONG cnk_test_SCardEstablishContext(DWORD scope, LPCVOID reserved1, LPCVOID reserved2,
+                                           LPSCARDCONTEXT context) {
+  return g_cnk_test_transport != NULL && g_cnk_test_transport->establish_context != NULL
+             ? g_cnk_test_transport->establish_context(scope, reserved1, reserved2, context)
+             : SCardEstablishContext(scope, reserved1, reserved2, context);
+}
+static LONG cnk_test_SCardReleaseContext(SCARDCONTEXT context) {
+  return g_cnk_test_transport != NULL && g_cnk_test_transport->release_context != NULL
+             ? g_cnk_test_transport->release_context(context)
+             : SCardReleaseContext(context);
+}
+static LONG cnk_test_SCardListReaders(SCARDCONTEXT context, LPCSTR groups, LPSTR readers, LPDWORD length) {
+  return g_cnk_test_transport != NULL && g_cnk_test_transport->list_readers != NULL
+             ? g_cnk_test_transport->list_readers(context, groups, readers, length)
+             : SCardListReaders(context, groups, readers, length);
+}
+static LONG cnk_test_SCardConnect(SCARDCONTEXT context, LPCSTR reader, DWORD share, DWORD protocols,
+                                  LPSCARDHANDLE card, LPDWORD activeProtocol) {
+  return g_cnk_test_transport != NULL && g_cnk_test_transport->connect != NULL
+             ? g_cnk_test_transport->connect(context, reader, share, protocols, card, activeProtocol)
+             : SCardConnect(context, reader, share, protocols, card, activeProtocol);
+}
+static LONG cnk_test_SCardDisconnect(SCARDHANDLE card, DWORD disposition) {
+  return g_cnk_test_transport != NULL && g_cnk_test_transport->disconnect != NULL
+             ? g_cnk_test_transport->disconnect(card, disposition)
+             : SCardDisconnect(card, disposition);
+}
+static LONG cnk_test_SCardBeginTransaction(SCARDHANDLE card) {
+  return g_cnk_test_transport != NULL && g_cnk_test_transport->begin_transaction != NULL
+             ? g_cnk_test_transport->begin_transaction(card)
+             : SCardBeginTransaction(card);
+}
+static LONG cnk_test_SCardEndTransaction(SCARDHANDLE card, DWORD disposition) {
+  return g_cnk_test_transport != NULL && g_cnk_test_transport->end_transaction != NULL
+             ? g_cnk_test_transport->end_transaction(card, disposition)
+             : SCardEndTransaction(card, disposition);
+}
+static LONG cnk_test_SCardTransmit(SCARDHANDLE card, LPCSCARD_IO_REQUEST sendPci, LPCBYTE sendBuffer, DWORD sendLength,
+                                   LPSCARD_IO_REQUEST receivePci, LPBYTE receiveBuffer, LPDWORD receiveLength) {
+  return g_cnk_test_transport != NULL && g_cnk_test_transport->transmit != NULL
+             ? g_cnk_test_transport->transmit(card, sendPci, sendBuffer, sendLength, receivePci, receiveBuffer,
+                                               receiveLength)
+             : SCardTransmit(card, sendPci, sendBuffer, sendLength, receivePci, receiveBuffer, receiveLength);
+}
+static LONG cnk_test_SCardGetStatusChange(SCARDCONTEXT context, DWORD timeout, LPSCARD_READERSTATE states,
+                                          DWORD count) {
+  return g_cnk_test_transport != NULL && g_cnk_test_transport->get_status_change != NULL
+             ? g_cnk_test_transport->get_status_change(context, timeout, states, count)
+             : SCardGetStatusChange(context, timeout, states, count);
+}
+static LONG cnk_test_SCardCancel(SCARDCONTEXT context) {
+  return g_cnk_test_transport != NULL && g_cnk_test_transport->cancel != NULL
+             ? g_cnk_test_transport->cancel(context)
+             : SCardCancel(context);
+}
+
+#undef SCardEstablishContext
+#undef SCardReleaseContext
+#undef SCardListReaders
+#undef SCardConnect
+#undef SCardDisconnect
+#undef SCardBeginTransaction
+#undef SCardEndTransaction
+#undef SCardTransmit
+#undef SCardGetStatusChange
+#undef SCardCancel
+#define SCardEstablishContext cnk_test_SCardEstablishContext
+#define SCardReleaseContext cnk_test_SCardReleaseContext
+#define SCardListReaders cnk_test_SCardListReaders
+#define SCardConnect cnk_test_SCardConnect
+#define SCardDisconnect cnk_test_SCardDisconnect
+#define SCardBeginTransaction cnk_test_SCardBeginTransaction
+#define SCardEndTransaction cnk_test_SCardEndTransaction
+#define SCardTransmit cnk_test_SCardTransmit
+#define SCardGetStatusChange cnk_test_SCardGetStatusChange
+#define SCardCancel cnk_test_SCardCancel
+
+CK_RV cnk_pcsc_set_test_transport(const CNK_PCSC_TEST_TRANSPORT *transport) {
+  g_cnk_test_transport = transport;
+  return CKR_OK;
+}
+#endif
+
 // Global variables for reader management
 ReaderInfo *g_cnk_readers = NULL; // Array of reader info structs
 CK_LONG g_cnk_num_readers = 0;
@@ -39,7 +125,7 @@ CK_LONG g_cnk_num_readers = 0;
 #define CNK_TEST_DATA_EXPORT
 #endif
 CNK_TEST_DATA_EXPORT _Atomic CK_BBOOL g_cnk_is_initialized = CK_FALSE;
-_Atomic CK_ULONG g_cnk_pcsc_operations = 0;
+CNK_TEST_API _Atomic CK_ULONG g_cnk_pcsc_operations = 0;
 CNK_PKCS11_MUTEX g_cnk_readers_mutex;
 static ReaderInfo *known_readers = NULL;
 static CK_LONG known_reader_count = 0;
@@ -799,7 +885,7 @@ CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
 
 // Begin a PC/SC transaction. This helper deliberately does not SELECT an
 // applet; callers performing PIV work should use cnk_begin_piv_transaction.
-CK_RV cnk_begin_card_transaction(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
+CNK_TEST_API CK_RV cnk_begin_card_transaction(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
   CNK_ENSURE_NONNULL(phCard);
   CK_RV operationRv = cnk_pcsc_operation_begin();
   if (operationRv != CKR_OK)
@@ -916,7 +1002,7 @@ CK_RV cnk_begin_piv_transaction(CK_SLOT_ID slotID, SCARDHANDLE *phCard) {
 
 // Disconnect from a card and end any active transaction.
 // In managed mode the caller-owned card handle remains connected.
-void cnk_disconnect_card(SCARDHANDLE hCard) {
+CNK_TEST_API void cnk_disconnect_card(SCARDHANDLE hCard) {
   if (hCard == 0) {
     return;
   }
@@ -936,8 +1022,8 @@ void cnk_disconnect_card(SCARDHANDLE hCard) {
 }
 
 // Helper function to transmit APDU commands and log both command and response
-LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *pCommand, CK_ULONG cbCommand, CK_BYTE *pResponse,
-                         DWORD *pcbResponse, CK_BBOOL auto_get_response) {
+CNK_TEST_API LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *pCommand, CK_ULONG cbCommand, CK_BYTE *pResponse,
+                                      DWORD *pcbResponse, CK_BBOOL auto_get_response) {
   DWORD available = *pcbResponse;
   CNK_LOG_FUNC(": hCard = %p, pCommand = %p, cbCommand = %lu, pResponse = %p, available = %lu, auto_get_response = %d",
                hCard, pCommand, cbCommand, pResponse, available, auto_get_response);
