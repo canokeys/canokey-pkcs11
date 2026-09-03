@@ -23,14 +23,14 @@ jobs:
             pre-build-script: |
               sudo apt-get update -y
               sudo apt-get install -y libpcsclite-dev libcmocka-dev
-            cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=clang'
+            cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DBUILD_FUZZING=ON -DCMAKE_C_COMPILER=clang'
           - name: Ubuntu latest / ASan UBSan
             os: ubuntu-latest
             artifact-suffix: ubuntu-sanitized
             pre-build-script: |
               sudo apt-get update -y
               sudo apt-get install -y libpcsclite-dev libcmocka-dev
-            cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=clang -DCMAKE_C_FLAGS=-fsanitize=address,undefined\ -fno-omit-frame-pointer -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined'
+            cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DBUILD_FUZZING=ON -DCMAKE_C_COMPILER=clang -DCMAKE_C_FLAGS=-fsanitize=address,undefined\ -fno-omit-frame-pointer -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined'
           - name: Windows Server 2022 / Visual Studio 2022
             os: windows-2022
             artifact-suffix: windows-2022
@@ -47,7 +47,7 @@ jobs:
             pre-build-script: |
               brew update
               brew install cmocka
-            cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=clang'
+            cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DBUILD_FUZZING=ON -DCMAKE_C_COMPILER=clang'
 
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -100,13 +100,26 @@ jobs:
           if not defined VSINSTALL exit /b 1
           call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
           for /f "delims=" %%i in ('python -c "import sys; print(sys.executable)"') do set "PYTHON=%%i"
-          cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DBUILD_REAL_TESTING=ON -DCMAKE_TOOLCHAIN_FILE="%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake" -DPython3_EXECUTABLE="%PYTHON%"
+          cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DBUILD_FUZZING=ON -DBUILD_REAL_TESTING=ON -DCMAKE_TOOLCHAIN_FILE="%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake" -DPython3_EXECUTABLE="%PYTHON%"
           cmake --build build -v
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1
+      - name: Run bounded fuzzers
+        if: runner.os != 'Windows'
+        run: |
+          ./build/test/fuzz/cnk_fuzz_tlv -max_total_time=10 -print_final_stats=1
+          ./build/test/fuzz/cnk_fuzz_api -max_total_time=10 -print_final_stats=1
+      - name: Run bounded fuzzers on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & .\build\test\fuzz\cnk_fuzz_tlv.exe -max_total_time=10 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\build\test\fuzz\cnk_fuzz_api.exe -max_total_time=10 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
