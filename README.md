@@ -198,6 +198,10 @@ all 24 PIV key slots (`9A`, `9C`, `9D`, `9E`, and `82` through `95`) without
 probing every slot individually. Older firmware falls back to the per-slot
 metadata path and does not advertise post-quantum mechanisms.
 
+Managed callers that need a coherent read-only inventory can use
+`C_CNK_GetPivMetadataDirectory()`. It returns the same directory in one
+version-gated PIV transaction and does not retain a cache or card handle.
+
 The PKCS#11 3.2 interface currently supports:
 
 - ML-DSA-65 key generation, signing, and host-side verification with

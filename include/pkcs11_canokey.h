@@ -41,6 +41,22 @@ typedef CNK_MANAGED_MODE_INIT_ARGS *CNK_MANAGED_MODE_INIT_ARGS_PTR;
 #define CNK_PIV_TOUCH_POLICY_ALWAYS 0x02
 #define CNK_PIV_TOUCH_POLICY_CACHED 0x03
 
+// PIV metadata-directory entries returned by the read-only extension below.
+// The directory is a card snapshot; callers own the output array and the
+// module retains no pointer after the call returns.
+#define CNK_PIV_METADATA_DIRECTORY_FLAG_KEY 0x01
+#define CNK_PIV_METADATA_DIRECTORY_FLAG_CERT 0x02
+#define CNK_PIV_METADATA_DIRECTORY_MAX_ENTRIES 24
+
+typedef struct {
+  CK_BYTE pivSlot;
+  CK_BYTE flags;
+  CK_BYTE algorithmType;
+  CK_BYTE origin;
+  CK_BYTE pinPolicy;
+  CK_BYTE touchPolicy;
+} CNK_PIV_METADATA_DIRECTORY_ENTRY;
+
 // PIV secret reference values for C_CNK_SetPIN().
 #define CNK_PIV_PIN_TYPE_PIN 0x80
 #define CNK_PIV_PIN_TYPE_PUK 0x81
@@ -88,6 +104,14 @@ CK_DEFINE_FUNCTION(CK_RV, C_CNK_FinalizePinManaged)(CK_SESSION_HANDLE hSession, 
 // login and are read through that session.
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_GetPivData)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pTag, CK_ULONG ulTagLen,
                                             CK_BYTE_PTR pValue, CK_ULONG_PTR pulValueLen);
+
+// Read the firmware metadata directory in one card transaction. Firmware
+// versions before 5.7 return CKR_FUNCTION_NOT_SUPPORTED. A NULL entries
+// pointer performs a count query; entryCount is updated before any buffer
+// error, following PKCS#11 two-stage output semantics.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_GetPivMetadataDirectory)(CK_SESSION_HANDLE hSession,
+                                                         CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
+                                                         CK_ULONG_PTR entryCount);
 
 // Extension API to change the PIV PIN or PUK and get remaining tries.
 // pinType: CNK_PIV_PIN_TYPE_PIN or CNK_PIV_PIN_TYPE_PUK

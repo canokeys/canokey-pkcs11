@@ -66,19 +66,6 @@ extern CNK_FREE_FUNC g_cnk_free_func;
 // algorithm, including ML-DSA-65 and RSA-4096 modulus/exponent TLVs.
 #define CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE 2048
 
-#define CNK_PIV_METADATA_DIRECTORY_FLAG_KEY 0x01
-#define CNK_PIV_METADATA_DIRECTORY_FLAG_CERT 0x02
-#define CNK_PIV_METADATA_DIRECTORY_MAX_ENTRIES 24
-
-typedef struct {
-  CK_BYTE pivSlot;
-  CK_BYTE flags;
-  CK_BYTE algorithmType;
-  CK_BYTE origin;
-  CK_BYTE pinPolicy;
-  CK_BYTE touchPolicy;
-} CNK_PIV_METADATA_DIRECTORY_ENTRY;
-
 typedef struct {
   CK_BYTE enabled;
   CK_BYTE ed25519;

@@ -201,6 +201,7 @@ until then callers must not assume multi-card support.
 | `C_FindObjects` | `OP(FIND)` | Returns handles from session-owned queue while holding `session->lock`; token logout barrier is rechecked before return. | Returns at most requested count and advances position once. Logout invalidates queued private results; failure does not leak a private handle. |
 | `C_FindObjectsFinal` | `OP(FIND)` | Owns no caller data; clears session find state under lock. | Success/terminal failure leaves no active find operation and no queued handles. |
 | `C_CNK_GetPivData` | `SESSION` | Tag/output are borrowed; returned bytes belong to caller. Private reads may use a copied cached PIN for that card transaction only. | NULL output is size query. Logout/pending auth blocks private access; card/parse failure leaves token state unchanged. |
+| `C_CNK_GetPivMetadataDirectory` | `SLOT-READ` | Entries and count are caller-owned; the directory is a call-local snapshot and no card/session pointer is retained. | Uses one version-gated metadata-directory APDU and one PIV transaction. NULL/too-small follow two-stage rules; firmware before 5.7 returns `CKR_FUNCTION_NOT_SUPPORTED`. |
 | `C_CNK_ObjIdToPivTag` | `STATIC` | Pure fixed-table mapping; output belongs to caller. | Valid ID writes exactly one tag; invalid ID leaves no module state and returns object-handle error. |
 
 ## Encrypt and Decrypt APIs
