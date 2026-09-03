@@ -113,12 +113,14 @@ jobs:
           ./build/test/fuzz/cnk_fuzz_tlv -max_total_time=10 -print_final_stats=1
           ./build/test/fuzz/cnk_fuzz_api -max_total_time=10 -print_final_stats=1
           ./build/test/fuzz/cnk_fuzz_concurrency -max_total_time=10 -print_final_stats=1
+          ./build/test/fuzz/cnk_fuzz_pcsc -max_total_time=10 -print_final_stats=1
       - name: Run bounded replay fuzzers on macOS
         if: runner.os == 'macOS'
         run: |
           ./build/test/fuzz/cnk_fuzz_tlv -max_total_time=10
           ./build/test/fuzz/cnk_fuzz_api -max_total_time=10
           ./build/test/fuzz/cnk_fuzz_concurrency -max_total_time=10
+          ./build/test/fuzz/cnk_fuzz_pcsc -max_total_time=10
       - name: Run bounded fuzzers on Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -128,6 +130,8 @@ jobs:
           & .\build\test\fuzz\cnk_fuzz_api.exe -max_total_time=10 -print_final_stats=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\build\test\fuzz\cnk_fuzz_concurrency.exe -max_total_time=10 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\build\test\fuzz\cnk_fuzz_pcsc.exe -max_total_time=10 -print_final_stats=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
