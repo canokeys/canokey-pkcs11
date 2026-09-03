@@ -33,7 +33,12 @@
 // Global variables for reader management
 ReaderInfo *g_cnk_readers = NULL; // Array of reader info structs
 CK_LONG g_cnk_num_readers = 0;
-_Atomic CK_BBOOL g_cnk_is_initialized = CK_FALSE;
+#if defined(CNK_TEST_EXPORT) && defined(_WIN32)
+#define CNK_TEST_DATA_EXPORT __declspec(dllexport)
+#else
+#define CNK_TEST_DATA_EXPORT
+#endif
+CNK_TEST_DATA_EXPORT _Atomic CK_BBOOL g_cnk_is_initialized = CK_FALSE;
 _Atomic CK_ULONG g_cnk_pcsc_operations = 0;
 CNK_PKCS11_MUTEX g_cnk_readers_mutex;
 static ReaderInfo *known_readers = NULL;

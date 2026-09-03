@@ -356,6 +356,8 @@ static CK_RV begin_session_secret_reservation(CNK_PKCS11_SESSION *session, const
   if (!secret->private)
     return CKR_OK;
   CK_RV rv = cnk_token_begin_user_operation(session);
+  if (rv == CKR_USER_NOT_LOGGED_IN)
+    return CKR_OK;
   if (rv == CKR_OK)
     *reservation = session;
   return rv;

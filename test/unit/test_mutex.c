@@ -55,7 +55,7 @@ static CK_RV countUnlock(void *mutex) {
 static void test_failed_application_lock_does_not_unlock(void **state) {
   (void)state;
   CK_INFO info;
-  assert_int_equal(C_GetInfo(&info), CKR_OK);
+  assert_int_equal(C_GetInfo(&info), CKR_CRYPTOKI_NOT_INITIALIZED);
   assert_int_equal(C_GetOperationState(CK_INVALID_HANDLE, NULL, NULL), CKR_FUNCTION_NOT_SUPPORTED);
   unlockCalls = 0;
   CK_C_INITIALIZE_ARGS args = {

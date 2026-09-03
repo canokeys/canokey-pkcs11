@@ -131,12 +131,17 @@ static CK_RV parsePinProtectedManagementKey(const CK_BYTE *data, CK_ULONG dataLe
 }
 
 // Function pointers for memory allocation (global)
-CNK_MALLOC_FUNC g_cnk_malloc_func = malloc;
-CNK_FREE_FUNC g_cnk_free_func = free;
+#if defined(CNK_TEST_EXPORT) && defined(_WIN32)
+#define CNK_TEST_DATA_EXPORT __declspec(dllexport)
+#else
+#define CNK_TEST_DATA_EXPORT
+#endif
+CNK_TEST_DATA_EXPORT CNK_MALLOC_FUNC g_cnk_malloc_func = malloc;
+CNK_TEST_DATA_EXPORT CNK_FREE_FUNC g_cnk_free_func = free;
 
-_Atomic CK_BBOOL g_cnk_is_managed_mode = CK_FALSE; // False for standalone mode, True for managed mode
-SCARDCONTEXT g_cnk_pcsc_context = 0L;
-SCARDHANDLE g_cnk_scard = 0L;
+CNK_TEST_DATA_EXPORT _Atomic CK_BBOOL g_cnk_is_managed_mode = CK_FALSE; // False for standalone mode, True for managed mode
+CNK_TEST_DATA_EXPORT SCARDCONTEXT g_cnk_pcsc_context = 0L;
+CNK_TEST_DATA_EXPORT SCARDHANDLE g_cnk_scard = 0L;
 
 CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
   CNK_LOG_FUNC(": pInitArgs: %p", pInitArgs);

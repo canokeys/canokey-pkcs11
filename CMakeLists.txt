@@ -201,7 +201,11 @@ if(BUILD_UNIT_TESTING)
     PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/external/tf-psa-crypto/drivers/pqcp/mldsa-native/mldsa
       ${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/mlkem)
-  target_compile_definitions(${CNK_PKCS_TARGET}-test PRIVATE "CNK_LIB_STATIC" "CNK_VERBOSE" "MBEDTLS_ALLOW_PRIVATE_ACCESS")
+  target_compile_definitions(${CNK_PKCS_TARGET}-test PRIVATE "CNK_LIB_SHARED" "CRYPTOKI_EXPORTS" "CNK_VERBOSE"
+                                                               "MBEDTLS_ALLOW_PRIVATE_ACCESS")
+  # Unit tests intentionally call internal symbols from the test-only shared
+  # library. Export them on MSVC/ClangCL just as the Unix test link does.
+  set_target_properties(${CNK_PKCS_TARGET}-test PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
   target_link_libraries(${CNK_PKCS_TARGET}-test PRIVATE ${CNK_PKCS_LIBS})
   add_subdirectory(test/unit)
 endif()

@@ -28,16 +28,22 @@ typedef struct {
 // Global variables for reader management (declared as extern)
 extern ReaderInfo *g_cnk_readers;
 extern CK_LONG g_cnk_num_readers;
-extern _Atomic CK_BBOOL g_cnk_is_initialized;
-extern _Atomic CK_BBOOL g_cnk_is_managed_mode; // true for managed mode, false for standalone mode
-extern SCARDCONTEXT g_cnk_pcsc_context;
-extern SCARDHANDLE g_cnk_scard;
+#if defined(_WIN32) && defined(CNK_LIB_SHARED) && !defined(CRYPTOKI_EXPORTS)
+#define CNK_DATA_SPEC __declspec(dllimport)
+#else
+#define CNK_DATA_SPEC
+#endif
+
+extern CNK_DATA_SPEC _Atomic CK_BBOOL g_cnk_is_initialized;
+extern CNK_DATA_SPEC _Atomic CK_BBOOL g_cnk_is_managed_mode; // true for managed mode, false for standalone mode
+extern CNK_DATA_SPEC SCARDCONTEXT g_cnk_pcsc_context;
+extern CNK_DATA_SPEC SCARDHANDLE g_cnk_scard;
 extern _Atomic CK_ULONG g_cnk_pcsc_operations;
 extern CNK_PKCS11_MUTEX g_cnk_readers_mutex;
 
 // Memory management functions
-extern CNK_MALLOC_FUNC g_cnk_malloc_func;
-extern CNK_FREE_FUNC g_cnk_free_func;
+extern CNK_DATA_SPEC CNK_MALLOC_FUNC g_cnk_malloc_func;
+extern CNK_DATA_SPEC CNK_FREE_FUNC g_cnk_free_func;
 
 // PIV slots mapping to CKA_ID values
 #define PIV_SLOT_9A 1
