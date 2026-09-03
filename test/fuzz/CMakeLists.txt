@@ -22,12 +22,25 @@ target_link_libraries(cnk_fuzz_api PRIVATE ${CNK_PKCS_TARGET})
 target_compile_options(cnk_fuzz_api PRIVATE ${CNK_FUZZ_FLAGS})
 target_link_options(cnk_fuzz_api PRIVATE ${CNK_FUZZ_FLAGS})
 set_target_properties(cnk_fuzz_api PROPERTIES BUILD_RPATH "$ORIGIN/../..")
+
+find_package(Threads REQUIRED)
+add_executable(cnk_fuzz_concurrency fuzz_concurrency.c ${CNK_REPLAY_MAIN})
+target_compile_definitions(cnk_fuzz_concurrency PRIVATE CNK_LIB_SHARED)
+target_link_libraries(cnk_fuzz_concurrency PRIVATE ${CNK_PKCS_TARGET} Threads::Threads)
+target_compile_options(cnk_fuzz_concurrency PRIVATE ${CNK_FUZZ_FLAGS})
+target_link_options(cnk_fuzz_concurrency PRIVATE ${CNK_FUZZ_FLAGS})
+set_target_properties(cnk_fuzz_concurrency PROPERTIES BUILD_RPATH "$ORIGIN/../..")
 if (WIN32)
   add_custom_command(TARGET cnk_fuzz_api POST_BUILD
                      COMMAND ${CMAKE_COMMAND} -E copy_if_different
                              "$<TARGET_FILE:${CNK_PKCS_TARGET}>"
                              "$<TARGET_FILE_DIR:cnk_fuzz_api>")
+  add_custom_command(TARGET cnk_fuzz_concurrency POST_BUILD
+                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                             "$<TARGET_FILE:${CNK_PKCS_TARGET}>"
+                             "$<TARGET_FILE_DIR:cnk_fuzz_concurrency>")
 endif()
 
 add_test(NAME fuzz_tlv_smoke COMMAND cnk_fuzz_tlv -runs=100)
 add_test(NAME fuzz_api_smoke COMMAND cnk_fuzz_api -runs=100)
+add_test(NAME fuzz_concurrency_smoke COMMAND cnk_fuzz_concurrency -runs=20)
