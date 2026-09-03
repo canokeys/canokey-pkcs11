@@ -151,7 +151,7 @@ CK_RV cnk_slot_exists(CK_SLOT_ID slotID, CK_BBOOL *exists);
 // Clean up PC/SC resources
 CK_RV cnk_cleanup_pcsc(void);
 CK_RV cnk_wait_for_pcsc_operations(void);
-void cnk_cancel_pcsc_operations(void);
+CNK_TEST_API void cnk_cancel_pcsc_operations(void);
 CK_RV cnk_pcsc_operation_begin(void);
 void cnk_pcsc_operation_end(void);
 
