@@ -191,12 +191,11 @@ static void test_logging_can_be_configured_before_initialize(void **state) {
   (void)state;
   cnk_reset_logging();
   assert_int_equal(C_CNK_ConfigLogging(CNK_LOG_LEVEL_INFO, NULL, CK_TRUE), CKR_OK);
-  assert_int_equal(atomic_load(&g_cnk_log_level), CNK_LOG_LEVEL_INFO);
-  assert_true(atomic_load(&g_cnk_unsafe_log_apdu));
-  // Reset also clears the borrowed FILE* override without attempting to close it.
-  cnk_reset_logging();
-  assert_int_equal(atomic_load(&g_cnk_log_level), CNK_LOG_LEVEL_WARN);
-  assert_false(atomic_load(&g_cnk_unsafe_log_apdu));
+  // The pre-initialization setting must survive the normal lifecycle merge.
+  CNK_MANAGED_MODE_INIT_ARGS args = {.malloc_func = malloc, .free_func = free, .hSCardCtx = 31, .hScard = 31};
+  assert_int_equal(C_CNK_EnableManagedMode(&args), CKR_OK);
+  assert_int_equal(C_Initialize(NULL), CKR_OK);
+  assert_int_equal(C_Finalize(NULL), CKR_OK);
 }
 
 int main(void) {

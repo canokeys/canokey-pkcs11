@@ -37,7 +37,7 @@ jobs:
             pre-build-script: ''
             cmake-config-args: ''
           - name: Windows Server 2025 / Visual Studio 2026
-            os: windows-2025-vs2026
+            os: windows-2025
             artifact-suffix: windows-2025-vs2026
             pre-build-script: ''
             cmake-config-args: ''
