@@ -80,10 +80,14 @@ under the first available `TMPDIR`, `TEMP`, or `TMP` directory:
 `canokey_pkcs11_<pid>.log`. Release builds retain the `WARN` default and do
 not open a file unless configured explicitly.
 
-The optional `CNK_LOG_CONFIG` environment variable names a UTF-8 text file
-with `key=value` entries. Supported keys are `log_level`, `log_path`,
-`log_dir`, and `unsafe_log_apdu`. Environment variables are applied after the
-file and therefore take precedence:
+The library automatically checks a per-user UTF-8 text configuration file
+with `key=value` entries. On Windows the default is
+`%APPDATA%\\Canokeys\\canokey-pkcs11.conf`; on Unix it is
+`$XDG_CONFIG_HOME/canokey-pkcs11.conf` or `$HOME/.config/canokey-pkcs11.conf`;
+macOS also falls back to `~/Library/Application Support/canokey-pkcs11.conf`.
+`CNK_LOG_CONFIG` is an optional explicit path override. Supported keys are
+`log_level`, `log_path`, `log_dir`, and `unsafe_log_apdu`. Environment
+variables are applied after the file and therefore take precedence:
 
 - `CNK_LOG_LEVEL`: one of `trace`, `debug`, `info`, `warn`, `error`, `fatal`,
   `none`, or the corresponding numeric log level.

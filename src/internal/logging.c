@@ -180,6 +180,59 @@ static void cnk_read_log_config_file(CNK_LOG_SETTINGS *settings, const char *con
   fclose(config);
 }
 
+static CK_BBOOL cnk_build_default_config_path(char *path, size_t path_size) {
+  if (path == NULL || path_size == 0)
+    return CK_FALSE;
+
+#if defined(_WIN32)
+  const char *config_root = getenv("APPDATA");
+  if (config_root == NULL || config_root[0] == '\0')
+    config_root = getenv("USERPROFILE");
+  if (config_root == NULL || config_root[0] == '\0')
+    return CK_FALSE;
+  int written = snprintf(path, path_size, "%s%cCanokeys%ccanokey-pkcs11.conf", config_root, CNK_PATH_SEPARATOR,
+                         CNK_PATH_SEPARATOR);
+#elif defined(__APPLE__) || defined(__MACH__)
+  const char *config_root = getenv("XDG_CONFIG_HOME");
+  int written;
+  if (config_root != NULL && config_root[0] != '\0') {
+    written = snprintf(path, path_size, "%s%ccanokey-pkcs11.conf", config_root, CNK_PATH_SEPARATOR);
+  } else {
+    config_root = getenv("HOME");
+    if (config_root == NULL || config_root[0] == '\0')
+      return CK_FALSE;
+    written = snprintf(path, path_size, "%s%cLibrary%cApplication Support%ccanokey-pkcs11.conf", config_root,
+                       CNK_PATH_SEPARATOR, CNK_PATH_SEPARATOR, CNK_PATH_SEPARATOR);
+  }
+#else
+  const char *config_root = getenv("XDG_CONFIG_HOME");
+  int written;
+  if (config_root != NULL && config_root[0] != '\0') {
+    written = snprintf(path, path_size, "%s%ccanokey-pkcs11.conf", config_root, CNK_PATH_SEPARATOR);
+  } else {
+    config_root = getenv("HOME");
+    if (config_root == NULL || config_root[0] == '\0')
+      return CK_FALSE;
+    written = snprintf(path, path_size, "%s%c.config%ccanokey-pkcs11.conf", config_root, CNK_PATH_SEPARATOR,
+                       CNK_PATH_SEPARATOR);
+  }
+#endif
+
+  return written >= 0 && (size_t)written < path_size;
+}
+
+static void cnk_read_user_log_config(CNK_LOG_SETTINGS *settings) {
+  const char *explicit_path = getenv("CNK_LOG_CONFIG");
+  if (explicit_path != NULL && explicit_path[0] != '\0') {
+    cnk_read_log_config_file(settings, explicit_path);
+    return;
+  }
+
+  char default_path[CNK_LOG_PATH_MAX];
+  if (cnk_build_default_config_path(default_path, sizeof(default_path)))
+    cnk_read_log_config_file(settings, default_path);
+}
+
 static void cnk_replace_log_file(FILE *file, CK_BBOOL owned) {
   FILE *old_file;
   CK_BBOOL old_owned;
@@ -254,10 +307,9 @@ void cnk_config_logging_from_env(void) {
   settings.level = CNK_LOG_LEVEL_WARN;
 #endif
 
-  // Configuration files are optional and deliberately explicit. This keeps
-  // a library load side-effect free in Release while allowing GUI clients to
-  // opt into a persistent file without inheriting shell stderr.
-  cnk_read_log_config_file(&settings, getenv("CNK_LOG_CONFIG"));
+  // A user config file is discovered automatically; CNK_LOG_CONFIG remains an
+  // explicit override for isolated tests or non-standard deployment paths.
+  cnk_read_user_log_config(&settings);
 
   int level;
   if (cnk_parse_log_level(getenv("CNK_LOG_LEVEL"), &level)) {

@@ -437,12 +437,16 @@ PIV object IDs map to slots as:
   delete case, but there is no standard PIV APDU that deletes both certificates
   and asymmetric keys with matching PKCS#11 object semantics.
 - Current reader enumeration only keeps PC/SC reader names containing `canokey`, case-insensitive.
-- Standalone `C_Initialize()` configures logging from an optional
-  `CNK_LOG_CONFIG` key/value file, then applies `CNK_LOG_LEVEL`,
-  `CNK_LOG_PATH`, `CNK_LOG_DIR`, and `CNK_UNSAFE_LOG_APDU` overrides. Debug
-  builds default to a process-specific file in `TMPDIR`, `TEMP`, or `TMP` at
-  `DEBUG` level; Release keeps the `WARN` default and no file. Raw APDU logs
-  require both debug-or-lower log level and `CNK_UNSAFE_LOG_APDU=1`.
+- Standalone `C_Initialize()` automatically checks the per-user config file
+  `%APPDATA%\\Canokeys\\canokey-pkcs11.conf` on Windows and
+  `$XDG_CONFIG_HOME/canokey-pkcs11.conf` or `$HOME/.config/canokey-pkcs11.conf`
+  on Unix-like systems (macOS also supports its Application Support path).
+  `CNK_LOG_CONFIG` is an explicit path override; then
+  `CNK_LOG_LEVEL`, `CNK_LOG_PATH`, `CNK_LOG_DIR`, and
+  `CNK_UNSAFE_LOG_APDU` override file values. Debug builds default to a
+  process-specific file in `TMPDIR`, `TEMP`, or `TMP` at `DEBUG` level; Release
+  keeps the `WARN` default and no file. Raw APDU logs require both
+  debug-or-lower log level and `CNK_UNSAFE_LOG_APDU=1`.
 - Managed mode ignores logging environment/config-file settings; callers must
   use `C_CNK_ConfigLogging(level, file, unsafe_log_apdu)`. A caller-supplied
   `FILE *` remains caller-owned, while files opened from standalone
