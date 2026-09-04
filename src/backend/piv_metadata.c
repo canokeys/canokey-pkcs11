@@ -23,6 +23,7 @@ typedef struct {
   CK_BBOOL valid;
   CK_SLOT_ID slotId;
   uint64_t refreshedAtMs;
+  CK_ULONG bindingEpoch;
   CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
 } CNK_PIV_EXTENSION_CACHE_ENTRY;
 
@@ -627,9 +628,11 @@ CK_RV cnk_get_piv_algorithm_extension_cached(CK_SLOT_ID slotID, CNK_PIV_ALGORITH
     return cnk_get_piv_algorithm_extension(slotID, config);
   CK_ULONG index = (CK_ULONG)slotID % CNK_PIV_EXTENSION_CACHE_SLOTS;
   uint64_t nowMs = cnk_public_cache_now_ms();
+  CK_ULONG bindingEpoch = atomic_load(&g_cnk_managed_binding_epoch);
   CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
   CNK_PIV_EXTENSION_CACHE_ENTRY *entry = &g_piv_extension_cache[index];
-  if (entry->valid && entry->slotId == slotID && cnk_public_cache_fresh(entry->refreshedAtMs, nowMs)) {
+  if (entry->valid && entry->slotId == slotID && entry->bindingEpoch == bindingEpoch &&
+      cnk_public_cache_fresh(entry->refreshedAtMs, nowMs)) {
     *config = entry->config;
     cnk_mutex_unlock(&g_cnk_readers_mutex);
     return CKR_OK;
@@ -641,6 +644,7 @@ CK_RV cnk_get_piv_algorithm_extension_cached(CK_SLOT_ID slotID, CNK_PIV_ALGORITH
     return rv;
   CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
   entry->slotId = slotID;
+  entry->bindingEpoch = atomic_load(&g_cnk_managed_binding_epoch);
   entry->config = *config;
   entry->refreshedAtMs = cnk_public_cache_now_ms();
   entry->valid = CK_TRUE;
