@@ -564,6 +564,8 @@ static CK_RV verify_context_pin_card_operation(SCARDHANDLE hCard, void *context)
 
 CK_RV cnk_verify_piv_pin_for_context(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,
                                      CK_BYTE_PTR pPinTries) {
+  CNK_ENSURE_NONNULL(pPin);
+  CNK_ENSURE_OK(validate_piv_pin_len(ulPinLen));
   ContextPinVerification verification = {.pin = pPin, .pinLen = ulPinLen, .pinTries = pPinTries};
   return cnk_with_card(slotID, verify_context_pin_card_operation, &verification, NULL);
 }

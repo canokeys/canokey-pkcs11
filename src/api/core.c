@@ -36,6 +36,7 @@ static CK_BBOOL g_backend_cleanup_pending = CK_FALSE;
 static CK_BBOOL g_session_cleanup_pending = CK_FALSE;
 static atomic_flag g_lifecycle_lock = ATOMIC_FLAG_INIT;
 static atomic_uint g_api_admission_count = 0;
+static atomic_bool g_cnk_finalizing = false;
 
 CK_BBOOL cnk_cleanup_is_pending(void) {
   return g_initialization_cleanup_pending || g_backend_cleanup_pending || g_session_cleanup_pending;
@@ -57,7 +58,7 @@ CK_RV cnk_api_admission_begin(CNK_API_ADMISSION_GUARD *guard) {
   if (guard == NULL)
     return CKR_ARGUMENTS_BAD;
   cnk_lifecycle_lock();
-  if (!g_cnk_is_initialized) {
+  if (!g_cnk_is_initialized || atomic_load(&g_cnk_finalizing)) {
     cnk_lifecycle_unlock();
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
@@ -87,6 +88,9 @@ static void release_lifecycle_lock(atomic_flag **lock) {
 
 CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
   atomic_flag *lifecycleLock CNK_LIFECYCLE_GUARD = &g_lifecycle_lock;
+  CK_RV pcscRv = CKR_OK;
+  CK_RV sessionRv = CKR_OK;
+  CK_RV backendRv = CKR_OK;
   cnk_lifecycle_lock();
 
   // Mode selection and logging configuration are one lifecycle decision. Do
@@ -114,7 +118,14 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
     g_initialization_cleanup_pending = CK_FALSE;
     g_backend_cleanup_pending = CK_FALSE;
     g_session_cleanup_pending = CK_FALSE;
+    atomic_store(&g_cnk_finalizing, false);
   }
+
+  // A final teardown has released the lifecycle lock while draining admitted
+  // calls. Do not publish a new instance into that teardown window; a retry is
+  // valid only after the pending cleanup stages above have completed.
+  if (atomic_load(&g_cnk_finalizing))
+    CNK_RETURN(CKR_OPERATION_ACTIVE, "finalization is in progress");
 
   // Check if the library is already initialized
   if (g_cnk_is_initialized) {
@@ -218,6 +229,7 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
 
   // Mark the library as initialized
   g_cnk_is_initialized = CK_TRUE;
+  atomic_store(&g_cnk_finalizing, false);
 
   int last_ref_count = atomic_fetch_add(&g_ref_count, 1);
   CNK_ENSURE_EQUAL_REASON(last_ref_count, 0, "library has been initialized. Invalid state");
@@ -228,9 +240,9 @@ initialization_failed:
   // Attempt every cleanup stage even when an application callback fails. A
   // later C_Initialize must be able to retry only the specific failed stage,
   // rather than inheriting a half-torn-down mutex/backend combination.
-  CK_RV pcscRv = g_cnk_is_managed_mode ? CKR_OK : cnk_cleanup_pcsc();
-  CK_RV sessionRv = cnk_session_manager_cleanup();
-  CK_RV backendRv = cnk_cleanup_backend();
+  pcscRv = g_cnk_is_managed_mode ? CKR_OK : cnk_cleanup_pcsc();
+  sessionRv = cnk_session_manager_cleanup();
+  backendRv = cnk_cleanup_backend();
   g_initialization_cleanup_pending = pcscRv != CKR_OK;
   g_session_cleanup_pending = sessionRv != CKR_OK;
   g_backend_cleanup_pending = backendRv != CKR_OK;
@@ -279,6 +291,10 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   // in progress. Calls that already hold references or card transactions are
   // drained before the PC/SC context is released.
   g_cnk_is_initialized = CK_FALSE;
+  atomic_store(&g_cnk_finalizing, true);
+  cnk_lifecycle_unlock();
+  lifecycleLock = NULL;
+  cnk_piv_algorithm_extension_cache_invalidate();
   while (atomic_load(&g_api_admission_count) != 0) {
 #ifdef _WIN32
     Sleep(0);
@@ -286,6 +302,9 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
     sched_yield();
 #endif
   }
+
+  cnk_lifecycle_lock();
+  lifecycleLock = &g_lifecycle_lock;
 
   // Wake a blocking C_WaitForSlotEvent before waiting for the operation
   // counter. cnk_cleanup_pcsc performs the same cancellation later, but the
@@ -296,12 +315,14 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   CK_RV activeRv = cnk_session_wait_for_active_calls();
   if (activeRv != CKR_OK) {
     g_cnk_is_initialized = CK_TRUE;
+    atomic_store(&g_cnk_finalizing, false);
     atomic_fetch_add(&g_ref_count, 1);
     return activeRv;
   }
   activeRv = cnk_wait_for_pcsc_operations();
   if (activeRv != CKR_OK) {
     g_cnk_is_initialized = CK_TRUE;
+    atomic_store(&g_cnk_finalizing, false);
     atomic_fetch_add(&g_ref_count, 1);
     return activeRv;
   }
@@ -311,6 +332,7 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   CK_RV pcscCleanupRv = g_cnk_is_managed_mode ? CKR_OK : cnk_cleanup_pcsc();
   if (pcscCleanupRv != CKR_OK) {
     g_cnk_is_initialized = CK_TRUE;
+    atomic_store(&g_cnk_finalizing, false);
     atomic_fetch_add(&g_ref_count, 1);
     return pcscCleanupRv;
   }
@@ -323,6 +345,7 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
     g_session_cleanup_pending = CK_TRUE;
     g_backend_cleanup_pending = CK_TRUE;
     g_cnk_is_initialized = CK_FALSE;
+    atomic_store(&g_cnk_finalizing, true);
     return rv;
   }
 
@@ -334,6 +357,7 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
     // allocator/mode binding so C_Initialize can retry cnk_cleanup_backend.
     g_backend_cleanup_pending = CK_TRUE;
     g_cnk_is_initialized = CK_FALSE;
+    atomic_store(&g_cnk_finalizing, true);
     return backendCleanupRv;
   }
 
@@ -351,6 +375,7 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   nsync_malloc_ptr_ = malloc;
   nsync_free_ptr_ = free;
   g_cnk_is_initialized = CK_FALSE;
+  atomic_store(&g_cnk_finalizing, false);
 
   cnk_reset_logging();
   cnk_mutex_system_cleanup();

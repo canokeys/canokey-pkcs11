@@ -219,6 +219,20 @@ if(BUILD_FUZZING)
   if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "BUILD_FUZZING requires Clang and libFuzzer")
   endif()
-  target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE CNK_TEST_TRANSPORT)
+  # Keep the replaceable PC/SC transport out of the production library. Fuzz
+  # executables link this test-only twin, while release artifacts continue to
+  # use the transport-free ${CNK_PKCS_TARGET} target.
+  set(CNK_FUZZ_TARGET "${CNK_PKCS_TARGET}-fuzz")
+  add_library(${CNK_FUZZ_TARGET} SHARED ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
+  target_include_directories(${CNK_FUZZ_TARGET}
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/external/tf-psa-crypto/drivers/pqcp/mldsa-native/mldsa
+      ${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/mlkem)
+  target_compile_definitions(${CNK_FUZZ_TARGET} PRIVATE CNK_LIB_SHARED CRYPTOKI_EXPORTS
+                                                         CNK_VERBOSE MBEDTLS_ALLOW_PRIVATE_ACCESS
+                                                         CNK_TEST_TRANSPORT)
+  target_link_libraries(${CNK_FUZZ_TARGET} PRIVATE ${CNK_PKCS_LIBS})
+  set_target_properties(${CNK_FUZZ_TARGET} PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS TRUE
+                                                       OUTPUT_NAME "${CNK_PKCS_LIB_NAME}-fuzz")
   add_subdirectory(test/fuzz)
 endif()

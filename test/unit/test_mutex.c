@@ -7,6 +7,7 @@
 
 #include "api/session.h"
 #include "backend/pcsc.h"
+#include "internal/logging.h"
 #include "internal/mutex.h"
 #include "pkcs11_canokey.h"
 
@@ -186,6 +187,18 @@ static void test_session_manager_cleanup_retries_mutex_destroy(void **state) {
   cnk_mutex_system_cleanup();
 }
 
+static void test_logging_can_be_configured_before_initialize(void **state) {
+  (void)state;
+  cnk_reset_logging();
+  assert_int_equal(C_CNK_ConfigLogging(CNK_LOG_LEVEL_INFO, NULL, CK_TRUE), CKR_OK);
+  assert_int_equal(atomic_load(&g_cnk_log_level), CNK_LOG_LEVEL_INFO);
+  assert_true(atomic_load(&g_cnk_unsafe_log_apdu));
+  // Reset also clears the borrowed FILE* override without attempting to close it.
+  cnk_reset_logging();
+  assert_int_equal(atomic_load(&g_cnk_log_level), CNK_LOG_LEVEL_WARN);
+  assert_false(atomic_load(&g_cnk_unsafe_log_apdu));
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test(test_failed_application_lock_does_not_unlock),
@@ -197,6 +210,7 @@ int main(void) {
       cmocka_unit_test(test_uninitialized_managed_binding_can_be_reset),
       cmocka_unit_test(test_backend_cleanup_retries_only_failed_mutex),
       cmocka_unit_test(test_session_manager_cleanup_retries_mutex_destroy),
+      cmocka_unit_test(test_logging_can_be_configured_before_initialize),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

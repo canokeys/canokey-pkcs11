@@ -220,7 +220,8 @@ CK_RV cnk_build_piv_ec_import(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCou
     rv = cnk_template_get_attribute(attributes, attributeCount, CKA_VALUE, &valueAttribute);
   if (rv != CKR_OK)
     return rv;
-  if (paramsAttribute->pValue == NULL || valueAttribute->pValue == NULL || valueAttribute->ulValueLen == 0)
+  if (paramsAttribute->pValue == NULL || paramsAttribute->ulValueLen == 0 || valueAttribute->pValue == NULL ||
+      valueAttribute->ulValueLen == 0)
     return CKR_ATTRIBUTE_VALUE_INVALID;
   rv = cnk_ec_params_to_piv_algorithm(paramsAttribute->pValue, paramsAttribute->ulValueLen, algorithmType);
   if (rv != CKR_OK)

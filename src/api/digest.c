@@ -175,18 +175,21 @@ CK_RV C_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey) {
   // treat it as indigestible even though the bytes are resident on the host.
   if (secret->sensitive || !secret->extractable)
     CNK_RETURN(CKR_KEY_INDIGESTIBLE, "Sensitive or non-extractable session key cannot be digested");
+  CK_BBOOL userReservationHeld = CK_FALSE;
   if (secret->private) {
-    CK_BBOOL pinCached = CK_FALSE;
-    CNK_ENSURE_OK(cnk_token_pin_is_cached(session, &pinCached));
-    if (!pinCached)
-      CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "Private session key requires USER login");
+    CNK_ENSURE_OK(cnk_token_begin_user_operation(session));
+    userReservationHeld = CK_TRUE;
   }
 
   if (mbedtls_md_update(&session->digestingContext.context, secret->value, secret->valueLen) != 0) {
     cnk_reset_digesting_context(session);
+    if (userReservationHeld)
+      cnk_token_end_management_operation(session);
     CNK_RETURN(CKR_FUNCTION_FAILED, "md update failed");
   }
   session->digestingContext.mode = CNK_DIGEST_MODE_MULTI_PART;
+  if (userReservationHeld)
+    cnk_token_end_management_operation(session);
   CNK_RET_OK;
 }
 
@@ -208,5 +211,6 @@ CK_RV C_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest, CK_ULONG_PT
     cnk_reset_digesting_context(session);
     CNK_RETURN(CKR_OPERATION_ACTIVE, "C_DigestFinal cannot terminate a single-part digest");
   }
+  session->digestingContext.mode = CNK_DIGEST_MODE_MULTI_PART;
   return digestFinal(session, pDigest, pulDigestLen);
 }

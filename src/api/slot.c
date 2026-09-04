@@ -309,7 +309,7 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
 
   CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig = {0};
   CK_BBOOL extensionsSupported =
-      cnk_get_piv_algorithm_extension(slotID, &algorithmConfig) == CKR_OK && algorithmConfig.enabled;
+      cnk_get_piv_algorithm_extension_cached(slotID, &algorithmConfig) == CKR_OK && algorithmConfig.enabled;
   if (extensionsSupported && algorithmConfig.ed25519 != 0) {
     supportedMechanisms[numMechanisms++] = CKM_EC_EDWARDS_KEY_PAIR_GEN;
     supportedMechanisms[numMechanisms++] = CKM_EDDSA;
@@ -359,7 +359,40 @@ static CK_ULONG piv_rsa_max_bits(const CNK_PIV_ALGORITHM_EXTENSION_CONFIG *confi
 static CK_BBOOL mechanism_uses_algorithm_extension(CK_MECHANISM_TYPE type) {
   switch (type) {
   case CKM_RSA_PKCS_KEY_PAIR_GEN:
+  case CKM_RSA_X_509:
+  case CKM_RSA_PKCS:
+  case CKM_RSA_PKCS_OAEP:
+  case CKM_RSA_PKCS_PSS:
+  case CKM_SHA1_RSA_PKCS:
+  case CKM_SHA1_RSA_PKCS_PSS:
+  case CKM_SHA224_RSA_PKCS:
+  case CKM_SHA224_RSA_PKCS_PSS:
+  case CKM_SHA256_RSA_PKCS:
+  case CKM_SHA256_RSA_PKCS_PSS:
+  case CKM_SHA384_RSA_PKCS:
+  case CKM_SHA384_RSA_PKCS_PSS:
+  case CKM_SHA512_RSA_PKCS:
+  case CKM_SHA512_RSA_PKCS_PSS:
+  case CKM_SHA3_224_RSA_PKCS:
+  case CKM_SHA3_224_RSA_PKCS_PSS:
+  case CKM_SHA3_256_RSA_PKCS:
+  case CKM_SHA3_256_RSA_PKCS_PSS:
+  case CKM_SHA3_384_RSA_PKCS:
+  case CKM_SHA3_384_RSA_PKCS_PSS:
+  case CKM_SHA3_512_RSA_PKCS:
+  case CKM_SHA3_512_RSA_PKCS_PSS:
   case CKM_ECDSA_KEY_PAIR_GEN:
+  case CKM_ECDSA:
+  case CKM_ECDSA_SHA1:
+  case CKM_ECDSA_SHA224:
+  case CKM_ECDSA_SHA256:
+  case CKM_ECDSA_SHA384:
+  case CKM_ECDSA_SHA512:
+  case CKM_ECDSA_SHA3_224:
+  case CKM_ECDSA_SHA3_256:
+  case CKM_ECDSA_SHA3_384:
+  case CKM_ECDSA_SHA3_512:
+  case CKM_ECDH1_DERIVE:
   case CKM_EC_EDWARDS_KEY_PAIR_GEN:
   case CKM_EDDSA:
   case CKM_EC_MONTGOMERY_KEY_PAIR_GEN:
@@ -385,7 +418,7 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   CNK_PIV_ALGORITHM_EXTENSION_CONFIG config = {0};
   CK_BBOOL extensionEnabled = CK_FALSE;
   if (mechanism_uses_algorithm_extension(type))
-    extensionEnabled = cnk_get_piv_algorithm_extension(slotID, &config) == CKR_OK && config.enabled;
+    extensionEnabled = cnk_get_piv_algorithm_extension_cached(slotID, &config) == CKR_OK && config.enabled;
 
   if (type == CKM_ML_DSA_KEY_PAIR_GEN || type == CKM_ML_DSA || type == CKM_ML_KEM_KEY_PAIR_GEN || type == CKM_ML_KEM) {
     if (!extensionEnabled ||

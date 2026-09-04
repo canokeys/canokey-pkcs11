@@ -17,6 +17,16 @@
 
 #define CNK_PIV_MAX_PUBLIC_KEY_RESPONSE 4096
 #define CNK_PIV_PUBLIC_CACHE_TTL_MS 60000
+#define CNK_PIV_EXTENSION_CACHE_SLOTS 64
+
+typedef struct {
+  CK_BBOOL valid;
+  CK_SLOT_ID slotId;
+  uint64_t refreshedAtMs;
+  CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
+} CNK_PIV_EXTENSION_CACHE_ENTRY;
+
+static CNK_PIV_EXTENSION_CACHE_ENTRY g_piv_extension_cache[CNK_PIV_EXTENSION_CACHE_SLOTS];
 
 static uint64_t cnk_public_cache_now_ms(void) {
 #if defined(_WIN32)
@@ -607,6 +617,42 @@ CK_RV cnk_get_piv_algorithm_extension(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTEN
     return CKR_FUNCTION_NOT_SUPPORTED;
   memcpy(config, response, sizeof(*config));
   return CKR_OK;
+}
+
+CK_RV cnk_get_piv_algorithm_extension_cached(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config) {
+  CNK_ENSURE_NONNULL(config);
+  // Managed callers share a host-owned card handle and may observe external
+  // key changes between callbacks; never reuse a standalone snapshot there.
+  if (atomic_load(&g_cnk_is_managed_mode))
+    return cnk_get_piv_algorithm_extension(slotID, config);
+  CK_ULONG index = (CK_ULONG)slotID % CNK_PIV_EXTENSION_CACHE_SLOTS;
+  uint64_t nowMs = cnk_public_cache_now_ms();
+  CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
+  CNK_PIV_EXTENSION_CACHE_ENTRY *entry = &g_piv_extension_cache[index];
+  if (entry->valid && entry->slotId == slotID && cnk_public_cache_fresh(entry->refreshedAtMs, nowMs)) {
+    *config = entry->config;
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
+    return CKR_OK;
+  }
+  cnk_mutex_unlock(&g_cnk_readers_mutex);
+
+  CK_RV rv = cnk_get_piv_algorithm_extension(slotID, config);
+  if (rv != CKR_OK)
+    return rv;
+  CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
+  entry->slotId = slotID;
+  entry->config = *config;
+  entry->refreshedAtMs = cnk_public_cache_now_ms();
+  entry->valid = CK_TRUE;
+  cnk_mutex_unlock(&g_cnk_readers_mutex);
+  return CKR_OK;
+}
+
+void cnk_piv_algorithm_extension_cache_invalidate(void) {
+  if (cnk_mutex_lock(&g_cnk_readers_mutex) != CKR_OK)
+    return;
+  memset(g_piv_extension_cache, 0, sizeof(g_piv_extension_cache));
+  cnk_mutex_unlock(&g_cnk_readers_mutex);
 }
 
 static CK_RV pivRandomSupportedOnCard(SCARDHANDLE card, CK_BBOOL *supported) {

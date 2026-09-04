@@ -7,8 +7,6 @@
 #include <mbedtls/md.h>
 #include <mbedtls/platform_util.h>
 #include <mbedtls/private/bignum.h>
-#include <mbedtls/private/ctr_drbg.h>
-#include <mbedtls/private/entropy.h>
 #include <mbedtls/private/rsa.h>
 #include <psa/crypto.h>
 #include <string.h>
@@ -203,11 +201,6 @@ CK_RV pss_encode(CK_BYTE_PTR pbHash, CK_ULONG cbHash, CK_BYTE_PTR pbModulus, CK_
   CK_BYTE_PTR pDBMask = NULL_PTR;
   mbedtls_mpi modulus_mpi;
 
-  mbedtls_entropy_context entropyCtx;
-  mbedtls_ctr_drbg_context ctrDrbgCtx;
-  mbedtls_entropy_init(&entropyCtx);
-  mbedtls_ctr_drbg_init(&ctrDrbgCtx);
-
   /* emBits = modBits - 1 per RFC 8017 section 9.1.1. */
   mbedtls_mpi_init(&modulus_mpi);
   mbedtls_mpi_read_binary(&modulus_mpi, pbModulus, cbModulus);
@@ -222,25 +215,21 @@ CK_RV pss_encode(CK_BYTE_PTR pbHash, CK_ULONG cbHash, CK_BYTE_PTR pbModulus, CK_
   }
 
   /* -------- Generate salt -------- */
-  const char *pers = "rsa_pss_sign";
-  int ret =
-      mbedtls_ctr_drbg_seed(&ctrDrbgCtx, mbedtls_entropy_func, &entropyCtx, (const unsigned char *)pers, strlen(pers));
-  if (ret != 0) {
-    CNK_ERROR("Failed to seed RNG: -0x%04x", -ret);
-    rv = CKR_FUNCTION_FAILED;
-    goto cleanup;
-  }
-
   if (cbSalt > 0) {
+    if (psa_crypto_init() != PSA_SUCCESS) {
+      CNK_ERROR("Failed to initialize PSA RNG");
+      rv = CKR_RANDOM_NO_RNG;
+      goto cleanup;
+    }
     pSalt = ck_malloc(cbSalt);
     if (!pSalt) {
       CNK_ERROR("Failed to allocate salt buffer");
       rv = CKR_HOST_MEMORY;
       goto cleanup;
     }
-    if (mbedtls_ctr_drbg_random(&ctrDrbgCtx, pSalt, cbSalt) != 0) {
+    if (psa_generate_random(pSalt, cbSalt) != PSA_SUCCESS) {
       CNK_ERROR("Failed to generate salt");
-      rv = CKR_FUNCTION_FAILED;
+      rv = CKR_RANDOM_NO_RNG;
       goto cleanup;
     }
   }
@@ -327,8 +316,6 @@ CK_RV pss_encode(CK_BYTE_PTR pbHash, CK_ULONG cbHash, CK_BYTE_PTR pbModulus, CK_
   mbedtls_platform_zeroize(pDB, dbLen);
 
 cleanup:
-  mbedtls_ctr_drbg_free(&ctrDrbgCtx);
-  mbedtls_entropy_free(&entropyCtx);
   mbedtls_mpi_free(&modulus_mpi);
   if (pSalt != NULL)
     mbedtls_platform_zeroize(pSalt, cbSalt);

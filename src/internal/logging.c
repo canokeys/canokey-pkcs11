@@ -9,6 +9,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
+#else
+#include <fcntl.h>
+#endif
 
 #if defined(_WIN32)
 #include <process.h>
@@ -35,6 +41,10 @@ atomic_bool g_cnk_unsafe_log_apdu = false;
 atomic_bool g_cnk_piv_metadata_cache_enabled = true;
 static FILE *g_cnk_log_file = NULL;
 static CK_BBOOL g_cnk_log_file_owned = CK_FALSE;
+static CK_BBOOL g_cnk_explicit_logging = CK_FALSE;
+static int g_cnk_explicit_level = CNK_LOG_LEVEL_WARN;
+static CK_BBOOL g_cnk_explicit_unsafe = CK_FALSE;
+static FILE *g_cnk_explicit_file = NULL;
 static nsync_mu g_cnk_log_mutex = NSYNC_MU_INIT;
 static char g_cnk_process_name[CNK_PROCESS_NAME_MAX] = "canokey-pkcs11";
 
@@ -347,7 +357,31 @@ static FILE *cnk_open_configured_log(const CNK_LOG_SETTINGS *settings, char *res
   if (written < 0 || (size_t)written >= resolved_path_size)
     return NULL;
 
-  return fopen(resolved_path, "ab");
+  if (!settings->path_is_directory)
+    return fopen(resolved_path, "ab");
+#if defined(_WIN32)
+  HANDLE handle = CreateFileA(resolved_path, FILE_APPEND_DATA | GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                              CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (handle == INVALID_HANDLE_VALUE)
+    return NULL;
+  int descriptor = _open_osfhandle((intptr_t)handle, _O_APPEND | _O_BINARY);
+  if (descriptor < 0) {
+    CloseHandle(handle);
+    return NULL;
+  }
+  FILE *file = _fdopen(descriptor, "a");
+  if (file == NULL)
+    _close(descriptor);
+  return file;
+#else
+  int descriptor = open(resolved_path, O_WRONLY | O_CREAT | O_EXCL | O_APPEND | O_NOFOLLOW, 0600);
+  if (descriptor < 0)
+    return NULL;
+  FILE *file = fdopen(descriptor, "a");
+  if (file == NULL)
+    close(descriptor);
+  return file;
+#endif
 }
 
 CK_RV cnk_config_logging(const int level, FILE *file, CK_BBOOL unsafe_log_apdu) {
@@ -356,6 +390,15 @@ CK_RV cnk_config_logging(const int level, FILE *file, CK_BBOOL unsafe_log_apdu) 
   } else if (level != -1) {
     return CKR_ARGUMENTS_BAD;
   }
+
+  nsync_mu_lock(&g_cnk_log_mutex);
+  g_cnk_explicit_logging = CK_TRUE;
+  if (level != -1)
+    g_cnk_explicit_level = level;
+  g_cnk_explicit_unsafe = unsafe_log_apdu;
+  if (file != NULL)
+    g_cnk_explicit_file = file;
+  nsync_mu_unlock(&g_cnk_log_mutex);
 
   if (file != NULL)
     cnk_replace_log_file(file, CK_FALSE);
@@ -367,6 +410,10 @@ CK_RV cnk_config_logging(const int level, FILE *file, CK_BBOOL unsafe_log_apdu) 
 
 void cnk_reset_logging(void) {
   cnk_replace_log_file(NULL, CK_FALSE);
+  nsync_mu_lock(&g_cnk_log_mutex);
+  g_cnk_explicit_logging = CK_FALSE;
+  g_cnk_explicit_file = NULL;
+  nsync_mu_unlock(&g_cnk_log_mutex);
   atomic_store(&g_cnk_log_level, CNK_LOG_LEVEL_WARN);
   atomic_store(&g_cnk_unsafe_log_apdu, false);
   atomic_store(&g_cnk_piv_metadata_cache_enabled, true);
@@ -375,6 +422,16 @@ void cnk_reset_logging(void) {
 void cnk_config_logging_from_env(void) {
   CNK_LOG_SETTINGS settings = {0};
   settings.piv_metadata_cache_enabled = CK_TRUE;
+  CK_BBOOL explicitLogging;
+  int explicitLevel;
+  CK_BBOOL explicitUnsafe;
+  FILE *explicitFile;
+  nsync_mu_lock(&g_cnk_log_mutex);
+  explicitLogging = g_cnk_explicit_logging;
+  explicitLevel = g_cnk_explicit_level;
+  explicitUnsafe = g_cnk_explicit_unsafe;
+  explicitFile = g_cnk_explicit_file;
+  nsync_mu_unlock(&g_cnk_log_mutex);
   cnk_capture_process_name();
 #if defined(CNK_VERBOSE)
   settings.level = CNK_LOG_LEVEL_DEBUG;
@@ -420,6 +477,13 @@ void cnk_config_logging_from_env(void) {
     cnk_set_log_path(&settings, log_path, CK_FALSE);
 
   cnk_reset_logging();
+  if (explicitLogging) {
+    settings.level = explicitLevel;
+    settings.level_set = CK_TRUE;
+    settings.unsafe_log_apdu = explicitUnsafe;
+    settings.unsafe_log_apdu_set = CK_TRUE;
+    settings.path_set = CK_FALSE;
+  }
   atomic_store(&g_cnk_log_level, settings.level_set ? settings.level : CNK_LOG_LEVEL_WARN);
   atomic_store(&g_cnk_unsafe_log_apdu, settings.unsafe_log_apdu_set && settings.unsafe_log_apdu ? true : false);
   atomic_store(&g_cnk_piv_metadata_cache_enabled,
@@ -427,8 +491,12 @@ void cnk_config_logging_from_env(void) {
 
   char resolved_path[CNK_LOG_PATH_MAX];
   FILE *log_file = cnk_open_configured_log(&settings, resolved_path, sizeof(resolved_path));
+  if (explicitLogging && explicitFile != NULL) {
+    log_file = explicitFile;
+    snprintf(resolved_path, sizeof(resolved_path), "caller-provided stream");
+  }
   if (log_file != NULL) {
-    cnk_replace_log_file(log_file, CK_TRUE);
+    cnk_replace_log_file(log_file, explicitLogging && explicitFile != NULL ? CK_FALSE : CK_TRUE);
     CNK_INFO("Standalone logging enabled at %s", resolved_path);
   }
 }

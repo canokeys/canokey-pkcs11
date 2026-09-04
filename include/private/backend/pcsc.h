@@ -257,6 +257,8 @@ CK_RV cnk_get_piv_metadata_directory_cached(CNK_PKCS11_SESSION *session, CNK_PIV
 void cnk_piv_public_cache_invalidate(CNK_PKCS11_SESSION *session);
 
 CK_RV cnk_get_piv_algorithm_extension(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config);
+CK_RV cnk_get_piv_algorithm_extension_cached(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config);
+void cnk_piv_algorithm_extension_cache_invalidate(void);
 
 // Firmware 6.0+ exposes an unauthenticated PIV GET CHALLENGE command backed by
 // the token RNG. Older firmware reports supported = CK_FALSE.
