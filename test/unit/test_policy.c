@@ -129,7 +129,6 @@ static void test_reject_invalid_touch_policy(void **state) {
 static void test_key_capabilities_by_algorithm(void **state) {
   (void)state;
   CNK_PKCS11_SESSION session = {0};
-  session.secp521r1Algorithm = PIV_ALG_ECC_521;
 
   assert_true(CNK_PivPrivateKeyCanSign(&session, PIV_ALG_RSA_2048));
   assert_true(CNK_PivPrivateKeyCanDecrypt(&session, PIV_ALG_RSA_2048));

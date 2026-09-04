@@ -249,15 +249,35 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR algorithmT
   if (publicKey != NULL && publicKeyLen == NULL)
     return CKR_ARGUMENTS_BAD;
 
-  SCARDHANDLE card = 0;
-  CK_RV rv = connectPiv(slotID, &card);
-  if (rv != CKR_OK)
-    return rv;
-
   CK_BYTE apdu[] = {0x00, 0xF7, 0x00, pivTag, 0x00};
   CK_BYTE response[CNK_PIV_MAX_PUBLIC_KEY_RESPONSE];
-  DWORD responseLen = sizeof(response);
-  LONG pcscRv = cnk_transceive_apdu(card, apdu, sizeof(apdu), response, &responseLen, CK_TRUE);
+  SCARDHANDLE card = 0;
+  CK_RV rv = CKR_DEVICE_ERROR;
+  DWORD responseLen = 0;
+  LONG pcscRv = SCARD_S_SUCCESS;
+  CK_BYTE sw1 = 0;
+  CK_BYTE sw2 = 0;
+  for (CK_ULONG attempt = 0; attempt < 2; attempt++) {
+    rv = connectPiv(slotID, &card);
+    if (rv != CKR_OK)
+      return rv;
+    responseLen = sizeof(response);
+    pcscRv = cnk_transceive_apdu(card, apdu, sizeof(apdu), response, &responseLen, CK_TRUE);
+    if (pcscRv != SCARD_S_SUCCESS || responseLen < 2)
+      break;
+    sw1 = response[responseLen - 2];
+    sw2 = response[responseLen - 1];
+    if (attempt == 0 && sw1 == 0x64 && sw2 == 0x00) {
+      // Some firmware revisions can lose the pending GET RESPONSE state for a
+      // long RSA metadata response. Retry the complete SELECT/GET METADATA
+      // transaction once; never publish a partial inventory to Windows.
+      CNK_WARN("GET METADATA for PIV slot 0x%02X returned 6400; retrying complete transaction", pivTag);
+      cnk_disconnect_card(card);
+      card = 0;
+      continue;
+    }
+    break;
+  }
   if (pcscRv != SCARD_S_SUCCESS) {
     CNK_ERROR("Failed to send metadata command: %ld", pcscRv);
     rv = CKR_DEVICE_ERROR;
@@ -268,8 +288,8 @@ CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR algorithmT
     rv = CKR_DEVICE_ERROR;
     goto cleanup;
   }
-  CK_BYTE sw1 = response[responseLen - 2];
-  CK_BYTE sw2 = response[responseLen - 1];
+  sw1 = response[responseLen - 2];
+  sw2 = response[responseLen - 1];
   if (sw1 != 0x90 || sw2 != 0x00) {
     CNK_ERROR("GET METADATA returned error status: %02X%02X", sw1, sw2);
     rv = sw1 == 0x6A && (sw2 == 0x82 || sw2 == 0x88) ? CKR_DATA_INVALID : CKR_DEVICE_ERROR;
