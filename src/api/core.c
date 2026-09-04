@@ -35,6 +35,7 @@ static CK_BBOOL g_initialization_cleanup_pending = CK_FALSE;
 static CK_BBOOL g_backend_cleanup_pending = CK_FALSE;
 static CK_BBOOL g_session_cleanup_pending = CK_FALSE;
 static atomic_flag g_lifecycle_lock = ATOMIC_FLAG_INIT;
+static atomic_uint g_api_admission_count = 0;
 
 CK_BBOOL cnk_cleanup_is_pending(void) {
   return g_initialization_cleanup_pending || g_backend_cleanup_pending || g_session_cleanup_pending;
@@ -51,6 +52,27 @@ void cnk_lifecycle_lock(void) {
 }
 
 void cnk_lifecycle_unlock(void) { atomic_flag_clear(&g_lifecycle_lock); }
+
+CK_RV cnk_api_admission_begin(CNK_API_ADMISSION_GUARD *guard) {
+  if (guard == NULL)
+    return CKR_ARGUMENTS_BAD;
+  cnk_lifecycle_lock();
+  if (!g_cnk_is_initialized) {
+    cnk_lifecycle_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  atomic_fetch_add(&g_api_admission_count, 1);
+  guard->active = CK_TRUE;
+  cnk_lifecycle_unlock();
+  return CKR_OK;
+}
+
+void cnk_api_admission_end(CNK_API_ADMISSION_GUARD *guard) {
+  if (guard != NULL && guard->active) {
+    atomic_fetch_sub(&g_api_admission_count, 1);
+    guard->active = CK_FALSE;
+  }
+}
 
 static void release_lifecycle_lock(atomic_flag **lock) {
   if (lock != NULL && *lock != NULL)
@@ -239,7 +261,10 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   atomic_flag *lifecycleLock CNK_LIFECYCLE_GUARD = &g_lifecycle_lock;
   cnk_lifecycle_lock();
 
-  CNK_ENSURE_INITIALIZED();
+  // C_Finalize already owns the lifecycle lock, so use a direct check rather
+  // than the public API admission guard (which would try to reacquire it).
+  if (!g_cnk_is_initialized)
+    CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki not initialized");
 
   // Invalid calls must not consume a managed-mode reference.
   CNK_ENSURE_NULL(pReserved);
@@ -255,6 +280,13 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   // in progress. Calls that already hold references or card transactions are
   // drained before the PC/SC context is released.
   g_cnk_is_initialized = CK_FALSE;
+  while (atomic_load(&g_api_admission_count) != 0) {
+#ifdef _WIN32
+    Sleep(0);
+#else
+    sched_yield();
+#endif
+  }
 
   // Wake a blocking C_WaitForSlotEvent before waiting for the operation
   // counter. cnk_cleanup_pcsc performs the same cancellation later, but the

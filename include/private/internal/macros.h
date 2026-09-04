@@ -2,6 +2,7 @@
 #define CNK_INTERNAL_MACROS_H
 
 #include "backend/pcsc.h"
+#include "internal/lifecycle.h"
 #include "internal/logging.h"
 #include "internal/util.h"
 #include "pkcs11.h"
@@ -10,11 +11,18 @@
  * Macro to check if the PKCS#11 library is initialized
  * Returns CKR_CRYPTOKI_NOT_INITIALIZED if not initialized
  */
+#if defined(__clang__) || defined(__GNUC__)
+#define CNK_API_ADMISSION_CLEANUP __attribute__((cleanup(cnk_api_admission_end)))
+#else
+#error "CanoKey API admission guards require compiler cleanup support"
+#endif
+
 #define CNK_ENSURE_INITIALIZED()                                                                                       \
+  CNK_API_ADMISSION_GUARD _cnk_api_admission_guard CNK_API_ADMISSION_CLEANUP = {.active = CK_FALSE};                   \
   do {                                                                                                                 \
-    if (CNK_UNLIKELY(!g_cnk_is_initialized)) {                                                                         \
-      CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki not initialized");                                            \
-    }                                                                                                                  \
+    CK_RV _cnk_api_admission_rv = cnk_api_admission_begin(&_cnk_api_admission_guard);                                  \
+    if (_cnk_api_admission_rv != CKR_OK)                                                                               \
+      return _cnk_api_admission_rv;                                                                                    \
   } while (0)
 
 /**
