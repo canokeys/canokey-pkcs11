@@ -204,13 +204,19 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
 
   // Get firmware version
   CK_BYTE fw_major, fw_minor;
-  CK_RV rv = cnk_get_version(slotID, &fw_major, &fw_minor, (char *)pInfo->model, sizeof(pInfo->model));
+  char model[sizeof(pInfo->model) + 1] = {0};
+  CK_RV rv = cnk_get_version(slotID, &fw_major, &fw_minor, model, sizeof(model));
   if (rv != CKR_OK) {
     // If we can't get the version, default to 1.0
     CNK_WARN("Failed to get firmware version, defaulting to 1.0");
     fw_major = 1;
     fw_minor = 0;
   }
+  memset(pInfo->model, ' ', sizeof(pInfo->model));
+  size_t modelLen = strlen(model);
+  if (modelLen > sizeof(pInfo->model))
+    modelLen = sizeof(pInfo->model);
+  memcpy(pInfo->model, model, modelLen);
 
   // Set hardware and firmware versions
   pInfo->hardwareVersion.major = 1;
@@ -587,11 +593,13 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
 
 CK_RV C_InitToken(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_UTF8CHAR_PTR pLabel) {
   CNK_LOG_FUNC(": slotID: %lu, pPin: %p, ulPinLen: %lu, pLabel: %p", slotID, pPin, ulPinLen, pLabel);
+  CNK_ENSURE_INITIALIZED();
   CNK_RET_NOT_IMPLEMENTED;
 }
 
 CK_RV C_InitPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
   CNK_LOG_FUNC(": hSession: %lu, pPin: %p, ulPinLen: %lu", hSession, pPin, ulPinLen);
+  CNK_ENSURE_INITIALIZED();
   CNK_RET_NOT_IMPLEMENTED;
 }
 

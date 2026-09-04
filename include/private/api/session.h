@@ -88,6 +88,13 @@ typedef struct {
   CK_MECHANISM_TYPE mechanismType;
   mbedtls_md_type_t type;
   mbedtls_md_context_t context;
+  // Length queries preserve the context, so remember which completion API
+  // the caller selected across the two-stage output boundary.
+  enum {
+    CNK_DIGEST_MODE_UNDECIDED = 0,
+    CNK_DIGEST_MODE_SINGLE_PART,
+    CNK_DIGEST_MODE_MULTI_PART,
+  } mode;
 } CNK_PKCS11_DIGESTING_CONTEXT;
 
 typedef struct {

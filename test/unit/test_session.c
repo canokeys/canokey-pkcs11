@@ -484,8 +484,42 @@ static void test_digest_key_rejects_non_extractable_secret(void **state) {
   assert_int_equal(C_CloseSession(session), CKR_OK);
 }
 
+static void test_unsupported_slot_functions_require_initialization(void **state) {
+  (void)state;
+  CK_BYTE pin = '1';
+  CK_UTF8CHAR label[32] = {0};
+  assert_int_equal(C_InitToken(0, &pin, sizeof(pin), label), CKR_CRYPTOKI_NOT_INITIALIZED);
+  assert_int_equal(C_InitPIN(CK_INVALID_HANDLE, &pin, sizeof(pin)), CKR_CRYPTOKI_NOT_INITIALIZED);
+}
+
+static void test_close_all_sessions_validates_slot(void **state) {
+  (void)state;
+  assert_int_equal(C_CloseAllSessions(1), CKR_SLOT_ID_INVALID);
+  assert_int_equal(C_CloseAllSessions(0), CKR_OK);
+}
+
+static void test_generate_key_validates_session_before_mechanism(void **state) {
+  (void)state;
+  CK_MECHANISM mechanism = {CKM_DES_KEY_GEN, NULL, 0};
+  CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+  assert_int_equal(C_GenerateKey(CK_INVALID_HANDLE, &mechanism, NULL, 0, &key), CKR_SESSION_HANDLE_INVALID);
+}
+
+static void test_create_object_validates_template_before_management_login(void **state) {
+  (void)state;
+  CK_SESSION_HANDLE session;
+  assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &session), CKR_OK);
+  CK_OBJECT_HANDLE object = CK_INVALID_HANDLE;
+  CK_OBJECT_CLASS dataClass = CKO_DATA;
+  CK_ATTRIBUTE validClassOnly = {CKA_CLASS, &dataClass, sizeof(dataClass)};
+  assert_int_equal(C_CreateObject(session, NULL, 1, &object), CKR_ARGUMENTS_BAD);
+  assert_int_equal(C_CreateObject(session, &validClassOnly, 1, &object), CKR_TEMPLATE_INCOMPLETE);
+  assert_int_equal(C_CloseSession(session), CKR_OK);
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
+      cmocka_unit_test(test_unsupported_slot_functions_require_initialization),
       cmocka_unit_test_setup_teardown(test_close_does_not_deadlock_template_find, setup, teardown),
       cmocka_unit_test_setup_teardown(test_cancel_serializes_with_digest_update, setup, teardown),
       cmocka_unit_test_setup_teardown(test_close_waits_for_digest_update, setup, teardown),
@@ -499,6 +533,9 @@ int main(void) {
       cmocka_unit_test_setup_teardown(test_cached_auth_check_propagates_lock_failure, setup, teardown),
       cmocka_unit_test_setup_teardown(test_data_object_template_rejects_null_object_id, setup, teardown),
       cmocka_unit_test_setup_teardown(test_digest_key_rejects_non_extractable_secret, setup, teardown),
+      cmocka_unit_test_setup_teardown(test_close_all_sessions_validates_slot, setup, teardown),
+      cmocka_unit_test_setup_teardown(test_generate_key_validates_session_before_mechanism, setup, teardown),
+      cmocka_unit_test_setup_teardown(test_create_object_validates_template_before_management_login, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

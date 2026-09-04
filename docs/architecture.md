@@ -134,6 +134,11 @@ not copied or deleted by PKCS#11. Session secret objects are host-resident and
 support copy, secure destroy, restricted metadata updates, and digest when not
 sensitive.
 
+PIV private-key visibility follows the stored PIN policy. PIN-never keys are
+public PKCS#11 objects (`CKA_PRIVATE=false`) so callers can discover and use
+them without authentication. PIN-once and PIN-always keys are private objects
+and are omitted from public-session searches; USER login makes them visible.
+
 ## Firmware Gates
 
 - PIV 5.7+ provides the metadata directory and runtime PQ algorithm IDs.

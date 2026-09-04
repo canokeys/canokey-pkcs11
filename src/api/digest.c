@@ -29,6 +29,7 @@ static CK_RV digestUpdate(CNK_PKCS11_SESSION *session, CK_BYTE_PTR part, CK_ULON
     cnk_reset_digesting_context(session);
     return CKR_FUNCTION_FAILED;
   }
+  session->digestingContext.mode = CNK_DIGEST_MODE_MULTI_PART;
   return CKR_OK;
 }
 
@@ -90,7 +91,7 @@ CK_RV C_Digest(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen
                CK_ULONG_PTR pulDigestLen) {
   CNK_LOG_FUNC(": hSession: %lu, ulDataLen: %lu, pDigest: %p, pulDigestLen: %p", hSession, ulDataLen, pDigest,
                pulDigestLen);
-  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pulDigestLen);
+  CNK_ENSURE_INITIALIZED();
 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
@@ -98,10 +99,20 @@ CK_RV C_Digest(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen
   CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
   if (session->digestingContext.mechanismType == 0)
     CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_DigestInit not called");
+  if (pulDigestLen == NULL) {
+    cnk_reset_digesting_context(session);
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "pulDigestLen is NULL");
+  }
+  if (session->digestingContext.mode == CNK_DIGEST_MODE_MULTI_PART) {
+    cnk_reset_digesting_context(session);
+    CNK_RETURN(CKR_OPERATION_ACTIVE, "C_Digest cannot terminate a multi-part digest");
+  }
   if (pData == NULL && ulDataLen > 0) {
     cnk_reset_digesting_context(session);
     CNK_RETURN(CKR_ARGUMENTS_BAD, "pData is NULL but ulDataLen > 0");
   }
+
+  session->digestingContext.mode = CNK_DIGEST_MODE_SINGLE_PART;
 
   // Check the destination before consuming input so CKR_BUFFER_TOO_SMALL
   // preserves the exact digest state for a retry.
@@ -175,16 +186,27 @@ CK_RV C_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey) {
     cnk_reset_digesting_context(session);
     CNK_RETURN(CKR_FUNCTION_FAILED, "md update failed");
   }
+  session->digestingContext.mode = CNK_DIGEST_MODE_MULTI_PART;
   CNK_RET_OK;
 }
 
 CK_RV C_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest, CK_ULONG_PTR pulDigestLen) {
   CNK_LOG_FUNC(": hSession: %lu, pDigest: %p, pulDigestLen: %p", hSession, pDigest, pulDigestLen);
-  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pulDigestLen);
+  CNK_ENSURE_INITIALIZED();
 
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
   CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
+  if (session->digestingContext.mechanismType == 0)
+    CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "C_DigestInit not called");
+  if (pulDigestLen == NULL) {
+    cnk_reset_digesting_context(session);
+    CNK_RETURN(CKR_ARGUMENTS_BAD, "pulDigestLen is NULL");
+  }
+  if (session->digestingContext.mode == CNK_DIGEST_MODE_SINGLE_PART) {
+    cnk_reset_digesting_context(session);
+    CNK_RETURN(CKR_OPERATION_ACTIVE, "C_DigestFinal cannot terminate a single-part digest");
+  }
   return digestFinal(session, pDigest, pulDigestLen);
 }

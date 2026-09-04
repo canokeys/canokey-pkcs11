@@ -262,6 +262,58 @@ static void test_digest_sha3_256_buffer_too_small(void **state) {
   assert_int_equal(rv, CKR_OK);
 }
 
+static void test_digest_argument_error_terminates_operation(void **state) {
+  (void)state;
+  CK_SESSION_HANDLE session;
+  CNK_MANAGED_MODE_INIT_ARGS args = {.malloc_func = malloc, .free_func = free, .hSCardCtx = 1, .hScard = 1};
+  assert_int_equal(C_CNK_EnableManagedMode(&args), CKR_OK);
+  assert_int_equal(C_Initialize(NULL), CKR_OK);
+  assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION, NULL, NULL, &session), CKR_OK);
+
+  CK_MECHANISM mechanism = {.mechanism = CKM_SHA256, .pParameter = NULL, .ulParameterLen = 0};
+  CK_BYTE data[] = {1, 2, 3};
+  CK_BYTE digest[32];
+  CK_ULONG digestLen = sizeof(digest);
+  assert_int_equal(C_DigestInit(session, &mechanism), CKR_OK);
+  assert_int_equal(C_Digest(session, data, sizeof(data), digest, NULL), CKR_ARGUMENTS_BAD);
+  assert_int_equal(C_Digest(session, data, sizeof(data), digest, &digestLen), CKR_OPERATION_NOT_INITIALIZED);
+
+  assert_int_equal(C_DigestInit(session, &mechanism), CKR_OK);
+  assert_int_equal(C_DigestFinal(session, digest, NULL), CKR_ARGUMENTS_BAD);
+  assert_int_equal(C_DigestFinal(session, digest, &digestLen), CKR_OPERATION_NOT_INITIALIZED);
+
+  assert_int_equal(C_CloseSession(session), CKR_OK);
+  assert_int_equal(C_Finalize(NULL), CKR_OK);
+}
+
+static void test_digest_rejects_mixed_completion_modes(void **state) {
+  (void)state;
+  CK_SESSION_HANDLE session;
+  CNK_MANAGED_MODE_INIT_ARGS args = {.malloc_func = malloc, .free_func = free, .hSCardCtx = 1, .hScard = 1};
+  assert_int_equal(C_CNK_EnableManagedMode(&args), CKR_OK);
+  assert_int_equal(C_Initialize(NULL), CKR_OK);
+  assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION, NULL, NULL, &session), CKR_OK);
+
+  CK_MECHANISM mechanism = {.mechanism = CKM_SHA256, .pParameter = NULL, .ulParameterLen = 0};
+  CK_BYTE data[] = {1, 2, 3};
+  CK_BYTE digest[32];
+  CK_ULONG digestLen = sizeof(digest);
+  assert_int_equal(C_DigestInit(session, &mechanism), CKR_OK);
+  assert_int_equal(C_DigestUpdate(session, data, 1), CKR_OK);
+  assert_int_equal(C_Digest(session, data + 1, sizeof(data) - 1, digest, &digestLen), CKR_OPERATION_ACTIVE);
+  assert_int_equal(C_DigestFinal(session, digest, &digestLen), CKR_OPERATION_NOT_INITIALIZED);
+
+  assert_int_equal(C_DigestInit(session, &mechanism), CKR_OK);
+  digestLen = 0;
+  assert_int_equal(C_Digest(session, data, sizeof(data), NULL, &digestLen), CKR_OK);
+  assert_int_equal(digestLen, sizeof(digest));
+  assert_int_equal(C_DigestFinal(session, digest, &digestLen), CKR_OPERATION_ACTIVE);
+  assert_int_equal(C_Digest(session, data, sizeof(data), digest, &digestLen), CKR_OPERATION_NOT_INITIALIZED);
+
+  assert_int_equal(C_CloseSession(session), CKR_OK);
+  assert_int_equal(C_Finalize(NULL), CKR_OK);
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test(test_digest_sha1_one_shot),
@@ -271,6 +323,8 @@ int main(void) {
       cmocka_unit_test(test_digest_sha256_multi_update),
       cmocka_unit_test(test_digest_sha3_256_one_shot),
       cmocka_unit_test(test_digest_sha3_256_buffer_too_small),
+      cmocka_unit_test(test_digest_argument_error_terminates_operation),
+      cmocka_unit_test(test_digest_rejects_mixed_completion_modes),
   };
   C_CNK_ConfigLogging(CNK_LOG_LEVEL_DEBUG, NULL, CK_TRUE);
   return cmocka_run_group_tests(tests, NULL, NULL);

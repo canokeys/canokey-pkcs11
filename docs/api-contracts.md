@@ -156,11 +156,11 @@ until then callers must not assume multi-card support.
 | --- | --- | --- | --- |
 | `C_GetSlotList` | `SLOT-READ` | Caller owns list. Standalone reader snapshot is protected; managed mode exposes canonical slot 0 only. | NULL is count query; too-small reports count; `tokenPresent` filtering must not expose invalid slots. |
 | `C_GetSlotInfo` | `SLOT-READ` | Borrows output; firmware/name read is guarded as one PC/SC operation. | Returns a complete snapshot; failure leaves no retained state. |
-| `C_GetTokenInfo` | `SLOT-READ` | Session counters are read without reader/session lock inversion; card fields are independent snapshots. | Reports coherent open/RW counts and RNG/version flags; card-query failure does not mutate login/session state. |
+| `C_GetTokenInfo` | `SLOT-READ` | Session counters are read without reader/session lock inversion; card fields are independent snapshots. | Reports coherent open/RW counts and RNG/version flags with blank-padded fixed strings; card-query failure does not mutate login/session state. |
 | `C_GetMechanismList` | `SLOT-READ` | Algorithm-extension data is call-local; caller owns returned list. | NULL/too-small follow two-stage rules. Independently configured algorithms are advertised independently. |
 | `C_GetMechanismInfo` | `SLOT-READ` | Reads call-local firmware algorithm configuration. | Returns info only for actually enabled mechanisms; no capability overclaim or state mutation. |
-| `C_InitToken` | `UNSUPPORTED` | No card mutation or retained caller PIN/label. | Returns not implemented and leaves the token unchanged. |
-| `C_InitPIN` | `UNSUPPORTED` | No PIN retention or card mutation. | Returns not implemented; PIN initialization is outside this module's supported PIV flow. |
+| `C_InitToken` | `UNSUPPORTED` | No card mutation or retained caller PIN/label. | Requires an initialized module, then returns not implemented and leaves the token unchanged. |
+| `C_InitPIN` | `UNSUPPORTED` | No PIN retention or card mutation. | Requires an initialized module, then returns not implemented; PIN initialization is outside this module's supported PIV flow. |
 | `C_SetPIN` | `TOKEN-AUTH` | Forwards borrowed old/new PINs to the PIN form of `C_CNK_SetPIN`; no PIN pointer survives. | Holds the user-operation reservation through card change and cached-PIN update. Failure does not publish a new local PIN. |
 | `C_SeedRandom` | `SESSION` | Validates session and firmware RNG capability; seed bytes are borrowed and never stored. | Returns `CKR_RANDOM_SEED_NOT_SUPPORTED`; never changes token RNG state. |
 | `C_GenerateRandom` | `SESSION` | Output belongs to caller; card operation is guarded and chunked. | Validates the session before treating zero length as a no-op. Failure reports no fabricated bytes or RNG capability change. |
@@ -172,7 +172,7 @@ until then callers must not assume multi-card support.
 | --- | --- | --- | --- |
 | `C_OpenSession` | `SESSION` | Firmware configuration is read before `session_mutex`; new session/token counters publish atomically. | Failure publishes no handle/counter. Success returns one table-owned session with initialized lock/contexts. |
 | `C_CloseSession` | `SESSION` | Sets a closing tombstone, owns a close reference, drains existing calls, then performs token accounting and cleanup. | Concurrent close gets invalid handle. Every failure restores table membership, counters, closing state, and logout barriers consistently; success invalidates handle and zeroizes secrets. |
-| `C_CloseAllSessions` | `SESSION` | Iteratively snapshots one handle and delegates close without holding the table lock across cleanup/card I/O. | Completes when no matching session remains; propagates first non-stale close failure without corrupting remaining sessions. |
+| `C_CloseAllSessions` | `SESSION` | Validates the slot, then iteratively snapshots one handle and delegates close without holding the table lock across cleanup/card I/O. | Invalid slots fail before mutation. Otherwise completes when no matching session remains and propagates the first non-stale close failure without corrupting remaining sessions. |
 | `C_GetSessionInfo` | `SESSION` | Holds session reference and reads table/token state under their owning locks. | Returns one coherent state/flags/slot snapshot; never mutates login or operation state. |
 | `C_GetOperationState` | `UNSUPPORTED` | Does not serialize or expose internal operation buffers. | Returns `CKR_FUNCTION_NOT_SUPPORTED` without consuming an operation. |
 | `C_SetOperationState` | `UNSUPPORTED` | Does not retain serialized state/key handles. | Returns `CKR_FUNCTION_NOT_SUPPORTED` without replacing active operations. |
@@ -191,7 +191,7 @@ until then callers must not assume multi-card support.
 
 | API | Profile | Lifetime and concurrency | Progress and exit guarantee |
 | --- | --- | --- | --- |
-| `C_CreateObject` | `OBJECT` / `CARD-WRITE` | Template is borrowed. Session-secret data is copied under `session->lock`; PIV private/certificate/data writes hold management reservation and zeroize import buffers. | Session object publishes only after full template validation. Card write failure returns no handle; a committed card mutation is never represented as rolled back. |
+| `C_CreateObject` | `OBJECT` / `CARD-WRITE` | Template is borrowed and its class/object identity is validated before authentication. Session-secret data is copied under `session->lock`; PIV private/certificate/data writes hold management reservation and zeroize import buffers. | Session object publishes only after full template validation. Card write failure returns no handle; a committed card mutation is never represented as rolled back. |
 | `C_CopyObject` | `OBJECT` | Source session secret is snapshotted under `session->lock`; copied value is module-owned and zeroized after allocation. | Only copyable visible session secrets succeed. Failure publishes no new handle and leaves source unchanged. |
 | `C_DestroyObject` | `OBJECT` | Holds `session->lock`; secret bytes are zeroized before handle becomes inactive. | Private visibility and destroyable policy are rechecked. PIV token objects remain unchanged and return action prohibited. |
 | `C_GetObjectSize` | `OBJECT` | Uses ordinary attribute APIs; no returned pointer is retained. | Returns a coherent estimated object size or error; no object/operation state mutation. |
@@ -222,10 +222,10 @@ until then callers must not assume multi-card support.
 | API | Profile | Lifetime and concurrency | Progress and exit guarantee |
 | --- | --- | --- | --- |
 | `C_DigestInit` | `OP(DIGEST)` | Creates module-owned hash context under `session->lock`; mechanism pointer is not retained. | Publishes active context only after setup/start succeeds; does not replace another digest. |
-| `C_Digest` | `OP(DIGEST)` | Data/output are borrowed for call. | NULL/too-small preserves digest. Real success consumes it; invalid input or hash failure resets/zeroizes it. |
-| `C_DigestUpdate` | `OP(DIGEST)` | Part is borrowed and processed while holding `session->lock`. | Success advances exactly once. Backend failure terminates/reset context; bad NULL input performs no update. |
+| `C_Digest` | `OP(DIGEST)` | Data/output are borrowed for call; the session records single-part selection across two-stage output queries. | NULL/too-small preserves digest. Real success consumes it; invalid input, hash failure, or an attempt to finish a multi-part digest resets/zeroizes it. |
+| `C_DigestUpdate` | `OP(DIGEST)` | Part is borrowed and processed while holding `session->lock`; success selects multi-part completion. | Success advances exactly once. Backend failure terminates/reset context; bad NULL input performs no update. |
 | `C_DigestKey` | `OP(DIGEST)` / `OBJECT` | Reads a visible session secret under the same session lock; key bytes never leave module. | Sensitive/non-extractable/private-hidden keys are rejected before update. Hash failure resets digest. |
-| `C_DigestFinal` | `OP(DIGEST)` | Output is caller-owned; hash context remains module-owned. | NULL/too-small preserves context. Real success or hash failure resets it. |
+| `C_DigestFinal` | `OP(DIGEST)` | Output is caller-owned; hash context and completion mode remain module-owned. | NULL/too-small preserves context. Real success, invalid output, hash failure, or an attempt to finish a single-part digest resets it. |
 
 ## Sign and Verify APIs
 
@@ -252,7 +252,7 @@ until then callers must not assume multi-card support.
 | `C_DecryptDigestUpdate` | `UNSUPPORTED` | Does not change DECRYPT or DIGEST state. | Returns `CKR_FUNCTION_NOT_SUPPORTED`. |
 | `C_SignEncryptUpdate` | `UNSUPPORTED` | Does not change SIGN or ENCRYPT state. | Returns `CKR_FUNCTION_NOT_SUPPORTED`. |
 | `C_DecryptVerifyUpdate` | `UNSUPPORTED` | Does not change DECRYPT or VERIFY state. | Returns `CKR_FUNCTION_NOT_SUPPORTED`. |
-| `C_GenerateKey` | `OBJECT` | Template is borrowed; random secret prototype is stack-owned and zeroized; final secret is copied under `session->lock`. | Private result requires current USER visibility. Failure publishes no handle and no residual random key. |
+| `C_GenerateKey` | `OBJECT` | Template is borrowed; the session is validated before mechanism dispatch; random secret prototype is stack-owned and zeroized; final secret is copied under `session->lock`. | Private result requires current USER visibility. Failure publishes no handle and no residual random key. |
 | `C_GenerateKeyPair` | `CARD-WRITE` | Templates borrowed; generated public-key buffer call-local. Management reservation spans irreversible generation. | Success publishes deterministic PIV handles after card commit. Failure before/at card call publishes neither handle; no partial local object exists. |
 | `C_WrapKey` | `UNSUPPORTED` | Does not read secret value or alter operation state. | Returns `CKR_FUNCTION_NOT_SUPPORTED`. |
 | `C_UnwrapKey` | `UNSUPPORTED` | Does not retain wrapped data/template or create an object. | Returns `CKR_FUNCTION_NOT_SUPPORTED`. |

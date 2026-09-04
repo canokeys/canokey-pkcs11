@@ -542,7 +542,7 @@ static CK_RV getTemplateDataObject(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
 }
 
 static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS objectClass, CK_BYTE objectId,
-                                  CK_BBOOL *exists) {
+                                  CK_BBOOL *exists, CK_BYTE *pinPolicy) {
   CK_SLOT_ID slotId = session->slotId;
   CK_BYTE pivTag;
   CK_BYTE certTag;
@@ -550,6 +550,8 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
 
   CNK_ENSURE_NONNULL(exists);
   *exists = CK_FALSE;
+  if (pinPolicy != NULL)
+    *pinPolicy = 0;
 
   switch (objectClass) {
   case CKO_CERTIFICATE:
@@ -592,7 +594,7 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
     CK_BYTE algorithmType = 0;
     CK_BYTE publicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
     CK_ULONG publicKeyLen = sizeof(publicKey);
-    rv = cnk_get_metadata(slotId, pivTag, &algorithmType, publicKey, &publicKeyLen, NULL, NULL);
+    rv = cnk_get_metadata(slotId, pivTag, &algorithmType, publicKey, &publicKeyLen, pinPolicy, NULL);
     if (rv == CKR_OK) {
       *exists = CK_TRUE;
       return CKR_OK;
@@ -676,14 +678,20 @@ CK_RV CNK_GetPivPolicies(CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_BYTE d
   CNK_RET_OK;
 }
 
+CK_BBOOL CNK_PivPrivateKeyIsPrivate(CK_BYTE pinPolicy) { return pinPolicy != CNK_PIV_PIN_POLICY_NEVER; }
+
 static CK_RV appendMatchingPivObjects(CNK_PKCS11_SESSION *session, CK_SESSION_HANDLE hSession,
                                       CK_OBJECT_CLASS objectClass, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                                       const CNK_PIV_METADATA_DIRECTORY_ENTRY *directory, CK_ULONG directoryCount) {
   CK_BYTE firstId = session->findIdSpecified ? session->findObjectId : 1;
   CK_BYTE lastId = session->findIdSpecified ? session->findObjectId : PIV_SLOT_COUNT;
+  CK_BBOOL pinCached = CK_FALSE;
+  if (objectClass == CKO_PRIVATE_KEY)
+    CNK_ENSURE_OK(cnk_token_pin_is_cached(session, &pinCached));
 
   for (CK_BYTE id = firstId; id <= lastId; id++) {
     CK_BBOOL exists = CK_FALSE;
+    CK_BYTE pinPolicy = 0;
     if (directory != NULL) {
       CK_BYTE pivTag;
       CK_RV rv = C_CNK_ObjIdToPivTag(id, &pivTag);
@@ -694,17 +702,21 @@ static CK_RV appendMatchingPivObjects(CNK_PKCS11_SESSION *session, CK_SESSION_HA
           CK_BYTE requiredFlag = objectClass == CKO_CERTIFICATE ? CNK_PIV_METADATA_DIRECTORY_FLAG_CERT
                                                                 : CNK_PIV_METADATA_DIRECTORY_FLAG_KEY;
           exists = (directory[i].flags & requiredFlag) != 0;
+          pinPolicy = directory[i].pinPolicy;
           break;
         }
       }
     } else {
-      CK_RV rv = checkPivObjectExists(session, objectClass, id, &exists);
+      CK_RV rv =
+          checkPivObjectExists(session, objectClass, id, &exists, objectClass == CKO_PRIVATE_KEY ? &pinPolicy : NULL);
       if (rv != CKR_OK)
         return rv;
     }
     if (!exists) {
       continue;
     }
+    if (objectClass == CKO_PRIVATE_KEY && CNK_PivPrivateKeyIsPrivate(pinPolicy) && !pinCached)
+      continue;
 
     CK_OBJECT_HANDLE hObject = makeObjectHandle(session->slotId, objectClass, id);
     if (ulCount == 0 || matchTemplate(hSession, hObject, pTemplate, ulCount)) {
@@ -728,7 +740,7 @@ static CK_RV appendMatchingPivDataObjects(CNK_PKCS11_SESSION *session, CK_SESSIO
     if (session->findIdSpecified && session->findObjectId != mapping->objId)
       continue;
 
-    rv = checkPivObjectExists(session, CKO_DATA, mapping->objId, &exists);
+    rv = checkPivObjectExists(session, CKO_DATA, mapping->objId, &exists, NULL);
     if (rv != CKR_OK)
       return rv;
     if (!exists)
@@ -958,11 +970,10 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
 
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
-  CK_BBOOL managementKeyCached = CK_FALSE;
-  CNK_ENSURE_OK(cnk_token_management_key_is_cached(session, &managementKeyCached));
-  if (!managementKeyCached)
-    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "CKU_SO login is required");
 
+  // Validate the local object identity before checking authentication. This
+  // keeps malformed templates deterministic and avoids reporting a missing
+  // management key for an input that could never be written.
   CK_OBJECT_CLASS objectClass;
   CK_BYTE objId;
   CNK_ENSURE_OK(cnk_template_get_object_class(pTemplate, ulCount, CKA_CLASS, &objectClass));
@@ -973,6 +984,11 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
   } else {
     CNK_ENSURE_OK(getTemplateObjectId(pTemplate, ulCount, objectClass, &objId));
   }
+
+  CK_BBOOL managementKeyCached = CK_FALSE;
+  CNK_ENSURE_OK(cnk_token_management_key_is_cached(session, &managementKeyCached));
+  if (!managementKeyCached)
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "CKU_SO login is required");
 
   switch (objectClass) {
   case CKO_DATA: {
@@ -1389,8 +1405,10 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       break;
 
     case CKA_PRIVATE:
-      bbool =
-          (objClass == CKO_PRIVATE_KEY || (objClass == CKO_DATA && dataMapping->privateObject)) ? CK_TRUE : CK_FALSE;
+      bbool = (objClass == CKO_PRIVATE_KEY && CNK_PivPrivateKeyIsPrivate(bPinPolicy)) ||
+                      (objClass == CKO_DATA && dataMapping->privateObject)
+                  ? CK_TRUE
+                  : CK_FALSE;
       rv = setSingleAttributeValue(&pTemplate[i], &bbool, sizeof(bbool));
       break;
 

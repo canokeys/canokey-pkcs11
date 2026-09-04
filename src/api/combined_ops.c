@@ -107,6 +107,10 @@ CK_RV C_GenerateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   CNK_ENSURE_NONNULL(phKey);
   if (ulCount > 0)
     CNK_ENSURE_NONNULL(pTemplate);
+
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+
   if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
     CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "key generation mechanism takes no parameters");
 
@@ -122,8 +126,6 @@ CK_RV C_GenerateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
     CNK_RETURN(CKR_MECHANISM_INVALID, "unsupported secret-key generation mechanism");
   }
 
-  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
-  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   // C_GenerateKey is intentionally host-side and session-only. Advertising
   // these mechanisms does not imply a card RNG or persistent symmetric store.
   CNK_PKCS11_SECRET_KEY_OBJECT prototype = {0};

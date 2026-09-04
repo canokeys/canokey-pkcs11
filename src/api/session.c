@@ -955,6 +955,7 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
 CK_RV C_CloseAllSessions(CK_SLOT_ID slotID) {
   CNK_LOG_FUNC(": slotID: %lu", slotID);
   CNK_ENSURE_INITIALIZED();
+  PKCS11_CHECK_SLOT_ID_VALID(slotID);
 
   for (;;) {
     CK_SESSION_HANDLE handle = CK_INVALID_HANDLE;

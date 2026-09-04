@@ -22,6 +22,15 @@ static void test_default_policy_for_slots(void **state) {
   assert_int_equal(CNK_DefaultPinPolicyForPivObjectId(PIV_SLOT_83), CNK_PIV_PIN_POLICY_ONCE);
 }
 
+static void test_private_visibility_follows_pin_policy(void **state) {
+  (void)state;
+
+  assert_false(CNK_PivPrivateKeyIsPrivate(CNK_PIV_PIN_POLICY_NEVER));
+  assert_true(CNK_PivPrivateKeyIsPrivate(CNK_PIV_PIN_POLICY_ONCE));
+  assert_true(CNK_PivPrivateKeyIsPrivate(CNK_PIV_PIN_POLICY_ALWAYS));
+  assert_true(CNK_PivPrivateKeyIsPrivate(0));
+}
+
 static void test_policy_defaults(void **state) {
   (void)state;
 
@@ -182,6 +191,7 @@ static void test_25519_named_curve_parameters(void **state) {
 int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test(test_default_policy_for_slots),
+      cmocka_unit_test(test_private_visibility_follows_pin_policy),
       cmocka_unit_test(test_policy_defaults),
       cmocka_unit_test(test_always_authenticate_sets_pin_policy_always),
       cmocka_unit_test(test_vendor_pin_policy_overrides_always_authenticate),

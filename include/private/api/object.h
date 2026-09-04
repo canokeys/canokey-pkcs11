@@ -45,6 +45,10 @@ CK_RV CNK_GetPivPolicies(CK_ATTRIBUTE_PTR p_template, CK_ULONG ul_count, CK_BYTE
  */
 CK_BYTE CNK_DefaultPinPolicyForPivObjectId(CK_BYTE obj_id);
 
+// PIN-never PIV keys are public PKCS#11 objects even though they contain a
+// card-resident private key. Other PIV private keys require USER visibility.
+CK_BBOOL CNK_PivPrivateKeyIsPrivate(CK_BYTE pin_policy);
+
 // Translate a canonical algorithm constant to the ID configured by the card.
 // Standard PIV algorithms are returned unchanged; disabled extensions return 0.
 CK_BYTE CNK_PivConfiguredAlgorithm(const CNK_PKCS11_SESSION *session, CK_BYTE canonical_algorithm);
