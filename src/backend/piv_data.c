@@ -24,7 +24,9 @@ static CK_RV cnk_get_piv_data_on_card(SCARDHANDLE hCard, const CK_BYTE *tag, CK_
   memcpy(apdu + 7, tag, tag_len);
   apdu[7 + tag_len] = 0x00;
 
-  CK_BYTE response[CNK_PIV_MAX_DATA_OBJECT_SIZE];
+  // GET DATA returns the object payload followed by SW1/SW2. Reserve those
+  // status bytes in addition to the maximum accepted payload size.
+  CK_BYTE response[CNK_PIV_MAX_DATA_OBJECT_SIZE + 2];
   DWORD response_len = sizeof(response);
   LONG pcsc_rv = cnk_transceive_apdu(hCard, apdu, 8 + tag_len, response, &response_len, fetch_data);
   if (pcsc_rv != SCARD_S_SUCCESS) {

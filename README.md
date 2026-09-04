@@ -231,7 +231,9 @@ metadata path and does not advertise post-quantum mechanisms.
 
 Managed callers that need a coherent read-only inventory can use
 `C_CNK_GetPivMetadataDirectory()`. It returns the same directory in one
-version-gated PIV transaction and does not retain a cache or card handle.
+version-gated PIV transaction. Standalone mode may retain a bounded,
+token-lock-protected public snapshot for up to 60 seconds; managed mode always
+bypasses that snapshot. Neither mode retains a card handle or selected applet.
 
 The PKCS#11 3.2 interface currently supports:
 

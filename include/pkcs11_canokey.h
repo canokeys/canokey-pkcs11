@@ -42,8 +42,9 @@ typedef CNK_MANAGED_MODE_INIT_ARGS *CNK_MANAGED_MODE_INIT_ARGS_PTR;
 #define CNK_PIV_TOUCH_POLICY_CACHED 0x03
 
 // PIV metadata-directory entries returned by the read-only extension below.
-// The directory is a card snapshot; callers own the output array and the
-// module retains no pointer after the call returns.
+// Callers own the output array and the module retains no caller pointer after
+// the call returns. Standalone mode may retain a bounded public copy internally;
+// managed mode bypasses that copy.
 #define CNK_PIV_METADATA_DIRECTORY_FLAG_KEY 0x01
 #define CNK_PIV_METADATA_DIRECTORY_FLAG_CERT 0x02
 #define CNK_PIV_METADATA_DIRECTORY_MAX_ENTRIES 24
