@@ -2,7 +2,15 @@
 
 This a PKCS#11 module that allows applications to leverage the PIV applet on CanoKeys.
 
-This module is based on version 2.40 of the PKCS#11 (Cryptoki) specifications. The complete specifications are available at [oasis-open.org](https://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/os/pkcs11-base-v2.40-os.html).
+See [docs/architecture.md](docs/architecture.md) for implementation layers,
+state ownership, and host/card responsibility boundaries. The normative
+ownership, concurrency, progress, and exit-state rules for every exported API
+are in [docs/api-contracts.md](docs/api-contracts.md).
+
+This module implements the PKCS#11 3.2 interface while retaining the legacy
+2.40 function list for existing applications. The complete 3.2 specification
+is available at
+[oasis-open.org](https://docs.oasis-open.org/pkcs11/pkcs11-base/v3.2/pkcs11-base-v3.2.html).
 
 It uses PCSCLite on Linux, PCSC Framework on macOS, and native PC/SC APIs (`winscard`) on Windows.
 
@@ -21,8 +29,8 @@ brew install cmake cmocka ninja-build # macOS only
 2. Configure and build:
 
 ```bash
-CC=clang cmake -B build -DCMAKE_BUILD_TYPE=Debug -G Ninja -DENABLE_TESTING=ON . # Linux / macOS
-cmake -B build -DCMAKE_BUILD_TYPE=Debug -G "Visual Studio 17 2022" -T ClangCL -A x64 # Windows
+CC=clang CXX=clang cmake -B build -DCMAKE_BUILD_TYPE=Debug -G Ninja -DENABLE_TESTING=ON . # Linux / macOS
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -G Ninja -DCMAKE_C_COMPILER=clang-cl # Windows developer prompt
 cmake --build build -v
 ```
 
@@ -52,28 +60,71 @@ Its `pInitArgs` parameter is treated as the standard PKCS#11
 `CK_C_INITIALIZE_ARGS` pointer, and `pReserved` must be NULL as required by the
 PKCS#11 specification.
 
+Login state is shared by all sessions for the same token, as required by
+PKCS#11. Closing the last session performs an implicit logout and clears cached
+PIN and management-key material. Explicit logout also cancels all open private
+operation contexts and their context-specific PIN authorizations. PIV PIN-always keys use the standard
+`CKU_CONTEXT_SPECIFIC` flow after `C_SignInit` or `C_DecryptInit`; one
+context-specific login authorizes exactly one private-key operation.
+
+The PKCS#11 3.2 function list contains non-NULL pointers for every standard
+entry point. Unsupported Message, Async, and authenticated-wrap operations
+return `CKR_FUNCTION_NOT_SUPPORTED`. The module also provides the documented
+host-side verification and public-key encryption operations.
+
 ## Logging
 
-In standalone mode, logging is configured during `C_Initialize()` from
-environment variables:
+In standalone mode, logging is configured during `C_Initialize()`. Debug
+builds enable `DEBUG` logging by default and write one process-specific file
+under the first available `TMPDIR`, `TEMP`, or `TMP` directory:
+`canokey_pkcs11_<YYYYMMDD>_<HHMMSS>_<process-name>_<pid>_<tid>.log`.
+Release builds retain the `WARN`
+default and do not open a file unless configured explicitly. The process name
+is in the file name, not repeated on every line, which makes concurrent
+Acrobat helper processes distinguishable without bloating the log.
+
+The library automatically checks a per-user UTF-8 text configuration file
+with `key=value` entries. On Windows the default is
+`%APPDATA%\\Canokeys\\canokey-pkcs11.conf`; on Unix it is
+`$XDG_CONFIG_HOME/canokey-pkcs11.conf` or `$HOME/.config/canokey-pkcs11.conf`;
+macOS also falls back to `~/Library/Application Support/canokey-pkcs11.conf`.
+`CNK_LOG_CONFIG` is an optional explicit path override. Supported keys are
+`log_level`, `log_path`, `log_dir`, `unsafe_log_apdu`, and `metadata_cache`.
+Environment
+variables are applied after the file and therefore take precedence:
 
 - `CNK_LOG_LEVEL`: one of `trace`, `debug`, `info`, `warn`, `error`, `fatal`,
-  `none`, or the corresponding numeric log level. The default is `warn`.
+  `none`, or the corresponding numeric log level.
+- `CNK_LOG_PATH`: exact log file path. The library opens it in append mode.
+- `CNK_LOG_DIR`: directory for a process-specific
+  `canokey_pkcs11_<YYYYMMDD>_<HHMMSS>_<process-name>_<pid>_<tid>.log` file.
+  `CNK_LOG_PATH` takes
+  precedence when both are set.
 - `CNK_UNSAFE_LOG_APDU`: set to `1`, `true`, `yes`, or `on` to print raw APDU
   command and response bytes. This is disabled by default because APDUs can
   contain PINs, decrypted plaintext, ECDH shared secrets, management-key
   material, and other sensitive data.
+- `CNK_PIV_METADATA_CACHE`: set to `0`, `false`, `no`, or `off` to disable the
+  standalone public PIV metadata, directory, public-key, and certificate cache.
+
+The standalone cache retains only public metadata and certificate bytes for up
+to 60 seconds. Successful local key, certificate, or PIV data writes invalidate
+the snapshot. Every cacheable read checks the cache switch, TTL, and
+managed-mode state; managed mode always performs a hardware read because the
+Windows minidriver owns its refresh policy. Log entries identify `cached` versus
+`hardware` reads.
 
 Raw APDU logging also requires the normal log level to include debug messages,
 for example:
 
 ```bash
-CNK_LOG_LEVEL=debug CNK_UNSAFE_LOG_APDU=1 pkcs11-tool --module ./libcanokey-pkcs11.so --show-info
+CNK_LOG_LEVEL=debug CNK_LOG_DIR="$TMPDIR" CNK_UNSAFE_LOG_APDU=1 pkcs11-tool --module ./libcanokey-pkcs11.so --show-info
 ```
 
-In managed mode, environment variables are ignored. The caller should use
-`C_CNK_ConfigLogging(level, file, unsafe_log_apdu)` to configure logging and to
-decide whether raw APDU bytes are printed.
+If a configured file cannot be opened, logging falls back to the process's
+standard error stream. In managed mode, environment and config-file settings
+are ignored. The caller should use `C_CNK_ConfigLogging(level, file,
+unsafe_log_apdu)`; the supplied `FILE *` remains caller-owned.
 
 ## CanoKey Extensions
 
@@ -107,6 +158,24 @@ remaining retries for the selected secret. Standard `C_SetPIN()` forwards to
 `C_CNK_SetPIN(..., CNK_PIV_PIN_TYPE_PIN, ..., NULL)`. `C_CNK_UnblockPIN()`
 uses the PUK to reset the PIV PIN and can return the remaining PUK tries.
 
+`C_CNK_LoginPinManaged()` performs a USER PIN login and then checks the
+Yubico-compatible ADMIN DATA flags before reading the PIN-protected management
+key from PRINTED. It requires the actual PUK retry counter to be zero, verifies
+and caches the key internally, and clears temporary ADMIN DATA, PRINTED, and key
+buffers before returning. `C_CNK_UnblockPIN()` is prohibited in that mode.
+
+For an already prepared development card,
+`scripts/finalize-pin-managed.ps1` calls the destructive
+`C_CNK_FinalizePinManaged()` extension to authenticate USER and the protected
+management key, permanently block the PUK, and confirm zero retries. It requires
+an explicit acknowledgement switch plus the stable PKCS#11 slot ID and expected
+token serial. The script verifies both before mutation.
+
+```powershell
+.\scripts\finalize-pin-managed.ps1 -SlotId 0 -ExpectedSerial 0 `
+  -AcknowledgePermanentPukBlock
+```
+
 Standard PIV data objects are exposed as `CKO_DATA` token objects when the card
 reports that they exist. Enumeration probes a fixed table of common PIV data
 objects, including CHUID, card capability container, discovery object,
@@ -116,3 +185,81 @@ PIN-protected data objects can be found when present. `C_CreateObject(CKO_DATA)`
 writes or overwrites a PIV data object through `PUT DATA` in an SO session.
 `C_SetAttributeValue` remains read-only for PIV token objects, so
 `CKA_MODIFIABLE` is reported as false.
+
+ECDH, ML-KEM, `CKM_GENERIC_SECRET_KEY_GEN`, and `CKM_AES_KEY_GEN` create
+session-only secret-key objects. These objects can be copied, securely
+destroyed, digested when non-sensitive, and updated through a restricted set of
+label and usage attributes. PIV token objects remain non-copyable,
+non-destroyable, and read-only.
+
+Firmware algorithm extensions are also exposed through their standard
+PKCS#11 key types and named-curve encodings. All extension algorithm IDs are
+read from the card at session creation, so deployments that customize the
+firmware mapping remain discoverable and usable. P-521 supports key generation,
+private-key import, ECDSA sign/verify, and ECDH. Ed25519 supports
+`CKM_EC_EDWARDS_KEY_PAIR_GEN`, private-key import, and pure `CKM_EDDSA`
+signing without a context. X25519 supports
+`CKM_EC_MONTGOMERY_KEY_PAIR_GEN`, private-key import, and
+`CKM_ECDH1_DERIVE`; both PKCS#11 and the CanoKey PIV extension use RFC 7748
+little-endian wire values. SM2 keys expose their correct curve OID but no signing or
+derivation mechanism, because PKCS#11 3.2 defines no SM2 mechanism.
+
+`CKM_EDDSA` currently advertises card-side signing only. The bundled host
+crypto provider has no compatible pure-Ed25519 verification primitive, so the
+module does not claim `CKF_VERIFY` or set `CKA_VERIFY` for these keys.
+
+Public-key verification runs on the host for RSA PKCS#1 v1.5, RSA-PSS,
+ECDSA, and ML-DSA-65. RSA, ECDSA, and ML-DSA support both single-part and
+`C_VerifyUpdate`/`C_VerifyFinal` flows. RSA public-key encryption also runs on
+the host for `CKM_RSA_X_509`, `CKM_RSA_PKCS`, and `CKM_RSA_PKCS_OAEP`;
+encryption is single-part. Mixed host/card mechanisms omit `CKF_HW` because not
+every advertised operation is performed by the token.
+
+Firmware PIV version 6.0 or newer exposes the token RNG through the
+unauthenticated `00 84` command. `C_GenerateRandom` advertises `CKF_RNG` only
+for those tokens and splits arbitrary output lengths into requests of at most
+256 bytes. The firmware RNG is self-seeded and has no entropy-injection APDU,
+so `C_SeedRandom` returns `CKR_RANDOM_SEED_NOT_SUPPORTED`.
+
+## Post-Quantum Keys
+
+Firmware 5.7 or newer exposes a versioned PIV metadata directory and runtime
+algorithm-extension IDs. The module uses those facilities to discover keys in
+all 24 PIV key slots (`9A`, `9C`, `9D`, `9E`, and `82` through `95`) without
+probing every slot individually. Older firmware falls back to the per-slot
+metadata path and does not advertise post-quantum mechanisms.
+
+Managed callers that need a coherent read-only inventory can use
+`C_CNK_GetPivMetadataDirectory()`. It returns the same directory in one
+version-gated PIV transaction. Standalone mode may retain a bounded,
+token-lock-protected public snapshot for up to 60 seconds; managed mode always
+bypasses that snapshot. Neither mode retains a card handle or selected applet.
+
+The PKCS#11 3.2 interface currently supports:
+
+- ML-DSA-65 key generation, signing, and host-side verification with
+  `CKM_ML_DSA_KEY_PAIR_GEN` and `CKM_ML_DSA`. Both single-part and streaming
+  input are supported. PIV currently signs with an empty ML-DSA context, so
+  additional signing contexts are rejected.
+- ML-KEM-768 key generation, host-side encapsulation, and on-card
+  decapsulation with `CKM_ML_KEM_KEY_PAIR_GEN`, `CKM_ML_KEM`,
+  `C_EncapsulateKey`, and `C_DecapsulateKey`. Shared secrets are returned as
+  session `CKO_SECRET_KEY` objects.
+- Seed-based private-key import through `C_CreateObject`: ML-DSA-65 accepts a
+  32-byte `CKA_SEED`, and ML-KEM-768 accepts the 64-byte FIPS 203 `d || z`
+  seed. The matching `CKA_PARAMETER_SET` is required.
+
+Only `CKP_ML_DSA_65` and `CKP_ML_KEM_768` are accepted. Encapsulation uses the
+same pinned `mlkem-native` implementation as CanoKey firmware.
+
+The downloadable `test_pqc.exe` requires explicit token identity. It runs
+non-destructive checks by default; enable the write matrix only when overwriting
+IDs 08, 09, 23, and 24 is intended:
+
+```powershell
+$env:CNK_PIV_PIN = '<PIN>'
+$env:CNK_PIV_SLOT_ID = '0'
+$env:CNK_PIV_SERIAL = '0'
+$env:CNK_RUN_DESTRUCTIVE_REAL_TESTS = '1'
+.\test_pqc.exe .\canokey-pkcs11.dll
+```

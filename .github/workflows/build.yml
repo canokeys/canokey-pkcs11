@@ -5,39 +5,62 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    if: ${{ !contains(github.event.head_commit.message, 'ci skip') }}
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, 'ci skip') }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - name: Ubuntu latest
+            os: ubuntu-latest
+            artifact-suffix: ubuntu-latest
             pre-build-script: |
               sudo apt-get update -y
               sudo apt-get install -y libpcsclite-dev libcmocka-dev
-            cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=clang'
-          - os: windows-latest
+            cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DBUILD_FUZZING=ON -DCMAKE_C_COMPILER=clang'
+          - name: Ubuntu latest / ASan UBSan
+            os: ubuntu-latest
+            artifact-suffix: ubuntu-sanitized
+            pre-build-script: |
+              sudo apt-get update -y
+              sudo apt-get install -y libpcsclite-dev libcmocka-dev
+            cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DBUILD_FUZZING=ON -DCMAKE_C_COMPILER=clang -DCMAKE_C_FLAGS=-fsanitize=address,undefined\ -fno-omit-frame-pointer -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined'
+          - name: Windows Server 2022 / Visual Studio 2022
+            os: windows-2022
+            artifact-suffix: windows-2022
             pre-build-script: ''
-            cmake-config-args: '-G "Visual Studio 17 2022" -T ClangCL -A x64'
-          - os: macos-latest
+            cmake-config-args: ''
+          - name: Windows Server 2025 / Visual Studio 2026
+            os: windows-2025
+            artifact-suffix: windows-2025-vs2026
+            pre-build-script: ''
+            cmake-config-args: ''
+          - name: macOS latest
+            os: macos-latest
+            artifact-suffix: macos-latest
             pre-build-script: |
               brew update
               brew install cmocka
-            cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=clang'
+            cmake-config-args: '-G Ninja -DBUILD_TESTING=ON -DBUILD_FUZZING=ON -DCMAKE_C_COMPILER=clang'
 
-    name: ${{ matrix.os }}
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: 'recursive'
+          persist-credentials: false
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
-          python-version: '3.10'
+          python-version: '3.14'
           cache: 'pip'
           cache-dependency-path: cmake/tf-psa-crypto-generator-requirements.txt
       - name: Pre-build script
@@ -47,20 +70,76 @@ jobs:
         run: >
           python -m pip install --disable-pip-version-check
           --prefer-binary -r cmake/tf-psa-crypto-generator-requirements.txt
+      - name: Install native CMocka
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not $env:VCPKG_INSTALLATION_ROOT) {
+            throw 'VCPKG_INSTALLATION_ROOT is not set on the Windows runner'
+          }
+          $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg.exe'
+          if (-not (Test-Path -LiteralPath $vcpkg)) {
+            throw "vcpkg executable not found: $vcpkg"
+          }
+          & $vcpkg install cmocka:x64-windows --clean-after-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Configure
+        if: runner.os != 'Windows'
         run: >
           cmake -S . -B build ${{ matrix.cmake-config-args }}
           -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')"
       - name: Build
+        if: runner.os != 'Windows'
         run: cmake --build build -v
+      - name: Configure and build on Windows
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSINSTALL=%%i"
+          if not defined VSINSTALL exit /b 1
+          call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
+          for /f "delims=" %%i in ('python -c "import sys; print(sys.executable)"') do set "PYTHON=%%i"
+          cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DBUILD_FUZZING=ON -DBUILD_REAL_TESTING=ON -DCMAKE_TOOLCHAIN_FILE="%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake" -DPython3_EXECUTABLE="%PYTHON%"
+          cmake --build build -v
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
-        if: matrix.os != 'windows-latest' # windows does not have cmocka installed now
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
+      - name: Run bounded fuzzers
+        if: runner.os == 'Linux'
+        run: |
+          ./build/test/fuzz/cnk_fuzz_tlv -max_total_time=10 -print_final_stats=1
+          ./build/test/fuzz/cnk_fuzz_api -max_total_time=10 -print_final_stats=1
+          ./build/test/fuzz/cnk_fuzz_concurrency -max_total_time=10 -print_final_stats=1
+          ./build/test/fuzz/cnk_fuzz_pcsc -max_total_time=10 -print_final_stats=1
+      - name: Run bounded replay fuzzers on macOS
+        if: runner.os == 'macOS'
+        run: |
+          ./build/test/fuzz/cnk_fuzz_tlv -max_total_time=10
+          ./build/test/fuzz/cnk_fuzz_api -max_total_time=10
+          ./build/test/fuzz/cnk_fuzz_concurrency -max_total_time=10
+          ./build/test/fuzz/cnk_fuzz_pcsc -max_total_time=10
+      - name: Run bounded fuzzers on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & .\build\test\fuzz\cnk_fuzz_tlv.exe -max_total_time=10 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\build\test\fuzz\cnk_fuzz_api.exe -max_total_time=10 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\build\test\fuzz\cnk_fuzz_concurrency.exe -max_total_time=10 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\build\test\fuzz\cnk_fuzz_pcsc.exe -max_total_time=10 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: canokey-pkcs11-${{ matrix.os }}
+          name: canokey-pkcs11-${{ matrix.artifact-suffix }}
+          if-no-files-found: error
           path: |
             build/libcanokey-pkcs11.so*
             build/libcanokey-pkcs11.dylib*
             build/**/canokey-pkcs11.dll
+            build/**/test_pqc.exe

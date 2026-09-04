@@ -11,5 +11,6 @@ CK_RV cnk_mgf_to_md(CK_RSA_PKCS_MGF_TYPE mgf, mbedtls_md_type_t *mdType);
 CK_RV cnk_ec_kdf_to_md(CK_ULONG kdf, mbedtls_md_type_t *mdType);
 CK_RV cnk_rsa_pkcs_pss_mech_to_hash_mgf(CK_MECHANISM_TYPE mechanism, CK_MECHANISM_TYPE *hashAlg,
                                         CK_RSA_PKCS_MGF_TYPE *mgf);
+CK_RV cnk_aes192_encrypt_block(const CK_BYTE key[24], const CK_BYTE input[16], CK_BYTE output[16]);
 
 #endif // CNK_INTERNAL_CRYPTO_H
