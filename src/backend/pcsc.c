@@ -233,13 +233,20 @@ CK_RV cnk_slot_exists(CK_SLOT_ID slotID, CK_BBOOL *exists) {
 
 // Initialize PC/SC context only
 CK_RV cnk_initialize_pcsc(void) {
-  if (g_cnk_pcsc_context != 0)
+  if (atomic_load(&g_cnk_pcsc_context) != 0)
     CNK_RET_OK;
 
-  LONG rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &g_cnk_pcsc_context);
+  SCARDCONTEXT context = 0;
+  LONG rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &context);
   if (rv != SCARD_S_SUCCESS) {
     CNK_ERROR("SCardEstablishContext failed with error: 0x%lx", rv);
     return CKR_DEVICE_ERROR;
+  }
+
+  SCARDCONTEXT expected = 0;
+  if (!atomic_compare_exchange_strong(&g_cnk_pcsc_context, &expected, context)) {
+    // Another thread published the process-wide context first.
+    SCardReleaseContext(context);
   }
 
   CNK_RET_OK;
@@ -269,7 +276,12 @@ CK_RV cnk_list_readers(void) {
   DWORD readers_len = 0;
 
   // First call to get the needed buffer size
-  ULONG rv = SCardListReaders(g_cnk_pcsc_context, NULL, NULL, &readers_len);
+  SCARDCONTEXT context = atomic_load(&g_cnk_pcsc_context);
+  if (context == 0) {
+    cnk_mutex_unlock(&g_cnk_readers_mutex);
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  ULONG rv = SCardListReaders(context, NULL, NULL, &readers_len);
   if (rv == (ULONG)SCARD_E_NO_READERS_AVAILABLE || (rv == (ULONG)SCARD_S_SUCCESS && readers_len == 0)) {
     cnk_mutex_unlock(&g_cnk_readers_mutex);
     return CKR_OK;
@@ -289,7 +301,7 @@ CK_RV cnk_list_readers(void) {
   }
 
   // Get the actual readers list
-  rv = SCardListReaders(g_cnk_pcsc_context, NULL, readers_buf, &readers_len);
+  rv = SCardListReaders(context, NULL, readers_buf, &readers_len);
   if (rv != SCARD_S_SUCCESS) {
     ck_free(readers_buf);
     cnk_mutex_unlock(&g_cnk_readers_mutex);
@@ -370,16 +382,17 @@ CK_RV cnk_list_readers(void) {
 // Clean up PC/SC resources
 CK_RV cnk_cleanup_pcsc(void) {
   if (!backend_mutexes_initialized) {
-    if (g_cnk_pcsc_context != 0) {
-      SCardReleaseContext(g_cnk_pcsc_context);
-      g_cnk_pcsc_context = 0;
+    SCARDCONTEXT context = atomic_exchange(&g_cnk_pcsc_context, 0);
+    if (context != 0) {
+      SCardReleaseContext(context);
     }
     return CKR_OK;
   }
 
   // Wake a blocked waiter before taking its serialization mutex.
-  if (g_cnk_pcsc_context)
-    SCardCancel(g_cnk_pcsc_context);
+  SCARDCONTEXT context = atomic_load(&g_cnk_pcsc_context);
+  if (context)
+    SCardCancel(context);
   CK_RV rv = cnk_mutex_lock(&g_cnk_slot_event_mutex);
   if (rv != CKR_OK) {
     CNK_ERROR("Failed to lock slot-event state during PC/SC cleanup");
@@ -406,9 +419,9 @@ CK_RV cnk_cleanup_pcsc(void) {
   known_reader_count = 0;
   next_reader_slot_id = 0;
 
-  if (g_cnk_pcsc_context) {
-    SCardReleaseContext(g_cnk_pcsc_context);
-    g_cnk_pcsc_context = 0;
+  context = atomic_exchange(&g_cnk_pcsc_context, 0);
+  if (context) {
+    SCardReleaseContext(context);
   }
 
   g_cnk_num_readers = 0;
@@ -470,8 +483,9 @@ static void release_pcsc_operation_guard(CK_BBOOL *active) {
 }
 
 CNK_TEST_API void cnk_cancel_pcsc_operations(void) {
-  if (g_cnk_pcsc_context != 0)
-    SCardCancel(g_cnk_pcsc_context);
+  SCARDCONTEXT context = atomic_load(&g_cnk_pcsc_context);
+  if (context != 0)
+    SCardCancel(context);
 }
 
 static void freeSlotEventReaders(CNK_SLOT_EVENT_READER *readers, CK_ULONG count) {
@@ -614,7 +628,12 @@ static CK_RV establishSlotEventBaseline(void) {
   SCARD_READERSTATE *states = NULL;
   CK_SLOT_ID *slotIds = NULL;
   CNK_ENSURE_OK(buildSlotEventStates(&states, &slotIds));
-  LONG pcscRv = SCardGetStatusChange(g_cnk_pcsc_context, 0, states, slot_event_reader_count + 1);
+  SCARDCONTEXT context = atomic_load(&g_cnk_pcsc_context);
+  if (context == 0) {
+    freeSlotEventStates(states, slotIds, slot_event_reader_count);
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  LONG pcscRv = SCardGetStatusChange(context, 0, states, slot_event_reader_count + 1);
   if (pcscRv == SCARD_S_SUCCESS) {
     for (CK_ULONG i = 0; i < slot_event_reader_count; i++)
       slot_event_readers[i].currentState = states[i].dwEventState & ~SCARD_STATE_CHANGED;
@@ -634,7 +653,12 @@ static CK_RV synchronizeSlotEventReadersAfterPnp(void) {
     SCARD_READERSTATE *states = NULL;
     CK_SLOT_ID *slotIds = NULL;
     CNK_ENSURE_OK(buildSlotEventStates(&states, &slotIds));
-    LONG pcscRv = SCardGetStatusChange(g_cnk_pcsc_context, 0, states, readerCount + 1);
+    SCARDCONTEXT context = atomic_load(&g_cnk_pcsc_context);
+    if (context == 0) {
+      freeSlotEventStates(states, slotIds, readerCount);
+      return CKR_CRYPTOKI_NOT_INITIALIZED;
+    }
+    LONG pcscRv = SCardGetStatusChange(context, 0, states, readerCount + 1);
     if (pcscRv != SCARD_S_SUCCESS && pcscRv != SCARD_E_TIMEOUT) {
       freeSlotEventStates(states, slotIds, readerCount);
       return CKR_DEVICE_ERROR;
@@ -660,7 +684,7 @@ static CK_RV synchronizeSlotEventReadersAfterPnp(void) {
 CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
   if (g_cnk_is_managed_mode)
     return CKR_FUNCTION_NOT_SUPPORTED;
-  if (!g_cnk_is_initialized || g_cnk_pcsc_context == 0)
+  if (!g_cnk_is_initialized || atomic_load(&g_cnk_pcsc_context) == 0)
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   CNK_PKCS11_MUTEX_GUARD eventLock CNK_MUTEX_GUARD = {.mutex = &g_cnk_slot_event_mutex};
   CNK_ENSURE_OK(cnk_mutex_lock_guard(&eventLock));
@@ -681,7 +705,12 @@ CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
     CK_SLOT_ID *slotIds = NULL;
     CNK_ENSURE_OK(buildSlotEventStates(&states, &slotIds));
     DWORD timeout = (flags & CKF_DONT_BLOCK) != 0 ? 0 : INFINITE;
-    LONG pcscRv = SCardGetStatusChange(g_cnk_pcsc_context, timeout, states, oldReaderCount + 1);
+    SCARDCONTEXT context = atomic_load(&g_cnk_pcsc_context);
+    if (context == 0) {
+      freeSlotEventStates(states, slotIds, oldReaderCount);
+      return CKR_CRYPTOKI_NOT_INITIALIZED;
+    }
+    LONG pcscRv = SCardGetStatusChange(context, timeout, states, oldReaderCount + 1);
     if (pcscRv == SCARD_E_TIMEOUT) {
       freeSlotEventStates(states, slotIds, oldReaderCount);
       return CKR_NO_EVENT;
@@ -752,7 +781,12 @@ CNK_TEST_API CK_RV cnk_begin_card_transaction(CK_SLOT_ID slotID, SCARDHANDLE *ph
 
   // In managed mode, use the provided card handle
   if (g_cnk_is_managed_mode) {
-    *phCard = g_cnk_scard;
+    SCARDCONTEXT managedContext = 0;
+    SCARDHANDLE managedCard = 0;
+    cnk_load_managed_binding(&managedContext, &managedCard);
+    if (managedContext == 0 || managedCard == 0)
+      CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "managed binding is not available");
+    *phCard = managedCard;
 
     // Begin transaction with default timeout of 2 seconds
     LONG rv = SCardBeginTransaction(*phCard);
@@ -813,8 +847,11 @@ CNK_TEST_API CK_RV cnk_begin_card_transaction(CK_SLOT_ID slotID, SCARDHANDLE *ph
 
   // Connect to the card
   DWORD active_protocol;
-  LONG rv = SCardConnect(g_cnk_pcsc_context, readerName, SCARD_SHARE_SHARED, SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1,
-                         phCard, &active_protocol);
+  SCARDCONTEXT context = atomic_load(&g_cnk_pcsc_context);
+  if (context == 0)
+    CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki finalization is in progress");
+  LONG rv = SCardConnect(context, readerName, SCARD_SHARE_SHARED, SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1, phCard,
+                         &active_protocol);
   ck_free(readerName);
   if (rv != SCARD_S_SUCCESS) {
     CNK_ERROR("SCardConnect failed with error: 0x%lx", rv);

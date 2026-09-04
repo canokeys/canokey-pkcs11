@@ -50,8 +50,9 @@ extern CK_LONG g_cnk_num_readers;
 
 extern CNK_DATA_SPEC _Atomic CK_BBOOL g_cnk_is_initialized;
 extern CNK_DATA_SPEC _Atomic CK_BBOOL g_cnk_is_managed_mode; // true for managed mode, false for standalone mode
-extern CNK_DATA_SPEC SCARDCONTEXT g_cnk_pcsc_context;
-extern CNK_DATA_SPEC SCARDHANDLE g_cnk_scard;
+extern CNK_DATA_SPEC _Atomic SCARDCONTEXT g_cnk_pcsc_context;
+extern CNK_DATA_SPEC _Atomic SCARDHANDLE g_cnk_scard;
+extern CNK_DATA_SPEC _Atomic CK_ULONG g_cnk_managed_binding_epoch;
 extern CNK_TEST_API _Atomic CK_ULONG g_cnk_pcsc_operations;
 extern CNK_PKCS11_MUTEX g_cnk_readers_mutex;
 
@@ -155,6 +156,8 @@ CNK_TEST_API void cnk_cancel_pcsc_operations(void);
 CK_RV cnk_pcsc_operation_begin(void);
 void cnk_pcsc_operation_end(void);
 CK_BBOOL cnk_pcsc_operations_active(void);
+void cnk_store_managed_binding(SCARDCONTEXT context, SCARDHANDLE card);
+void cnk_load_managed_binding(SCARDCONTEXT *context, SCARDHANDLE *card);
 
 // PIV application functions
 CK_RV cnk_select_piv_application(SCARDHANDLE hCard);

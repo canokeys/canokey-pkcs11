@@ -50,11 +50,9 @@
  * @param id The slot ID to check
  */
 #define PKCS11_VALIDATE(ptr, id)                                                                                       \
-  do {                                                                                                                 \
-    CNK_ENSURE_INITIALIZED();                                                                                          \
-    CNK_ENSURE_NONNULL(ptr);                                                                                           \
-    PKCS11_CHECK_SLOT_ID_VALID(id);                                                                                    \
-  } while (0)
+  CNK_ENSURE_INITIALIZED();                                                                                            \
+  CNK_ENSURE_NONNULL(ptr);                                                                                             \
+  PKCS11_CHECK_SLOT_ID_VALID(id)
 
 /**
  * Macro to validate initialization and a required pointer argument
@@ -62,9 +60,7 @@
  * @param ptr The pointer to check
  */
 #define PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(ptr)                                                                  \
-  do {                                                                                                                 \
-    CNK_ENSURE_INITIALIZED();                                                                                          \
-    CNK_ENSURE_NONNULL(ptr);                                                                                           \
-  } while (0)
+  CNK_ENSURE_INITIALIZED();                                                                                            \
+  CNK_ENSURE_NONNULL(ptr)
 
 #endif /* CNK_INTERNAL_MACROS_H */

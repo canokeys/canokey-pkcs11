@@ -243,8 +243,7 @@ initialization_failed:
   // allocator callbacks even though C_Finalize cannot be called.
   if (g_cnk_is_managed_mode) {
     g_cnk_is_managed_mode = CK_FALSE;
-    g_cnk_pcsc_context = 0;
-    g_cnk_scard = 0;
+    cnk_store_managed_binding(0, 0);
     g_cnk_malloc_func = malloc;
     g_cnk_free_func = free;
     mbedtls_platform_set_calloc_free(calloc, free);
@@ -345,8 +344,7 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
 
   if (g_cnk_is_managed_mode)
     g_cnk_is_managed_mode = CK_FALSE;
-  g_cnk_pcsc_context = 0;
-  g_cnk_scard = 0;
+  cnk_store_managed_binding(0, 0);
   g_cnk_malloc_func = malloc;
   g_cnk_free_func = free;
   mbedtls_platform_set_calloc_free(calloc, free);

@@ -14,6 +14,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sched.h>
+#endif
+
 #define CNK_ADMIN_DATA_MAX_LEN 128
 #define CNK_PIN_PROTECTED_DATA_MAX_LEN 64
 #define CNK_MANAGEMENT_KEY_LEN 24
@@ -141,8 +147,39 @@ CNK_TEST_DATA_EXPORT CNK_FREE_FUNC g_cnk_free_func = free;
 
 CNK_TEST_DATA_EXPORT _Atomic CK_BBOOL g_cnk_is_managed_mode =
     CK_FALSE; // False for standalone mode, True for managed mode
-CNK_TEST_DATA_EXPORT SCARDCONTEXT g_cnk_pcsc_context = 0L;
-CNK_TEST_DATA_EXPORT SCARDHANDLE g_cnk_scard = 0L;
+CNK_TEST_DATA_EXPORT _Atomic SCARDCONTEXT g_cnk_pcsc_context = 0L;
+CNK_TEST_DATA_EXPORT _Atomic SCARDHANDLE g_cnk_scard = 0L;
+CNK_TEST_DATA_EXPORT _Atomic CK_ULONG g_cnk_managed_binding_epoch = 0;
+
+void cnk_store_managed_binding(SCARDCONTEXT context, SCARDHANDLE card) {
+  atomic_fetch_add(&g_cnk_managed_binding_epoch, 1);
+  atomic_store(&g_cnk_pcsc_context, context);
+  atomic_store(&g_cnk_scard, card);
+  atomic_fetch_add(&g_cnk_managed_binding_epoch, 1);
+}
+
+void cnk_load_managed_binding(SCARDCONTEXT *context, SCARDHANDLE *card) {
+  if (context == NULL || card == NULL)
+    return;
+  for (;;) {
+    CK_ULONG before = atomic_load(&g_cnk_managed_binding_epoch);
+    if ((before & 1u) != 0)
+      continue;
+    SCARDCONTEXT snapshotContext = atomic_load(&g_cnk_pcsc_context);
+    SCARDHANDLE snapshotCard = atomic_load(&g_cnk_scard);
+    CK_ULONG after = atomic_load(&g_cnk_managed_binding_epoch);
+    if (before == after && (after & 1u) == 0) {
+      *context = snapshotContext;
+      *card = snapshotCard;
+      return;
+    }
+#ifdef _WIN32
+    Sleep(0);
+#else
+    sched_yield();
+#endif
+  }
+}
 
 CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
   CNK_LOG_FUNC(": pInitArgs: %p", pInitArgs);
@@ -178,7 +215,7 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
     goto done;
   }
   if (cnk_pcsc_operations_active() &&
-      (g_cnk_pcsc_context != pInitArgs->hSCardCtx || g_cnk_scard != pInitArgs->hScard)) {
+      (atomic_load(&g_cnk_pcsc_context) != pInitArgs->hSCardCtx || atomic_load(&g_cnk_scard) != pInitArgs->hScard)) {
     // Do not replace process-wide handles while an admitted card operation
     // can still be using the previous binding. The caller may retry after it
     // completes.
@@ -203,8 +240,7 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
   // The current caller owns the live handle for this operation. Minidriver
   // entry points reassert this binding before using the PKCS#11 session, so a
   // CARD_DATA whose handle was deleted is never retained indefinitely.
-  g_cnk_pcsc_context = pInitArgs->hSCardCtx;
-  g_cnk_scard = pInitArgs->hScard;
+  cnk_store_managed_binding(pInitArgs->hSCardCtx, pInitArgs->hScard);
   rv = CKR_OK;
 
 done:
@@ -227,8 +263,7 @@ CK_RV C_CNK_ResetManagedMode(void) {
     return CKR_OPERATION_ACTIVE;
   }
   g_cnk_is_managed_mode = CK_FALSE;
-  g_cnk_pcsc_context = 0;
-  g_cnk_scard = 0;
+  cnk_store_managed_binding(0, 0);
   g_cnk_malloc_func = malloc;
   g_cnk_free_func = free;
   mbedtls_platform_set_calloc_free(calloc, free);
