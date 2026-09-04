@@ -295,6 +295,10 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   cnk_lifecycle_unlock();
   lifecycleLock = NULL;
   cnk_piv_algorithm_extension_cache_invalidate();
+  // Wake a blocking C_WaitForSlotEvent before draining API admissions: that
+  // call keeps its admission guard until SCardGetStatusChange returns.
+  if (!g_cnk_is_managed_mode)
+    cnk_cancel_pcsc_operations();
   while (atomic_load(&g_api_admission_count) != 0) {
 #ifdef _WIN32
     Sleep(0);
@@ -305,12 +309,6 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
 
   cnk_lifecycle_lock();
   lifecycleLock = &g_lifecycle_lock;
-
-  // Wake a blocking C_WaitForSlotEvent before waiting for the operation
-  // counter. cnk_cleanup_pcsc performs the same cancellation later, but the
-  // lifetime barrier must cancel first to avoid waiting forever.
-  if (!g_cnk_is_managed_mode)
-    cnk_cancel_pcsc_operations();
 
   CK_RV activeRv = cnk_session_wait_for_active_calls();
   if (activeRv != CKR_OK) {
