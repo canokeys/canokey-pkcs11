@@ -177,6 +177,14 @@ CK_RV C_CNK_EnableManagedMode(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs) {
     rv = CKR_OPERATION_ACTIVE;
     goto done;
   }
+  if (cnk_pcsc_operations_active() &&
+      (g_cnk_pcsc_context != pInitArgs->hSCardCtx || g_cnk_scard != pInitArgs->hScard)) {
+    // Do not replace process-wide handles while an admitted card operation
+    // can still be using the previous binding. The caller may retry after it
+    // completes.
+    rv = CKR_OPERATION_ACTIVE;
+    goto done;
+  }
 
   // Windows may create several CARD_DATA instances for one physical card.
   // Their PC/SC handles and CSP allocator callbacks can differ. Keep all

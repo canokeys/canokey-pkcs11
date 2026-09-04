@@ -154,6 +154,7 @@ CK_RV cnk_wait_for_pcsc_operations(void);
 CNK_TEST_API void cnk_cancel_pcsc_operations(void);
 CK_RV cnk_pcsc_operation_begin(void);
 void cnk_pcsc_operation_end(void);
+CK_BBOOL cnk_pcsc_operations_active(void);
 
 // PIV application functions
 CK_RV cnk_select_piv_application(SCARDHANDLE hCard);

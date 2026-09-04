@@ -447,6 +447,8 @@ void cnk_pcsc_operation_end(void) {
     ;
 }
 
+CK_BBOOL cnk_pcsc_operations_active(void) { return atomic_load(&g_cnk_pcsc_operations) != 0; }
+
 CK_RV cnk_pcsc_operation_begin(void) {
   // Pair the counter with the initialized admission flag. If finalization
   // wins before the increment, the second check removes the provisional
