@@ -437,11 +437,16 @@ PIV object IDs map to slots as:
   delete case, but there is no standard PIV APDU that deletes both certificates
   and asymmetric keys with matching PKCS#11 object semantics.
 - Current reader enumeration only keeps PC/SC reader names containing `canokey`, case-insensitive.
-- Standalone `C_Initialize()` reads `CNK_LOG_LEVEL` and
-  `CNK_UNSAFE_LOG_APDU`. Raw APDU logs require both debug-or-lower log level
-  and `CNK_UNSAFE_LOG_APDU=1`.
-- Managed mode ignores logging environment variables; callers must use
-  `C_CNK_ConfigLogging(level, file, unsafe_log_apdu)`.
+- Standalone `C_Initialize()` configures logging from an optional
+  `CNK_LOG_CONFIG` key/value file, then applies `CNK_LOG_LEVEL`,
+  `CNK_LOG_PATH`, `CNK_LOG_DIR`, and `CNK_UNSAFE_LOG_APDU` overrides. Debug
+  builds default to a process-specific file in `TMPDIR`, `TEMP`, or `TMP` at
+  `DEBUG` level; Release keeps the `WARN` default and no file. Raw APDU logs
+  require both debug-or-lower log level and `CNK_UNSAFE_LOG_APDU=1`.
+- Managed mode ignores logging environment/config-file settings; callers must
+  use `C_CNK_ConfigLogging(level, file, unsafe_log_apdu)`. A caller-supplied
+  `FILE *` remains caller-owned, while files opened from standalone
+  configuration are closed by the logging lifecycle.
 - Windows CI and local native MSVC/clang-cl builds do not run unit tests for
   now because `test/unit/CMakeLists.txt` requires `PkgConfig` and `cmocka`,
   which are not installed in that environment.

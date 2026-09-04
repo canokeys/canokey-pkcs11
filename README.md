@@ -74,11 +74,23 @@ host-side verification and public-key encryption operations.
 
 ## Logging
 
-In standalone mode, logging is configured during `C_Initialize()` from
-environment variables:
+In standalone mode, logging is configured during `C_Initialize()`. Debug
+builds enable `DEBUG` logging by default and write one process-specific file
+under the first available `TMPDIR`, `TEMP`, or `TMP` directory:
+`canokey_pkcs11_<pid>.log`. Release builds retain the `WARN` default and do
+not open a file unless configured explicitly.
+
+The optional `CNK_LOG_CONFIG` environment variable names a UTF-8 text file
+with `key=value` entries. Supported keys are `log_level`, `log_path`,
+`log_dir`, and `unsafe_log_apdu`. Environment variables are applied after the
+file and therefore take precedence:
 
 - `CNK_LOG_LEVEL`: one of `trace`, `debug`, `info`, `warn`, `error`, `fatal`,
-  `none`, or the corresponding numeric log level. The default is `warn`.
+  `none`, or the corresponding numeric log level.
+- `CNK_LOG_PATH`: exact log file path. The library opens it in append mode.
+- `CNK_LOG_DIR`: directory for a process-specific
+  `canokey_pkcs11_<pid>.log` file. `CNK_LOG_PATH` takes precedence when both
+  are set.
 - `CNK_UNSAFE_LOG_APDU`: set to `1`, `true`, `yes`, or `on` to print raw APDU
   command and response bytes. This is disabled by default because APDUs can
   contain PINs, decrypted plaintext, ECDH shared secrets, management-key
@@ -88,12 +100,13 @@ Raw APDU logging also requires the normal log level to include debug messages,
 for example:
 
 ```bash
-CNK_LOG_LEVEL=debug CNK_UNSAFE_LOG_APDU=1 pkcs11-tool --module ./libcanokey-pkcs11.so --show-info
+CNK_LOG_LEVEL=debug CNK_LOG_DIR="$TMPDIR" CNK_UNSAFE_LOG_APDU=1 pkcs11-tool --module ./libcanokey-pkcs11.so --show-info
 ```
 
-In managed mode, environment variables are ignored. The caller should use
-`C_CNK_ConfigLogging(level, file, unsafe_log_apdu)` to configure logging and to
-decide whether raw APDU bytes are printed.
+If a configured file cannot be opened, logging falls back to the process's
+standard error stream. In managed mode, environment and config-file settings
+are ignored. The caller should use `C_CNK_ConfigLogging(level, file,
+unsafe_log_apdu)`; the supplied `FILE *` remains caller-owned.
 
 ## CanoKey Extensions
 

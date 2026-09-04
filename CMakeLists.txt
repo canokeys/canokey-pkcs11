@@ -141,9 +141,8 @@ else()
   target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_LIB_STATIC")
 endif()
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-  target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_VERBOSE")
-endif()
+# Keep Debug diagnostics enabled for both single- and multi-config generators.
+target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "$<$<CONFIG:Debug>:CNK_VERBOSE>")
 
 target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "MBEDTLS_ALLOW_PRIVATE_ACCESS")
 

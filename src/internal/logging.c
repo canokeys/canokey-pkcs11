@@ -1,11 +1,25 @@
 #include "internal/logging.h"
 
+#include <ctype.h>
 #include <nsync_mu.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#if defined(_WIN32)
+#include <process.h>
+#define CNK_PROCESS_ID _getpid
+#define CNK_PATH_SEPARATOR '\\'
+#else
+#include <unistd.h>
+#define CNK_PROCESS_ID getpid
+#define CNK_PATH_SEPARATOR '/'
+#endif
+
+#define CNK_LOG_PATH_MAX 1024
 
 static const char *const g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE] = {
     "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "NONE",
@@ -15,7 +29,18 @@ static const char *const g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE] = {
 atomic_int g_cnk_log_level = CNK_LOG_LEVEL_WARN;
 atomic_bool g_cnk_unsafe_log_apdu = false;
 static FILE *g_cnk_log_file = NULL;
+static CK_BBOOL g_cnk_log_file_owned = CK_FALSE;
 static nsync_mu g_cnk_log_mutex = NSYNC_MU_INIT;
+
+typedef struct {
+  int level;
+  CK_BBOOL level_set;
+  CK_BBOOL unsafe_log_apdu;
+  CK_BBOOL unsafe_log_apdu_set;
+  char path[CNK_LOG_PATH_MAX];
+  CK_BBOOL path_set;
+  CK_BBOOL path_is_directory;
+} CNK_LOG_SETTINGS;
 
 static int cnk_ascii_tolower(int ch) {
   if (ch >= 'A' && ch <= 'Z')
@@ -77,6 +102,122 @@ static CK_BBOOL cnk_parse_bool(const char *value, CK_BBOOL *result) {
   return CK_FALSE;
 }
 
+static char *cnk_trim_ascii(char *value) {
+  if (value == NULL)
+    return NULL;
+
+  while (*value != '\0' && isspace((unsigned char)*value))
+    value++;
+
+  char *end = value + strlen(value);
+  while (end > value && isspace((unsigned char)end[-1]))
+    *--end = '\0';
+  return value;
+}
+
+static void cnk_set_log_path(CNK_LOG_SETTINGS *settings, const char *value, CK_BBOOL is_directory) {
+  if (settings == NULL || value == NULL || value[0] == '\0')
+    return;
+  size_t length = strlen(value);
+  if (length >= sizeof(settings->path))
+    return;
+  memcpy(settings->path, value, length + 1);
+  settings->path_set = CK_TRUE;
+  settings->path_is_directory = is_directory;
+}
+
+static void cnk_apply_log_setting(CNK_LOG_SETTINGS *settings, const char *key, const char *value) {
+  if (settings == NULL || key == NULL || value == NULL)
+    return;
+
+  if (cnk_ascii_equals_ignore_case(key, "log_level")) {
+    int level;
+    if (cnk_parse_log_level(value, &level)) {
+      settings->level = level;
+      settings->level_set = CK_TRUE;
+    }
+  } else if (cnk_ascii_equals_ignore_case(key, "unsafe_log_apdu")) {
+    CK_BBOOL unsafe_log_apdu;
+    if (cnk_parse_bool(value, &unsafe_log_apdu)) {
+      settings->unsafe_log_apdu = unsafe_log_apdu;
+      settings->unsafe_log_apdu_set = CK_TRUE;
+    }
+  } else if (cnk_ascii_equals_ignore_case(key, "log_path")) {
+    cnk_set_log_path(settings, value, CK_FALSE);
+  } else if (cnk_ascii_equals_ignore_case(key, "log_dir")) {
+    cnk_set_log_path(settings, value, CK_TRUE);
+  }
+}
+
+static void cnk_read_log_config_file(CNK_LOG_SETTINGS *settings, const char *config_path) {
+  if (settings == NULL || config_path == NULL || config_path[0] == '\0')
+    return;
+
+  FILE *config = fopen(config_path, "rb");
+  if (config == NULL)
+    return;
+
+  char line[CNK_LOG_PATH_MAX];
+  while (fgets(line, sizeof(line), config) != NULL) {
+    char *comment = strpbrk(line, "#;");
+    if (comment != NULL)
+      *comment = '\0';
+    char *entry = cnk_trim_ascii(line);
+    // PowerShell and several editors emit a UTF-8 BOM. Treat it as file
+    // encoding metadata so the first setting follows the same rules as all
+    // subsequent key/value entries.
+    if (entry != NULL && strlen(entry) >= 3 && (unsigned char)entry[0] == 0xef && (unsigned char)entry[1] == 0xbb &&
+        (unsigned char)entry[2] == 0xbf)
+      entry = cnk_trim_ascii(entry + 3);
+    if (entry == NULL || entry[0] == '\0')
+      continue;
+    char *separator = strchr(entry, '=');
+    if (separator == NULL)
+      continue;
+    *separator = '\0';
+    cnk_apply_log_setting(settings, cnk_trim_ascii(entry), cnk_trim_ascii(separator + 1));
+  }
+  fclose(config);
+}
+
+static void cnk_replace_log_file(FILE *file, CK_BBOOL owned) {
+  FILE *old_file;
+  CK_BBOOL old_owned;
+  nsync_mu_lock(&g_cnk_log_mutex);
+  old_file = g_cnk_log_file;
+  old_owned = g_cnk_log_file_owned;
+  g_cnk_log_file = file;
+  g_cnk_log_file_owned = owned;
+  nsync_mu_unlock(&g_cnk_log_mutex);
+
+  // Loggers hold the same mutex while using the stream, so it is safe to
+  // close an environment-owned stream after detaching it from the global.
+  if (old_owned && old_file != NULL)
+    fclose(old_file);
+}
+
+static FILE *cnk_open_configured_log(const CNK_LOG_SETTINGS *settings, char *resolved_path, size_t resolved_path_size) {
+  if (settings == NULL || !settings->path_set || resolved_path == NULL || resolved_path_size == 0)
+    return NULL;
+
+  int written;
+  if (settings->path_is_directory) {
+    size_t path_length = strlen(settings->path);
+    if (path_length > 0 && settings->path[path_length - 1] != CNK_PATH_SEPARATOR)
+      written = snprintf(resolved_path, resolved_path_size, "%s%ccanokey_pkcs11_%lu.log", settings->path,
+                         CNK_PATH_SEPARATOR, (unsigned long)CNK_PROCESS_ID());
+    else
+      written = snprintf(resolved_path, resolved_path_size, "%scanokey_pkcs11_%lu.log", settings->path,
+                         (unsigned long)CNK_PROCESS_ID());
+  } else {
+    written = snprintf(resolved_path, resolved_path_size, "%s", settings->path);
+  }
+  if (written < 0 || (size_t)written >= resolved_path_size)
+    return NULL;
+
+  return fopen(resolved_path, "ab");
+}
+
 CK_RV cnk_config_logging(const int level, FILE *file, CK_BBOOL unsafe_log_apdu) {
   if (level >= 0 && level < CNK_LOG_LEVEL_SIZE) {
     atomic_store(&g_cnk_log_level, level);
@@ -84,11 +225,8 @@ CK_RV cnk_config_logging(const int level, FILE *file, CK_BBOOL unsafe_log_apdu) 
     return CKR_ARGUMENTS_BAD;
   }
 
-  if (file != NULL) {
-    nsync_mu_lock(&g_cnk_log_mutex);
-    g_cnk_log_file = file;
-    nsync_mu_unlock(&g_cnk_log_mutex);
-  }
+  if (file != NULL)
+    cnk_replace_log_file(file, CK_FALSE);
 
   atomic_store(&g_cnk_unsafe_log_apdu, unsafe_log_apdu ? true : false);
 
@@ -96,27 +234,60 @@ CK_RV cnk_config_logging(const int level, FILE *file, CK_BBOOL unsafe_log_apdu) 
 }
 
 void cnk_reset_logging(void) {
-  nsync_mu_lock(&g_cnk_log_mutex);
-  g_cnk_log_file = NULL;
-  nsync_mu_unlock(&g_cnk_log_mutex);
+  cnk_replace_log_file(NULL, CK_FALSE);
   atomic_store(&g_cnk_log_level, CNK_LOG_LEVEL_WARN);
   atomic_store(&g_cnk_unsafe_log_apdu, false);
 }
 
 void cnk_config_logging_from_env(void) {
-  atomic_store(&g_cnk_log_level, CNK_LOG_LEVEL_WARN);
-  atomic_store(&g_cnk_unsafe_log_apdu, false);
+  CNK_LOG_SETTINGS settings = {0};
+#if defined(CNK_VERBOSE)
+  settings.level = CNK_LOG_LEVEL_DEBUG;
+  settings.level_set = CK_TRUE;
+  const char *temp_dir = getenv("TMPDIR");
+  if (temp_dir == NULL || temp_dir[0] == '\0')
+    temp_dir = getenv("TEMP");
+  if (temp_dir == NULL || temp_dir[0] == '\0')
+    temp_dir = getenv("TMP");
+  cnk_set_log_path(&settings, temp_dir, CK_TRUE);
+#else
+  settings.level = CNK_LOG_LEVEL_WARN;
+#endif
+
+  // Configuration files are optional and deliberately explicit. This keeps
+  // a library load side-effect free in Release while allowing GUI clients to
+  // opt into a persistent file without inheriting shell stderr.
+  cnk_read_log_config_file(&settings, getenv("CNK_LOG_CONFIG"));
 
   int level;
-  const char *level_env = getenv("CNK_LOG_LEVEL");
-  if (cnk_parse_log_level(level_env, &level)) {
-    atomic_store(&g_cnk_log_level, level);
+  if (cnk_parse_log_level(getenv("CNK_LOG_LEVEL"), &level)) {
+    settings.level = level;
+    settings.level_set = CK_TRUE;
   }
 
   CK_BBOOL unsafe_log_apdu;
-  const char *apdu_env = getenv("CNK_UNSAFE_LOG_APDU");
-  if (cnk_parse_bool(apdu_env, &unsafe_log_apdu)) {
-    atomic_store(&g_cnk_unsafe_log_apdu, unsafe_log_apdu ? true : false);
+  if (cnk_parse_bool(getenv("CNK_UNSAFE_LOG_APDU"), &unsafe_log_apdu)) {
+    settings.unsafe_log_apdu = unsafe_log_apdu;
+    settings.unsafe_log_apdu_set = CK_TRUE;
+  }
+
+  // An exact file path takes precedence over a directory from either source.
+  const char *log_dir = getenv("CNK_LOG_DIR");
+  const char *log_path = getenv("CNK_LOG_PATH");
+  if (log_dir != NULL)
+    cnk_set_log_path(&settings, log_dir, CK_TRUE);
+  if (log_path != NULL)
+    cnk_set_log_path(&settings, log_path, CK_FALSE);
+
+  cnk_reset_logging();
+  atomic_store(&g_cnk_log_level, settings.level_set ? settings.level : CNK_LOG_LEVEL_WARN);
+  atomic_store(&g_cnk_unsafe_log_apdu, settings.unsafe_log_apdu_set && settings.unsafe_log_apdu ? true : false);
+
+  char resolved_path[CNK_LOG_PATH_MAX];
+  FILE *log_file = cnk_open_configured_log(&settings, resolved_path, sizeof(resolved_path));
+  if (log_file != NULL) {
+    cnk_replace_log_file(log_file, CK_TRUE);
+    CNK_INFO("Standalone logging enabled at %s", resolved_path);
   }
 }
 
