@@ -163,6 +163,7 @@ CK_RV C_EncapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
   }
   if (*ciphertextLen < CNK_MLKEM768_CIPHERTEXT_BYTES) {
     *ciphertextLen = CNK_MLKEM768_CIPHERTEXT_BYTES;
+    *key = CK_INVALID_HANDLE;
     mbedtls_platform_zeroize(&prototype, sizeof(prototype));
     return CKR_BUFFER_TOO_SMALL;
   }
