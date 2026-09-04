@@ -111,18 +111,19 @@ PKCS#11 session lifetime is a separate host concern: `C_OpenSession`,
 reader transaction open. A session may span multiple card transactions, and
 only the call that transmits the dependent PIV APDUs owns this critical section.
 
-The target minidriver integration will reference-count managed contexts above
-the PKCS#11 session: each `CARD_DATA` owns one session and one context
-reference, while the final context performs `C_Finalize` and restores the
-default binding. The current bridge already keeps allocator callbacks
-process-wide and immutable, but its explicit context registry is still pending;
-until then callers must not assume multi-card support.
+The minidriver integration reference-counts managed contexts above the
+PKCS#11 session: each `CARD_DATA` owns one session and one context reference,
+while the final context performs `C_Finalize` and restores the default binding.
+The bridge keeps allocator callbacks process-wide and immutable, and rejects a
+second physical card in one process; multi-card support requires a per-token
+backend boundary.
 
 ## Profiles
 
 | Profile | Required behavior |
 | --- | --- |
 | `STATIC` | No initialization requirement, no mutable token/session state, borrowed arguments only, fully concurrent. |
+| `LOGGING` | Changes process-wide diagnostic settings under the logging mutex; a caller-supplied `FILE *` remains borrowed until the next reconfiguration or finalization. |
 | `LIFECYCLE` | Serialized by `g_lifecycle_lock`; allocator, backend, session-manager, and binding transitions are transactional and retryable. |
 | `SLOT-READ` | Requires initialized module and valid slot; reader/card access uses snapshot locks and a PC/SC operation guard; no login mutation. |
 | `EVENT` | Owns the slot-event queue/baseline under its mutex; blocking wait is cancellable by finalization; managed mode is unsupported. |
@@ -148,7 +149,7 @@ until then callers must not assume multi-card support.
 | `C_CancelFunction` | `UNSUPPORTED` | No session lookup or retained state. | Always returns `CKR_FUNCTION_NOT_PARALLEL`; use `C_SessionCancel` for supported cancellation. |
 | `C_CNK_EnableManagedMode` | `LIFECYCLE` | Borrows card handles for the process-wide one-card binding; Windows may rotate both handles and per-context CSP allocators. PKCS#11 internal state uses the DLL allocator, while minidriver output buffers use their owning `CARD_DATA` callbacks. | Rejects standalone initialized state and incompatible cleanup-pending transitions. Success updates the active card handle without cross-heap frees. |
 | `C_CNK_ResetManagedMode` | `LIFECYCLE` | Releases only an uninitialized managed binding; no caller-owned card resource is freed. | Rejects initialized or cleanup-pending state. Success restores default allocators/zero handles atomically. |
-| `C_CNK_ConfigLogging` | `STATIC` | Borrows `FILE *` for the configured logging lifetime; caller must keep it valid until reconfiguration/finalization. | Logging changes are best-effort and thread-safe; no token/session/auth state changes. |
+| `C_CNK_ConfigLogging` | `LOGGING` | Borrows `FILE *` for the configured logging lifetime; caller must keep it valid until reconfiguration/finalization. | Logging changes are best-effort and thread-safe; no token/session/auth state changes. |
 
 ## Slot, Token, and Mechanism APIs
 

@@ -4,8 +4,8 @@
 #include <nsync_mu.h>
 #include <stdarg.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -360,7 +360,6 @@ CK_RV cnk_config_logging(const int level, FILE *file, CK_BBOOL unsafe_log_apdu) 
   if (file != NULL)
     cnk_replace_log_file(file, CK_FALSE);
 
-  cnk_capture_process_name();
   atomic_store(&g_cnk_unsafe_log_apdu, unsafe_log_apdu ? true : false);
 
   return CKR_OK;
@@ -424,7 +423,7 @@ void cnk_config_logging_from_env(void) {
   atomic_store(&g_cnk_log_level, settings.level_set ? settings.level : CNK_LOG_LEVEL_WARN);
   atomic_store(&g_cnk_unsafe_log_apdu, settings.unsafe_log_apdu_set && settings.unsafe_log_apdu ? true : false);
   atomic_store(&g_cnk_piv_metadata_cache_enabled,
-              !settings.piv_metadata_cache_set || settings.piv_metadata_cache_enabled ? true : false);
+               !settings.piv_metadata_cache_set || settings.piv_metadata_cache_enabled ? true : false);
 
   char resolved_path[CNK_LOG_PATH_MAX];
   FILE *log_file = cnk_open_configured_log(&settings, resolved_path, sizeof(resolved_path));

@@ -165,7 +165,11 @@ CK_RV cnk_session_manager_init(void) {
 
   CK_RV rv = cnk_mutex_lock(&session_mutex);
   if (rv != CKR_OK) {
-    cnk_mutex_destroy(&session_mutex);
+    CK_RV destroyRv = cnk_mutex_destroy(&session_mutex);
+    if (destroyRv == CKR_OK) {
+      session_mutex_initialized = CK_FALSE;
+      memset(&session_mutex, 0, sizeof(session_mutex));
+    }
     return rv;
   }
 
@@ -175,7 +179,11 @@ CK_RV cnk_session_manager_init(void) {
     session_table = (CNK_PKCS11_SESSION **)ck_malloc(session_table_size * sizeof(CNK_PKCS11_SESSION *));
     if (session_table == NULL) {
       cnk_mutex_unlock(&session_mutex);
-      cnk_mutex_destroy(&session_mutex);
+      CK_RV destroyRv = cnk_mutex_destroy(&session_mutex);
+      if (destroyRv == CKR_OK) {
+        session_mutex_initialized = CK_FALSE;
+        memset(&session_mutex, 0, sizeof(session_mutex));
+      }
       CNK_RETURN(CKR_HOST_MEMORY, "Failed to allocate memory for session table");
     }
     memset(session_table, 0, session_table_size * sizeof(CNK_PKCS11_SESSION *));
@@ -401,7 +409,6 @@ CK_RV cnk_token_update_cached_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR o
     return CKR_PIN_LEN_RANGE;
   CK_RV lockRv = cnk_mutex_lock(&session->token->lock);
   if (lockRv != CKR_OK) {
-    clear_token_auth(session->token);
     return lockRv;
   }
   if (session->token->logoutPending) {
@@ -975,14 +982,22 @@ CK_RV C_CloseAllSessions(CK_SLOT_ID slotID) {
 
   for (;;) {
     CK_SESSION_HANDLE handle = CK_INVALID_HANDLE;
+    CK_BBOOL waitForClosing = CK_FALSE;
     CNK_ENSURE_OK(cnk_mutex_lock(&session_mutex));
     for (CK_LONG i = 0; i < session_table_size; i++) {
       if (session_table[i] != NULL && session_table[i]->slotId == slotID) {
-        handle = session_table[i]->handle;
+        if (atomic_load(&session_table[i]->closing))
+          waitForClosing = CK_TRUE;
+        else
+          handle = session_table[i]->handle;
         break;
       }
     }
     cnk_mutex_unlock(&session_mutex);
+    if (waitForClosing) {
+      yield_session_close();
+      continue;
+    }
     if (handle == CK_INVALID_HANDLE)
       break;
     CK_RV rv = C_CloseSession(handle);
@@ -1143,7 +1158,7 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
     rv = cnk_verify_piv_pin_with_session(session->slotId, session, pPin, ulPinLen, pPinTries);
     CK_RV lockRv = cnk_mutex_lock(&session->token->lock);
     if (lockRv != CKR_OK) {
-      clear_token_auth(session->token);
+      atomic_store(&session->token->loginState, TOKEN_LOGIN_PUBLIC);
       return lockRv;
     }
     if (session->token->loginState == TOKEN_LOGIN_PENDING_USER)
@@ -1195,7 +1210,7 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
     if (rv != CKR_OK) {
       CK_RV lockRv = cnk_mutex_lock(&session->token->lock);
       if (lockRv != CKR_OK) {
-        clear_token_auth(session->token);
+        atomic_store(&session->token->loginState, TOKEN_LOGIN_PUBLIC);
         return lockRv;
       }
       if (session->token->loginState == TOKEN_LOGIN_PENDING_SO)
@@ -1206,7 +1221,7 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
 
     CK_RV lockRv = cnk_mutex_lock(&session->token->lock);
     if (lockRv != CKR_OK) {
-      clear_token_auth(session->token);
+      atomic_store(&session->token->loginState, TOKEN_LOGIN_PUBLIC);
       return lockRv;
     }
     if (session->token->loginState == TOKEN_LOGIN_PENDING_SO) {

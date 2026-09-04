@@ -6,6 +6,7 @@
 #include "internal/template.h"
 #include "internal/util.h"
 
+#include <mbedtls/platform_util.h>
 #include <string.h>
 
 #define CNK_MAX_PIV_CERTIFICATE_OBJECT_SIZE 8192
@@ -235,6 +236,9 @@ CK_RV cnk_build_piv_ec_import(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCou
     break;
   case PIV_ALG_ECC_521:
     expectedLen = 66;
+    break;
+  case PIV_ALG_SM2:
+    expectedLen = 32;
     break;
   default:
     return CKR_ATTRIBUTE_VALUE_INVALID;

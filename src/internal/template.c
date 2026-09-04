@@ -112,6 +112,7 @@ CK_RV cnk_ec_params_to_piv_algorithm(const CK_BYTE *params, CK_ULONG paramsLen, 
   static const CK_BYTE secp256k1[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x0A};
   static const CK_BYTE ed25519[] = {0x06, 0x03, 0x2B, 0x65, 0x70};
   static const CK_BYTE x25519[] = {0x06, 0x03, 0x2B, 0x65, 0x6E};
+  static const CK_BYTE sm2[] = {0x06, 0x08, 0x2A, 0x81, 0x1C, 0xCF, 0x55, 0x01, 0x82, 0x2D};
   CNK_ENSURE_NONNULL(params, algorithmType);
 
   if (paramsLen == sizeof(p256) && memcmp(params, p256, sizeof(p256)) == 0)
@@ -126,6 +127,8 @@ CK_RV cnk_ec_params_to_piv_algorithm(const CK_BYTE *params, CK_ULONG paramsLen, 
     *algorithmType = PIV_ALG_ED25519;
   else if (paramsLen == sizeof(x25519) && memcmp(params, x25519, sizeof(x25519)) == 0)
     *algorithmType = PIV_ALG_X25519;
+  else if (paramsLen == sizeof(sm2) && memcmp(params, sm2, sizeof(sm2)) == 0)
+    *algorithmType = PIV_ALG_SM2;
   else
     return CKR_ATTRIBUTE_VALUE_INVALID;
   return CKR_OK;

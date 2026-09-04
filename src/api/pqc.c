@@ -239,7 +239,10 @@ CK_RV C_DecapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
   CK_BYTE sharedSecret[CNK_MLKEM768_SHARED_SECRET_BYTES];
   CK_ULONG sharedSecretLen = sizeof(sharedSecret);
   CK_BBOOL operationReserved = CK_FALSE;
-  rv = cnk_token_begin_card_operation(session);
+  // Private decapsulation must reserve USER authorization atomically with
+  // the operation; otherwise logout could complete between the prototype
+  // check and card reservation.
+  rv = prototype.private ? cnk_token_begin_user_operation(session) : cnk_token_begin_card_operation(session);
   if (rv != CKR_OK)
     goto cleanup;
   operationReserved = CK_TRUE;

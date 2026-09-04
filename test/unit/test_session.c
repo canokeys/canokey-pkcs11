@@ -209,6 +209,7 @@ static void test_cancel_serializes_with_digest_update(void **state) {
   pthread_t thread;
   assert_int_equal(pthread_create(&thread, NULL, digestThread, &ctx), 0);
   waitForWorker(&ctx.entered);
+  waitForWorker(&ctx.updateStarted);
   assert_int_equal(C_SessionCancel(session, CKF_DIGEST), CKR_OK);
   assert_int_equal(pthread_join(thread, NULL), 0);
 #endif
@@ -252,6 +253,7 @@ static void test_close_waits_for_digest_update(void **state) {
   pthread_t thread;
   assert_int_equal(pthread_create(&thread, NULL, digestThread, &ctx), 0);
   waitForWorker(&ctx.entered);
+  waitForWorker(&ctx.updateStarted);
   CloseThreadContext closeCtx = {.session = session, .rv = CKR_GENERAL_ERROR, .finished = false};
   pthread_t closeThreadId;
   assert_int_equal(pthread_create(&closeThreadId, NULL, closeThread, &closeCtx), 0);
