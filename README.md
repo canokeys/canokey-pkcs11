@@ -77,8 +77,10 @@ host-side verification and public-key encryption operations.
 In standalone mode, logging is configured during `C_Initialize()`. Debug
 builds enable `DEBUG` logging by default and write one process-specific file
 under the first available `TMPDIR`, `TEMP`, or `TMP` directory:
-`canokey_pkcs11_<pid>.log`. Release builds retain the `WARN` default and do
-not open a file unless configured explicitly.
+`canokey_pkcs11_<process-name>_<pid>.log`. Release builds retain the `WARN`
+default and do not open a file unless configured explicitly. The process name
+is in the file name, not repeated on every line, which makes concurrent
+Acrobat helper processes distinguishable without bloating the log.
 
 The library automatically checks a per-user UTF-8 text configuration file
 with `key=value` entries. On Windows the default is
@@ -93,8 +95,8 @@ variables are applied after the file and therefore take precedence:
   `none`, or the corresponding numeric log level.
 - `CNK_LOG_PATH`: exact log file path. The library opens it in append mode.
 - `CNK_LOG_DIR`: directory for a process-specific
-  `canokey_pkcs11_<pid>.log` file. `CNK_LOG_PATH` takes precedence when both
-  are set.
+  `canokey_pkcs11_<process-name>_<pid>.log` file. `CNK_LOG_PATH` takes
+  precedence when both are set.
 - `CNK_UNSAFE_LOG_APDU`: set to `1`, `true`, `yes`, or `on` to print raw APDU
   command and response bytes. This is disabled by default because APDUs can
   contain PINs, decrypted plaintext, ECDH shared secrets, management-key

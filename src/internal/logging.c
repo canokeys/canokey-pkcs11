@@ -11,8 +11,9 @@
 
 #if defined(_WIN32)
 #include <process.h>
-#define CNK_PROCESS_ID _getpid
+#include <windows.h>
 #define CNK_PATH_SEPARATOR '\\'
+#define CNK_PROCESS_ID _getpid
 #else
 #include <unistd.h>
 #define CNK_PROCESS_ID getpid
@@ -20,6 +21,7 @@
 #endif
 
 #define CNK_LOG_PATH_MAX 1024
+#define CNK_PROCESS_NAME_MAX 64
 
 static const char *const g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE] = {
     "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "NONE",
@@ -31,6 +33,7 @@ atomic_bool g_cnk_unsafe_log_apdu = false;
 static FILE *g_cnk_log_file = NULL;
 static CK_BBOOL g_cnk_log_file_owned = CK_FALSE;
 static nsync_mu g_cnk_log_mutex = NSYNC_MU_INIT;
+static char g_cnk_process_name[CNK_PROCESS_NAME_MAX] = "canokey-pkcs11";
 
 typedef struct {
   int level;
@@ -41,6 +44,56 @@ typedef struct {
   CK_BBOOL path_set;
   CK_BBOOL path_is_directory;
 } CNK_LOG_SETTINGS;
+
+static void cnk_sanitize_process_name(void) {
+  // Keep the process identity useful in a filename without allowing path
+  // separators or other platform-specific characters to escape the log dir.
+  for (size_t i = 0; g_cnk_process_name[i] != '\0'; i++) {
+    unsigned char ch = (unsigned char)g_cnk_process_name[i];
+    if (!isalnum(ch) && ch != '.' && ch != '-' && ch != '_')
+      g_cnk_process_name[i] = '_';
+  }
+}
+
+static void cnk_capture_process_name(void) {
+  const char *path = NULL;
+#if defined(_WIN32)
+  char executable_path[CNK_LOG_PATH_MAX];
+  DWORD executable_length = GetModuleFileNameA(NULL, executable_path, sizeof(executable_path));
+  if (executable_length > 0 && executable_length < sizeof(executable_path))
+    path = executable_path;
+#elif defined(__APPLE__) || defined(__MACH__)
+  path = getprogname();
+#elif defined(__linux__)
+  FILE *process_file = fopen("/proc/self/comm", "rb");
+  if (process_file != NULL) {
+    if (fgets(g_cnk_process_name, sizeof(g_cnk_process_name), process_file) != NULL) {
+      char *newline = strpbrk(g_cnk_process_name, "\r\n");
+      if (newline != NULL)
+        *newline = '\0';
+    }
+    fclose(process_file);
+    if (g_cnk_process_name[0] != '\0') {
+      cnk_sanitize_process_name();
+      return;
+    }
+  }
+#endif
+
+  if (path != NULL && path[0] != '\0') {
+    const char *basename = strrchr(path, '/');
+    const char *windows_basename = strrchr(path, '\\');
+    if (windows_basename != NULL && (basename == NULL || windows_basename > basename))
+      basename = windows_basename;
+    if (basename != NULL)
+      basename++;
+    else
+      basename = path;
+    snprintf(g_cnk_process_name, sizeof(g_cnk_process_name), "%s", basename);
+  }
+
+  cnk_sanitize_process_name();
+}
 
 static int cnk_ascii_tolower(int ch) {
   if (ch >= 'A' && ch <= 'Z')
@@ -257,11 +310,11 @@ static FILE *cnk_open_configured_log(const CNK_LOG_SETTINGS *settings, char *res
   if (settings->path_is_directory) {
     size_t path_length = strlen(settings->path);
     if (path_length > 0 && settings->path[path_length - 1] != CNK_PATH_SEPARATOR)
-      written = snprintf(resolved_path, resolved_path_size, "%s%ccanokey_pkcs11_%lu.log", settings->path,
-                         CNK_PATH_SEPARATOR, (unsigned long)CNK_PROCESS_ID());
+      written = snprintf(resolved_path, resolved_path_size, "%s%ccanokey_pkcs11_%s_%lu.log", settings->path,
+                         CNK_PATH_SEPARATOR, g_cnk_process_name, (unsigned long)CNK_PROCESS_ID());
     else
-      written = snprintf(resolved_path, resolved_path_size, "%scanokey_pkcs11_%lu.log", settings->path,
-                         (unsigned long)CNK_PROCESS_ID());
+      written = snprintf(resolved_path, resolved_path_size, "%scanokey_pkcs11_%s_%lu.log", settings->path,
+                         g_cnk_process_name, (unsigned long)CNK_PROCESS_ID());
   } else {
     written = snprintf(resolved_path, resolved_path_size, "%s", settings->path);
   }
@@ -281,6 +334,7 @@ CK_RV cnk_config_logging(const int level, FILE *file, CK_BBOOL unsafe_log_apdu) 
   if (file != NULL)
     cnk_replace_log_file(file, CK_FALSE);
 
+  cnk_capture_process_name();
   atomic_store(&g_cnk_unsafe_log_apdu, unsafe_log_apdu ? true : false);
 
   return CKR_OK;
@@ -294,6 +348,7 @@ void cnk_reset_logging(void) {
 
 void cnk_config_logging_from_env(void) {
   CNK_LOG_SETTINGS settings = {0};
+  cnk_capture_process_name();
 #if defined(CNK_VERBOSE)
   settings.level = CNK_LOG_LEVEL_DEBUG;
   settings.level_set = CK_TRUE;
