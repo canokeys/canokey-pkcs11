@@ -731,7 +731,7 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
 
   CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig = {0};
   CK_BBOOL extensionEnabled =
-      cnk_get_piv_algorithm_extension(slotID, &algorithmConfig) == CKR_OK && algorithmConfig.enabled;
+      cnk_get_piv_algorithm_extension_cached(slotID, &algorithmConfig) == CKR_OK && algorithmConfig.enabled;
 
   CNK_ENSURE_OK(cnk_mutex_lock(&session_mutex));
 
