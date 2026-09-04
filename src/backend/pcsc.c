@@ -1,4 +1,5 @@
 #include "backend/pcsc.h"
+#include "api/session.h"
 #include "internal/logging.h"
 #include "internal/mutex.h"
 #include "internal/util.h"
@@ -699,6 +700,8 @@ CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
           findSlotEventReaderByName(slot_event_readers, slot_event_reader_count, states[i].szReader);
       if (snapshotIndex >= 0)
         slot_event_readers[snapshotIndex].currentState = states[i].dwEventState & ~SCARD_STATE_CHANGED;
+      if ((states[i].dwEventState & SCARD_STATE_CHANGED) != 0)
+        cnk_token_invalidate_public_cache(slotIds[i]);
       if ((states[i].dwEventState & SCARD_STATE_CHANGED) != 0 && !pnpChanged && rv == CKR_OK)
         rv = enqueueSlotEvent(slotIds[i]);
     }

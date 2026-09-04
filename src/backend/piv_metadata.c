@@ -57,7 +57,7 @@ static CK_LONG cnk_public_cache_index(CK_BYTE pivTag) {
     if (pivTag >= 0x84 && pivTag <= 0x95)
       return 4 + (CK_LONG)(pivTag - 0x82);
     if (pivTag >= 0x0F && pivTag <= 0x20)
-      return 4 + (CK_LONG)(pivTag - 0x0F);
+      return 6 + (CK_LONG)(pivTag - 0x0F);
     return -1;
   }
 }

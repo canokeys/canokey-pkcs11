@@ -577,6 +577,22 @@ CK_RV cnk_token_get_session_counts(CK_SLOT_ID slotId, CK_ULONG_PTR openSessions,
   return CKR_OK;
 }
 
+CK_RV cnk_token_invalidate_public_cache(CK_SLOT_ID slotId) {
+  CK_RV rv = cnk_mutex_lock(&session_mutex);
+  if (rv != CKR_OK)
+    return rv;
+  CNK_PKCS11_TOKEN_STATE *token = find_token_state(slotId);
+  if (token != NULL) {
+    rv = cnk_mutex_lock(&token->lock);
+    if (rv == CKR_OK) {
+      memset(&token->pivPublicCache, 0, sizeof(token->pivPublicCache));
+      cnk_mutex_unlock(&token->lock);
+    }
+  }
+  cnk_mutex_unlock(&session_mutex);
+  return rv;
+}
+
 CK_RV cnk_token_allow_owner_login(CNK_PKCS11_SESSION *session, CK_BBOOL allow) {
   CNK_ENSURE_NONNULL(session, session->token);
   CK_RV rv = cnk_mutex_lock(&session->token->lock);

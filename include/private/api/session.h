@@ -266,6 +266,8 @@ CK_RV cnk_token_begin_card_operation(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_allow_owner_login(CNK_PKCS11_SESSION *session, CK_BBOOL allow);
 void cnk_token_end_management_operation(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_get_session_counts(CK_SLOT_ID slotId, CK_ULONG_PTR openSessions, CK_ULONG_PTR readOnlySessions);
+// Card replacement events invalidate public snapshots associated with a slot.
+CK_RV cnk_token_invalidate_public_cache(CK_SLOT_ID slotId);
 CK_RV cnk_token_revoke_private_operations(CNK_PKCS11_TOKEN_STATE *token);
 
 #endif /* CNK_API_SESSION_H */
