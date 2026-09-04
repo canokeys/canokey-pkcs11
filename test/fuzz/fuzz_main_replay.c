@@ -19,10 +19,13 @@ int main(int argc, char **argv) {
   LLVMFuzzerInitialize(&argc, &argv);
 #endif
   unsigned long seconds = 1;
+  unsigned long runs = 0;
   const char *corpusFile = NULL;
   for (int i = 1; i < argc; i++) {
     if (strncmp(argv[i], "-max_total_time=", 16) == 0)
       seconds = strtoul(argv[i] + 16, NULL, 10);
+    else if (strncmp(argv[i], "-runs=", 6) == 0)
+      runs = strtoul(argv[i] + 6, NULL, 10);
     else if (argv[i][0] != '-')
       corpusFile = argv[i];
   }
@@ -42,6 +45,16 @@ int main(int argc, char **argv) {
   }
 
   uint32_t state = 0xC0DEC0DEu;
+  if (runs != 0) {
+    for (unsigned long i = 0; i < runs; i++) {
+      LLVMFuzzerTestOneInput(input, inputLen);
+      size_t index = next_random(&state) % inputLen;
+      input[index] ^= (uint8_t)next_random(&state);
+      if (inputLen < sizeof(input) && (next_random(&state) & 7u) == 0)
+        input[inputLen++] = (uint8_t)next_random(&state);
+    }
+    return 0;
+  }
   clock_t deadline = clock() + (clock_t)seconds * CLOCKS_PER_SEC;
   do {
     LLVMFuzzerTestOneInput(input, inputLen);
