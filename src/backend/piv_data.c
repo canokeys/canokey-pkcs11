@@ -172,6 +172,9 @@ CK_RV cnk_put_piv_data_by_tag(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, co
   cnk_disconnect_card(hCard);
   if (rv != CKR_OK)
     CNK_RETURN(rv, "PUT DATA");
+  // A successful write may change certificate or key-adjacent public data;
+  // discard the standalone snapshot before exposing the result to callers.
+  cnk_piv_public_cache_invalidate(session);
   CNK_RET_OK;
 }
 

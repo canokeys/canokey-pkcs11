@@ -732,6 +732,9 @@ CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, C
   cnk_disconnect_card(hCard);
   if (rv != CKR_OK)
     CNK_RETURN(rv, "GENERATE ASYMMETRIC KEY PAIR");
+  // The card mutation committed even if response parsing later fails, so a
+  // subsequent metadata query must perform a fresh hardware read.
+  cnk_piv_public_cache_invalidate(session);
   if (response_len < 2)
     CNK_RETURN(CKR_DEVICE_ERROR, "generate response too short");
 
@@ -775,5 +778,6 @@ CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE
   cnk_disconnect_card(hCard);
   if (rv != CKR_OK)
     CNK_RETURN(rv, "IMPORT ASYMMETRIC KEY");
+  cnk_piv_public_cache_invalidate(session);
   CNK_RET_OK;
 }

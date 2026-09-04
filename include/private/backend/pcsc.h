@@ -236,10 +236,21 @@ CK_RV cnk_put_piv_data_by_tag(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, co
 CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType, CK_BYTE_PTR pbPublicKey,
                        CK_ULONG_PTR pulPublicKeyLen, CK_BYTE_PTR pbPinPolicy, CK_BYTE_PTR pbTouchPolicy);
 
+// Standalone-only public snapshot wrappers. Managed callers intentionally
+// bypass this cache because the minidriver owns its own refresh policy.
+CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType,
+                              CK_BYTE_PTR pbPublicKey, CK_ULONG_PTR pulPublicKeyLen, CK_BYTE_PTR pbPinPolicy,
+                              CK_BYTE_PTR pbTouchPolicy);
+CK_RV cnk_get_piv_data_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR data, CK_ULONG_PTR data_len,
+                              CK_BBOOL fetch_data);
+
 // Read the firmware 5.7+ PIV metadata directory. Older firmware returns
 // CKR_FUNCTION_NOT_SUPPORTED so callers can fall back to per-slot probes.
 CK_RV cnk_get_piv_metadata_directory(CK_SLOT_ID slotID, CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
                                      CK_ULONG_PTR entryCount);
+CK_RV cnk_get_piv_metadata_directory_cached(CNK_PKCS11_SESSION *session, CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
+                                            CK_ULONG_PTR entryCount);
+void cnk_piv_public_cache_invalidate(CNK_PKCS11_SESSION *session);
 
 CK_RV cnk_get_piv_algorithm_extension(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config);
 

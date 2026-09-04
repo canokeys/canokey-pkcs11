@@ -139,7 +139,8 @@ static CK_RV parsePinProtectedManagementKey(const CK_BYTE *data, CK_ULONG dataLe
 CNK_TEST_DATA_EXPORT CNK_MALLOC_FUNC g_cnk_malloc_func = malloc;
 CNK_TEST_DATA_EXPORT CNK_FREE_FUNC g_cnk_free_func = free;
 
-CNK_TEST_DATA_EXPORT _Atomic CK_BBOOL g_cnk_is_managed_mode = CK_FALSE; // False for standalone mode, True for managed mode
+CNK_TEST_DATA_EXPORT _Atomic CK_BBOOL g_cnk_is_managed_mode =
+    CK_FALSE; // False for standalone mode, True for managed mode
 CNK_TEST_DATA_EXPORT SCARDCONTEXT g_cnk_pcsc_context = 0L;
 CNK_TEST_DATA_EXPORT SCARDHANDLE g_cnk_scard = 0L;
 
@@ -254,7 +255,7 @@ CK_RV C_CNK_GetPivMetadataDirectory(CK_SESSION_HANDLE hSession, CNK_PIV_METADATA
   CNK_ENSURE_NONNULL(entryCount);
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  return cnk_get_piv_metadata_directory(session->slotId, entries, entryCount);
+  return cnk_get_piv_metadata_directory_cached(session, entries, entryCount);
 }
 
 static CK_RV loginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,

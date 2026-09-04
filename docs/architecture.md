@@ -22,7 +22,14 @@ template decoding is isolated in `internal/template.c`.
 
 `backend/piv_metadata.c` owns PIV version gates, metadata discovery, algorithm
 extensions, PIN/PUK retry metadata, permanent PUK blocking, and token
-randomness. `backend/piv_crypto.c` owns card-backed private-key operations and
+randomness. In standalone mode it also maintains a short-lived public snapshot
+cache for metadata-directory entries, public-key metadata, and certificate
+bytes. The cache is token-lock protected, expires after 60 seconds, and is
+cleared after successful local PIV writes. It never stores credentials, card
+handles, selected applets, or authentication state. The `metadata_cache`
+configuration key and `CNK_PIV_METADATA_CACHE` override can disable it. Managed
+mode bypasses the cache on every read so the minidriver owns refresh policy.
+`backend/piv_crypto.c` owns card-backed private-key operations and
 key generation/import. `backend/piv_auth.c` owns PIN, PUK, and management-key
 authentication. `backend/piv_data.c` owns PIV data objects and legacy
 version/serial commands. `backend/pcsc.c` is limited to reader discovery, slot

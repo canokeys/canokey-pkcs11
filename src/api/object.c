@@ -567,7 +567,7 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
       return rv;
     }
 
-    rv = cnk_get_piv_data(slotId, certTag, NULL, NULL, CK_FALSE);
+    rv = cnk_get_piv_data_cached(session, certTag, NULL, NULL, CK_FALSE);
     if (rv == CKR_OK) {
       *exists = CK_TRUE;
       return CKR_OK;
@@ -594,7 +594,7 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
     CK_BYTE algorithmType = 0;
     CK_BYTE publicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
     CK_ULONG publicKeyLen = sizeof(publicKey);
-    rv = cnk_get_metadata(slotId, pivTag, &algorithmType, publicKey, &publicKeyLen, pinPolicy, NULL);
+    rv = cnk_get_metadata_cached(session, pivTag, &algorithmType, publicKey, &publicKeyLen, pinPolicy, NULL);
     if (rv == CKR_OK) {
       *exists = CK_TRUE;
       return CKR_OK;
@@ -1363,8 +1363,8 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
   case CKO_PUBLIC_KEY:
   case CKO_PRIVATE_KEY: {
-    CK_RV rvMeta = cnk_get_metadata(session->slotId, bPivSlot, &bAlgorithmType, abPublicKey, &cbPublicKey, &bPinPolicy,
-                                    &bTouchPolicy);
+    CK_RV rvMeta = cnk_get_metadata_cached(session, bPivSlot, &bAlgorithmType, abPublicKey, &cbPublicKey, &bPinPolicy,
+                                           &bTouchPolicy);
     if (rvMeta != CKR_OK) {
       CNK_DEBUG("Failed to get metadata for PIV slot 0x%02X: %lu", bPivSlot, rvMeta);
     } else {
@@ -1376,7 +1376,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
   case CKO_CERTIFICATE:
     CNK_ENSURE_OK(CNK_ObjectIdToCertificateTag(objId, &bPivSlot));
-    CNK_ENSURE_OK(cnk_get_piv_data(session->slotId, bPivSlot, data, &cbData, CK_TRUE));
+    CNK_ENSURE_OK(cnk_get_piv_data_cached(session, bPivSlot, data, &cbData, CK_TRUE));
     if (cbData == 0) {
       CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "No data found for PIV slot");
     }
@@ -1612,7 +1612,7 @@ CK_RV C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, 
   const CNK_PIV_METADATA_DIRECTORY_ENTRY *directoryPtr = directory;
   if (!session->findClassSpecified ||
       (session->findObjectClass != CKO_DATA && session->findObjectClass != CKO_SECRET_KEY)) {
-    rv = cnk_get_piv_metadata_directory(session->slotId, directory, &directoryCount);
+    rv = cnk_get_piv_metadata_directory_cached(session, directory, &directoryCount);
     if (rv == CKR_FUNCTION_NOT_SUPPORTED) {
       directoryPtr = NULL;
       directoryCount = 0;

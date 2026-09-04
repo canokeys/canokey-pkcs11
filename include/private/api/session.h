@@ -6,6 +6,7 @@
 #include "internal/mutex.h"
 #include <mbedtls/md.h>
 #include <stdatomic.h>
+#include <stdint.h>
 
 // Session states as defined in PKCS#11 standard
 typedef enum {
@@ -23,6 +24,36 @@ typedef enum {
   TOKEN_LOGIN_USER,
   TOKEN_LOGIN_SO,
 } CNK_TOKEN_LOGIN_STATE;
+
+#define CNK_PIV_PUBLIC_CACHE_SLOT_COUNT 24
+#define CNK_PIV_PUBLIC_CACHE_MAX_PUBLIC_KEY 2048
+#define CNK_PIV_PUBLIC_CACHE_MAX_CERTIFICATE 8192
+
+// Public PIV data is safe to cache, unlike the credential fields below. The
+// snapshot is invalidated after local card writes and expires periodically so
+// external PKCS#11/PIV mutations become visible without retaining a card
+// handle or a selected applet between API calls.
+typedef struct {
+  CK_BBOOL metadataValid;
+  uint64_t metadataRefreshedAtMs;
+  CK_BYTE algorithmType;
+  CK_BYTE pinPolicy;
+  CK_BYTE touchPolicy;
+  CK_BYTE publicKey[CNK_PIV_PUBLIC_CACHE_MAX_PUBLIC_KEY];
+  CK_ULONG publicKeyLen;
+  CK_BBOOL certificateValid;
+  uint64_t certificateRefreshedAtMs;
+  CK_BYTE certificate[CNK_PIV_PUBLIC_CACHE_MAX_CERTIFICATE];
+  CK_ULONG certificateLen;
+} CNK_PIV_PUBLIC_CACHE_ENTRY;
+
+typedef struct {
+  CK_BBOOL directoryValid;
+  uint64_t directoryRefreshedAtMs;
+  CK_ULONG directoryCount;
+  CK_BYTE directory[CNK_PIV_PUBLIC_CACHE_SLOT_COUNT][6];
+  CNK_PIV_PUBLIC_CACHE_ENTRY slots[CNK_PIV_PUBLIC_CACHE_SLOT_COUNT];
+} CNK_PIV_PUBLIC_CACHE;
 
 // Login credentials are shared by every session for one slot, as required by
 // PKCS#11. The lock protects state and both sensitive caches.
@@ -42,6 +73,7 @@ typedef struct CNK_PKCS11_TOKEN_STATE {
   _Atomic CK_BBOOL logoutPending;
   _Atomic CK_ULONG openSessions;
   _Atomic CK_ULONG readOnlySessions;
+  CNK_PIV_PUBLIC_CACHE pivPublicCache;
   CNK_PKCS11_MUTEX lock;
   struct CNK_PKCS11_TOKEN_STATE *next;
 } CNK_PKCS11_TOKEN_STATE;

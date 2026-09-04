@@ -35,6 +35,19 @@ Before editing, write the affected transitions down and identify the operation
 that owns each reservation. Do not infer authorization from a single enum or
 from the presence of a cached credential.
 
+## Public Snapshot Cache Validation
+
+The standalone module may cache only public PIV metadata-directory entries,
+public-key metadata, and certificate bytes. Every cacheable read must check the
+current TTL, the `metadata_cache` configuration switch (or
+`CNK_PIV_METADATA_CACHE` override), and managed mode before using a snapshot.
+Managed mode must always read hardware. Tests and logs must distinguish cached
+reads from hardware reads and identify cache-disabled or managed bypasses.
+Successful local key, certificate, and PIV data writes must invalidate the
+snapshot. External mutations are expected to become visible after the 60-second
+TTL; no credential, card handle, selected applet, or authentication state may
+ever be retained in this cache.
+
 ## Required Test Matrix
 
 For every changed authorization or card-write path, cover these combinations:

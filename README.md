@@ -77,7 +77,8 @@ host-side verification and public-key encryption operations.
 In standalone mode, logging is configured during `C_Initialize()`. Debug
 builds enable `DEBUG` logging by default and write one process-specific file
 under the first available `TMPDIR`, `TEMP`, or `TMP` directory:
-`canokey_pkcs11_<process-name>_<pid>.log`. Release builds retain the `WARN`
+`canokey_pkcs11_<YYYYMMDD>_<HHMMSS>_<process-name>_<pid>_<tid>.log`.
+Release builds retain the `WARN`
 default and do not open a file unless configured explicitly. The process name
 is in the file name, not repeated on every line, which makes concurrent
 Acrobat helper processes distinguishable without bloating the log.
@@ -88,19 +89,30 @@ with `key=value` entries. On Windows the default is
 `$XDG_CONFIG_HOME/canokey-pkcs11.conf` or `$HOME/.config/canokey-pkcs11.conf`;
 macOS also falls back to `~/Library/Application Support/canokey-pkcs11.conf`.
 `CNK_LOG_CONFIG` is an optional explicit path override. Supported keys are
-`log_level`, `log_path`, `log_dir`, and `unsafe_log_apdu`. Environment
+`log_level`, `log_path`, `log_dir`, `unsafe_log_apdu`, and `metadata_cache`.
+Environment
 variables are applied after the file and therefore take precedence:
 
 - `CNK_LOG_LEVEL`: one of `trace`, `debug`, `info`, `warn`, `error`, `fatal`,
   `none`, or the corresponding numeric log level.
 - `CNK_LOG_PATH`: exact log file path. The library opens it in append mode.
 - `CNK_LOG_DIR`: directory for a process-specific
-  `canokey_pkcs11_<process-name>_<pid>.log` file. `CNK_LOG_PATH` takes
+  `canokey_pkcs11_<YYYYMMDD>_<HHMMSS>_<process-name>_<pid>_<tid>.log` file.
+  `CNK_LOG_PATH` takes
   precedence when both are set.
 - `CNK_UNSAFE_LOG_APDU`: set to `1`, `true`, `yes`, or `on` to print raw APDU
   command and response bytes. This is disabled by default because APDUs can
   contain PINs, decrypted plaintext, ECDH shared secrets, management-key
   material, and other sensitive data.
+- `CNK_PIV_METADATA_CACHE`: set to `0`, `false`, `no`, or `off` to disable the
+  standalone public PIV metadata, directory, public-key, and certificate cache.
+
+The standalone cache retains only public metadata and certificate bytes for up
+to 60 seconds. Successful local key, certificate, or PIV data writes invalidate
+the snapshot. Every cacheable read checks the cache switch, TTL, and
+managed-mode state; managed mode always performs a hardware read because the
+Windows minidriver owns its refresh policy. Log entries identify `cached` versus
+`hardware` reads.
 
 Raw APDU logging also requires the normal log level to include debug messages,
 for example:

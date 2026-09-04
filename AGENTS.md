@@ -174,6 +174,18 @@ Local compatibility fixes made during probing:
   PIV data-object candidates, and session-only secret keys.
 - `cnk_get_metadata()` maps `6A82` and `6A88` to `CKR_DATA_INVALID` so object enumeration skips missing PIV keys.
 
+### Public PIV snapshot cache
+
+Standalone object discovery may cache only public PIV metadata-directory entries,
+public-key metadata, and certificate bytes for 60 seconds. The cache is guarded
+by the token lock and is invalidated after successful local key, certificate, or
+PIV data writes. It must never contain PINs, management keys, card handles,
+selected applets, or authentication state. Every cacheable read checks the
+current TTL, the `metadata_cache` configuration value (or
+`CNK_PIV_METADATA_CACHE` override), and managed mode before returning a cached
+value. Managed mode always bypasses the cache. Diagnostics must distinguish
+cached reads from hardware reads and state the bypass reason when applicable.
+
 ## Current Dev Hardware PIV State
 
 The inserted development key uses the default CanoKey PIV credentials:

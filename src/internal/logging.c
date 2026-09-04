@@ -5,6 +5,7 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -15,6 +16,7 @@
 #define CNK_PATH_SEPARATOR '\\'
 #define CNK_PROCESS_ID _getpid
 #else
+#include <pthread.h>
 #include <unistd.h>
 #define CNK_PROCESS_ID getpid
 #define CNK_PATH_SEPARATOR '/'
@@ -30,6 +32,7 @@ static const char *const g_cnk_log_level_name[CNK_LOG_LEVEL_SIZE] = {
 // default values
 atomic_int g_cnk_log_level = CNK_LOG_LEVEL_WARN;
 atomic_bool g_cnk_unsafe_log_apdu = false;
+atomic_bool g_cnk_piv_metadata_cache_enabled = true;
 static FILE *g_cnk_log_file = NULL;
 static CK_BBOOL g_cnk_log_file_owned = CK_FALSE;
 static nsync_mu g_cnk_log_mutex = NSYNC_MU_INIT;
@@ -40,6 +43,8 @@ typedef struct {
   CK_BBOOL level_set;
   CK_BBOOL unsafe_log_apdu;
   CK_BBOOL unsafe_log_apdu_set;
+  CK_BBOOL piv_metadata_cache_enabled;
+  CK_BBOOL piv_metadata_cache_set;
   char path[CNK_LOG_PATH_MAX];
   CK_BBOOL path_set;
   CK_BBOOL path_is_directory;
@@ -195,6 +200,13 @@ static void cnk_apply_log_setting(CNK_LOG_SETTINGS *settings, const char *key, c
       settings->unsafe_log_apdu = unsafe_log_apdu;
       settings->unsafe_log_apdu_set = CK_TRUE;
     }
+  } else if (cnk_ascii_equals_ignore_case(key, "metadata_cache") ||
+             cnk_ascii_equals_ignore_case(key, "piv_metadata_cache")) {
+    CK_BBOOL enabled;
+    if (cnk_parse_bool(value, &enabled)) {
+      settings->piv_metadata_cache_enabled = enabled;
+      settings->piv_metadata_cache_set = CK_TRUE;
+    }
   } else if (cnk_ascii_equals_ignore_case(key, "log_path")) {
     cnk_set_log_path(settings, value, CK_FALSE);
   } else if (cnk_ascii_equals_ignore_case(key, "log_dir")) {
@@ -308,13 +320,27 @@ static FILE *cnk_open_configured_log(const CNK_LOG_SETTINGS *settings, char *res
 
   int written;
   if (settings->path_is_directory) {
+    char timestamp[16] = "00000000_000000";
+    time_t now = time(NULL);
+    struct tm local_time;
+#if defined(_WIN32)
+    if (now != (time_t)-1 && localtime_s(&local_time, &now) == 0)
+#else
+    if (now != (time_t)-1 && localtime_r(&now, &local_time) != NULL)
+#endif
+      strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", &local_time);
+#if defined(_WIN32)
+    unsigned long thread_id = (unsigned long)GetCurrentThreadId();
+#else
+    unsigned long thread_id = (unsigned long)(uintptr_t)pthread_self();
+#endif
     size_t path_length = strlen(settings->path);
     if (path_length > 0 && settings->path[path_length - 1] != CNK_PATH_SEPARATOR)
-      written = snprintf(resolved_path, resolved_path_size, "%s%ccanokey_pkcs11_%s_%lu.log", settings->path,
-                         CNK_PATH_SEPARATOR, g_cnk_process_name, (unsigned long)CNK_PROCESS_ID());
+      written = snprintf(resolved_path, resolved_path_size, "%s%ccanokey_pkcs11_%s_%s_%lu_%lu.log", settings->path,
+                         CNK_PATH_SEPARATOR, timestamp, g_cnk_process_name, (unsigned long)CNK_PROCESS_ID(), thread_id);
     else
-      written = snprintf(resolved_path, resolved_path_size, "%scanokey_pkcs11_%s_%lu.log", settings->path,
-                         g_cnk_process_name, (unsigned long)CNK_PROCESS_ID());
+      written = snprintf(resolved_path, resolved_path_size, "%scanokey_pkcs11_%s_%s_%lu_%lu.log", settings->path,
+                         timestamp, g_cnk_process_name, (unsigned long)CNK_PROCESS_ID(), thread_id);
   } else {
     written = snprintf(resolved_path, resolved_path_size, "%s", settings->path);
   }
@@ -344,10 +370,12 @@ void cnk_reset_logging(void) {
   cnk_replace_log_file(NULL, CK_FALSE);
   atomic_store(&g_cnk_log_level, CNK_LOG_LEVEL_WARN);
   atomic_store(&g_cnk_unsafe_log_apdu, false);
+  atomic_store(&g_cnk_piv_metadata_cache_enabled, true);
 }
 
 void cnk_config_logging_from_env(void) {
   CNK_LOG_SETTINGS settings = {0};
+  settings.piv_metadata_cache_enabled = CK_TRUE;
   cnk_capture_process_name();
 #if defined(CNK_VERBOSE)
   settings.level = CNK_LOG_LEVEL_DEBUG;
@@ -378,6 +406,12 @@ void cnk_config_logging_from_env(void) {
     settings.unsafe_log_apdu_set = CK_TRUE;
   }
 
+  CK_BBOOL piv_metadata_cache_enabled;
+  if (cnk_parse_bool(getenv("CNK_PIV_METADATA_CACHE"), &piv_metadata_cache_enabled)) {
+    settings.piv_metadata_cache_enabled = piv_metadata_cache_enabled;
+    settings.piv_metadata_cache_set = CK_TRUE;
+  }
+
   // An exact file path takes precedence over a directory from either source.
   const char *log_dir = getenv("CNK_LOG_DIR");
   const char *log_path = getenv("CNK_LOG_PATH");
@@ -389,6 +423,8 @@ void cnk_config_logging_from_env(void) {
   cnk_reset_logging();
   atomic_store(&g_cnk_log_level, settings.level_set ? settings.level : CNK_LOG_LEVEL_WARN);
   atomic_store(&g_cnk_unsafe_log_apdu, settings.unsafe_log_apdu_set && settings.unsafe_log_apdu ? true : false);
+  atomic_store(&g_cnk_piv_metadata_cache_enabled,
+              !settings.piv_metadata_cache_set || settings.piv_metadata_cache_enabled ? true : false);
 
   char resolved_path[CNK_LOG_PATH_MAX];
   FILE *log_file = cnk_open_configured_log(&settings, resolved_path, sizeof(resolved_path));
