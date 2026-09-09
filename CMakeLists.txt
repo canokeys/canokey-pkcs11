@@ -113,6 +113,21 @@ set(CNK_PKCS_LIBS nsync ${CNK_CRYPTO_LIBRARIES})
 
 file(GLOB_RECURSE CNK_PKCS_SRC CONFIGURE_DEPENDS src/*.c)
 
+option(CNK_BUILD_CONTAINER_NAME_TESTS "Build isolated F5 API/transport contract tests" OFF)
+if(CNK_BUILD_CONTAINER_NAME_TESTS)
+  enable_testing()
+  add_executable(container-name-test test/contract/container-name.c src/api/container_name.c)
+  target_include_directories(container-name-test PRIVATE include include/private)
+  target_compile_definitions(container-name-test PRIVATE CNK_LIB_STATIC)
+  target_link_libraries(container-name-test PRIVATE nsync ${CNK_CRYPTO_LIBRARIES})
+  if(UNIX AND NOT APPLE)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(F5_PCSC REQUIRED libpcsclite)
+    target_include_directories(container-name-test PRIVATE ${F5_PCSC_INCLUDE_DIRS})
+  endif()
+  add_test(NAME container-name-contract COMMAND container-name-test)
+endif()
+
 # these files will be installed (excluding include/private)
 file(GLOB CNK_PKCS_PUBLIC_HEADERS include/*.h)
 

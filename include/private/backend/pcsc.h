@@ -263,6 +263,9 @@ void cnk_piv_algorithm_extension_cache_invalidate(void);
 // Firmware 6.0+ exposes an unauthenticated PIV GET CHALLENGE command backed by
 // the token RNG. Older firmware reports supported = CK_FALSE.
 CK_RV cnk_piv_random_supported(CK_SLOT_ID slotID, CK_BBOOL *supported);
+// Shared version gate for RNG and F5 names. Card must already be selected;
+// reads PIV GET VERSION (00 FD), without reconnecting or resetting authentication.
+CK_RV cnk_piv_v6_supported_on_card(SCARDHANDLE card, CK_BBOOL *supported);
 CK_RV cnk_piv_generate_random(CK_SLOT_ID slotID, CK_BYTE_PTR output, CK_ULONG outputLen);
 
 // Generate a PIV asymmetric key pair.

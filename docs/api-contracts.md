@@ -190,8 +190,15 @@ backend boundary.
 
 ## Object APIs
 
+F5 names are raw UTF-16LE bytes. The slot argument is a PIV reference, including
+82..95 and F9. The shared RNG PIV-version gate requires 6.0.0 or later before
+sending F5. Old/unavailable PIV versions return unsupported; version transport
+errors and unexpected F5 errors on supported versions do not select fallback.
+
 | API | Profile | Lifetime and concurrency | Progress and exit guarantee |
 | --- | --- | --- | --- |
+| `C_CNK_GetContainerName` | `SESSION` | Admission and session reference span one fresh unauthenticated PIV transaction. Output belongs to caller; no name/capability cache or borrowed pointer survives. | NULL queries actual length with read-only card I/O. Too-small sets length without partial copy. Empty success means unnamed; absent key returns CKR_KEY_HANDLE_INVALID. |
+| `C_CNK_SetContainerName` | `CARD-WRITE` | Borrowed name validates before card work. RW session and management reservation span SELECT, management authentication and one short F5 write. | Zero length clears. No retry: a failed transport can follow a committed write. Cache invalidates before transmission. Every exit releases card, reservation, reference and admission; no key/PIN/ADMIN DATA mutation. |
 | `C_CreateObject` | `OBJECT` / `CARD-WRITE` | Template is borrowed and its class/object identity is validated before authentication. Session-secret data is copied under `session->lock`; PIV private/certificate/data writes hold management reservation and zeroize import buffers. | Session object publishes only after full template validation. Card write failure returns no handle; a committed card mutation is never represented as rolled back. |
 | `C_CopyObject` | `OBJECT` | Source session secret is snapshotted under `session->lock`; copied value is module-owned and zeroized after allocation. | Only copyable visible session secrets succeed. Failure publishes no new handle and leaves source unchanged. |
 | `C_DestroyObject` | `OBJECT` | Holds `session->lock`; secret bytes are zeroized before handle becomes inactive. | Private visibility and destroyable policy are rechecked. PIV token objects remain unchanged and return action prohibited. |

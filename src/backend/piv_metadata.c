@@ -679,7 +679,7 @@ void cnk_piv_algorithm_extension_cache_invalidate(void) {
   cnk_mutex_unlock(&g_cnk_readers_mutex);
 }
 
-static CK_RV pivRandomSupportedOnCard(SCARDHANDLE card, CK_BBOOL *supported) {
+CK_RV cnk_piv_v6_supported_on_card(SCARDHANDLE card, CK_BBOOL *supported) {
   CNK_ENSURE_NONNULL(supported);
   CK_BYTE version[3];
   CK_RV rv = readPivVersionOnCard(card, version);
@@ -699,7 +699,7 @@ CK_RV cnk_piv_random_supported(CK_SLOT_ID slotID, CK_BBOOL *supported) {
   CK_RV rv = connectPiv(slotID, &card);
   if (rv != CKR_OK)
     return rv;
-  rv = pivRandomSupportedOnCard(card, supported);
+  rv = cnk_piv_v6_supported_on_card(card, supported);
   cnk_disconnect_card(card);
   return rv;
 }
@@ -713,7 +713,7 @@ CK_RV cnk_piv_generate_random(CK_SLOT_ID slotID, CK_BYTE_PTR output, CK_ULONG ou
     return rv;
 
   CK_BBOOL supported = CK_FALSE;
-  rv = pivRandomSupportedOnCard(card, &supported);
+  rv = cnk_piv_v6_supported_on_card(card, &supported);
   if (rv != CKR_OK || !supported) {
     cnk_disconnect_card(card);
     return rv == CKR_OK ? CKR_RANDOM_NO_RNG : rv;

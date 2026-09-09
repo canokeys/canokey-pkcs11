@@ -1,5 +1,9 @@
 # CanoKey PKCS#11 Architecture
 
+The bounded F5 name extension lives in `src/api/container_name.c` and composes
+the shared PC/SC transaction and management-authentication primitives. See
+[container-names.md](container-names.md) for wire semantics and firmware fallback.
+
 `docs/api-contracts.md` is the normative ownership, concurrency, progress, and
 exit-state specification for every exported entry point. This document explains
 the larger component boundaries; implementation and review must satisfy both.
