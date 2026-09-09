@@ -10,6 +10,14 @@ the larger component boundaries; implementation and review must satisfy both.
 
 ## Layers
 
+`backend/piv_key_write.c` guards managed key generation/import. After management
+authentication it reads uncached F7 metadata in the same PC/SC transaction.
+Only a status-only 6A82/6A88 reply permits writing; 9000 means occupied,
+irrespective of algorithm, and all other replies/errors block writing. The
+writer inherits the open transaction on success; failure closes it. The API
+entry point owns the management reservation throughout. Standalone provisioning
+keeps its explicit replacement behavior. No PIN or management-data policy changes.
+
 The module has four internal layers:
 
 1. Public PKCS#11 and CanoKey extension declarations live in `include/`.

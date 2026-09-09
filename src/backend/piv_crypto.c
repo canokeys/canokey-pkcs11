@@ -724,7 +724,7 @@ CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, C
   CK_ULONG response_len = sizeof(response);
   SCARDHANDLE hCard = 0;
 
-  CK_RV rv = cnk_authenticate_admin_for_write(slotID, session, &hCard);
+  CK_RV rv = cnk_begin_key_write(slotID, session, pivSlot, &hCard);
   if (rv != CKR_OK)
     return rv;
 
@@ -770,7 +770,7 @@ CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE
   CNK_ENSURE_NONNULL(keyData);
 
   SCARDHANDLE hCard = 0;
-  CK_RV rv = cnk_authenticate_admin_for_write(slotID, session, &hCard);
+  CK_RV rv = cnk_begin_key_write(slotID, session, pivSlot, &hCard);
   if (rv != CKR_OK)
     return rv;
 

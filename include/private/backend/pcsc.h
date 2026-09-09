@@ -235,6 +235,11 @@ CK_RV cnk_put_piv_data(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE t
 CK_RV cnk_put_piv_data_by_tag(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag, CK_ULONG tag_len,
                               CK_BYTE_PTR data, CK_ULONG data_len);
 
+// Like admin authentication, but managed key creation also requires a fresh
+// empty-slot response. Success transfers the same transaction to the writer;
+// failure releases it. Caller holds the token management reservation.
+CK_RV cnk_begin_key_write(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pivSlot, SCARDHANDLE *card);
+
 // Get metadata for a PIV key or object
 // This function retrieves metadata from a PIV key or object using the PIV metadata APDU command
 CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType, CK_BYTE_PTR pbPublicKey,
