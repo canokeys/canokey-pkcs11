@@ -499,8 +499,7 @@ CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BY
                               CK_BYTE_PTR publicKey, CK_ULONG_PTR publicKeyLen, CK_BYTE_PTR pinPolicy,
                               CK_BYTE_PTR touchPolicy) {
   CNK_ENSURE_NONNULL(session, session->token, algorithmType);
-  /* Build the immutable libcanokey profile once per card binding. The legacy
-   * parser remains the fallback until its result path is switched below. */
+  /* Build the immutable libcanokey profile once per card binding. */
   CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
   if (g_cnk_is_managed_mode || !atomic_load(&g_cnk_piv_metadata_cache_enabled)) {
     CNK_DEBUG("hardware metadata read (%s): PIV slot 0x%02X", g_cnk_is_managed_mode ? "managed mode" : "cache disabled",
