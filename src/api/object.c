@@ -1171,7 +1171,18 @@ CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
   }
 
   CNK_ENSURE_OK(CNK_ValidateObject(hObject, session, 0, NULL));
-  // PIV token objects have no general PKCS#11 deletion semantics.
+  CK_OBJECT_CLASS objectClass;
+  CK_BYTE objectId;
+  extractObjectInfo(hObject, NULL, &objectClass, &objectId);
+  if (objectClass == CKO_CERTIFICATE) {
+    CK_BYTE pivSlot;
+    CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objectId, &pivSlot));
+    CNK_ENSURE_OK(cnk_token_begin_management_operation(session));
+    CK_RV deleteRv = cnk_delete_piv_certificate_libcanokey(session->slotId, session, pivSlot);
+    cnk_token_end_management_operation(session);
+    CNK_RETURN(deleteRv, "certificate deletion");
+  }
+  // PIV key and data token objects have no general PKCS#11 deletion semantics.
   CNK_RETURN(CKR_ACTION_PROHIBITED, "PIV token objects are not destroyable");
 }
 

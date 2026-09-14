@@ -311,6 +311,78 @@ cleanup:
   return rv;
 }
 
+CK_RV cnk_delete_piv_certificate_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pivSlot) {
+  CNK_ENSURE_NONNULL(session);
+  SCARDHANDLE card = 0;
+  CK_RV rv = cnk_authenticate_admin_for_write(slotID, session, &card);
+  if (rv != CKR_OK)
+    return rv;
+  rv = cnk_ensure_libcanokey_profile(session);
+  if (rv != CKR_OK)
+    goto cleanup;
+  CNK_LIBCANO_CONTEXT *context = NULL;
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  uint32_t step = 0;
+  uint32_t status = CNK_LIBCANO_OK;
+  CK_BYTE response[8192] = {0};
+  rv = cnk_mutex_lock(&session->token->lock);
+  if (rv != CKR_OK)
+    goto cleanup;
+  CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
+  uint32_t contextStatus = profile == NULL
+                               ? CNK_LIBCANO_INVALID_STATE
+                               : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context,
+                                                     &error);
+  cnk_mutex_unlock(&session->token->lock);
+  if (contextStatus != CNK_LIBCANO_OK) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+  status = cnk_piv_delete_certificate_in_context_new(context, pivSlot, NULL, &operation, &error);
+  if (status != CNK_LIBCANO_OK) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+  if (cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
+    size_t commandLen = 0;
+    status = cnk_operation_command(operation, NULL, &commandLen);
+    if (status != CNK_LIBCANO_OK || commandLen == 0 || commandLen > 2048) {
+      rv = CKR_DEVICE_ERROR;
+      goto cleanup;
+    }
+    CK_BYTE command[2048];
+    status = cnk_operation_command(operation, command, &commandLen);
+    if (status != CNK_LIBCANO_OK) {
+      rv = CKR_DEVICE_ERROR;
+      goto cleanup;
+    }
+    DWORD responseLen = sizeof(response);
+    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS) {
+      rv = CKR_DEVICE_ERROR;
+      goto cleanup;
+    }
+    status = cnk_operation_advance(operation, response, responseLen, &step, &error);
+    if (status != CNK_LIBCANO_OK) {
+      rv = CKR_DEVICE_ERROR;
+      goto cleanup;
+    }
+  }
+  rv = step == CNK_LIBCANO_STEP_DONE ? CKR_OK : CKR_DEVICE_ERROR;
+  if (rv == CKR_OK)
+    cnk_piv_public_cache_invalidate(session);
+cleanup:
+  if (operation) cnk_operation_free(operation);
+  if (context) cnk_piv_context_free(context);
+  cnk_disconnect_card(card);
+  mbedtls_platform_zeroize(response, sizeof(response));
+  return rv;
+}
+
 CK_RV cnk_put_piv_data_by_tag(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag, CK_ULONG tag_len,
                               CK_BYTE_PTR data, CK_ULONG data_len) {
   CNK_LOG_FUNC(": slotID: %ld, tag: %p, tag_len: %lu, data: %p, data_len: %lu", slotID, tag, tag_len, data, data_len);

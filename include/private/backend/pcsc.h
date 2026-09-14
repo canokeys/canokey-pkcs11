@@ -235,6 +235,7 @@ CK_RV cnk_put_piv_data(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE t
 // Write a PIV data object by its full BER-TLV tag.
 CK_RV cnk_put_piv_data_by_tag(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag, CK_ULONG tag_len,
                               CK_BYTE_PTR data, CK_ULONG data_len);
+CK_RV cnk_delete_piv_certificate_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pivSlot);
 
 // Like admin authentication, but managed key creation also requires a fresh
 // empty-slot response. Success transfers the same transaction to the writer;
