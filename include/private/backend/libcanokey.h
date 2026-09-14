@@ -25,6 +25,9 @@ void cnk_piv_context_free(CNK_LIBCANO_CONTEXT *);
 uint32_t cnk_piv_get_metadata_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t,
                                              const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
                                              CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_read_certificate_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t,
+                                                 const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
+                                                 CNK_LIBCANO_ERROR *);
 uint32_t cnk_operation_start(CNK_LIBCANO_OPERATION *, uint32_t *, CNK_LIBCANO_ERROR *);
 uint32_t cnk_operation_advance(CNK_LIBCANO_OPERATION *, const uint8_t *, size_t, uint32_t *, CNK_LIBCANO_ERROR *);
 uint32_t cnk_operation_command(const CNK_LIBCANO_OPERATION *, uint8_t *, size_t *);

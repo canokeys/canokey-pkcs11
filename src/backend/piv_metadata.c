@@ -116,6 +116,68 @@ cleanup:
   cnk_disconnect_card(card);
   return rv;
 }
+
+static CK_RV cnk_get_certificate_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR data,
+                                            CK_ULONG_PTR dataLen, CK_BBOOL fetchData) {
+  CNK_ENSURE_NONNULL(session, session->token);
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  CK_BYTE slot = pivTag == 0x05 ? 0x9a : pivTag == 0x0a ? 0x9c : pivTag == 0x0b ? 0x9d : pivTag == 0x01 ? 0x9e : 0;
+  if (slot == 0 && pivTag >= 0x0d && pivTag <= 0x20)
+    slot = (CK_BYTE)(0x82 + pivTag - 0x0d);
+  if (slot == 0)
+    return CKR_ARGUMENTS_BAD;
+  if (!fetchData)
+    dataLen = NULL;
+  else if (dataLen == NULL)
+    return CKR_ARGUMENTS_BAD;
+  SCARDHANDLE card = 0;
+  CNK_ENSURE_OK(cnk_begin_piv_transaction(session->slotId, &card));
+  CNK_LIBCANO_CONTEXT *context = NULL;
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  uint32_t step = 0;
+  CK_RV rv = CKR_DEVICE_ERROR;
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
+  cnk_mutex_unlock(&session->token->lock);
+  if (profile == NULL)
+    goto cleanup;
+  if (cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_SELECTED, &context, &error) != CNK_LIBCANO_OK ||
+      cnk_piv_read_certificate_in_context_new(context, slot, NULL, &operation, &error) != CNK_LIBCANO_OK ||
+      cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK)
+    goto cleanup;
+  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
+    size_t commandLen = 0;
+    if (cnk_operation_command(operation, NULL, &commandLen) != CNK_LIBCANO_OK || commandLen > 1024)
+      goto cleanup;
+    CK_BYTE command[1024];
+    if (cnk_operation_command(operation, command, &commandLen) != CNK_LIBCANO_OK)
+      goto cleanup;
+    CK_BYTE response[8192];
+    DWORD responseLen = sizeof(response);
+    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS ||
+        cnk_operation_advance(operation, response, responseLen, &step, &error) != CNK_LIBCANO_OK)
+      goto cleanup;
+  }
+  if (step != CNK_LIBCANO_STEP_DONE)
+    goto cleanup;
+  size_t required = 0;
+  if (cnk_operation_result_copy_bytes(operation, NULL, &required) != CNK_LIBCANO_OK || required > CNK_PIV_PUBLIC_CACHE_MAX_CERTIFICATE)
+    goto cleanup;
+  if (!fetchData) { rv = CKR_OK; goto cleanup; }
+  CK_ULONG capacity = *dataLen;
+  *dataLen = (CK_ULONG)required;
+  if (data == NULL) { rv = CKR_OK; goto cleanup; }
+  if (capacity < required) { rv = CKR_BUFFER_TOO_SMALL; goto cleanup; }
+  if (cnk_operation_result_copy_bytes(operation, data, &required) != CNK_LIBCANO_OK)
+    goto cleanup;
+  rv = CKR_OK;
+cleanup:
+  if (operation) cnk_operation_free(operation);
+  if (context) cnk_piv_context_free(context);
+  cnk_disconnect_card(card);
+  return rv;
+}
 #include <time.h>
 
 #if defined(_WIN32)
@@ -651,12 +713,12 @@ CK_RV cnk_get_piv_data_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BY
   if (g_cnk_is_managed_mode || !atomic_load(&g_cnk_piv_metadata_cache_enabled)) {
     CNK_DEBUG("hardware certificate read (%s): PIV slot 0x%02X",
               g_cnk_is_managed_mode ? "managed mode" : "cache disabled", pivTag);
-    return cnk_get_piv_data(session->slotId, pivTag, data, data_len, fetch_data);
+    return cnk_get_certificate_libcanokey(session, pivTag, data, data_len, fetch_data);
   }
 
   CK_LONG index = cnk_public_cache_index(pivTag);
   if (index < 0)
-    return cnk_get_piv_data(session->slotId, pivTag, data, data_len, fetch_data);
+    return cnk_get_certificate_libcanokey(session, pivTag, data, data_len, fetch_data);
   CNK_PIV_PUBLIC_CACHE_ENTRY *entry = &session->token->pivPublicCache.slots[index];
   uint64_t nowMs = cnk_public_cache_now_ms();
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
@@ -687,7 +749,7 @@ CK_RV cnk_get_piv_data_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BY
   CK_BYTE fetched[CNK_PIV_PUBLIC_CACHE_MAX_CERTIFICATE];
   CK_ULONG fetchedLen = sizeof(fetched);
   CNK_DEBUG("hardware certificate read: PIV slot 0x%02X", pivTag);
-  CK_RV rv = cnk_get_piv_data(session->slotId, pivTag, fetched, &fetchedLen, CK_TRUE);
+  CK_RV rv = cnk_get_certificate_libcanokey(session, pivTag, fetched, &fetchedLen, CK_TRUE);
   if (rv != CKR_OK)
     return rv;
   if (fetchedLen > sizeof(entry->certificate))
