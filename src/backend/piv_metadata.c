@@ -92,6 +92,15 @@ static CK_RV cnk_get_metadata_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pi
   }
   if (step != CNK_LIBCANO_STEP_DONE)
     goto cleanup;
+  CNK_LIBCANO_METADATA metadata = {.struct_size = sizeof(metadata)};
+  if (cnk_operation_metadata(operation, &metadata) != CNK_LIBCANO_OK ||
+      (metadata.presence_flags & CNK_LIBCANO_METADATA_HAS_ALGORITHM) == 0)
+    goto cleanup;
+  *algorithmType = metadata.algorithm_id;
+  if (pinPolicy != NULL && (metadata.presence_flags & CNK_LIBCANO_METADATA_HAS_POLICY) != 0)
+    *pinPolicy = metadata.pin_policy;
+  if (touchPolicy != NULL && (metadata.presence_flags & CNK_LIBCANO_METADATA_HAS_POLICY) != 0)
+    *touchPolicy = metadata.touch_policy;
   size_t rawLen = 0;
   if (cnk_operation_result_copy_bytes(operation, NULL, &rawLen) != CNK_LIBCANO_OK || rawLen > 4096)
     goto cleanup;
@@ -99,7 +108,6 @@ static CK_RV cnk_get_metadata_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pi
   if (cnk_operation_result_copy_bytes(operation, raw, &rawLen) != CNK_LIBCANO_OK)
     goto cleanup;
   CK_ULONG offset = 0;
-  CK_BBOOL sawAlgorithm = CK_FALSE;
   while (offset < rawLen) {
     CK_BYTE tag = raw[offset++];
     CK_LONG fail = 0;
@@ -109,16 +117,14 @@ static CK_RV cnk_get_metadata_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pi
     offset += lengthSize;
     if (length > rawLen - offset) goto cleanup;
     const CK_BYTE *value = raw + offset;
-    if (tag == 0x01 && length == 1) { *algorithmType = value[0]; sawAlgorithm = CK_TRUE; }
-    else if (tag == 0x02 && length >= 2) { if (pinPolicy) *pinPolicy = value[0]; if (touchPolicy) *touchPolicy = value[1]; }
-    else if (tag == 0x04 && publicKeyLen) {
+    if (tag == 0x04 && publicKeyLen) {
       CK_ULONG capacity = *publicKeyLen; *publicKeyLen = length;
       if (publicKey && capacity < length) { rv = CKR_BUFFER_TOO_SMALL; goto cleanup; }
       if (publicKey) memcpy(publicKey, value, length);
     }
     offset += length;
   }
-  rv = sawAlgorithm ? CKR_OK : CKR_DEVICE_ERROR;
+  rv = CKR_OK;
 cleanup:
   if (operation) cnk_operation_free(operation);
   if (context) cnk_piv_context_free(context);
