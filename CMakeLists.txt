@@ -120,6 +120,10 @@ file(GLOB CNK_PKCS_PUBLIC_HEADERS include/*.h)
 file(GLOB_RECURSE CNK_PKCS_HEADERS include/*.h)
 
 add_library(${CNK_PKCS_TARGET} ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
+target_include_directories(${CNK_PKCS_TARGET}
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/tf-psa-crypto/drivers/pqcp/mldsa-native/mldsa
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/mlkem)
 set_default_visibility(${CNK_PKCS_TARGET})
 if(USE_GNU_COMPILERS)
   target_compile_options(${CNK_PKCS_TARGET} PRIVATE "-Wextra" "-Wpedantic" "-Wall")
@@ -137,9 +141,8 @@ else()
   target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_LIB_STATIC")
 endif()
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-  target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "CNK_VERBOSE")
-endif()
+# Keep Debug diagnostics enabled for both single- and multi-config generators.
+target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "$<$<CONFIG:Debug>:CNK_VERBOSE>")
 
 target_compile_definitions(${CNK_PKCS_TARGET} PRIVATE "MBEDTLS_ALLOW_PRIVATE_ACCESS")
 
@@ -186,18 +189,50 @@ option(BUILD_TESTING "Build test programs" OFF)
 option(BUILD_UNIT_TESTING "Build unit test programs" ${BUILD_TESTING})
 option(BUILD_REAL_TESTING "Build real hardware test programs" ${BUILD_TESTING})
 option(RUN_REAL_TESTING "Register real hardware tests with CTest" OFF)
-if(BUILD_UNIT_TESTING OR BUILD_REAL_TESTING)
+option(BUILD_FUZZING "Build libFuzzer API and parser targets" OFF)
+if(BUILD_UNIT_TESTING OR BUILD_REAL_TESTING OR BUILD_FUZZING)
   enable_testing()
 endif()
 
 if(BUILD_UNIT_TESTING)
   # for test only, expose all symbols
   add_library(${CNK_PKCS_TARGET}-test SHARED ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
-  target_compile_definitions(${CNK_PKCS_TARGET}-test PRIVATE "CNK_LIB_STATIC" "CNK_VERBOSE" "MBEDTLS_ALLOW_PRIVATE_ACCESS")
+  target_include_directories(${CNK_PKCS_TARGET}-test
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/external/tf-psa-crypto/drivers/pqcp/mldsa-native/mldsa
+      ${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/mlkem)
+  target_compile_definitions(${CNK_PKCS_TARGET}-test PRIVATE "CNK_LIB_SHARED" "CRYPTOKI_EXPORTS" "CNK_VERBOSE"
+                                                               "MBEDTLS_ALLOW_PRIVATE_ACCESS")
+  # Unit tests intentionally call internal symbols from the test-only shared
+  # library. Export them on MSVC/ClangCL just as the Unix test link does.
+  set_target_properties(${CNK_PKCS_TARGET}-test PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS TRUE
+                                                            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test/unit")
   target_link_libraries(${CNK_PKCS_TARGET}-test PRIVATE ${CNK_PKCS_LIBS})
   add_subdirectory(test/unit)
 endif()
 
 if(BUILD_REAL_TESTING)
   add_subdirectory(test/real)
+endif()
+
+if(BUILD_FUZZING)
+  if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "BUILD_FUZZING requires Clang and libFuzzer")
+  endif()
+  # Keep the replaceable PC/SC transport out of the production library. Fuzz
+  # executables link this test-only twin, while release artifacts continue to
+  # use the transport-free ${CNK_PKCS_TARGET} target.
+  set(CNK_FUZZ_TARGET "${CNK_PKCS_TARGET}-fuzz")
+  add_library(${CNK_FUZZ_TARGET} SHARED ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
+  target_include_directories(${CNK_FUZZ_TARGET}
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/external/tf-psa-crypto/drivers/pqcp/mldsa-native/mldsa
+      ${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/mlkem)
+  target_compile_definitions(${CNK_FUZZ_TARGET} PRIVATE CNK_LIB_SHARED CRYPTOKI_EXPORTS
+                                                         CNK_VERBOSE MBEDTLS_ALLOW_PRIVATE_ACCESS
+                                                         CNK_TEST_TRANSPORT)
+  target_link_libraries(${CNK_FUZZ_TARGET} PRIVATE ${CNK_PKCS_LIBS})
+  set_target_properties(${CNK_FUZZ_TARGET} PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS TRUE
+                                                       OUTPUT_NAME "${CNK_PKCS_LIB_NAME}-fuzz")
+  add_subdirectory(test/fuzz)
 endif()

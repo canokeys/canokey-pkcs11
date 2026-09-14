@@ -807,7 +807,7 @@ static void test_pss_encode_max_salt(void **state) {
   assert_int_equal(rv, CKR_OK);
 }
 
-// Test PSS encoding with salt length > hash length (should fail)
+// Salt may exceed the digest length, but must fit emLen - hLen - 2.
 static void test_pss_encode_invalid_salt(void **state) {
   (void)state; // Unused
 
@@ -815,18 +815,14 @@ static void test_pss_encode_invalid_salt(void **state) {
   CK_BYTE hash[32]; // SHA-256 hash size is 32 bytes
   memset(hash, 0xAA, sizeof(hash));
 
-  // Get maximum salt length (equal to hash length for SHA-256)
-  const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-  assert_non_null(md_info);
-  CK_ULONG maxSaltLen = mbedtls_md_get_size(md_info);
-  CK_ULONG invalidSaltLen = maxSaltLen + 1; // Salt length > hash length (invalid)
+  CK_ULONG invalidSaltLen = sizeof(modulus) - sizeof(hash) - 1;
 
   CK_BYTE output[256] = {0};
 
   // Act: Attempt to encode with invalid salt length
   CK_RV rv = pss_encode(hash, sizeof(hash), modulus, sizeof(modulus), invalidSaltLen, MBEDTLS_MD_SHA256, output);
 
-  // Assert: Should fail according to FIPS 186-4
+  // One byte beyond the RFC 8017 modulus-dependent maximum must fail.
   assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
 }
 
@@ -965,14 +961,10 @@ static void test_pss_encode_salt_lengths(void **state) {
   CK_BYTE output[256];
 
   // Test with various salt lengths
-  CK_ULONG salt_lengths[] = {0, 8, 16, 32};
+  CK_ULONG salt_lengths[] = {0, 8, 16, 32, 64, 128, 222};
 
   for (CK_ULONG i = 0; i < sizeof(salt_lengths) / sizeof(salt_lengths[0]); i++) {
     CK_ULONG salt_len = salt_lengths[i];
-
-    // Skip if salt_len > hash_len (invalid case, tested separately)
-    if (salt_len > hash_len)
-      continue;
 
     // Clear output buffer
     memset(output, 0, sizeof(output));
@@ -1008,8 +1000,8 @@ static void test_pss_encode_errors(void **state) {
   CK_RV rv = pss_encode(hash, hash_len - 1, modulus, sizeof(modulus), 20, MBEDTLS_MD_SHA256, output);
   assert_int_equal(rv, CKR_DATA_LEN_RANGE);
 
-  // Test 2: Salt length > hash length (should fail)
-  rv = pss_encode(hash, hash_len, modulus, sizeof(modulus), hash_len + 1, MBEDTLS_MD_SHA256, output);
+  // Test 2: Salt length exceeds emLen - hLen - 2.
+  rv = pss_encode(hash, hash_len, modulus, sizeof(modulus), 223, MBEDTLS_MD_SHA256, output);
   assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
 }
 

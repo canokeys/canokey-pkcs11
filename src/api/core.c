@@ -1,5 +1,6 @@
 #include "api/session.h"
 #include "backend/pcsc.h"
+#include "internal/lifecycle.h"
 #include "internal/logging.h"
 #include "internal/macros.h"
 #include "internal/mutex.h"
@@ -11,17 +12,120 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sched.h>
+#endif
+
+#include <mbedtls/platform.h>
+#include <nsync_malloc.h>
+#include <psa/crypto.h>
+#include <psa/crypto_extra.h>
+
 // Forward declaration of the function list
 static CK_FUNCTION_LIST ck_function_list;
+static CK_FUNCTION_LIST_3_2 ck_function_list_3_2;
+static CK_UTF8CHAR ck_interface_name[] = "PKCS 11";
+static CK_INTERFACE ck_interface_3_2 = {ck_interface_name, &ck_function_list_3_2, 0};
 
 // Global variables
 static atomic_int g_ref_count = 0;
+static CK_BBOOL g_initialization_cleanup_pending = CK_FALSE;
+static CK_BBOOL g_backend_cleanup_pending = CK_FALSE;
+static CK_BBOOL g_session_cleanup_pending = CK_FALSE;
+static atomic_flag g_lifecycle_lock = ATOMIC_FLAG_INIT;
+static atomic_uint g_api_admission_count = 0;
+static atomic_bool g_cnk_finalizing = false;
+
+CK_BBOOL cnk_cleanup_is_pending(void) {
+  return g_initialization_cleanup_pending || g_backend_cleanup_pending || g_session_cleanup_pending;
+}
+
+void cnk_lifecycle_lock(void) {
+  while (atomic_flag_test_and_set(&g_lifecycle_lock)) {
+#ifdef _WIN32
+    Sleep(0);
+#else
+    sched_yield();
+#endif
+  }
+}
+
+void cnk_lifecycle_unlock(void) { atomic_flag_clear(&g_lifecycle_lock); }
+
+CK_RV cnk_api_admission_begin(CNK_API_ADMISSION_GUARD *guard) {
+  if (guard == NULL)
+    return CKR_ARGUMENTS_BAD;
+  cnk_lifecycle_lock();
+  if (!g_cnk_is_initialized || atomic_load(&g_cnk_finalizing)) {
+    cnk_lifecycle_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  atomic_fetch_add(&g_api_admission_count, 1);
+  guard->active = CK_TRUE;
+  cnk_lifecycle_unlock();
+  return CKR_OK;
+}
+
+void cnk_api_admission_end(CNK_API_ADMISSION_GUARD *guard) {
+  if (guard != NULL && guard->active) {
+    atomic_fetch_sub(&g_api_admission_count, 1);
+    guard->active = CK_FALSE;
+  }
+}
+
+static void release_lifecycle_lock(atomic_flag **lock) {
+  if (lock != NULL && *lock != NULL)
+    atomic_flag_clear(*lock);
+}
+
+#if defined(__clang__) || defined(__GNUC__)
+#define CNK_LIFECYCLE_GUARD __attribute__((cleanup(release_lifecycle_lock)))
+#else
+#error "CanoKey lifecycle serialization requires compiler cleanup support"
+#endif
 
 CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
+  atomic_flag *lifecycleLock CNK_LIFECYCLE_GUARD = &g_lifecycle_lock;
+  CK_RV pcscRv = CKR_OK;
+  CK_RV sessionRv = CKR_OK;
+  CK_RV backendRv = CKR_OK;
+  cnk_lifecycle_lock();
+
+  // Mode selection and logging configuration are one lifecycle decision. Do
+  // not let a concurrent managed acquisition apply standalone environment
+  // logging (including unsafe APDU output) after the mode has changed.
   if (!g_cnk_is_managed_mode)
     cnk_config_logging_from_env();
-
   CNK_LOG_FUNC(": pInitArgs: %p", pInitArgs);
+
+  // A failed callback during rollback can leave the PC/SC/backend objects
+  // alive while Cryptoki remains uninitialized. Finish that rollback before
+  // accepting a new initialization attempt.
+  if (g_initialization_cleanup_pending || g_backend_cleanup_pending || g_session_cleanup_pending) {
+    CK_RV cleanupRv = g_initialization_cleanup_pending ? cnk_cleanup_pcsc() : CKR_OK;
+    if (cleanupRv != CKR_OK)
+      return cleanupRv;
+    cleanupRv = g_session_cleanup_pending ? cnk_session_manager_cleanup() : CKR_OK;
+    if (cleanupRv != CKR_OK)
+      return cleanupRv;
+    cleanupRv = g_backend_cleanup_pending ? cnk_cleanup_backend() : CKR_OK;
+    if (cleanupRv != CKR_OK)
+      return cleanupRv;
+    mbedtls_psa_crypto_free();
+    cnk_mutex_system_cleanup();
+    g_initialization_cleanup_pending = CK_FALSE;
+    g_backend_cleanup_pending = CK_FALSE;
+    g_session_cleanup_pending = CK_FALSE;
+    atomic_store(&g_cnk_finalizing, false);
+  }
+
+  // A final teardown has released the lifecycle lock while draining admitted
+  // calls. Do not publish a new instance into that teardown window; a retry is
+  // valid only after the pending cleanup stages above have completed.
+  if (atomic_load(&g_cnk_finalizing))
+    CNK_RETURN(CKR_OPERATION_ACTIVE, "finalization is in progress");
 
   // Check if the library is already initialized
   if (g_cnk_is_initialized) {
@@ -77,7 +181,9 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
         // Case 1:
         // the application won't be accessing the Cryptoki library from multiple
         // threads simultaneously
-        mutex_rv = CKR_OK; // no need to do anything
+        // Internal synchronization objects are still required for state
+        // ownership and cleanup, even when the caller promises serialization.
+        mutex_rv = cnk_mutex_system_init(NULL);
       }
     } else { // all_supplied
       if (can_use_os_locking) {
@@ -101,27 +207,78 @@ CK_RV C_Initialize(CK_VOID_PTR pInitArgs) {
     }
   }
 
-  if (!g_cnk_is_managed_mode) {
-    // Standalone mode: Initialize the PC/SC subsystem
-    CNK_ENSURE_OK(cnk_initialize_pcsc());
+  if (psa_crypto_init() != PSA_SUCCESS) {
+    cnk_mutex_system_cleanup();
+    CNK_RETURN(CKR_FUNCTION_FAILED, "cannot initialize TF-PSA-Crypto");
   }
 
-  cnk_initialize_backend();
+  CK_RV rv = cnk_initialize_backend();
+  if (rv != CKR_OK)
+    goto initialization_failed;
 
-  // Initialize the session manager
-  CNK_ENSURE_OK(cnk_session_manager_init());
+  if (!g_cnk_is_managed_mode) {
+    // Standalone mode: Initialize the PC/SC subsystem.
+    rv = cnk_initialize_pcsc();
+    if (rv != CKR_OK)
+      goto initialization_failed;
+  }
+
+  rv = cnk_session_manager_init();
+  if (rv != CKR_OK)
+    goto initialization_failed;
 
   // Mark the library as initialized
   g_cnk_is_initialized = CK_TRUE;
+  atomic_store(&g_cnk_finalizing, false);
 
   int last_ref_count = atomic_fetch_add(&g_ref_count, 1);
   CNK_ENSURE_EQUAL_REASON(last_ref_count, 0, "library has been initialized. Invalid state");
 
   CNK_RET_OK;
+
+initialization_failed:
+  // Attempt every cleanup stage even when an application callback fails. A
+  // later C_Initialize must be able to retry only the specific failed stage,
+  // rather than inheriting a half-torn-down mutex/backend combination.
+  pcscRv = g_cnk_is_managed_mode ? CKR_OK : cnk_cleanup_pcsc();
+  sessionRv = cnk_session_manager_cleanup();
+  backendRv = cnk_cleanup_backend();
+  g_initialization_cleanup_pending = pcscRv != CKR_OK;
+  g_session_cleanup_pending = sessionRv != CKR_OK;
+  g_backend_cleanup_pending = backendRv != CKR_OK;
+  mbedtls_psa_crypto_free();
+  if (pcscRv != CKR_OK || sessionRv != CKR_OK || backendRv != CKR_OK)
+    return rv;
+  // Initialization never published a usable Cryptoki instance. Once every
+  // cleanup stage succeeded, also roll back an uninitialized managed binding;
+  // otherwise the next CardAcquireContext would inherit stale handles and
+  // allocator callbacks even though C_Finalize cannot be called.
+  if (g_cnk_is_managed_mode) {
+    g_cnk_is_managed_mode = CK_FALSE;
+    cnk_store_managed_binding(0, 0);
+    g_cnk_malloc_func = malloc;
+    g_cnk_free_func = free;
+    mbedtls_platform_set_calloc_free(calloc, free);
+    nsync_malloc_ptr_ = malloc;
+    nsync_free_ptr_ = free;
+  }
+  cnk_reset_logging();
+  cnk_mutex_system_cleanup();
+  return rv;
 }
 
 CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   CNK_LOG_FUNC(": pReserved: %p", pReserved);
+  atomic_flag *lifecycleLock CNK_LIFECYCLE_GUARD = &g_lifecycle_lock;
+  cnk_lifecycle_lock();
+
+  // C_Finalize already owns the lifecycle lock, so use a direct check rather
+  // than the public API admission guard (which would try to reacquire it).
+  if (!g_cnk_is_initialized)
+    CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki not initialized");
+
+  // Invalid calls must not consume a managed-mode reference.
+  CNK_ENSURE_NULL(pReserved);
 
   if (!g_cnk_is_managed_mode && atomic_load(&g_ref_count) > 1) {
     CNK_RETURN(CKR_MUTEX_BAD, "g_ref_count > 1 in standalone mode");
@@ -130,40 +287,111 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
     CNK_RETURN(CKR_OK, "library still in use");
   }
 
-  // According to PKCS#11, pReserved must be NULL_PTR
-  CNK_ENSURE_NULL(pReserved);
-
-  // Clean up session manager
-  cnk_session_manager_cleanup();
-
-  // Clean up mutex system
-  cnk_mutex_system_cleanup();
-
-  // In managed mode, we don't clean up PC/SC resources
-  if (g_cnk_is_managed_mode) {
-    // Reset managed mode variables
-    g_cnk_is_managed_mode = CK_FALSE;
-    g_cnk_scard = 0;
-    g_cnk_is_initialized = CK_FALSE;
-    CNK_RET_OK;
+  // Stop admitting new API calls while the final session/backend teardown is
+  // in progress. Calls that already hold references or card transactions are
+  // drained before the PC/SC context is released.
+  g_cnk_is_initialized = CK_FALSE;
+  atomic_store(&g_cnk_finalizing, true);
+  cnk_lifecycle_unlock();
+  lifecycleLock = NULL;
+  cnk_piv_algorithm_extension_cache_invalidate();
+  // Wake a blocking C_WaitForSlotEvent before draining API admissions: that
+  // call keeps its admission guard until SCardGetStatusChange returns.
+  if (!g_cnk_is_managed_mode)
+    cnk_cancel_pcsc_operations();
+  while (atomic_load(&g_api_admission_count) != 0) {
+#ifdef _WIN32
+    Sleep(0);
+#else
+    sched_yield();
+#endif
   }
 
-  // Clean up PC/SC resources in standalone mode
-  cnk_cleanup_pcsc();
-  g_cnk_is_initialized = CK_FALSE;
+  cnk_lifecycle_lock();
+  lifecycleLock = &g_lifecycle_lock;
 
-  CNK_RET_OK;
+  CK_RV activeRv = cnk_session_wait_for_active_calls();
+  if (activeRv != CKR_OK) {
+    g_cnk_is_initialized = CK_TRUE;
+    atomic_store(&g_cnk_finalizing, false);
+    atomic_fetch_add(&g_ref_count, 1);
+    return activeRv;
+  }
+  activeRv = cnk_wait_for_pcsc_operations();
+  if (activeRv != CKR_OK) {
+    g_cnk_is_initialized = CK_TRUE;
+    atomic_store(&g_cnk_finalizing, false);
+    atomic_fetch_add(&g_ref_count, 1);
+    return activeRv;
+  }
+
+  // PC/SC cleanup must complete before backend mutexes are destroyed. A
+  // failed callback leaves the initialized state intact for a later retry.
+  CK_RV pcscCleanupRv = g_cnk_is_managed_mode ? CKR_OK : cnk_cleanup_pcsc();
+  if (pcscCleanupRv != CKR_OK) {
+    g_cnk_is_initialized = CK_TRUE;
+    atomic_store(&g_cnk_finalizing, false);
+    atomic_fetch_add(&g_ref_count, 1);
+    return pcscCleanupRv;
+  }
+
+  CK_RV rv = cnk_session_manager_cleanup();
+  if (rv != CKR_OK) {
+    // Session teardown may have partially released state. Keep the module
+    // fail-closed and retry the remaining manager cleanup before a later
+    // C_Initialize publishes new API state.
+    g_session_cleanup_pending = CK_TRUE;
+    g_backend_cleanup_pending = CK_TRUE;
+    g_cnk_is_initialized = CK_FALSE;
+    atomic_store(&g_cnk_finalizing, true);
+    return rv;
+  }
+
+  // Managed mode owns no PC/SC context, but it still owns the backend mutexes.
+  CK_RV backendCleanupRv = cnk_cleanup_backend();
+
+  if (backendCleanupRv != CKR_OK) {
+    // Session state is already gone, but retain the backend descriptors and
+    // allocator/mode binding so C_Initialize can retry cnk_cleanup_backend.
+    g_backend_cleanup_pending = CK_TRUE;
+    g_cnk_is_initialized = CK_FALSE;
+    atomic_store(&g_cnk_finalizing, true);
+    return backendCleanupRv;
+  }
+
+  // PSA/mbedtls objects were allocated through the active managed allocator.
+  // Release them before restoring the process-default allocator, otherwise
+  // their cleanup would pass CSP-owned blocks to the CRT free implementation.
+  mbedtls_psa_crypto_free();
+
+  if (g_cnk_is_managed_mode)
+    g_cnk_is_managed_mode = CK_FALSE;
+  cnk_store_managed_binding(0, 0);
+  g_cnk_malloc_func = malloc;
+  g_cnk_free_func = free;
+  mbedtls_platform_set_calloc_free(calloc, free);
+  nsync_malloc_ptr_ = malloc;
+  nsync_free_ptr_ = free;
+  g_cnk_is_initialized = CK_FALSE;
+  atomic_store(&g_cnk_finalizing, false);
+
+  cnk_reset_logging();
+  cnk_mutex_system_cleanup();
+
+  if (pcscCleanupRv != CKR_OK)
+    return pcscCleanupRv;
+  return backendCleanupRv;
 }
 
 CK_RV C_GetInfo(CK_INFO_PTR pInfo) {
   CNK_LOG_FUNC(": pInfo: %p", pInfo);
 
-  PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pInfo);
+  CNK_ENSURE_INITIALIZED();
+  CNK_ENSURE_NONNULL(pInfo);
 
   // Fill in the CK_INFO structure
-  // Cryptoki version (PKCS#11 v2.40)
-  pInfo->cryptokiVersion.major = 2;
-  pInfo->cryptokiVersion.minor = 40;
+  pInfo->cryptokiVersion.major = 3;
+  pInfo->cryptokiVersion.minor = 2;
 
   // Manufacturer ID (padded with spaces)
   memset(pInfo->manufacturerID, ' ', sizeof(pInfo->manufacturerID));
@@ -200,6 +428,34 @@ CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList) {
   *ppFunctionList = &ck_function_list;
 
   CNK_RET_OK;
+}
+
+CK_RV C_GetInterfaceList(CK_INTERFACE_PTR interfaces, CK_ULONG_PTR count) {
+  CNK_ENSURE_NONNULL(count);
+  if (interfaces == NULL) {
+    *count = 1;
+    return CKR_OK;
+  }
+  if (*count < 1) {
+    *count = 1;
+    return CKR_BUFFER_TOO_SMALL;
+  }
+  interfaces[0] = ck_interface_3_2;
+  *count = 1;
+  return CKR_OK;
+}
+
+CK_RV C_GetInterface(CK_UTF8CHAR_PTR interfaceName, CK_VERSION_PTR version, CK_INTERFACE_PTR_PTR ppInterface,
+                     CK_FLAGS flags) {
+  CNK_ENSURE_NONNULL(ppInterface);
+  if (flags != 0)
+    return CKR_ARGUMENTS_BAD;
+  if (interfaceName != NULL && strcmp((const char *)interfaceName, (const char *)ck_interface_name) != 0)
+    return CKR_ARGUMENTS_BAD;
+  if (version != NULL && (version->major != 3 || version->minor != 2))
+    return CKR_ARGUMENTS_BAD;
+  *ppInterface = &ck_interface_3_2;
+  return CKR_OK;
 }
 
 CK_RV C_GetFunctionStatus(CK_SESSION_HANDLE hSession) {
@@ -286,3 +542,12 @@ static CK_FUNCTION_LIST ck_function_list = {{2, 40}, // PKCS #11 version 2.40
                                             C_GetFunctionStatus,
                                             C_CancelFunction,
                                             C_WaitForSlotEvent};
+
+// Generate the 3.2 table from the canonical declaration list. Unsupported
+// entries still point at type-correct stubs, so clients never dereference NULL.
+#define CK_PKCS11_FUNCTION_INFO(name) name,
+static CK_FUNCTION_LIST_3_2 ck_function_list_3_2 = {
+    {3, 2},
+#include "pkcs11f.h"
+};
+#undef CK_PKCS11_FUNCTION_INFO

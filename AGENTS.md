@@ -45,9 +45,9 @@ python -m pip install -r cmake\tf-psa-crypto-generator-requirements.txt
 
 CI uses `actions/setup-python` and passes that exact interpreter to CMake as
 `Python3_EXECUTABLE`, so TF-PSA-Crypto's generators run with the same Python
-environment that received the `pip install`. CI pins Python 3.10 because the
-required generator packages have reliable binary wheels there. The local
-requirements file is kept narrower than TF-PSA-Crypto's upstream
+environment that received the `pip install`. CI currently uses Python 3.14;
+the generator requirements are verified on Ubuntu, Windows, and macOS. The
+local requirements file is kept narrower than TF-PSA-Crypto's upstream
 `basic.requirements.txt` to avoid unneeded typing-stub packages and old
 MarkupSafe constraints during CI builds.
 
@@ -59,8 +59,46 @@ TF-PSA-Crypto migration.
 
 ## Development Hygiene
 
+- Before reviewing or implementing non-trivial behavior, follow
+  `docs/validation.md` and `docs/api-contracts.md`. Treat their state-machine,
+  ownership, lock, authorization, failure-injection, cross-repository, and
+  reviewer checks as required workflow, not optional suggestions.
+- Every function exported through `pkcs11f.h` or `pkcs11_canokey.h` must have
+  exactly one row in `docs/api-contracts.md`. When behavior, lifetime,
+  concurrency, progress, or exit guarantees change, update the row and its
+  tests in the same commit. Run `python scripts/check-api-contracts.py` before
+  committing; CI also runs it through CTest.
+
+- English is the project language. Write source comments, documentation,
+  diagnostic text, commit messages, and pull-request content in English.
+  Other languages are allowed only in explicitly identified localization
+  resources.
 - Before committing C source or header changes, run `clang-format` on the
   touched `.c` and `.h` files only. Do not run `clang-format` on CMake files.
+- Windows unit-test configuration must use a native CMake CMocka package
+  (vcpkg or an equivalent MSVC/ClangCL build). Do not introduce MinGW/MSYS2
+  CMocka libraries or make `pkg-config` a Windows test prerequisite; Unix
+  builds may continue to use `pkg-config`.
+- Add succinct comments for non-obvious invariants and boundaries: sensitive
+  data ownership/zeroization, operation-state lifetime, two-stage output
+  retries, wire encodings, endianness, and host-versus-card responsibilities.
+  Do not add comments that merely restate the next line of code.
+- Keep session lock ordering explicit: `session_mutex` protects the table and
+  active-call references, but close must release it before acquiring a
+  per-session lock. Scoped cleanup must release the session lock before the
+  session reference.
+- Do not approve an exported API change until every return after its first
+  state mutation has been classified as committed, retryable, or fully rolled
+  back according to `docs/api-contracts.md`. Check counter/pending/owner/cache
+  consistency together, not one field at a time.
+- Every API path that calls `cnk_session_find()` must declare its pointer with
+  `CNK_SESSION_REF`; otherwise concurrent close can either leak or free the
+  session too early.
+- Cryptographic operation contexts are protected by `session->lock` for the
+  complete API call. `C_SessionCancel` and close use the same lock before
+  freeing copied parameters, buffered messages, or hash contexts.
+- Update `docs/architecture.md` when moving ownership, adding an internal
+  layer, or changing the host/card responsibility boundary.
 - The VS bundled formatter is:
   `C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin\clang-format.exe`
 - Commit messages must follow Conventional Commits, include enough detail in the
@@ -89,9 +127,11 @@ Useful follow-up probes:
 & 'C:\Program Files\OpenSC Project\OpenSC\tools\pkcs11-tool.exe' --module "$PWD\build-ninja-clangcl-x64\canokey-pkcs11.dll" --list-objects --slot-index 0
 ```
 
-## Real CanoKey Probe Notes
+## Historical CanoKey Probe Notes
 
-With a CanoKey inserted, `opensc-tool --list-readers` reported:
+These observations came from an earlier, mostly empty development-card state.
+They are useful compatibility history, not the current object inventory.
+`opensc-tool --list-readers` reported:
 
 ```text
 0    Yes             canokeys.org OpenPGP PIV OATH 0
@@ -115,7 +155,10 @@ serial num: 1286a07b8d6ef74f
 ```
 
 `piv-tool --reader 0 --name` identifies `Personal Identity Verification Card`.
-`piv-tool --reader 0 --serial` returns a 16-byte value ending in `1286a07b8d6ef74f`, while this module reads the CanoKey private hardware serial as `FFFFFFFF`. That `FFFFFFFF` value is expected for the current development hardware and should not be treated as a bug by itself.
+`piv-tool --reader 0 --serial` historically returned a 16-byte value ending in
+`1286a07b8d6ef74f`, while an older firmware build exposed the CanoKey private
+hardware serial as `FFFFFFFF`. The current development firmware reports the
+PKCS#11 serial as `0`; always read it immediately before a destructive test.
 
 Observed APDU behavior for the inserted key:
 
@@ -127,9 +170,21 @@ Observed APDU behavior for the inserted key:
 Local compatibility fixes made during probing:
 
 - Empty `C_FindObjectsInit` templates now enumerate certificate, public-key, and private-key classes instead of ending the find operation immediately.
-- `MAX_FIND_OBJECTS` must fit 6 PIV slots x 3 key/certificate classes, fixed
+- `MAX_FIND_OBJECTS` must fit 24 PIV slots x 3 key/certificate classes, fixed
   PIV data-object candidates, and session-only secret keys.
 - `cnk_get_metadata()` maps `6A82` and `6A88` to `CKR_DATA_INVALID` so object enumeration skips missing PIV keys.
+
+### Public PIV snapshot cache
+
+Standalone object discovery may cache only public PIV metadata-directory entries,
+public-key metadata, and certificate bytes for 60 seconds. The cache is guarded
+by the token lock and is invalidated after successful local key, certificate, or
+PIV data writes. It must never contain PINs, management keys, card handles,
+selected applets, or authentication state. Every cacheable read checks the
+current TTL, the `metadata_cache` configuration value (or
+`CNK_PIV_METADATA_CACHE` override), and managed mode before returning a cached
+value. Managed mode always bypasses the cache. Diagnostics must distinguish
+cached reads from hardware reads and state the bypass reason when applicable.
 
 ## Current Dev Hardware PIV State
 
@@ -146,16 +201,25 @@ Management Key: 010203040506070801020304050607080102030405060708
 Prepared objects on the current key:
 
 ```text
-ID 01 -> slot 9A -> RSA-2048 key and certificate
-ID 02 -> slot 9C -> EC P-256 key and certificate
+ID 01 -> slot 9A -> EC P-256 key
+ID 02 -> slot 9C -> EC P-256 key
+ID 03 -> slot 9D -> EC P-256 key
+ID 04 -> slot 9E -> RSA-2048 key
+ID 05 -> slot 82 -> EC P-256 key
+ID 06 -> slot 83 -> EC P-384 key
+ID 07 -> slot 84 -> EC P-521 key
+ID 08 -> slot 85 -> Ed25519 key
+ID 09 -> slot 86 -> X25519 key
+ID 23 -> slot 94 -> ML-DSA-65 key
+ID 24 -> slot 95 -> ML-KEM-768 key
 ```
 
-Generated test artifacts are under:
+Certificates are independent PIV data objects and may not exist for every key
+listed above. Re-enumerate metadata before relying on this table because
+destructive tests intentionally overwrite selected slots.
 
-```text
-build-ninja-clangcl-x64\piv-9a-rsa-test\
-build-ninja-clangcl-x64\piv-9c-test\
-```
+The current firmware reports platform revision `gcdc54046`, canokey-core
+revision `3d602057`, and PIV application version `6.0.0`.
 
 OpenSC's own module is useful as an external comparison point:
 
@@ -175,12 +239,50 @@ Write-path notes:
   RSA CRT attributes (`CKA_PRIME_1`, `CKA_PRIME_2`, `CKA_EXPONENT_1`,
   `CKA_EXPONENT_2`, `CKA_COEFFICIENT`) or an EC private scalar in
   `CKA_VALUE` with matching `CKA_EC_PARAMS`.
-- Object deletion is not implemented. CanoKey has PUT DATA and a special empty
-  certificate delete encoding, but there is no standard PIV APDU that deletes
-  both the certificate and private key with PKCS#11-style object semantics.
+- PKCS#11 3.2 PQC import accepts seed-based private-key templates. ML-DSA-65
+  uses a 32-byte `CKA_SEED`; ML-KEM-768 uses a 64-byte `CKA_SEED` (`d || z`).
+  Both require the matching `CKA_PARAMETER_SET`. Expanded-only `CKA_VALUE`
+  import is unsupported because CanoKey persists the compact seed.
+- PIV token-object deletion is not implemented. Session secret keys are
+  securely destroyable, but there is no standard PIV APDU that deletes both a
+  certificate and private key with PKCS#11-style object semantics.
 - Windows minidriver `CardQueryFreeSpace` should report unknown free space for
   now. There is no PIV APDU for real object-store capacity, and adding one would
   require extending the CanoKey PIV applet.
+- PKCS#11 login state is token-scoped, not session-scoped. PIN and management
+  key caches live in `CNK_PKCS11_TOKEN_STATE`; all sessions derive their state
+  from that object. Last-session close and finalize must zero those caches.
+- PIV PIN-always maps to `CKA_ALWAYS_AUTHENTICATE` and requires
+  `C_Login(CKU_CONTEXT_SPECIFIC)` after operation init. The context PIN is
+  operation-local, must not enter the token USER cache, and is consumed and
+  zeroized after one operation or cancellation. If a session has simultaneous
+  PIN-always signing and decrypt operations, reject the ambiguous context login
+  rather than authorizing both operations with one PIN entry.
+- Every PKCS#11 3.2 function-list entry must be non-NULL. Unsupported 3.x APIs
+  use type-correct stubs returning `CKR_FUNCTION_NOT_SUPPORTED`. RSA/ECDSA/
+  ML-DSA Verify and RSA public-key Encrypt are host-side implementations; do
+  not mark mixed host/card mechanism capabilities with `CKF_HW`.
+- P-521 is a standard `CKK_EC` curve and is supported for generation, import,
+  ECDSA sign/verify, and ECDH. Ed25519 and X25519 use
+  `CKK_EC_EDWARDS`/`CKK_EC_MONTGOMERY` with RFC 8410 OIDs. Ed25519 currently
+  advertises pure `CKM_EDDSA` signing only; do not claim host verification
+  until the bundled crypto provider supplies a compatible primitive. PKCS#11
+  3.2 has no SM2 mechanism, so expose the SM2 object identity without mapping
+  it to `CKM_ECDSA`.
+- PIV extension algorithm IDs are card configuration, not compile-time
+  constants. Cache every field from `CNK_PIV_ALGORITHM_EXTENSION_CONFIG` and
+  use the configured value for discovery, key generation/import, capability
+  checks, and GENERAL AUTHENTICATE. A card may replace the documented default
+  byte values with another valid, non-conflicting mapping.
+- Host Verify supports RSA PKCS#1 v1.5/PSS, ECDSA, and ML-DSA-65 in single-part
+  and streaming forms. Host Encrypt supports single-part RSA X.509, PKCS#1
+  v1.5, and OAEP. OAEP mechanism copies must deep-copy `pSourceData` so caller
+  label lifetime does not leak into an active operation.
+- Standalone `C_WaitForSlotEvent` uses PC/SC status-change notifications and
+  the PnP pseudo-reader. Its baseline and pending-event queue persist across
+  calls so between-call and simultaneous events are not lost. `CKF_DONT_BLOCK`
+  returns `CKR_NO_EVENT` when nothing changed, and `C_Finalize` cancels a blocking wait. Managed mode returns
+  `CKR_FUNCTION_NOT_SUPPORTED` because the host owns its PC/SC lifecycle.
 - `C_CNK_SetPIN()` maps to the standard PIV Change Reference Data APDU. Pass
   `CNK_PIV_PIN_TYPE_PIN` (`0x80`) to change the PIN or
   `CNK_PIV_PIN_TYPE_PUK` (`0x81`) to change the PUK; the optional tries output
@@ -190,8 +292,33 @@ Write-path notes:
   and maps to Reset Retry Counter (`00 2C 00 80 10 puk new-pin`). CanoKey
   core's PIV applet implements these APDUs with the same fixed 8-byte,
   `0xFF`-padded fields.
-- `CKF_RNG` is intentionally not advertised because CanoKey PIV does not expose
-  a random-generation APDU through this module.
+- `C_CNK_LoginPinManaged()` checks Yubico-compatible ADMIN DATA (`5FFF00`)
+  for both PUK-blocked and PIN-protected bits, confirms the actual PUK retry
+  counter is zero, reads the protected management key from PRINTED (`5FC109`),
+  verifies it, and clears all temporary data before returning.
+  Keep ADMIN DATA and PRINTED parsing inside this extension so managed callers
+  never receive the raw management key.
+- `C_CNK_FinalizePinManaged()` is an explicitly destructive provisioning
+  operation. It authenticates USER and the protected management key before
+  permanently blocking the PUK with failing CHANGE REFERENCE DATA commands and
+  confirming zero retries. The provisioning script requires an explicit stable
+  slot ID and expected token serial. Do not hide this mutation in ordinary login
+  or initialization paths.
+- Token logout has a protected pending state. New login and credential-cache
+  reads must wait until the card logout round trip completes; local credentials
+  are cleared even when that round trip fails. Logout also clears every open
+  session's private operation context and context-specific PIN. `C_GetTokenInfo`
+  reports the token-wide open/read-only session counters under the token lock.
+- `C_SessionCancel` only accepts `CKF_FIND_OBJECTS`, `CKF_ENCRYPT`,
+  `CKF_DECRYPT`, `CKF_DIGEST`, `CKF_SIGN`, and `CKF_VERIFY`; unsupported flags
+  return `CKR_OPERATION_CANCEL_FAILED` instead of being silently ignored.
+- Conventional `CKK_EC` objects return `CKA_EC_POINT` as a DER OCTET STRING
+  containing the uncompressed point. Edwards and Montgomery objects retain raw
+  RFC 8032/7748 bytes.
+- PIV version 6.0+ exposes unauthenticated token randomness through `00 84`.
+  Advertise `CKF_RNG` only after that version check. `C_GenerateRandom` chunks
+  requests at 256 bytes; `C_SeedRandom` returns
+  `CKR_RANDOM_SEED_NOT_SUPPORTED` because firmware has no seed-injection APDU.
 - `CKA_CNK_PIV_PIN_POLICY` and `CKA_CNK_PIV_TOUCH_POLICY` are public
   vendor-defined `CK_BYTE` attributes in `include/pkcs11_canokey.h`. They can
   be supplied on private-key templates for `C_GenerateKeyPair` and
@@ -203,6 +330,8 @@ Write-path notes:
 - Runtime private-key operations must honor stored PIN policy. PIN-never keys
   can use GENERAL AUTHENTICATE without `CKU_USER`; PIN-once and PIN-always keys
   require a cached user PIN and must verify it before the operation.
+  `C_DeriveKey` has no Init boundary for `CKU_CONTEXT_SPECIFIC`, so PIN-always
+  ECDH must fail closed rather than consume the token-wide USER cache.
 - PIV data objects should be exposed as `CKO_DATA` token objects. Enumeration
   uses a fixed table of known PIV data-object candidates and returns only
   objects that `GET DATA` reports as present. The current candidate table covers
@@ -222,6 +351,10 @@ Write-path notes:
   `CNK_PIV_PIN_POLICY_ALWAYS` = 0x03, `CNK_PIV_TOUCH_POLICY_NEVER` = 0x01,
   `CNK_PIV_TOUCH_POLICY_ALWAYS` = 0x02, and
   `CNK_PIV_TOUCH_POLICY_CACHED` = 0x03.
+- ECDH, ML-KEM, and host key generation share the session secret-key allocator.
+  Session secret keys support copy, secure destroy, restricted label/usage
+  updates, and `C_DigestKey` for non-sensitive values. PIV token objects remain
+  non-copyable, non-destroyable, and read-only.
 
 RSA signing note:
 
@@ -229,7 +362,8 @@ RSA signing note:
 - CanoKey rejects the equivalent extended APDU form with `6700`.
 - OpenSC sends the RSA-2048 request as `10 87 07 9A FF <first 255 bytes>` followed by `00 87 07 9A 0B <last 11 bytes> 00`.
 
-Known-good real-hardware probes after the chaining fix:
+Known-good historical hardware probes after the chaining fix follow. Their
+slot IDs no longer match the current key inventory:
 
 ```powershell
 & 'C:\Program Files\OpenSC Project\OpenSC\tools\pkcs11-tool.exe' --module "$PWD\build-ninja-clangcl-x64\canokey-pkcs11.dll" --slot-index 0 --login --pin 123456 --sign --type privkey --id 01 --mechanism SHA256-RSA-PKCS --input-file .\build-ninja-clangcl-x64\piv-9a-rsa-test\rsa-message.txt --output-file .\build-ninja-clangcl-x64\piv-9a-rsa-test\rsa-message.sha256-rsa-pkcs.sig
@@ -271,17 +405,20 @@ Additional probes that passed:
 ## Current Implementation Shape
 
 - `src/api/`: exported PKCS#11 and CanoKey extension entry points, including
-  initialization, slots, sessions, objects, digesting, signing, encryption
-  stubs, and crypto extension stubs.
+  initialization, slots, sessions, objects, digesting, signing, host-side
+  verification/encryption, card-side decryption, centralized operation cleanup,
+  and 3.x compatibility stubs.
 - `include/private/api/`: private declarations shared by the API entry-point
   source files.
 - `src/backend/`: card/backend integrations. `pcsc.c` handles PC/SC
-  reader discovery, PIV AID selection, PIN verify/logout, GET DATA, metadata,
-  and GENERAL AUTHENTICATE signing.
+  reader discovery, PIV AID selection, PIN verify/logout, GET DATA, and GENERAL
+  AUTHENTICATE signing, RSA decryption, ECDH, and ML-KEM. `piv_metadata.c`
+  handles version-gated metadata, algorithm extensions, and token randomness.
 - `include/private/backend/`: private backend-facing declarations.
 - `src/internal/`: implementation helpers that are not direct API entry points,
-  including logging, mutex wrappers, RSA padding/PSS helpers, TLV utilities, and
-  the PIV management-key 3DES block helper.
+  including logging, mutex wrappers, RSA padding/PSS helpers, ML-DSA/ML-KEM
+  wrappers, shared template validation, PIV object wire encoding, TLV utilities,
+  and the PIV management-key 3DES block helper.
 - `include/private/internal/`: private helper declarations for the internal
   implementation layer.
 
@@ -298,23 +435,34 @@ PIV object IDs map to slots as:
 
 ## Known Gaps
 
-- Verify, random generation, wrap/unwrap, object delete/set-attribute, init PIN,
-  and slot events are mostly stubs returning `CKR_FUNCTION_NOT_SUPPORTED`.
+- Wrap/unwrap, multipart encrypt/decrypt, PIV token-object delete/set-attribute,
+  and init PIN remain unsupported or return the corresponding object-policy
+  error. `C_GenerateKey` uses host randomness for session-only AES and
+  generic-secret keys, while `C_GenerateRandom` uses the firmware 6.0+ token
+  RNG.
 - `C_GetObjectSize` is implemented as an approximate PKCS#11 object size based
   on readable attributes. `C_SetAttributeValue` validates object handles but
-  treats PIV token attributes as read-only. `C_CopyObject` is intentionally
-  unsupported because PIV token objects do not have stable copy semantics in
-  this module.
-- `C_DestroyObject` is intentionally not wired up yet. CanoKey PIV supports
+  treats PIV token attributes as read-only. `C_CopyObject` supports session
+  secret keys; PIV token objects do not have stable copy semantics.
+- `C_DestroyObject` securely clears session secret keys. CanoKey PIV supports
   PUT DATA (`00 DB`) for certificate writes and a special `53 00` certificate
   delete case, but there is no standard PIV APDU that deletes both certificates
   and asymmetric keys with matching PKCS#11 object semantics.
 - Current reader enumeration only keeps PC/SC reader names containing `canokey`, case-insensitive.
-- Standalone `C_Initialize()` reads `CNK_LOG_LEVEL` and
-  `CNK_UNSAFE_LOG_APDU`. Raw APDU logs require both debug-or-lower log level
-  and `CNK_UNSAFE_LOG_APDU=1`.
-- Managed mode ignores logging environment variables; callers must use
-  `C_CNK_ConfigLogging(level, file, unsafe_log_apdu)`.
+- Standalone `C_Initialize()` automatically checks the per-user config file
+  `%APPDATA%\\Canokeys\\canokey-pkcs11.conf` on Windows and
+  `$XDG_CONFIG_HOME/canokey-pkcs11.conf` or `$HOME/.config/canokey-pkcs11.conf`
+  on Unix-like systems (macOS also supports its Application Support path).
+  `CNK_LOG_CONFIG` is an explicit path override; then
+  `CNK_LOG_LEVEL`, `CNK_LOG_PATH`, `CNK_LOG_DIR`, and
+  `CNK_UNSAFE_LOG_APDU` override file values. Debug builds default to a
+  process-specific file in `TMPDIR`, `TEMP`, or `TMP` at `DEBUG` level; Release
+  keeps the `WARN` default and no file. Raw APDU logs require both
+  debug-or-lower log level and `CNK_UNSAFE_LOG_APDU=1`.
+- Managed mode ignores logging environment/config-file settings; callers must
+  use `C_CNK_ConfigLogging(level, file, unsafe_log_apdu)`. A caller-supplied
+  `FILE *` remains caller-owned, while files opened from standalone
+  configuration are closed by the logging lifecycle.
 - Windows CI and local native MSVC/clang-cl builds do not run unit tests for
   now because `test/unit/CMakeLists.txt` requires `PkgConfig` and `cmocka`,
   which are not installed in that environment.
@@ -324,3 +472,9 @@ PIV object IDs map to slots as:
   `C_CreateObject(CKO_PRIVATE_KEY)` against ID 06 / slot 83. These tests
   intentionally separate SO-authenticated write sessions from USER-authenticated
   signing sessions.
+- `test_pqc.exe` runs only its non-destructive checks unless
+  `CNK_RUN_DESTRUCTIVE_REAL_TESTS=1` is set. Every run requires
+  `CNK_PIV_SLOT_ID` and `CNK_PIV_SERIAL`; the destructive matrix verifies both,
+  then overwrites IDs 08/09 with Ed25519/X25519 vectors and IDs 23/24 with
+  ML-DSA-65/ML-KEM-768 vectors. Windows CI artifacts include this executable so
+  it can be run against the downloaded DLL without a local build.

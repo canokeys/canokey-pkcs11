@@ -5,9 +5,14 @@
 #define MBEDTLS_DEPRECATED_REMOVED
 #define MBEDTLS_CHECK_RETURN_WARNING
 
+// AES-192 management-key authentication uses the PSA ECB primitive.
+#define PSA_WANT_KEY_TYPE_AES 1
+#define PSA_WANT_ALG_ECB_NO_PADDING 1
+
 // EC groups exposed by CanoKey PIV slots.
 #define PSA_WANT_ECC_SECP_R1_256 1
 #define PSA_WANT_ECC_SECP_R1_384 1
+#define PSA_WANT_ECC_SECP_R1_521 1
 #define PSA_WANT_ECC_SECP_K1_256 1
 
 // disable SSL/ TLS key exchange algorithms

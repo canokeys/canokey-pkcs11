@@ -11,3 +11,4 @@ function(add_real_test NAME)
 endfunction()
 
 add_real_test(real)
+add_real_test(pqc)

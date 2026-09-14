@@ -737,10 +737,6 @@ static CK_RV decrypt_with_key(CK_FUNCTION_LIST_PTR pFunctionList, CK_SESSION_HAN
   }
 
   *pPlaintextLen = queryLen;
-  rv = pFunctionList->C_DecryptInit(hSession, pMechanism, hKey);
-  if (rv != CKR_OK)
-    return rv;
-
   return pFunctionList->C_Decrypt(hSession, ciphertext, ciphertextLen, plaintext, pPlaintextLen);
 }
 
@@ -1546,15 +1542,23 @@ static CK_RV ec_point_value(CK_BYTE_PTR ec_point, CK_ULONG ec_point_len, CK_BYTE
   if (ec_point == NULL || point == NULL || pPointLen == NULL)
     return CKR_ARGUMENTS_BAD;
 
-  if (ec_point_len == 0 || ec_point[0] != 0x04)
+  if (ec_point_len < 3 || ec_point[0] != 0x04)
     return CKR_ATTRIBUTE_VALUE_INVALID;
 
-  const CK_BYTE *p = ec_point;
-  CK_ULONG pointLen = ec_point_len;
-  if (ec_point_len >= 3 && ec_point[1] == ec_point_len - 2 && ec_point[2] == 0x04) {
-    p += 2;
-    pointLen -= 2;
+  CK_ULONG headerLen;
+  CK_ULONG pointLen;
+  if ((ec_point[1] & 0x80) == 0) {
+    headerLen = 2;
+    pointLen = ec_point[1];
+  } else if (ec_point[1] == 0x81 && ec_point_len >= 4) {
+    headerLen = 3;
+    pointLen = ec_point[2];
+  } else {
+    return CKR_ATTRIBUTE_VALUE_INVALID;
   }
+  if (headerLen + pointLen != ec_point_len || ec_point[headerLen] != 0x04)
+    return CKR_ATTRIBUTE_VALUE_INVALID;
+  const CK_BYTE *p = ec_point + headerLen;
 
   if (*pPointLen < pointLen) {
     *pPointLen = pointLen;

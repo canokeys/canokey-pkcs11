@@ -2,6 +2,8 @@
 #include "internal/logging.h"
 #include "internal/util.h"
 
+#include <psa/crypto.h>
+
 CK_RV cnk_hash_mech_to_md(CK_MECHANISM_TYPE mechanism, mbedtls_md_type_t *mdType) {
   CNK_ENSURE_NONNULL(mdType);
 
@@ -203,6 +205,36 @@ CK_RV cnk_rsa_pkcs_pss_mech_to_hash_mgf(CK_MECHANISM_TYPE mechanism, CK_MECHANIS
     break;
   default:
     CNK_RETURN(CKR_MECHANISM_INVALID, "mechanism has no fixed PSS hash/MGF");
+  }
+
+  CNK_RET_OK;
+}
+
+CK_RV cnk_aes192_encrypt_block(const CK_BYTE key[24], const CK_BYTE input[16], CK_BYTE output[16]) {
+  CNK_ENSURE_NONNULL(key, input, output);
+
+  psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+  mbedtls_svc_key_id_t keyId = MBEDTLS_SVC_KEY_ID_INIT;
+  size_t outputLen = 0;
+
+  psa_set_key_type(&attributes, PSA_KEY_TYPE_AES);
+  psa_set_key_bits(&attributes, 192);
+  psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_ENCRYPT);
+  psa_set_key_algorithm(&attributes, PSA_ALG_ECB_NO_PADDING);
+
+  psa_status_t status = psa_import_key(&attributes, key, 24, &keyId);
+  psa_reset_key_attributes(&attributes);
+  if (status != PSA_SUCCESS) {
+    CNK_ERROR("psa_import_key failed for AES-192 management authentication: %d", status);
+    CNK_RETURN(CKR_FUNCTION_FAILED, "Failed to import AES-192 management key");
+  }
+
+  status = psa_cipher_encrypt(keyId, PSA_ALG_ECB_NO_PADDING, input, 16, output, 16, &outputLen);
+  psa_status_t destroyStatus = psa_destroy_key(keyId);
+  if (status != PSA_SUCCESS || destroyStatus != PSA_SUCCESS || outputLen != 16) {
+    CNK_ERROR("AES-192 management authentication failed: cipher status %d, destroy status %d, output length %zu",
+              status, destroyStatus, outputLen);
+    CNK_RETURN(CKR_FUNCTION_FAILED, "Failed to encrypt AES-192 management challenge");
   }
 
   CNK_RET_OK;

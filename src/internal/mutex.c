@@ -123,12 +123,35 @@ CK_RV cnk_mutex_destroy(CNK_PKCS11_MUTEX *mutex) {
 CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex) {
   CNK_LOG_FUNC(": mutex: %p", mutex);
   CNK_ENSURE_NONNULL(mutex, mutex->mutex_handle, mutex->lock);
-  return mutex->lock(mutex->mutex_handle);
+  CK_RV rv = mutex->lock(mutex->mutex_handle);
+  return rv;
 }
 
 // Unlock a mutex
 CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex) {
   CNK_LOG_FUNC(": mutex: %p", mutex);
   CNK_ENSURE_NONNULL(mutex, mutex->mutex_handle, mutex->unlock);
-  return mutex->unlock(mutex->mutex_handle);
+  CK_RV rv = mutex->unlock(mutex->mutex_handle);
+  return rv;
+}
+
+CK_RV cnk_mutex_lock_guard(CNK_PKCS11_MUTEX_GUARD *guard) {
+  CNK_ENSURE_NONNULL(guard, guard->mutex);
+  CK_RV rv = cnk_mutex_lock(guard->mutex);
+  if (rv == CKR_OK)
+    guard->acquired = CK_TRUE;
+  return rv;
+}
+
+void cnk_mutex_unlock_guard(CNK_PKCS11_MUTEX_GUARD *guard) {
+  if (guard != NULL && guard->mutex != NULL && guard->acquired) {
+    CK_RV rv = cnk_mutex_unlock(guard->mutex);
+    if (rv != CKR_OK) {
+      // Cleanup callbacks cannot return an error to the enclosing API. Log
+      // the failure explicitly; the guard is still consumed so it cannot
+      // invoke an application unlock callback a second time.
+      CNK_WARN("Application mutex unlock failed during scoped cleanup: 0x%lx", rv);
+    }
+    guard->acquired = CK_FALSE;
+  }
 }

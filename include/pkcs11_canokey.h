@@ -41,6 +41,23 @@ typedef CNK_MANAGED_MODE_INIT_ARGS *CNK_MANAGED_MODE_INIT_ARGS_PTR;
 #define CNK_PIV_TOUCH_POLICY_ALWAYS 0x02
 #define CNK_PIV_TOUCH_POLICY_CACHED 0x03
 
+// PIV metadata-directory entries returned by the read-only extension below.
+// Callers own the output array and the module retains no caller pointer after
+// the call returns. Standalone mode may retain a bounded public copy internally;
+// managed mode bypasses that copy.
+#define CNK_PIV_METADATA_DIRECTORY_FLAG_KEY 0x01
+#define CNK_PIV_METADATA_DIRECTORY_FLAG_CERT 0x02
+#define CNK_PIV_METADATA_DIRECTORY_MAX_ENTRIES 24
+
+typedef struct {
+  CK_BYTE pivSlot;
+  CK_BYTE flags;
+  CK_BYTE algorithmType;
+  CK_BYTE origin;
+  CK_BYTE pinPolicy;
+  CK_BYTE touchPolicy;
+} CNK_PIV_METADATA_DIRECTORY_ENTRY;
+
 // PIV secret reference values for C_CNK_SetPIN().
 #define CNK_PIV_PIN_TYPE_PIN 0x80
 #define CNK_PIV_PIN_TYPE_PUK 0x81
@@ -48,6 +65,10 @@ typedef CNK_MANAGED_MODE_INIT_ARGS *CNK_MANAGED_MODE_INIT_ARGS_PTR;
 // Extension API to enable managed mode (must be called before `C_Initialize`)
 // pInitArgs: non-NULL pointer to CNK_MANAGED_MODE_INIT_ARGS
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_EnableManagedMode)(CNK_MANAGED_MODE_INIT_ARGS_PTR pInitArgs);
+
+// Roll back a managed-mode binding when C_Initialize fails before publishing
+// the Cryptoki initialized state. Returns CKR_OPERATION_ACTIVE once initialized.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_ResetManagedMode)(void);
 
 // Extension API to configure logging
 // level: must be CNK_LOG_LEVEL_*, -1 for unchanged (default: CNK_LOG_LEVEL_WARN)
@@ -61,6 +82,38 @@ CK_DEFINE_FUNCTION(CK_RV, C_CNK_ConfigLogging)(int level, FILE *file, CK_BBOOL u
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_Login)(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin,
                                        CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
 
+// Verify and cache a PIN-protected PIV management key while preserving the
+// existing CKU_USER login. This extension is intended for managed callers that
+// recovered the key from a PIN-protected PIV data object.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_LoginProtectedManagementKey)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pKey,
+                                                             CK_ULONG ulKeyLen);
+
+// Authenticate the user PIN and, when ADMIN DATA marks the token as
+// PIN-protected, recover and authenticate the management key without exposing
+// it to the caller.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_LoginPinManaged)(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen);
+
+// Finish a preconfigured PIN-managed setup by authenticating USER and the
+// protected management key, then permanently blocking the PIV PUK. This is a
+// destructive provisioning operation; successful completion leaves zero PUK
+// retries.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_FinalizePinManaged)(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin,
+                                                    CK_ULONG ulPinLen);
+
+// Read one PIV data object by its full BER-TLV tag. A NULL output buffer
+// queries the required length. PIN-protected objects require a cached CKU_USER
+// login and are read through that session.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_GetPivData)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pTag, CK_ULONG ulTagLen,
+                                            CK_BYTE_PTR pValue, CK_ULONG_PTR pulValueLen);
+
+// Read the firmware metadata directory in one card transaction. Firmware
+// versions before 5.7 return CKR_FUNCTION_NOT_SUPPORTED. A NULL entries
+// pointer performs a count query; entryCount is updated before any buffer
+// error, following PKCS#11 two-stage output semantics.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_GetPivMetadataDirectory)(CK_SESSION_HANDLE hSession,
+                                                         CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
+                                                         CK_ULONG_PTR entryCount);
+
 // Extension API to change the PIV PIN or PUK and get remaining tries.
 // pinType: CNK_PIV_PIN_TYPE_PIN or CNK_PIV_PIN_TYPE_PUK
 // pPinTries: pointer to receive remaining tries for the selected secret (NULL for not needed)
@@ -70,6 +123,7 @@ CK_DEFINE_FUNCTION(CK_RV, C_CNK_SetPIN)(CK_SESSION_HANDLE hSession, CK_BYTE pinT
 
 // Extension API to unblock the PIV PIN using the PUK and set a new PIN
 // pPinTries: pointer to an integer to receive the number of remaining PUK tries (NULL for not needed)
+// Returns CKR_ACTION_PROHIBITED when PIN-managed management-key recovery is configured.
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_UnblockPIN)(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULONG ulPukLen,
                                             CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewPinLen, CK_BYTE_PTR pPinTries);
 

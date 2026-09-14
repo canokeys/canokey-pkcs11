@@ -1,6 +1,8 @@
 #ifndef CNK_INTERNAL_MACROS_H
 #define CNK_INTERNAL_MACROS_H
 
+#include "backend/pcsc.h"
+#include "internal/lifecycle.h"
 #include "internal/logging.h"
 #include "internal/util.h"
 #include "pkcs11.h"
@@ -9,11 +11,18 @@
  * Macro to check if the PKCS#11 library is initialized
  * Returns CKR_CRYPTOKI_NOT_INITIALIZED if not initialized
  */
+#if defined(__clang__) || defined(__GNUC__)
+#define CNK_API_ADMISSION_CLEANUP __attribute__((cleanup(cnk_api_admission_end)))
+#else
+#error "CanoKey API admission guards require compiler cleanup support"
+#endif
+
 #define CNK_ENSURE_INITIALIZED()                                                                                       \
+  CNK_API_ADMISSION_GUARD _cnk_api_admission_guard CNK_API_ADMISSION_CLEANUP = {.active = CK_FALSE};                   \
   do {                                                                                                                 \
-    if (CNK_UNLIKELY(!g_cnk_is_initialized)) {                                                                         \
-      CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki not initialized");                                            \
-    }                                                                                                                  \
+    CK_RV _cnk_api_admission_rv = cnk_api_admission_begin(&_cnk_api_admission_guard);                                  \
+    if (_cnk_api_admission_rv != CKR_OK)                                                                               \
+      return _cnk_api_admission_rv;                                                                                    \
   } while (0)
 
 /**
@@ -24,12 +33,11 @@
  */
 #define PKCS11_CHECK_SLOT_ID_VALID(id)                                                                                 \
   do {                                                                                                                 \
-    cnk_mutex_lock(&g_cnk_readers_mutex);                                                                              \
-    if ((id) >= (CK_ULONG)g_cnk_num_readers) {                                                                         \
-      cnk_mutex_unlock(&g_cnk_readers_mutex);                                                                          \
+    CK_BBOOL _slot_exists = CK_FALSE;                                                                                  \
+    CNK_ENSURE_OK(cnk_slot_exists((id), &_slot_exists));                                                               \
+    if (!_slot_exists) {                                                                                               \
       CNK_RETURN(CKR_SLOT_ID_INVALID, "Invalid slot ID");                                                              \
     }                                                                                                                  \
-    cnk_mutex_unlock(&g_cnk_readers_mutex);                                                                            \
   } while (0)
 
 /**
@@ -42,11 +50,9 @@
  * @param id The slot ID to check
  */
 #define PKCS11_VALIDATE(ptr, id)                                                                                       \
-  do {                                                                                                                 \
-    CNK_ENSURE_INITIALIZED();                                                                                          \
-    CNK_ENSURE_NONNULL(ptr);                                                                                           \
-    PKCS11_CHECK_SLOT_ID_VALID(id);                                                                                    \
-  } while (0)
+  CNK_ENSURE_INITIALIZED();                                                                                            \
+  CNK_ENSURE_NONNULL(ptr);                                                                                             \
+  PKCS11_CHECK_SLOT_ID_VALID(id)
 
 /**
  * Macro to validate initialization and a required pointer argument
@@ -54,9 +60,7 @@
  * @param ptr The pointer to check
  */
 #define PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(ptr)                                                                  \
-  do {                                                                                                                 \
-    CNK_ENSURE_INITIALIZED();                                                                                          \
-    CNK_ENSURE_NONNULL(ptr);                                                                                           \
-  } while (0)
+  CNK_ENSURE_INITIALIZED();                                                                                            \
+  CNK_ENSURE_NONNULL(ptr)
 
 #endif /* CNK_INTERNAL_MACROS_H */

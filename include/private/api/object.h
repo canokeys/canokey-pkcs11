@@ -24,13 +24,13 @@ CK_RV CNK_ValidateObject(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, 
  */
 CK_OBJECT_HANDLE CNK_MakeObjectHandle(CK_SLOT_ID slot_id, CK_OBJECT_CLASS object_class, CK_BYTE object_id);
 
-/**
- * Maps a PIV object ID to its PIV key reference.
- *
- * @param obj_id Internal object ID
- * @param piv_tag PIV key reference
- */
-CK_RV CNK_ObjectIdToPivTag(CK_BYTE obj_id, CK_BYTE *piv_tag);
+// The caller must hold session->lock while using the returned object pointer.
+CK_RV CNK_GetSessionSecretKey(CNK_PKCS11_SESSION *session, CK_OBJECT_HANDLE object,
+                              CNK_PKCS11_SECRET_KEY_OBJECT **secret);
+
+// This function acquires session->lock internally. The caller must not hold it.
+CK_RV CNK_CreateSessionSecretKey(CNK_PKCS11_SESSION *session, const CNK_PKCS11_SECRET_KEY_OBJECT *prototype,
+                                 CK_OBJECT_HANDLE_PTR object);
 
 CK_RV CNK_GetPivPolicies(CK_ATTRIBUTE_PTR p_template, CK_ULONG ul_count, CK_BYTE default_pin_policy,
                          CK_BYTE *pin_policy, CK_BYTE *touch_policy);
@@ -45,6 +45,16 @@ CK_RV CNK_GetPivPolicies(CK_ATTRIBUTE_PTR p_template, CK_ULONG ul_count, CK_BYTE
  */
 CK_BYTE CNK_DefaultPinPolicyForPivObjectId(CK_BYTE obj_id);
 
+// PIN-never PIV keys are public PKCS#11 objects even though they contain a
+// card-resident private key. Other PIV private keys require USER visibility.
+CK_BBOOL CNK_PivPrivateKeyIsPrivate(CK_BYTE pin_policy);
+
+// Translate a canonical algorithm constant to the ID configured by the card.
+// Standard PIV algorithms are returned unchanged; disabled extensions return 0.
+CK_BYTE CNK_PivConfiguredAlgorithm(const CNK_PKCS11_SESSION *session, CK_BYTE canonical_algorithm);
+CK_BBOOL CNK_PivAlgorithmIsRsa(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
+CK_BBOOL CNK_PivAlgorithmIsEc(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
+
 /**
  * Reports whether a stored PIV key algorithm supports PKCS#11 signing.
  *
@@ -53,11 +63,11 @@ CK_BYTE CNK_DefaultPinPolicyForPivObjectId(CK_BYTE obj_id);
  *
  * @param algorithm_type PIV algorithm type from metadata
  */
-CK_BBOOL CNK_PivPrivateKeyCanSign(CK_BYTE algorithm_type);
+CK_BBOOL CNK_PivPrivateKeyCanSign(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
 
-CK_BBOOL CNK_PivPrivateKeyCanDecrypt(CK_BYTE algorithm_type);
+CK_BBOOL CNK_PivPrivateKeyCanDecrypt(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
 
-CK_BBOOL CNK_PivPrivateKeyCanDerive(CK_BYTE algorithm_type);
+CK_BBOOL CNK_PivPrivateKeyCanDerive(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
 
 /**
  * Maps a PIV object ID to its PIV certificate data-object tag.
