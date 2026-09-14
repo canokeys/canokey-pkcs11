@@ -258,3 +258,37 @@ PKCS#11 Rust adapter tests (9), strict Clippy, and API coverage (118/118) pass.
 Libcanokey workspace tests, strict Clippy, rustdoc, and C/C++ ABI transcripts
 pass. ARM64 executables were built but not run locally; real-card/minidriver
 acceptance and full PR-head CI are separate outstanding checks.
+
+## Review reply checkpoint (2026-09-14)
+
+Audited all 23 PKCS#11 PR #5 threads and all six libcanokey PR #1 threads,
+including resolved threads without a reply. The remaining PKCS#11 profile-lifetime
+and RSA-length findings are covered by 77d1edd. Libcanokey e71a0b6 fixes the
+remaining pre-limit input allocations and documents all 18 unsafe context ABI
+entries and all 21 Result-returning Rust context factories/constructors.
+
+Selected streaming input now shares standalone validation (SM2 IDs are absent
+or 1..=32 bytes, and other modes reject an ID). Object and certificate writes
+reject inputs above max_input_bytes before copying. Allocation-observing Rust
+regressions reproduced the original failures and pass after the fix. The C ABI
+transcript checks error descriptor validation/clearing and copied inputs surviving
+source-profile/context release. Both PKCS#11 Cargo dependencies now pin e71a0b6.
+Review replies identify the specific implementation and verification for each
+original finding; they do not declare the remaining migration gates complete.
+
+For card calls that acquire a token reservation, successful reservation
+acquisition is the admission point: logout returns CKR_OPERATION_ACTIVE while
+that reservation protects card I/O and result commit. An initialized operation
+context alone is not admission. The existing
+`test_logout_cannot_race_protected_management_login` regression checks logout
+rejection during both protected login and a held management-operation reservation;
+`test_logout_revokes_context_specific_authorization` checks context revocation.
+The full physical-card concurrency matrix remains a migration acceptance gate.
+
+The e71a0b6 dependency pin passes Windows x86/x64/ARM64 Debug/Release builds,
+x86/x64 C/Rust contract tests, Linux CTest (10/10), ASan/UBSan with leak detection
+(10/10), Rust adapter tests (9), strict Clippy and API contract coverage (118/118).
+All 29 original inline threads have individual replies. Review-body findings
+are answered with links to their source reviews because GitHub does not support
+nested replies to review summaries. Native ARM64 execution and hardware
+acceptance remain separate from these build and offline-test results.

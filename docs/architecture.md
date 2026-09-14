@@ -57,10 +57,12 @@ byte-order/format conversion for card-backed private-key operations. Classic
 RSA, ECDSA, P-521, secp256k1, and Ed25519 GENERAL AUTHENTICATE framing and
 signature parsing are delegated to the typed libcanokey operation inside one
 caller-owned selected transaction. ML-DSA uses the selected-context streaming
-operation. Key generation/import remain in this
-module during the later write migration. `backend/piv_auth.c` owns PIN, PUK, and
-management-key authentication. `backend/piv_data.c` owns PIV data objects and
-legacy version/serial commands. `backend/pcsc.c` is limited to reader discovery, slot
+operation. Key generation/import use typed context factories with C retaining
+PKCS#11 validation, management reservations and cache invalidation.
+`backend/piv_auth.c` retains PIN/PUK handling and management-algorithm discovery;
+management challenge-response is delegated to libcanokey. `backend/piv_data.c`
+uses context factories for session-backed PIV data operations and retains legacy
+compatibility reads and version/serial commands. `backend/pcsc.c` is limited to reader discovery, slot
 events, transaction ownership, and APDU transport. These focused modules share
 transaction helpers so managed mode continues to use the minidriver's card
 handle and every operation balances `SCardBeginTransaction` with
