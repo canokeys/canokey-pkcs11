@@ -98,8 +98,41 @@ CK_RV cnk_piv_context_for_session(CNK_PKCS11_SESSION *session, uint32_t state, C
   if (session->token->libcanokeyProfile != NULL &&
       session->token->libcanokeyProfileEpoch == atomic_load(&g_cnk_managed_binding_epoch))
     status = CNK_EXTERNAL_CALL(cnk_piv_context_new, session->token->libcanokeyProfile, state, context, &error);
-  cnk_mutex_unlock(&session->token->lock);
-  return cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
+  CK_RV unlockRv = cnk_mutex_unlock(&session->token->lock);
+  rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
+  if (rv == CKR_OK && unlockRv != CKR_OK) {
+    CNK_EXTERNAL_VOID(cnk_piv_context_free, *context);
+    *context = NULL;
+    rv = unlockRv;
+  }
+  return rv;
+}
+
+CK_RV cnk_piv_resolve_algorithm(CNK_PKCS11_SESSION *session, CK_BYTE wire, uint32_t *algorithm) {
+  if (session == NULL || session->token == NULL || algorithm == NULL)
+    return CKR_ARGUMENTS_BAD;
+  CK_RV rv = cnk_ensure_libcanokey_profile(session);
+  if (rv != CKR_OK)
+    return rv;
+  rv = cnk_mutex_lock(&session->token->lock);
+  if (rv != CKR_OK)
+    return rv;
+  uint32_t resolved = 0;
+  rv = CKR_DEVICE_ERROR;
+  if (session->token->libcanokeyProfile != NULL &&
+      session->token->libcanokeyProfileEpoch == atomic_load(&g_cnk_managed_binding_epoch)) {
+    uint32_t status =
+        CNK_EXTERNAL_CALL(cnk_profile_piv_algorithm_from_wire, session->token->libcanokeyProfile, wire, &resolved);
+    rv = status == CNK_LIBCANO_OK                 ? CKR_OK
+         : status == CNK_LIBCANO_INVALID_ARGUMENT ? CKR_FUNCTION_NOT_SUPPORTED
+                                                  : CKR_DEVICE_ERROR;
+  }
+  CK_RV unlockRv = cnk_mutex_unlock(&session->token->lock);
+  if (rv == CKR_OK)
+    rv = unlockRv;
+  if (rv == CKR_OK)
+    *algorithm = resolved;
+  return rv;
 }
 
 CK_RV cnk_run_piv_operation(SCARDHANDLE card, CNK_LIBCANO_OPERATION *operation, CK_RV absent, CK_BBOOL *attempted) {
@@ -171,12 +204,13 @@ cleanup:
 
 /* Compatibility encoding for the existing C public-key consumers. Both
  * metadata and generation must report precisely the bytes they write. */
-CK_RV cnk_copy_piv_public_key(const CNK_LIBCANO_OPERATION *operation, CK_BYTE algorithmType, CK_BYTE_PTR output,
-                              CK_ULONG_PTR outputLen) {
+CK_RV cnk_copy_piv_public_key(const CNK_LIBCANO_OPERATION *operation, CK_BYTE_PTR output, CK_ULONG_PTR outputLen) {
   if (operation == NULL || outputLen == NULL)
     return CKR_ARGUMENTS_BAD;
-  CK_BBOOL rsa =
-      algorithmType == PIV_ALG_RSA_2048 || algorithmType == PIV_ALG_RSA_3072 || algorithmType == PIV_ALG_RSA_4096;
+  uint32_t algorithm = 0;
+  if (CNK_EXTERNAL_CALL(cnk_operation_key_algorithm, operation, &algorithm) != CNK_LIBCANO_OK)
+    return CKR_DEVICE_ERROR;
+  CK_BBOOL rsa = algorithm >= CNK_LIBCANO_ALG_RSA_1024 && algorithm <= CNK_LIBCANO_ALG_RSA_4096;
   uint32_t field = rsa ? CNK_LIBCANO_PUBLIC_MODULUS : CNK_LIBCANO_PUBLIC_POINT_OR_RAW;
   size_t firstLen = 0;
   if (CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, field, NULL, &firstLen) != CNK_LIBCANO_OK ||

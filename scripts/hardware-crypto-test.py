@@ -51,6 +51,9 @@ class PSS(C.Structure):
     _fields_ = [("hash", U), ("mgf", U), ("salt", U)]
 
 
+RSA_BITS = {"rsa": 2048, "rsa3072": 3072, "rsa4096": 4096}
+KEY_KINDS = [*RSA_BITS, "p521", "x25519", "ed25519"]
+
 parser = argparse.ArgumentParser(
     description="Verify explicitly selected keys through a Windows PKCS11 DLL and independent software crypto."
 )
@@ -62,7 +65,7 @@ for option in ["ecdsa-id", "eddsa-id", "derive-id", "rsa-id"]:
 for option in ["mldsa-id", "mlkem-id", "certificate-id"]:
     parser.add_argument("--" + option, type=lambda x: int(x, 16))
 for operation in ["import", "generate"]:
-    for kind in ["rsa", "p521", "x25519", "ed25519"]:
+    for kind in KEY_KINDS:
         parser.add_argument(
             "--replace-" + operation + "-" + kind + "-id",
             type=lambda x: int(x, 16),
@@ -75,18 +78,19 @@ parser.add_argument(
     default=[],
     help="Read/write/restore the name of this physical PIV slot; no key or certificate is changed",
 )
+parser.add_argument(
+    "--pin-managed-unconfigured",
+    action="store_true",
+    help="Verify unconfigured PIN-managed login is rejected and its USER login is rolled back",
+)
 parser.add_argument("--report", type=Path)
 args = parser.parse_args()
 if os.name != "nt":
     parser.error("This ctypes layout targets native Windows only")
 if "CNK_PIV_PIN" not in os.environ:
     parser.error("CNK_PIV_PIN is required")
-imports = [
-    (kind, getattr(args, "replace_import_" + kind + "_id")) for kind in ["rsa", "p521", "x25519", "ed25519"]
-]
-generations = [
-    (kind, getattr(args, "replace_generate_" + kind + "_id")) for kind in ["rsa", "p521", "x25519", "ed25519"]
-]
+imports = [(kind, getattr(args, "replace_import_" + kind + "_id")) for kind in KEY_KINDS]
+generations = [(kind, getattr(args, "replace_generate_" + kind + "_id")) for kind in KEY_KINDS]
 if (
     args.certificate_id is not None
     or args.name_slot
@@ -103,6 +107,11 @@ lib = C.CDLL(str(args.module))
 class Version(C.Structure):
     _pack_ = 1
     _fields_ = [("major", B), ("minor", B)]
+
+
+class SessionInfo(C.Structure):
+    _pack_ = 1
+    _fields_ = [("slot", U), ("state", U), ("flags", U), ("device_error", U)]
 
 
 class TokenInfo(C.Structure):
@@ -130,6 +139,7 @@ class TokenInfo(C.Structure):
 
 for name, types in {
     "C_GetTokenInfo": [U, C.POINTER(TokenInfo)],
+    "C_GetSessionInfo": [U, C.POINTER(SessionInfo)],
     "C_GetSlotList": [B, C.POINTER(U), C.POINTER(U)],
     "C_CreateObject": [U, C.POINTER(Attr), U, C.POINTER(U)],
     "C_Initialize": [P],
@@ -453,6 +463,17 @@ def run_case(name, operation):
         print(f"FAIL {name}: {detail}", flush=True)
 
 
+def unconfigured_management_check():
+    pin = os.environ["CNK_PIV_PIN"].encode()
+    if lib.C_CNK_LoginPinManaged(s, pin, len(pin)) != 0x20:
+        raise RuntimeError("PIN-managed login did not report an unconfigured policy")
+    info = SessionInfo()
+    check(lib.C_GetSessionInfo(s, C.byref(info)))
+    if info.state != 2:
+        raise RuntimeError("Unconfigured PIN-managed login did not restore the public session")
+    print("PASS unconfigured PIN-managed login and USER-state rollback", flush=True)
+
+
 def names_checks(slots):
     def get(slot):
         length = U()
@@ -519,7 +540,7 @@ def names_checks(slots):
 def verify_private_key(id, kind):
     login(1, os.environ["CNK_PIV_PIN"].encode())
     try:
-        if kind == "rsa":
+        if kind in RSA_BITS:
             rsa_checks(id)
         elif kind == "p521":
             ecdsa_checks(id)
@@ -541,13 +562,17 @@ def generate_checks(id, kind):
         else None
     )
     key_type, mechanism, params = {
-        "rsa": (0, 0, None),
+        **{name: (0, 0, None) for name in RSA_BITS},
         "p521": (3, 0x1040, "06052b81040023"),
         "x25519": (0x41, 0x1056, "06032b656e"),
         "ed25519": (0x40, 0x1055, "06032b6570"),
     }[kind]
     common = [(0x100, key_type), (0x102, bytes([id])), (1, b"\1")]
-    attributes = [(0x121, 2048), (0x122, b"\1\0\1")] if kind == "rsa" else [(0x180, bytes.fromhex(params))]
+    attributes = (
+        [(0x121, RSA_BITS[kind]), (0x122, b"\1\0\1")]
+        if kind in RSA_BITS
+        else [(0x180, bytes.fromhex(params))]
+    )
     pub, keep_pub = attrs([(0, 2)] + common + attributes)
     private, keep_private = attrs([(0, 3), (2, b"\1")] + common)
     mech = Mech(mechanism, None, 0)
@@ -572,7 +597,7 @@ def generate_checks(id, kind):
     after = key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
     if after == before:
         raise RuntimeError("Generation did not replace the selected public key")
-    if kind in ("rsa", "p521") and key.key_size != (2048 if kind == "rsa" else 521):
+    if (kind in RSA_BITS or kind == "p521") and key.key_size != RSA_BITS.get(kind, 521):
         raise RuntimeError("Generated key has the wrong size")
     verify_private_key(id, kind)
     print(
@@ -584,8 +609,8 @@ def generate_checks(id, kind):
 def import_checks(id, kind):
     if not 1 <= id <= 24 or find(1, id):
         raise RuntimeError("Private-key import requires an explicit certificate-free PIV key slot")
-    if kind == "rsa":
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    if kind in RSA_BITS:
+        key = rsa.generate_private_key(public_exponent=65537, key_size=RSA_BITS[kind])
         numbers = key.private_numbers()
         integer = lambda v: v.to_bytes((v.bit_length() + 7) // 8, "big")
         values = [
@@ -659,6 +684,8 @@ def main():
             raise RuntimeError(f"Token serial mismatch: {actual_serial}")
         check(lib.C_OpenSession(args.slot, 6, None, None, C.byref(s)))
         opened = True
+        if args.pin_managed_unconfigured:
+            run_case("unconfigured PIN-managed login rollback", unconfigured_management_check)
         if args.name_slot:
             run_case("F5 name read/write/restore", lambda: names_checks(args.name_slot))
         for kind, id in generations:

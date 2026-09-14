@@ -81,8 +81,7 @@ static CK_RV cnk_get_metadata_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pi
   if (CNK_EXTERNAL_CALL(cnk_operation_metadata, operation, &metadata) != CNK_LIBCANO_OK ||
       (metadata.presence_flags & CNK_LIBCANO_METADATA_HAS_ALGORITHM) == 0)
     goto cleanup;
-  rv = publicKeyLen != NULL ? cnk_copy_piv_public_key(operation, metadata.algorithm_id, publicKey, publicKeyLen)
-                            : CKR_OK;
+  rv = publicKeyLen != NULL ? cnk_copy_piv_public_key(operation, publicKey, publicKeyLen) : CKR_OK;
   if (rv == CKR_OK || rv == CKR_BUFFER_TOO_SMALL) {
     *algorithmType = metadata.algorithm_id;
     if (pinPolicy != NULL && (metadata.presence_flags & CNK_LIBCANO_METADATA_HAS_POLICY) != 0)

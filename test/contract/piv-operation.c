@@ -25,10 +25,10 @@ static struct CNK_LIBCANO_OPERATION op;
 static struct CNK_LIBCANO_CONTEXT ctx;
 static CNK_PKCS11_TOKEN_STATE token;
 static CNK_PKCS11_SESSION session;
-static unsigned cards, operations, contexts, sends, invalidations, locked;
+static unsigned cards, operations, contexts, sends, invalidations, locked, pinCopies;
 static unsigned failAt, phase, endless, responseSize = 2, badCommand;
-static uint32_t errorKind, finalStep = CNK_LIBCANO_STEP_DONE;
-static CK_RV lockError;
+static uint32_t errorKind, profileStatus, publicAlgorithmStatus, finalStep = CNK_LIBCANO_STEP_DONE;
+static CK_RV lockError, unlockError;
 _Atomic CK_ULONG g_cnk_managed_binding_epoch;
 atomic_int g_cnk_log_level = CNK_LOG_LEVEL_NONE;
 static char lastLog[1024], transcript[8192];
@@ -57,7 +57,7 @@ CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex) {
   (void)mutex;
   CHECK(locked == 1);
   locked--;
-  return CKR_OK;
+  return unlockError;
 }
 CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *s) {
   CHECK(s == &session && !cards);
@@ -89,6 +89,7 @@ CK_RV cnk_token_copy_pin(CNK_PKCS11_SESSION *s, CK_BYTE *pin, CK_ULONG *len) {
   (void)s;
   (void)pin;
   (void)len;
+  pinCopies++;
   return CKR_USER_NOT_LOGGED_IN;
 }
 CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slot, CNK_PKCS11_SESSION *s, CK_UTF8CHAR_PTR pin, CK_ULONG len,
@@ -131,6 +132,20 @@ static uint32_t construct(const CNK_LIBCANO_CONTEXT *context, CNK_LIBCANO_OPERAT
     operations++;
   }
   return rv;
+}
+uint32_t cnk_profile_piv_algorithm_from_wire(const void *profile, uint32_t wire, uint32_t *algorithm) {
+  CHECK(profile == (void *)1 && wire == PIV_ALG_RSA_2048 && locked == 1 && !cards);
+  if (profileStatus)
+    return profileStatus;
+  *algorithm = CNK_LIBCANO_ALG_RSA_2048;
+  return CNK_LIBCANO_OK;
+}
+uint32_t cnk_operation_key_algorithm(const CNK_LIBCANO_OPERATION *operation, uint32_t *algorithm) {
+  CHECK(operation == &op && operations == 1);
+  if (publicAlgorithmStatus)
+    return publicAlgorithmStatus;
+  *algorithm = CNK_LIBCANO_ALG_RSA_2048;
+  return CNK_LIBCANO_OK;
 }
 uint32_t cnk_piv_generate_key_in_context_new(const CNK_LIBCANO_CONTEXT *c, const CNK_LIBCANO_KEY_PARAMETERS *p,
                                              const CNK_LIBCANO_OPTIONS *o, CNK_LIBCANO_OPERATION **out,
@@ -383,7 +398,8 @@ CK_RV cnk_piv_v6_supported_on_card(SCARDHANDLE card, CK_BBOOL *supported) {
 static void reset(void) {
   CHECK(!cards && !operations && !contexts && !locked);
   sends = invalidations = phase = failAt = errorKind = endless = badCommand = 0;
-  lockError = 0;
+  lockError = unlockError = 0;
+  profileStatus = publicAlgorithmStatus = pinCopies = 0;
   responseSize = 2;
   finalStep = CNK_LIBCANO_STEP_DONE;
   session.token = &token;
@@ -417,7 +433,7 @@ static CK_RV call(unsigned kind, CK_BYTE *out, CK_ULONG *len) {
     return cnk_write_piv_certificate(0, &session, 0x9c, der, sizeof(der));
   }
   default:
-    return cnk_get_piv_data_libcanokey(0, &session, tag, 3, out, len, CK_TRUE);
+    return cnk_get_piv_data_libcanokey(0, &session, tag, 3, out, len, CK_TRUE, CK_TRUE);
   }
 }
 int main(void) {
@@ -452,6 +468,24 @@ int main(void) {
       CHECK(len == 265 && output[0] == 0x81 && output[1] == 0x82 && output[260] == 0x82);
     reset();
   }
+  reset();
+  unlockError = CKR_CANT_LOCK;
+  len = sizeof(output);
+  CHECK(call(0, output, &len) == CKR_CANT_LOCK && !sends && !invalidations);
+  reset();
+  unlockError = CKR_CANT_LOCK;
+  CHECK(call(2, output, &len) == CKR_CANT_LOCK && !sends && !invalidations);
+  reset();
+  profileStatus = CNK_LIBCANO_INVALID_ARGUMENT;
+  len = sizeof(output);
+  CHECK(call(2, output, &len) == CKR_MECHANISM_INVALID && !sends && !invalidations);
+  reset();
+  publicAlgorithmStatus = CNK_LIBCANO_RESULT_TYPE_MISMATCH;
+  len = sizeof(output);
+  memset(output, 0xCC, sizeof(output));
+  CHECK(call(2, output, &len) == CKR_DEVICE_ERROR && sends == 1 && invalidations == 1);
+  CHECK(output[0] == 0xCC && len == sizeof(output));
+  reset();
   for (unsigned n = 0; n < 2; n++) {
     reset();
     badCommand = n + 1;
@@ -494,6 +528,11 @@ int main(void) {
       reset();
     }
   }
+  reset();
+  const CK_BYTE adminTag[] = {0x5f, 0xff, 0};
+  len = sizeof(output);
+  CHECK(cnk_get_public_piv_data(&session, adminTag, sizeof(adminTag), output, &len) == CKR_OK);
+  CHECK(pinCopies == 0 && sends == 1);
   reset();
   atomic_store(&g_cnk_log_level, CNK_LOG_LEVEL_DEBUG);
   transcript[0] = 0;

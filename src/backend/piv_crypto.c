@@ -10,7 +10,6 @@
 #include <mbedtls/platform_util.h>
 #include <string.h>
 
-#define CNK_PIV_MAX_PUBLIC_KEY_RESPONSE 4096
 static CK_RV cnk_libcanokey_sign_status(uint32_t status) {
   return cnk_piv_operation_status(status, NULL, CKR_KEY_HANDLE_INVALID);
 }
@@ -19,57 +18,25 @@ static CK_RV cnk_libcanokey_status_with_error(uint32_t status, const CNK_LIBCANO
   return cnk_piv_operation_status(status, error, CKR_KEY_HANDLE_INVALID);
 }
 
-static CK_RV cnk_libcanokey_sign_algorithm(CK_BYTE algorithmType, uint32_t *algorithm, uint32_t *kind) {
-  CNK_ENSURE_NONNULL(algorithm, kind);
-  switch (algorithmType) {
-  case PIV_ALG_RSA_2048:
-    *algorithm = CNK_LIBCANO_ALG_RSA_2048;
-    *kind = CNK_LIBCANO_SIGN_RSA_BLOCK;
-    return CKR_OK;
-  case PIV_ALG_RSA_3072:
-    *algorithm = CNK_LIBCANO_ALG_RSA_3072;
-    *kind = CNK_LIBCANO_SIGN_RSA_BLOCK;
-    return CKR_OK;
-  case PIV_ALG_RSA_4096:
-    *algorithm = CNK_LIBCANO_ALG_RSA_4096;
-    *kind = CNK_LIBCANO_SIGN_RSA_BLOCK;
-    return CKR_OK;
-  case PIV_ALG_ECC_256:
-    *algorithm = CNK_LIBCANO_ALG_P256;
-    *kind = CNK_LIBCANO_SIGN_DIGEST;
-    return CKR_OK;
-  case PIV_ALG_ECC_384:
-    *algorithm = CNK_LIBCANO_ALG_P384;
-    *kind = CNK_LIBCANO_SIGN_DIGEST;
-    return CKR_OK;
-  case PIV_ALG_ECC_521:
-    *algorithm = CNK_LIBCANO_ALG_P521;
-    *kind = CNK_LIBCANO_SIGN_DIGEST;
-    return CKR_OK;
-  case PIV_ALG_SECP256K1:
-    *algorithm = CNK_LIBCANO_ALG_SECP256K1;
-    *kind = CNK_LIBCANO_SIGN_DIGEST;
-    return CKR_OK;
-  case PIV_ALG_ED25519:
-    *algorithm = CNK_LIBCANO_ALG_ED25519;
-    *kind = CNK_LIBCANO_SIGN_MESSAGE;
-    return CKR_OK;
-  case PIV_ALG_MLDSA65:
-    *algorithm = CNK_LIBCANO_ALG_MLDSA65;
-    *kind = CNK_LIBCANO_SIGN_MESSAGE;
-    return CKR_OK;
+static uint32_t signing_input_kind(uint32_t algorithm) {
+  // The PKCS#11 layer prepares an encoded RSA block, an EC digest or an
+  // Ed/ML-DSA message. Wire-ID resolution belongs to the libcanokey profile.
+  switch (algorithm) {
+  case CNK_LIBCANO_ALG_RSA_2048:
+  case CNK_LIBCANO_ALG_RSA_3072:
+  case CNK_LIBCANO_ALG_RSA_4096:
+    return CNK_LIBCANO_SIGN_RSA_BLOCK;
+  case CNK_LIBCANO_ALG_P256:
+  case CNK_LIBCANO_ALG_P384:
+  case CNK_LIBCANO_ALG_P521:
+  case CNK_LIBCANO_ALG_SECP256K1:
+    return CNK_LIBCANO_SIGN_DIGEST;
+  case CNK_LIBCANO_ALG_ED25519:
+  case CNK_LIBCANO_ALG_MLDSA65:
+    return CNK_LIBCANO_SIGN_MESSAGE;
   default:
-    return CKR_FUNCTION_NOT_SUPPORTED;
+    return 0;
   }
-}
-
-static CK_RV cnk_libcanokey_private_algorithm(CK_BYTE algorithmType, uint32_t *algorithm) {
-  if (algorithmType == PIV_ALG_X25519) {
-    *algorithm = CNK_LIBCANO_ALG_X25519;
-    return CKR_OK;
-  }
-  uint32_t kind = 0;
-  return cnk_libcanokey_sign_algorithm(algorithmType, algorithm, &kind);
 }
 
 typedef enum {
@@ -86,10 +53,11 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
   CNK_LIBCANO_CONTEXT *context = NULL;
   CNK_LIBCANO_OPERATION *operation = NULL;
   CNK_ENSURE_NONNULL(session, output, outputLen, input);
-  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
   uint32_t algorithm = 0;
-  if (operationKind != CNK_PRIVATE_DECAPSULATE)
-    CNK_ENSURE_OK(cnk_libcanokey_private_algorithm(algorithmType, &algorithm));
+  if (operationKind == CNK_PRIVATE_DECAPSULATE)
+    CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  else
+    CNK_ENSURE_OK(cnk_piv_resolve_algorithm(session, algorithmType, &algorithm));
 
   SCARDHANDLE card = 0;
   CK_RV rv = cnk_connect_for_private_key_operation(slotId, session, pinPolicy, contextPin, contextPinLen, &card,
@@ -155,11 +123,12 @@ cleanup:
 static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *session, CK_BYTE_PTR data, CK_ULONG dataLen,
                                      CK_BYTE_PTR signature, CK_ULONG_PTR signatureLen) {
   CNK_ENSURE_NONNULL(session, signature, signatureLen, data);
-  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
-
-  uint32_t algorithm = 0, kind = 0;
-  CNK_ENSURE_OK(cnk_libcanokey_sign_algorithm(session->signingContext.algorithmType, &algorithm, &kind));
-  CK_BBOOL streaming = session->signingContext.algorithmType == session->mldsa65Algorithm;
+  uint32_t algorithm = 0;
+  CNK_ENSURE_OK(cnk_piv_resolve_algorithm(session, session->signingContext.algorithmType, &algorithm));
+  uint32_t kind = signing_input_kind(algorithm);
+  if (kind == 0)
+    return CKR_FUNCTION_NOT_SUPPORTED;
+  CK_BBOOL streaming = algorithm == CNK_LIBCANO_ALG_MLDSA65;
 
   SCARDHANDLE card = 0;
   CK_RV rv = cnk_connect_for_private_key_operation(slotId, session, session->signingContext.pinPolicy,
@@ -257,46 +226,6 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
   return cnk_piv_sign_libcanokey(slotId, pSession, pData, cbDataLen, pSignature, pcbSignature);
 }
 
-static CK_RV cnk_piv_generation_algorithm(CK_BYTE wire, uint32_t *algorithm) {
-  switch (wire) {
-  case PIV_ALG_RSA_2048:
-    *algorithm = CNK_LIBCANO_ALG_RSA_2048;
-    return CKR_OK;
-  case PIV_ALG_RSA_3072:
-    *algorithm = CNK_LIBCANO_ALG_RSA_3072;
-    return CKR_OK;
-  case PIV_ALG_RSA_4096:
-    *algorithm = CNK_LIBCANO_ALG_RSA_4096;
-    return CKR_OK;
-  case PIV_ALG_ECC_256:
-    *algorithm = CNK_LIBCANO_ALG_P256;
-    return CKR_OK;
-  case PIV_ALG_ECC_384:
-    *algorithm = CNK_LIBCANO_ALG_P384;
-    return CKR_OK;
-  case PIV_ALG_ECC_521:
-    *algorithm = CNK_LIBCANO_ALG_P521;
-    return CKR_OK;
-  case PIV_ALG_SECP256K1:
-    *algorithm = CNK_LIBCANO_ALG_SECP256K1;
-    return CKR_OK;
-  case PIV_ALG_ED25519:
-    *algorithm = CNK_LIBCANO_ALG_ED25519;
-    return CKR_OK;
-  case PIV_ALG_X25519:
-    *algorithm = CNK_LIBCANO_ALG_X25519;
-    return CKR_OK;
-  case PIV_ALG_MLDSA65:
-    *algorithm = CNK_LIBCANO_ALG_MLDSA65;
-    return CKR_OK;
-  case PIV_ALG_MLKEM768:
-    *algorithm = CNK_LIBCANO_ALG_MLKEM768;
-    return CKR_OK;
-  default:
-    return CKR_MECHANISM_INVALID;
-  }
-}
-
 CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
                                CK_BYTE pinPolicy, CK_BYTE touchPolicy, CK_BYTE_PTR pbPublicKey,
                                CK_ULONG_PTR pcbPublicKey) {
@@ -304,10 +233,12 @@ CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, C
   CNK_LIBCANO_OPERATION *operation = NULL;
   CNK_ENSURE_NONNULL(session, pbPublicKey, pcbPublicKey);
   uint32_t algorithm = 0;
-  CNK_ENSURE_OK(cnk_piv_generation_algorithm(algorithmType, &algorithm));
+  CK_RV rv = cnk_piv_resolve_algorithm(session, algorithmType, &algorithm);
+  if (rv != CKR_OK)
+    return rv == CKR_FUNCTION_NOT_SUPPORTED ? CKR_MECHANISM_INVALID : rv;
   CK_BBOOL attempted = CK_FALSE;
   SCARDHANDLE card = 0;
-  CK_RV rv = cnk_begin_key_write(slotID, session, pivSlot, &card);
+  rv = cnk_begin_key_write(slotID, session, pivSlot, &card);
   if (rv != CKR_OK)
     return rv;
   CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
@@ -330,7 +261,7 @@ CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, C
   if (rv != CKR_OK)
     goto cleanup;
 
-  rv = cnk_copy_piv_public_key(operation, algorithmType, pbPublicKey, pcbPublicKey);
+  rv = cnk_copy_piv_public_key(operation, pbPublicKey, pcbPublicKey);
 
 cleanup:
   if (attempted)

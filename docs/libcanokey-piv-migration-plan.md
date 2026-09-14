@@ -22,12 +22,16 @@ passes the corresponding contract and hardware gates; do not add silent fallback
 | 1: public reads | Typed metadata/public keys, certificates, session data, directory and ordinary/F9 name reads | Remove remaining legacy reads; full malformed/duplicate/gzip/buffer/cache matrix |
 | 2: signing | RSA, ECDSA, Ed25519 and streaming ML-DSA use Rust operations | Complete PIN-never/once/always, legacy-Le, size-query and cancellation matrix |
 | 3: other private operations | RSA decrypt, ECDH/X25519 and ML-KEM use Rust operations | Full PIN-policy, Windows endian/KDF and concurrent result-publication matrix |
-| 4: management/writes | Management challenge-response, key generation/import, certificate/data/F5 writes and certificate deletion | Move PIN/PUK, management-algorithm discovery and ADMIN DATA/PRINTED parsing; complete write/failure matrix |
-| 5: remove duplicate C | Removed C private-operation builders, import/certificate framing, old metadata parser and 3DES | Remove remaining device-info/configuration/RNG/PIN protocol code and duplicate algorithm mappings |
+| 4: management/writes | Management challenge-response, key generation/import, certificate/data/F5 writes and certificate deletion | Move PIN/PUK and management-algorithm discovery; complete write/failure matrix |
+| 5: remove duplicate C | Removed C private-operation/import/certificate/data builders, management-data parsers and 3DES | Remove remaining device-info/configuration/RNG/PIN protocol code and session algorithm duplication |
 
 C now passes semantic import parameters and component views directly to Rust.
 C retains PKCS#11 RSA-width admission and one bounded, zeroized EC-padding buffer.
-No C import TLV encode/reparse or certificate framing remains. Host crypto and
+No C import TLV encode/reparse or certificate framing remains. Backend wire IDs
+resolve through the immutable Rust profile; returned public keys use their typed
+algorithm. ADMIN DATA/PRINTED use Rust parsing, with empty policy distinguished
+from malformed data and PIN protection forbidding PUK recovery independently of
+the stored PUK-blocked claim. Public recovery reads never submit a cached PIN. Host crypto and
 PKCS#11 state are intentional C responsibilities, not migration leftovers.
 
 ## Required invariants
@@ -87,11 +91,16 @@ emulation. Passing a selected subset does not close the remaining gates.
 Reader: canokeys.org OpenPGP PIV OATH 0; serial 0; firmware
 3.1.0-dev+gaa408988; PIV 6.0.0. Re-enumerate before any provisioning.
 
-- x64 Debug/Release: 23 selected groups pass using scripts/hardware-crypto-test.py:
-  F5 read/write/clear/restore, four key generations, four imports, independent
+- x64 Debug/Release: 28 selected groups pass using scripts/hardware-crypto-test.py:
+  F5 read/write/clear/restore, unconfigured protection rollback, six key generations,
+  six imports, independent
   private-operation verification, certificate write/read/delete and RNG.
-- Test slots 87..8A: RSA-2048, P-521, X25519 and Ed25519 imports match the generated
-  public keys and pass private operations. Temporary certificates use slot 87.
+- Test slots 87..8A: RSA (2048/3072/4096), P-521, X25519 and Ed25519 generation/import
+  match public-key expectations and pass private operations. Slot 87 currently
+  holds the most recently tested RSA size; temporary certificates also use it.
+- Unconfigured PIN-managed login returns its expected policy error and rolls back
+  USER state on the actual card. Malformed/protected PUK recovery uses a counted
+  mutation seam with the real Rust parser; real PUK mutation remains unverified.
 - Native x64 minidriver: two DDI lifetimes pass certificate read/write, PUBLIC
   write rejection, ADMIN authorization and USER signatures on 9A/9C/82.
   Earlier propagation passed for these certificates, with signatures verified

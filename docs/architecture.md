@@ -33,8 +33,13 @@ Private-key import passes semantic parameters and borrowed component views to th
 Rust constructor. C retains RSA template-width admission and one padded EC scalar;
 that descriptor cannot be copied because its view points inside it. The descriptor
 is wiped on every exit, and the Rust operation owns/wipes its copies. There is no
-C import TLV encode/reparse or certificate framing. F5 similarly delegates its
-command and UTF-16 validation to Rust; [container-names.md](container-names.md)
+C import TLV encode/reparse or certificate framing. Management-protection data
+is decoded by Rust: stored flags remain claims,
+malformed data cannot become unconfigured success, and PRINTED yields a validated,
+zeroizing 24-byte key copy. The C caller still owns authentication/cache commit.
+Backend algorithm conversion consults the profile before authentication and uses
+typed result algorithms; configured wire IDs are never treated as canonical IDs.
+F5 similarly delegates its command and UTF-16 validation to Rust; [container-names.md](container-names.md)
 defines the consumer's precise fallback and error mapping.
 
 ## Transactions and shared state

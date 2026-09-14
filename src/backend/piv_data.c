@@ -19,8 +19,8 @@ static CK_RV map_libcanokey_object_error(const CNK_LIBCANO_OPERATION *operation,
 }
 
 static CK_RV cnk_get_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag,
-                                         CK_ULONG tag_len, CK_BYTE_PTR data, CK_ULONG_PTR data_len,
-                                         CK_BBOOL fetch_data) {
+                                         CK_ULONG tag_len, CK_BYTE_PTR data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data,
+                                         CK_BBOOL verifyCachedPin) {
   CNK_ENSURE_NONNULL(session, tag);
   if (tag_len == 0 || tag_len > 4 || (fetch_data && data_len == NULL))
     return CKR_ARGUMENTS_BAD;
@@ -30,7 +30,7 @@ static CK_RV cnk_get_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
   CK_BYTE pin[PIV_PADDED_PIN_LEN] = {0};
   CK_ULONG pinLen = 0;
   CK_BBOOL pinVerified = CK_FALSE;
-  CK_RV rv = cnk_token_copy_pin(session, pin, &pinLen);
+  CK_RV rv = verifyCachedPin ? cnk_token_copy_pin(session, pin, &pinLen) : CKR_USER_NOT_LOGGED_IN;
   if (rv == CKR_OK) {
     rv = cnk_verify_piv_pin_with_session_ex(slotID, session, pin, pinLen, NULL, &card);
     pinVerified = rv == CKR_OK;
@@ -91,85 +91,20 @@ cleanup:
   return rv;
 }
 
-static CK_RV cnk_get_piv_data_on_card(SCARDHANDLE hCard, const CK_BYTE *tag, CK_ULONG tag_len, CK_BYTE_PTR data,
-                                      CK_ULONG_PTR data_len, CK_BBOOL fetch_data) {
-  CNK_ENSURE_NONNULL(tag);
-  if (tag_len == 0 || tag_len > 4)
-    CNK_RETURN(CKR_ARGUMENTS_BAD, "bad PIV data object tag");
-  if (fetch_data && data_len == NULL)
-    CNK_RETURN(CKR_ARGUMENTS_BAD, "data_len is NULL");
-
-  CK_BYTE apdu[14] = {0x00, 0xCB, 0x3F, 0xFF, 0x00, 0x5C};
-  apdu[4] = (CK_BYTE)(2 + tag_len);
-  apdu[6] = (CK_BYTE)tag_len;
-  memcpy(apdu + 7, tag, tag_len);
-  apdu[7 + tag_len] = 0x00;
-
-  // GET DATA returns the object payload followed by SW1/SW2. Reserve those
-  // status bytes in addition to the maximum accepted payload size.
-  CK_BYTE response[CNK_PIV_MAX_DATA_OBJECT_SIZE + 2];
-  DWORD response_len = sizeof(response);
-  LONG pcsc_rv = cnk_transceive_apdu(hCard, apdu, 8 + tag_len, response, &response_len, fetch_data);
-  if (pcsc_rv != SCARD_S_SUCCESS) {
-    CNK_ERROR("Failed to send GET DATA command: %ld", pcsc_rv);
-    return CKR_DEVICE_ERROR;
-  }
-
-  // Check if the command was successful
-  if (response_len == 2 && response[0] == 0x6A && response[1] == 0x82) {
-    CNK_RETURN(CKR_DATA_INVALID, "PIV tag not found");
-  }
-  if (response_len == 2 && response[0] == 0x69 && response[1] == 0x82) {
-    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIV data object access denied");
-  }
-  CK_BBOOL success = response_len >= 2 && response[response_len - 2] == 0x90 && response[response_len - 1] == 0x00;
-  CK_BBOOL moreData = response_len >= 2 && response[response_len - 2] == 0x61;
-  if (response_len < 2 || (fetch_data && !success) || (!fetch_data && !success && !moreData)) {
-    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to execute GET DATA command");
-  }
-
-  // Report and optionally copy the response data, excluding status bytes.
-  if (fetch_data) {
-    CK_ULONG required = response_len - 2;
-    CK_ULONG available = *data_len;
-    *data_len = required;
-    if (data != NULL) {
-      if (available < required) {
-        CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Output buffer too small");
-      }
-      memcpy(data, response, required);
-    }
-  }
-
-  CNK_RET_OK;
-}
-
-// Get PIV data from the CanoKey device
-// If data is NULL, no data will be copied
-// This function may return:
-// - CKR_DATA_INVALID if the data object does not exist.
-// - CKR_OK if the data object is successfully read.
-// - CKR_DEVICE_ERROR if the data object could not be read.
-CK_RV cnk_get_piv_data_by_tag(CK_SLOT_ID slotID, const CK_BYTE *tag, CK_ULONG tag_len, CK_BYTE_PTR data,
-                              CK_ULONG_PTR data_len, CK_BBOOL fetch_data) {
-  CNK_LOG_FUNC(": slotID: %ld, tag: %p, tag_len: %lu, data: %p, data_len: %p, fetch_data: %d", slotID, tag, tag_len,
-               data, data_len, fetch_data);
-
-  SCARDHANDLE hCard;
-  CNK_ENSURE_OK(cnk_begin_piv_transaction(slotID, &hCard));
-
-  CK_RV rv = cnk_get_piv_data_on_card(hCard, tag, tag_len, data, data_len, fetch_data);
-
-  cnk_disconnect_card(hCard);
-  CNK_RETURN(rv, "GET DATA");
+CK_RV cnk_get_public_piv_data(CNK_PKCS11_SESSION *session, const CK_BYTE *tag, CK_ULONG tagLen, CK_BYTE *data,
+                              CK_ULONG *dataLen) {
+  CNK_ENSURE_NONNULL(session);
+  // Recovery policy reads must not submit a stale cached PIN before the PUK
+  // can replace it. Rust still validates framing and reports card access denial.
+  return cnk_get_piv_data_libcanokey(session->slotId, session, tag, tagLen, data, dataLen, CK_TRUE, CK_FALSE);
 }
 
 CK_RV cnk_get_piv_data_by_tag_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag,
                                            CK_ULONG tag_len, CK_BYTE_PTR data, CK_ULONG_PTR data_len,
                                            CK_BBOOL fetch_data) {
   CNK_LOG_FUNC(": slotID: %ld, session: %p, tag: %p, tag_len: %lu, data: %p, data_len: %p, fetch_data: %d", slotID,
-               session, tag, tag_len, data, data_len, fetch_data);
-  return cnk_get_piv_data_libcanokey(slotID, session, tag, tag_len, data, data_len, fetch_data);
+               session, tag, tag_len, data, data_len, fetch_data, CK_TRUE);
+  return cnk_get_piv_data_libcanokey(slotID, session, tag, tag_len, data, data_len, fetch_data, CK_TRUE);
 }
 
 static CK_RV cnk_put_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag,

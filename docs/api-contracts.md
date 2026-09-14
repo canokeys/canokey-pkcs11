@@ -89,8 +89,9 @@ a panic or ABI state/type mismatch remains a device error.
 
 Profile probing finishes before opening the authenticated transaction. Context
 construction clones the immutable profile while holding the token lock, rejects
-an obsolete binding epoch, and never probes or selects. Profile publication
-frees its candidate on a failed lock and permits at most three binding retries.
+an obsolete binding epoch, and never probes or selects. A failed unlock discards
+a provisional context instead of publishing success. Profile publication frees
+its candidate on a failed lock and permits at most three binding retries.
 Profile probing uses this same executor and error mapping; no separate callback
 loop discards its diagnostic fields. Error logs name the ABI status, semantic
 kind, phase and reference, with explicit absence for unreported SW/retry fields.
@@ -239,7 +240,7 @@ backend boundary.
 | `C_CNK_LoginPinManaged` | `TOKEN-AUTH` | Temporary ADMIN/PRINTED objects and recovered key are module-owned stack buffers and always zeroized. | A USER login established by this call is rolled back on composite failure; a pre-existing USER login is preserved. |
 | `C_CNK_FinalizePinManaged` | `CARD-WRITE` | Destructive PUK blocking holds token reservation across authentication, mutation, and confirmation. | Failure releases reservation then rolls back only login established by this call. Success guarantees PUK retry count is zero and PIN-managed auth is usable. |
 | `C_CNK_SetPIN` | `TOKEN-AUTH` | Borrowed PIN/PUK buffers exist only through the reserved card operation; tries output is caller-owned. | Card mutation and matching cache update commit as one logical transition. Other login/logout/write transitions cannot pass it. |
-| `C_CNK_UnblockPIN` | `TOKEN-AUTH` | Borrowed PUK/new PIN are never retained beyond the reserved card operation. | Success updates USER cache only according to documented login state; failure preserves old local credentials and reports retries. |
+| `C_CNK_UnblockPIN` | `TOKEN-AUTH` | Borrowed PUK/new PIN are never retained beyond the reserved card operation. | Public ADMIN DATA is read without a cached PIN. Malformed protection data aborts before PUK mutation; a stored-key protection bit forbids recovery even without a blocked-PUK claim. Success updates USER cache only according to documented login state; failure preserves old local credentials and reports retries. |
 
 ## Object APIs
 

@@ -87,6 +87,7 @@ enum { CNK_LIBCANO_PHASE_PARSING = 4 };
 struct CNK_PKCS11_SESSION;
 CK_RV cnk_ensure_libcanokey_profile(struct CNK_PKCS11_SESSION *session);
 enum {
+  CNK_LIBCANO_ALG_RSA_1024 = 1,
   CNK_LIBCANO_ALG_RSA_2048 = 2,
   CNK_LIBCANO_ALG_RSA_3072 = 3,
   CNK_LIBCANO_ALG_RSA_4096 = 4,
@@ -106,6 +107,8 @@ enum {
   CNK_LIBCANO_SIGN_MESSAGE = 3,
 };
 
+uint32_t cnk_profile_piv_algorithm_from_wire(const void *, uint32_t, uint32_t *);
+uint32_t cnk_operation_key_algorithm(const CNK_LIBCANO_OPERATION *, uint32_t *);
 uint32_t cnk_probe_device_new(uint32_t, const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_operation_take_profile(CNK_LIBCANO_OPERATION *, void **);
 uint32_t cnk_piv_context_new(const void *, uint32_t, CNK_LIBCANO_CONTEXT **, CNK_LIBCANO_ERROR *);
@@ -126,6 +129,8 @@ uint32_t cnk_piv_read_metadata_directory_in_context_new(const CNK_LIBCANO_CONTEX
                                                         CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_read_container_name_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const CNK_LIBCANO_OPTIONS *,
                                                     CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_admin_data_flags(const uint8_t *, size_t, uint32_t *, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_printed_management_key_copy(const uint8_t *, size_t, uint8_t *, size_t *, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_container_name_validate(const uint8_t *, size_t, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_set_container_name_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const uint8_t *, size_t,
                                                    const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,

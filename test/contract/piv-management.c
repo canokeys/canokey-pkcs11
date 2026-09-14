@@ -16,7 +16,8 @@
   } while (0)
 static CNK_PKCS11_TOKEN_STATE token;
 static CNK_PKCS11_SESSION session;
-static unsigned cards, sends, locked, failAt, malformedAt, deniedAt;
+static unsigned cards, sends, locked, failAt, malformedAt, deniedAt, invalidations;
+static CK_BYTE generateWire, generatedResponse[400];
 static CK_RV lockError, credentialError;
 static CK_BYTE key[24], plain[16], cipher[16];
 static size_t blockLen;
@@ -58,6 +59,14 @@ CK_RV cnk_begin_piv_transaction(CK_SLOT_ID slot, SCARDHANDLE *card) {
   cards++;
   *card = 1;
   return CKR_OK;
+}
+CK_RV cnk_begin_key_write(CK_SLOT_ID slot, CNK_PKCS11_SESSION *s, CK_BYTE reference, SCARDHANDLE *card) {
+  CHECK(reference == 0x9c);
+  return cnk_authenticate_admin_for_write(slot, s, card);
+}
+void cnk_piv_public_cache_invalidate(CNK_PKCS11_SESSION *s) {
+  CHECK(s == &session);
+  invalidations++;
 }
 void cnk_disconnect_card(SCARDHANDLE card) {
   CHECK(card == 1 && cards == 1 && !locked);
@@ -111,6 +120,10 @@ static uint32_t probe(void *unused, const uint8_t *command, size_t n, uint8_t *o
     out[0] = 6;
     out[1] = out[2] = 0;
     size = 3;
+  } else if (command[1] == 0xee && generateWire) {
+    const CK_BYTE config[] = {1, 0xe0, generateWire, 0x16, 0xe1, 0x53, 0x15, 0x54, 0xe2, 0xe3};
+    memcpy(out, config, sizeof(config));
+    size = sizeof(config);
   } else if (command[1] != 0xa4) {
     out[0] = 0x6d;
     out[1] = 0;
@@ -128,7 +141,27 @@ LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *command, CK_ULONG n, C
   sends++;
   // A second SELECT here would erase management authorization.
   CHECK(command[1] != 0xa4);
-  if (sends == 1) {
+  if (generateWire && sends == 4) {
+    const CK_BYTE expected[] = {0, 0x47, 0, 0x9c, 11, 0xac, 9, 0x80, 1, generateWire, 0xaa, 1, 1, 0xab, 1, 1};
+    CHECK(!continuation && n == sizeof(expected) && !memcmp(command, expected, sizeof(expected)));
+    CHECK(*len >= 258);
+    const CK_BYTE prefix[] = {0x7f, 0x49, 0x82, 1, 0x89, 0x81, 0x82, 1, 0x80};
+    memcpy(generatedResponse, prefix, sizeof(prefix));
+    memset(generatedResponse + sizeof(prefix), 0xa5, 384);
+    generatedResponse[sizeof(prefix) + 383] = 0xa7;
+    const CK_BYTE suffix[] = {0x82, 3, 1, 0, 1, 0x90, 0};
+    memcpy(generatedResponse + sizeof(prefix) + 384, suffix, sizeof(suffix));
+    memcpy(out, generatedResponse, 256);
+    out[256] = 0x61;
+    out[257] = 142;
+    *len = 258;
+  } else if (generateWire && sends == 5) {
+    const CK_BYTE expected[] = {0, 0xc0, 0, 0, 142};
+    CHECK(!continuation && n == sizeof(expected) && !memcmp(command, expected, sizeof(expected)));
+    CHECK(*len >= 144);
+    memcpy(out, generatedResponse + 256, 144);
+    *len = 144;
+  } else if (sends == 1) {
     const CK_BYTE expected[] = {0, 0xf7, 0, 0x9b, 0};
     CHECK(n == 5 && !memcmp(command, expected, 5));
     out[0] = 1;
@@ -250,6 +283,30 @@ int main(void) {
     cnk_profile_free(token.libcanokeyProfile);
     token.libcanokeyProfile = NULL;
   }
-  puts("PIV management known-answer and transaction contracts passed");
+  // The actual Rust profile maps D1 to RSA-3072. The C adapter must pass
+  // the semantic type to generation and classify its returned key as RSA.
+  generateWire = 0xd1;
+  firmware = "3.1.0";
+  blockLen = 16;
+  unhex("000102030405060708090a0b0c0d0e0f1011121314151617", key);
+  unhex("00112233445566778899aabbccddeeff", plain);
+  unhex("dda97ca4864cdfe06eaf70a0ec0d7191", cipher);
+  make_profile(&token.libcanokeyProfile);
+  sends = failAt = malformedAt = deniedAt = 0;
+  lockError = credentialError = CKR_OK;
+  CK_BYTE publicKey[512];
+  CK_ULONG length = sizeof(publicKey);
+  CK_RV generateRv = cnk_piv_generate_keypair(0, &session, generateWire, 0x9c, 1, 1, publicKey, &length);
+  if (generateRv != CKR_OK)
+    fprintf(stderr, "Generation failed: rv=%lx sends=%u length=%lu\n", generateRv, sends, length);
+  CHECK(generateRv == CKR_OK);
+  CHECK(sends == 5 && invalidations == 1 && length == 393 && !cards && !locked);
+  CHECK(publicKey[0] == 0x81 && publicKey[2] == 1 && publicKey[3] == 0x80 && publicKey[388] == 0x82);
+  sends = 0;
+  length = sizeof(publicKey);
+  CHECK(cnk_piv_generate_keypair(0, &session, 0xfe, 0x9c, 1, 1, publicKey, &length) == CKR_MECHANISM_INVALID);
+  CHECK(!sends && !cards && !locked);
+  cnk_profile_free(token.libcanokeyProfile);
+  puts("PIV management, configured algorithm and transaction contracts passed");
   return 0;
 }

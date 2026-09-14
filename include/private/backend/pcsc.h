@@ -215,9 +215,9 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, c
 // Get serial number (4-byte big endian number)
 CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number);
 
-// Get a PIV data object by its full BER-TLV tag, for example 5F C1 02 or 7E.
-CK_RV cnk_get_piv_data_by_tag(CK_SLOT_ID slotID, const CK_BYTE *tag, CK_ULONG tag_len, CK_BYTE_PTR data,
-                              CK_ULONG_PTR data_len, CK_BBOOL fetch_data);
+// Read public recovery-policy data without submitting a cached USER PIN.
+CK_RV cnk_get_public_piv_data(CNK_PKCS11_SESSION *session, const CK_BYTE *tag, CK_ULONG tagLen, CK_BYTE *data,
+                              CK_ULONG *dataLen);
 
 // Get a PIV data object by its full BER-TLV tag, verifying the cached user PIN first when available.
 CK_RV cnk_get_piv_data_by_tag_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag,

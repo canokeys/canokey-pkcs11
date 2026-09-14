@@ -1,5 +1,6 @@
 #include "api/session.h"
 #include "backend/pcsc.h"
+#include "backend/piv_operation.h"
 #include "internal/lifecycle.h"
 #include "internal/logging.h"
 #include "internal/macros.h"
@@ -29,111 +30,30 @@
 static const CK_BYTE CNK_ADMIN_DATA_TAG[] = {0x5F, 0xFF, 0x00};
 static const CK_BYTE CNK_PRINTED_INFORMATION_TAG[] = {0x5F, 0xC1, 0x09};
 
-// Parse one bounded BER-TLV element and advance the caller-owned cursor. These
-// PIN-management objects are security decisions, so trailing or duplicate
-// fields are rejected by their higher-level parsers rather than ignored.
-static CK_RV readTlv(const CK_BYTE *data, CK_ULONG dataLen, CK_ULONG_PTR offset, CK_BYTE expectedTag,
-                     const CK_BYTE **value, CK_ULONG_PTR valueLen) {
-  CNK_ENSURE_NONNULL(data, offset, value, valueLen);
-  if (*offset >= dataLen || data[*offset] != expectedTag)
-    return CKR_DATA_INVALID;
-
-  CK_ULONG cursor = *offset + 1;
-  CK_LONG fail = 0;
-  CK_ULONG lengthSize = 0;
-  CK_ULONG length = tlvGetLengthSafe(data + cursor, dataLen - cursor, &fail, &lengthSize);
-  if (fail)
-    return CKR_DATA_INVALID;
-  cursor += lengthSize;
-  if (length > dataLen - cursor)
-    return CKR_DATA_INVALID;
-
-  *value = data + cursor;
-  *valueLen = length;
-  *offset = cursor + length;
-  return CKR_OK;
+static CK_RV readAdminProtectionFlags(const CK_BYTE *data, CK_ULONG dataLen, uint32_t *flags) {
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_admin_data_flags, data, dataLen, flags, &error);
+  // Invalid protection data must not be confused with an absent policy.
+  return cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
 }
 
 static CK_RV checkPinManagedAdminData(const CK_BYTE *data, CK_ULONG dataLen) {
-  // Yubico ADMIN DATA: 53 { 80 { 81 bit-field, [82 salt], [83 date] } }.
-  // Bit 0x02 is the explicit opt-in to reading a key from PRINTED.
-  CK_ULONG offset = 0;
-  const CK_BYTE *outer;
-  CK_ULONG outerLen;
-  if (readTlv(data, dataLen, &offset, 0x53, &outer, &outerLen) != CKR_OK || offset != dataLen)
-    return CKR_DATA_INVALID;
-
-  offset = 0;
-  const CK_BYTE *admin;
-  CK_ULONG adminLen;
-  if (readTlv(outer, outerLen, &offset, 0x80, &admin, &adminLen) != CKR_OK || offset != outerLen)
-    return CKR_DATA_INVALID;
-
-  CK_BBOOL sawBitField = CK_FALSE;
-  CK_BBOOL sawSalt = CK_FALSE;
-  CK_BBOOL sawDate = CK_FALSE;
-  CK_BBOOL pukBlocked = CK_FALSE;
-  CK_BBOOL pinProtected = CK_FALSE;
-  offset = 0;
-  while (offset < adminLen) {
-    CK_BYTE tag = admin[offset];
-    const CK_BYTE *value;
-    CK_ULONG valueLen;
-    if (readTlv(admin, adminLen, &offset, tag, &value, &valueLen) != CKR_OK)
-      return CKR_DATA_INVALID;
-    switch (tag) {
-    case 0x81:
-      if (sawBitField || valueLen != 1)
-        return CKR_DATA_INVALID;
-      sawBitField = CK_TRUE;
-      pukBlocked = (value[0] & CNK_ADMIN_PUK_BLOCKED_BIT) != 0;
-      pinProtected = (value[0] & CNK_ADMIN_PIN_PROTECTED_BIT) != 0;
-      break;
-    case 0x82:
-      if (sawSalt || (valueLen != 0 && valueLen != 16))
-        return CKR_DATA_INVALID;
-      sawSalt = CK_TRUE;
-      break;
-    case 0x83:
-      if (sawDate || valueLen > 8)
-        return CKR_DATA_INVALID;
-      sawDate = CK_TRUE;
-      break;
-    default:
-      return CKR_DATA_INVALID;
-    }
-  }
-
-  // A PUK holder could otherwise reset the user PIN and recover the protected
-  // management key. PIN-managed login is valid only for the PUK-blocked mode.
-  return sawBitField && pukBlocked && pinProtected ? CKR_OK : CKR_DATA_INVALID;
+  uint32_t flags = 0;
+  CNK_ENSURE_OK(readAdminProtectionFlags(data, dataLen, &flags));
+  return (flags & (CNK_ADMIN_PUK_BLOCKED_BIT | CNK_ADMIN_PIN_PROTECTED_BIT)) ==
+                 (CNK_ADMIN_PUK_BLOCKED_BIT | CNK_ADMIN_PIN_PROTECTED_BIT)
+             ? CKR_OK
+             : CKR_DATA_INVALID;
 }
 
 static CK_RV parsePinProtectedManagementKey(const CK_BYTE *data, CK_ULONG dataLen,
                                             CK_BYTE managementKey[CNK_MANAGEMENT_KEY_LEN]) {
-  // PIN-protected PRINTED: 53 { 88 { 89 <24-byte management key> } }.
-  // Require exact nesting so unrelated PRINTED data cannot be used as a key.
-  CK_ULONG offset = 0;
-  const CK_BYTE *outer;
-  CK_ULONG outerLen;
-  if (readTlv(data, dataLen, &offset, 0x53, &outer, &outerLen) != CKR_OK || offset != dataLen)
-    return CKR_DATA_INVALID;
-
-  offset = 0;
-  const CK_BYTE *container;
-  CK_ULONG containerLen;
-  if (readTlv(outer, outerLen, &offset, 0x88, &container, &containerLen) != CKR_OK || offset != outerLen)
-    return CKR_DATA_INVALID;
-
-  offset = 0;
-  const CK_BYTE *key;
-  CK_ULONG keyLen;
-  if (readTlv(container, containerLen, &offset, 0x89, &key, &keyLen) != CKR_OK || offset != containerLen ||
-      keyLen != CNK_MANAGEMENT_KEY_LEN)
-    return CKR_DATA_INVALID;
-
-  memcpy(managementKey, key, keyLen);
-  return CKR_OK;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  size_t keyLen = CNK_MANAGEMENT_KEY_LEN;
+  uint32_t status =
+      CNK_EXTERNAL_CALL(cnk_piv_printed_management_key_copy, data, dataLen, managementKey, &keyLen, &error);
+  CK_RV rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
+  return rv == CKR_OK && keyLen != CNK_MANAGEMENT_KEY_LEN ? CKR_DEVICE_ERROR : rv;
 }
 
 // Function pointers for memory allocation (global)
@@ -471,16 +391,19 @@ CK_RV C_CNK_UnblockPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULON
   // Otherwise the PUK could set a known user PIN and immediately elevate to SO.
   CK_BYTE adminData[CNK_ADMIN_DATA_MAX_LEN];
   CK_ULONG adminDataLen = sizeof(adminData);
-  CK_RV policyRv = cnk_get_piv_data_by_tag(session->slotId, CNK_ADMIN_DATA_TAG, sizeof(CNK_ADMIN_DATA_TAG), adminData,
-                                           &adminDataLen, CK_TRUE);
+  CK_RV policyRv =
+      cnk_get_public_piv_data(session, CNK_ADMIN_DATA_TAG, sizeof(CNK_ADMIN_DATA_TAG), adminData, &adminDataLen);
+  uint32_t protectionFlags = 0;
   if (policyRv == CKR_OK)
-    policyRv = checkPinManagedAdminData(adminData, adminDataLen);
+    policyRv = readAdminProtectionFlags(adminData, adminDataLen, &protectionFlags);
   mbedtls_platform_zeroize(adminData, sizeof(adminData));
-  if (policyRv == CKR_OK) {
+  // The stored-key flag is enough to forbid PUK recovery. A missing/false
+  // PUK-blocked claim must not turn protected key retrieval into a bypass.
+  if (policyRv == CKR_OK && (protectionFlags & CNK_ADMIN_PIN_PROTECTED_BIT)) {
     cnk_token_end_management_operation(session);
     CNK_RETURN(CKR_ACTION_PROHIBITED, "PUK reset is disabled for PIN-managed management keys");
   }
-  if (policyRv != CKR_DATA_INVALID) {
+  if (policyRv != CKR_OK && policyRv != CKR_DATA_INVALID) {
     cnk_token_end_management_operation(session);
     return policyRv;
   }
