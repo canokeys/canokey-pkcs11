@@ -465,15 +465,92 @@ CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE
                algorithmType, pivSlot, keyData, keyDataLen);
   CNK_ENSURE_NONNULL(keyData);
 
-  SCARDHANDLE hCard = 0;
-  CK_RV rv = cnk_begin_key_write(slotID, session, pivSlot, &hCard);
+  uint32_t algorithm = 0;
+  CNK_ENSURE_OK(cnk_piv_generation_algorithm(algorithmType, &algorithm));
+  CNK_LIBCANO_BYTES components[5] = {0};
+  size_t componentCount = 0;
+  CK_BYTE pinPolicy = 0;
+  CK_BYTE touchPolicy = 0;
+  CK_BBOOL rsa = algorithmType == PIV_ALG_RSA_2048 || algorithmType == PIV_ALG_RSA_3072 ||
+                 algorithmType == PIV_ALG_RSA_4096;
+  CK_ULONG offset = 0;
+  while (offset < keyDataLen) {
+    CK_BYTE tag = keyData[offset++];
+    CK_LONG fail = 0;
+    CK_ULONG lengthSize = 0;
+    CK_ULONG length = tlvGetLengthSafe(keyData + offset, keyDataLen - offset, &fail, &lengthSize);
+    if (fail || lengthSize > keyDataLen - offset || length > keyDataLen - offset - lengthSize)
+      return CKR_DATA_INVALID;
+    offset += lengthSize;
+    const CK_BYTE *value = keyData + offset;
+    if (tag >= 1 && tag <= 5 && rsa) {
+      if (componentCount >= 5)
+        return CKR_DATA_INVALID;
+      components[componentCount++] = (CNK_LIBCANO_BYTES){value, length};
+    } else if (tag == 0x06 || tag == 0x07 || tag == 0x08 || tag == 0x09 || tag == 0x0A) {
+      components[0] = (CNK_LIBCANO_BYTES){value, length};
+      componentCount = 1;
+    } else if (tag == 0xAA && length == 1) {
+      pinPolicy = value[0];
+    } else if (tag == 0xAB && length == 1) {
+      touchPolicy = value[0];
+    }
+    offset += length;
+  }
+  if (componentCount != (rsa ? 5 : 1))
+    return CKR_DATA_INVALID;
+
+  SCARDHANDLE card = 0;
+  CK_RV rv = cnk_begin_key_write(slotID, session, pivSlot, &card);
   if (rv != CKR_OK)
     return rv;
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  CNK_LIBCANO_CONTEXT *context = NULL;
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  CNK_LIBCANO_KEY_PARAMETERS params = {.struct_size = sizeof(params), .slot = pivSlot, .algorithm = algorithm,
+                                        .pin_policy = pinPolicy, .touch_policy = touchPolicy};
+  uint32_t step = 0;
+  uint32_t status = CNK_LIBCANO_OK;
+  CK_BYTE response[8192] = {0};
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
+  uint32_t contextStatus = profile == NULL
+                               ? CNK_LIBCANO_INVALID_STATE
+                               : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context,
+                                                     &error);
+  cnk_mutex_unlock(&session->token->lock);
+  if (contextStatus != CNK_LIBCANO_OK ||
+      cnk_piv_import_key_in_context_new(context, &params, components, componentCount, NULL, &operation, &error) !=
+          CNK_LIBCANO_OK ||
+      cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
+    rv = CKR_DEVICE_ERROR;
+    goto import_cleanup;
+  }
+  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
+    size_t commandLen = 0;
+    status = cnk_operation_command(operation, NULL, &commandLen);
+    if (status != CNK_LIBCANO_OK || commandLen == 0 || commandLen > 2048)
+      goto import_cleanup;
+    CK_BYTE command[2048];
+    status = cnk_operation_command(operation, command, &commandLen);
+    if (status != CNK_LIBCANO_OK)
+      goto import_cleanup;
+    DWORD responseLen = sizeof(response);
+    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS)
+      goto import_cleanup;
+    status = cnk_operation_advance(operation, response, responseLen, &step, &error);
+    if (status != CNK_LIBCANO_OK)
+      goto import_cleanup;
+  }
+  rv = step == CNK_LIBCANO_STEP_DONE ? CKR_OK : CKR_DEVICE_ERROR;
+  if (rv == CKR_OK)
+    cnk_piv_public_cache_invalidate(session);
 
-  rv = cnk_transmit_chained_apdu(hCard, 0xFE, algorithmType, pivSlot, keyData, keyDataLen, NULL, NULL, CK_FALSE);
-  cnk_disconnect_card(hCard);
-  if (rv != CKR_OK)
-    CNK_RETURN(rv, "IMPORT ASYMMETRIC KEY");
-  cnk_piv_public_cache_invalidate(session);
-  CNK_RET_OK;
+import_cleanup:
+  if (operation) cnk_operation_free(operation);
+  if (context) cnk_piv_context_free(context);
+  cnk_disconnect_card(card);
+  mbedtls_platform_zeroize(response, sizeof(response));
+  return rv;
 }

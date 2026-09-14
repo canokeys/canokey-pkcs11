@@ -31,6 +31,10 @@ typedef struct {
 typedef struct {
   uint32_t struct_size, slot, algorithm, pin_policy, touch_policy;
 } CNK_LIBCANO_KEY_PARAMETERS;
+typedef struct {
+  const uint8_t *data;
+  size_t len;
+} CNK_LIBCANO_BYTES;
 enum {
   CNK_LIBCANO_METADATA_HAS_ALGORITHM = 1,
   CNK_LIBCANO_METADATA_HAS_POLICY = 2,
@@ -108,7 +112,7 @@ uint32_t cnk_piv_generate_key_in_context_new(const CNK_LIBCANO_CONTEXT *, const 
                                              const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
                                              CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_import_key_in_context_new(const CNK_LIBCANO_CONTEXT *, const CNK_LIBCANO_KEY_PARAMETERS *,
-                                           const void *, size_t, const CNK_LIBCANO_OPTIONS *,
+                                           const CNK_LIBCANO_BYTES *, size_t, const CNK_LIBCANO_OPTIONS *,
                                            CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_decrypt_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, uint32_t, const uint8_t *, size_t,
                                         const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);

@@ -145,9 +145,9 @@ ECDH fail-closed、Windows decrypt/derive tests 通过；旧 C decrypt/derive bu
 
 当前进度：libcanokey 已提供 management-authorized selected-context 的 object
 write、certificate write/delete、key generation/import 工厂；PKCS#11 `PUT DATA`
-object/certificate 写入已消费 object-write context，key generation 已切换到
-context mutation；private material import、delete 和完整 mutation rollback 回归
-仍待迁移。
+object/certificate 写入已消费 object-write context，key generation 和 private
+material import 已切换到 context mutation；certificate delete 和完整 mutation
+rollback 回归仍待迁移。
 
 libcanokey 负责 External/Mutual management authentication、algorithm selection、
 ADMIN DATA/PRINTED parsing、certificate PUT DATA/delete、PIV data writes、key
