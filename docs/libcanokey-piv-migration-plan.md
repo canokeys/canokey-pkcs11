@@ -46,8 +46,9 @@ UBSan、Windows x86/x64/ARM64 全部通过。
 
 ## 阶段 1：metadata、certificate、object reads
 
-状态：metadata、certificate 和 session-scoped PIV object reads 已接入；typed
-Metadata conversion、directory path、旧 parser 清理和完整回归待完成。
+状态：metadata typed scalar fields、certificate 和 session-scoped PIV object reads
+已接入；public-key compatibility conversion、directory path、旧 parser 清理和
+完整回归待完成。
 
 libcanokey API：
 
