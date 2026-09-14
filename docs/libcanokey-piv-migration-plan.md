@@ -147,7 +147,8 @@ ECDH fail-closed、Windows decrypt/derive tests 通过；旧 C decrypt/derive bu
 write、certificate write/delete、key generation/import 工厂；PKCS#11 `PUT DATA`
 object/certificate 写入、key generation、private material import 和 certificate
 delete 已切换到 context mutation，并修复了 lock/status failure cleanup。完整
-mutation rollback、并发和硬件回归仍待完成。
+mutation rollback、并发和硬件回归仍待完成；近期 review 暴露的 transaction
+cleanup、typed error mapping 和 generated-key output-length 问题已修复。
 
 libcanokey 负责 External/Mutual management authentication、algorithm selection、
 ADMIN DATA/PRINTED parsing、certificate PUT DATA/delete、PIV data writes、key
