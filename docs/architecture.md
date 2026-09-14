@@ -52,10 +52,15 @@ cleared after successful local PIV writes. It never stores credentials, card
 handles, selected applets, or authentication state. The `metadata_cache`
 configuration key and `CNK_PIV_METADATA_CACHE` override can disable it. Managed
 mode bypasses the cache on every read so the minidriver owns refresh policy.
-`backend/piv_crypto.c` owns card-backed private-key operations and
-key generation/import. `backend/piv_auth.c` owns PIN, PUK, and management-key
-authentication. `backend/piv_data.c` owns PIV data objects and legacy
-version/serial commands. `backend/pcsc.c` is limited to reader discovery, slot
+`backend/piv_crypto.c` owns PKCS#11 operation setup, PIN-policy enforcement, and
+byte-order/format conversion for card-backed private-key operations. Classic
+RSA, ECDSA, P-521, secp256k1, and Ed25519 GENERAL AUTHENTICATE framing and
+signature parsing are delegated to the typed libcanokey operation inside one
+caller-owned selected transaction. ML-DSA remains on the generic raw path until
+the streaming context C ABI is available. Key generation/import remain in this
+module during the later write migration. `backend/piv_auth.c` owns PIN, PUK, and
+management-key authentication. `backend/piv_data.c` owns PIV data objects and
+legacy version/serial commands. `backend/pcsc.c` is limited to reader discovery, slot
 events, transaction ownership, and APDU transport. These focused modules share
 transaction helpers so managed mode continues to use the minidriver's card
 handle and every operation balances `SCardBeginTransaction` with

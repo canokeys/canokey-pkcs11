@@ -12,7 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *session) {
+CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *session) {
   CNK_ENSURE_NONNULL(session, session->token);
   CK_ULONG epoch = atomic_load(&g_cnk_managed_binding_epoch);
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
