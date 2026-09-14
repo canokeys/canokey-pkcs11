@@ -32,6 +32,11 @@ enum {
   CNK_LIBCANO_METADATA_HAS_ALGORITHM = 1,
   CNK_LIBCANO_METADATA_HAS_POLICY = 2,
 };
+enum {
+  CNK_LIBCANO_PUBLIC_MODULUS = 1,
+  CNK_LIBCANO_PUBLIC_EXPONENT = 2,
+  CNK_LIBCANO_PUBLIC_POINT_OR_RAW = 3,
+};
 
 enum { CNK_LIBCANO_OK = 0, CNK_LIBCANO_STEP_EXCHANGE = 1, CNK_LIBCANO_STEP_DONE = 2 };
 enum { CNK_LIBCANO_CONTEXT_SELECTED = 1, CNK_LIBCANO_CONTEXT_PIN_VERIFIED = 2 };
@@ -99,6 +104,7 @@ uint32_t cnk_operation_advance(CNK_LIBCANO_OPERATION *, const uint8_t *, size_t,
 uint32_t cnk_operation_command(const CNK_LIBCANO_OPERATION *, uint8_t *, size_t *);
 uint32_t cnk_operation_result_copy_bytes(const CNK_LIBCANO_OPERATION *, uint8_t *, size_t *);
 uint32_t cnk_operation_metadata(const CNK_LIBCANO_OPERATION *, CNK_LIBCANO_METADATA *);
+uint32_t cnk_operation_public_key_copy(const CNK_LIBCANO_OPERATION *, uint32_t, uint8_t *, size_t *);
 uint32_t cnk_operation_directory_info(const CNK_LIBCANO_OPERATION *, CNK_LIBCANO_DIRECTORY_INFO *);
 uint32_t cnk_operation_directory_entry(const CNK_LIBCANO_OPERATION *, size_t, CNK_LIBCANO_DIRECTORY_ENTRY *);
 uint32_t cnk_operation_signature_p1363(const CNK_LIBCANO_OPERATION *, uint8_t *, size_t *);
