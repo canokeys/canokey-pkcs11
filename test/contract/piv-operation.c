@@ -141,9 +141,9 @@ uint32_t cnk_piv_import_key_in_context_new(const CNK_LIBCANO_CONTEXT *c, const C
   (void)o;
   return construct(c, out, e);
 }
-uint32_t cnk_piv_write_object_in_context_new(const CNK_LIBCANO_CONTEXT *c, const uint8_t *tag, size_t tn,
-                                             const uint8_t *d, size_t n, const CNK_LIBCANO_OPTIONS *o,
-                                             CNK_LIBCANO_OPERATION **out, CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_piv_write_object_container_in_context_new(const CNK_LIBCANO_CONTEXT *c, const uint8_t *tag, size_t tn,
+                                                       const uint8_t *d, size_t n, const CNK_LIBCANO_OPTIONS *o,
+                                                       CNK_LIBCANO_OPERATION **out, CNK_LIBCANO_ERROR *e) {
   (void)tag;
   (void)tn;
   (void)d;
@@ -165,9 +165,9 @@ uint32_t cnk_piv_read_container_name_in_context_new(const CNK_LIBCANO_CONTEXT *c
   (void)o;
   return construct(c, out, e);
 }
-uint32_t cnk_piv_read_object_in_context_new(const CNK_LIBCANO_CONTEXT *c, const uint8_t *tag, size_t n,
-                                            const CNK_LIBCANO_OPTIONS *o, CNK_LIBCANO_OPERATION **out,
-                                            CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_piv_read_object_container_in_context_new(const CNK_LIBCANO_CONTEXT *c, const uint8_t *tag, size_t n,
+                                                      const CNK_LIBCANO_OPTIONS *o, CNK_LIBCANO_OPERATION **out,
+                                                      CNK_LIBCANO_ERROR *e) {
   (void)tag;
   (void)n;
   (void)o;

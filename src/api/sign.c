@@ -293,7 +293,7 @@ static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData
   CNK_DEBUG("Signing with active key, PIV slot 0x%x", pivSlot);
 
   CK_BYTE_PTR pbSignRawData = NULL_PTR;
-  CK_ULONG cbSignRawData;
+  CK_ULONG cbSignRawData = 0;
 
   if (pSession->signingContext.mechanism.mechanism == CKM_ML_DSA ||
       pSession->signingContext.mechanism.mechanism == CKM_EDDSA) {
@@ -339,15 +339,20 @@ static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData
       rv = CKR_KEY_TYPE_INCONSISTENT;
       goto cleanup;
     }
-    if (cbInputData > cbSignRawData)
-      cbInputData = cbSignRawData;
+    // libcanokey owns digest normalization, including the P-521 bit shift.
+    // Preserve a short digest's length so it is not shifted after C-side padding.
+    if (cbInputData < cbSignRawData)
+      cbSignRawData = cbInputData;
+    if (cbSignRawData == 0) {
+      rv = CKR_DATA_LEN_RANGE;
+      goto cleanup;
+    }
     pbSignRawData = ck_malloc(cbSignRawData);
     if (!pbSignRawData) {
       rv = CKR_HOST_MEMORY;
       goto cleanup;
     }
-    memset(pbSignRawData, 0, cbSignRawData);
-    memcpy(pbSignRawData + cbSignRawData - cbInputData, pInputData, cbInputData);
+    memcpy(pbSignRawData, pInputData, cbSignRawData);
   } else {
     CNK_ERROR("Unexpected code path");
     rv = CKR_FUNCTION_FAILED;
@@ -366,6 +371,8 @@ static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData
   }
 
 cleanup:
+  if (pbSignRawData != NULL)
+    mbedtls_platform_zeroize(pbSignRawData, cbSignRawData);
   ck_free(pbSignRawData);
   return rv;
 }

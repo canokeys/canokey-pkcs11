@@ -1851,58 +1851,8 @@ static CK_RV handleCertificateAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE_PTR 
   }
 
   case CKA_VALUE:
-    // Extract X.509 certificate from the encoded data
-    // Format: 53 L1 70 L2 [cert] 71 01 00 FE 00
-    if (data_len > 0 && data[0] == 0x53) {
-      CK_ULONG offset = 1; // Start at the length byte after tag 0x53
-      CK_LONG fail = 0;
-      CK_ULONG length_size = 0;
-
-      // Parse L1 (length of the entire structure)
-      // We don't actually use l1_len for validation since tlv_get_length_safe already checks buffer bounds
-      tlvGetLengthSafe(data + offset, data_len - offset, &fail, &length_size);
-      if (fail) {
-        CNK_DEBUG("Failed to parse L1 length field");
-        rv = CKR_DATA_INVALID;
-        break;
-      }
-
-      // Move offset past the length field
-      offset += length_size;
-
-      // Check for tag 0x70 (certificate data)
-      if (offset < data_len && data[offset] == 0x70) {
-        offset += 1; // Move to L2
-
-        // Parse L2 (length of the certificate)
-        fail = 0;
-        length_size = 0;
-        uint16_t cert_len = tlvGetLengthSafe(data + offset, data_len - offset, &fail, &length_size);
-        if (fail) {
-          CNK_DEBUG("Failed to parse L2 length field");
-          rv = CKR_DATA_INVALID;
-          break;
-        }
-
-        // Move offset past the length field
-        offset += length_size;
-
-        // Check if we have enough data for the certificate
-        if (offset + cert_len <= data_len) {
-          rv = setSingleAttributeValue(attribute, data + offset, cert_len);
-        } else {
-          CNK_DEBUG("Certificate data exceeds available buffer");
-          rv = CKR_DATA_INVALID;
-        }
-      } else {
-        CNK_DEBUG("Expected tag 0x70 not found");
-        rv = CKR_DATA_INVALID;
-      }
-    } else {
-      // Fallback to sending the entire data if format is unexpected
-      CNK_DEBUG("Unexpected format, using entire data as certificate");
-      rv = setSingleAttributeValue(attribute, data, data_len);
-    }
+    // The backend already unwraps and decompresses the certificate payload.
+    rv = setSingleAttributeValue(attribute, data, data_len);
     break;
 
   default:

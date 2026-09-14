@@ -113,15 +113,16 @@ uint32_t cnk_piv_sign_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, uint
 uint32_t cnk_piv_sign_streaming_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, uint32_t, const uint8_t *, size_t,
                                                const uint8_t *, size_t, const CNK_LIBCANO_OPTIONS *,
                                                CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
-uint32_t cnk_piv_read_object_in_context_new(const CNK_LIBCANO_CONTEXT *, const uint8_t *, size_t,
-                                            const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_read_object_container_in_context_new(const CNK_LIBCANO_CONTEXT *, const uint8_t *, size_t,
+                                                      const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
+                                                      CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_read_metadata_directory_in_context_new(const CNK_LIBCANO_CONTEXT *, const CNK_LIBCANO_OPTIONS *,
                                                         CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_read_container_name_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const CNK_LIBCANO_OPTIONS *,
                                                     CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
-uint32_t cnk_piv_write_object_in_context_new(const CNK_LIBCANO_CONTEXT *, const uint8_t *, size_t, const uint8_t *,
-                                             size_t, const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
-                                             CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_write_object_container_in_context_new(const CNK_LIBCANO_CONTEXT *, const uint8_t *, size_t,
+                                                       const uint8_t *, size_t, const CNK_LIBCANO_OPTIONS *,
+                                                       CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_delete_certificate_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const CNK_LIBCANO_OPTIONS *,
                                                    CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_authenticate_management_in_context_new(const CNK_LIBCANO_CONTEXT *, const CNK_LIBCANO_MANAGEMENT *,

@@ -276,3 +276,11 @@ invalidate caches before transaction release even when completion is uncertain.
 The remaining legacy management-algorithm metadata probe and PIN/data/name
 compatibility paths are still migration work; this executor does not imply
 that those business rules have moved to Rust.
+
+Hardware integration keeps raw-object compatibility and certificate values
+separate at the backend boundary: container factories preserve 53/7E framing
+for PIV data and PIN-managed consumers, while certificate factories return
+unwrapped/decompressed payloads. ECDSA digest normalization belongs to
+libcanokey; C preserves short digest lengths so P-521 is not shifted twice.
+Private RSA/agreement operations use all ordinary slots evidenced by the
+profile, with consumer usage policy and PIN authorization still enforced.

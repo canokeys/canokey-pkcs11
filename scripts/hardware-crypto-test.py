@@ -1,0 +1,485 @@
+"""Windows real-card PKCS#11 checks using cryptography for independent verification.
+
+Requires cryptography, CNK_PIV_PIN, and explicit slot/serial/key selections.
+Certificate testing is opt-in and requires CNK_PIV_MANAGEMENT_KEY. It refuses
+an existing certificate, deletes its test certificate, and checks key retention.
+Opaque PKCS#11 structures use Windows packing; template storage stays alive
+through each borrowed C call. Credentials and shared secrets are never printed.
+"""
+
+import argparse
+import ctypes as C
+import hashlib
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding, utils, x25519, ed25519
+
+U = C.c_ulong
+B = C.c_ubyte
+P = C.c_void_p
+
+
+class Attr(C.Structure):
+    _pack_ = 1
+    _fields_ = [("type", U), ("value", P), ("len", U)]
+
+
+class Mech(C.Structure):
+    _pack_ = 1
+    _fields_ = [("type", U), ("param", P), ("len", U)]
+
+
+class ECDH(C.Structure):
+    _pack_ = 1
+    _fields_ = [("kdf", U), ("shared_len", U), ("shared", P), ("public_len", U), ("public", P)]
+
+
+class OAEP(C.Structure):
+    _pack_ = 1
+    _fields_ = [("hash", U), ("mgf", U), ("source", U), ("len_ptr", P), ("len", U)]
+
+
+class PSS(C.Structure):
+    _pack_ = 1
+    _fields_ = [("hash", U), ("mgf", U), ("salt", U)]
+
+
+parser = argparse.ArgumentParser(
+    description="Verify explicitly selected keys through a Windows PKCS11 DLL and independent software crypto."
+)
+parser.add_argument("--module", type=Path, required=True)
+parser.add_argument("--slot", type=lambda x: int(x, 0), required=True)
+parser.add_argument("--serial", required=True)
+for option in ["ecdsa-id", "eddsa-id", "derive-id", "rsa-id"]:
+    parser.add_argument("--" + option, type=lambda x: int(x, 16), action="append", default=[])
+for option in ["mldsa-id", "mlkem-id", "certificate-id"]:
+    parser.add_argument("--" + option, type=lambda x: int(x, 16))
+parser.add_argument("--report", type=Path)
+args = parser.parse_args()
+if os.name != "nt":
+    parser.error("This ctypes layout targets native Windows only")
+if "CNK_PIV_PIN" not in os.environ:
+    parser.error("CNK_PIV_PIN is required")
+if args.certificate_id is not None and "CNK_PIV_MANAGEMENT_KEY" not in os.environ:
+    parser.error("Certificate writes require CNK_PIV_MANAGEMENT_KEY")
+if (args.mldsa_id is None) != (args.mlkem_id is None):
+    parser.error("Specify both --mldsa-id and --mlkem-id")
+args.module = args.module.resolve()
+os.environ["CNK_UNSAFE_LOG_APDU"] = "0"
+lib = C.CDLL(str(args.module))
+
+
+class Version(C.Structure):
+    _pack_ = 1
+    _fields_ = [("major", B), ("minor", B)]
+
+
+class TokenInfo(C.Structure):
+    _pack_ = 1
+    _fields_ = (
+        [("label", B * 32), ("manufacturer", B * 32), ("model", B * 16), ("serial", B * 16), ("flags", U)]
+        + [
+            (n, U)
+            for n in [
+                "max_sessions",
+                "sessions",
+                "max_rw_sessions",
+                "rw_sessions",
+                "max_pin",
+                "min_pin",
+                "total_public",
+                "free_public",
+                "total_private",
+                "free_private",
+            ]
+        ]
+        + [("hardware", Version), ("firmware", Version), ("utc", B * 16)]
+    )
+
+
+for name, types in {
+    "C_GetTokenInfo": [U, C.POINTER(TokenInfo)],
+    "C_GetSlotList": [B, C.POINTER(U), C.POINTER(U)],
+    "C_CreateObject": [U, C.POINTER(Attr), U, C.POINTER(U)],
+    "C_Initialize": [P],
+    "C_Finalize": [P],
+    "C_OpenSession": [U, U, P, P, C.POINTER(U)],
+    "C_CloseSession": [U],
+    "C_CNK_LoginPinManaged": [U, P, U],
+    "C_Login": [U, U, P, U],
+    "C_Logout": [U],
+    "C_GetAttributeValue": [U, U, C.POINTER(Attr), U],
+    "C_FindObjectsInit": [U, C.POINTER(Attr), U],
+    "C_FindObjects": [U, C.POINTER(U), U, C.POINTER(U)],
+    "C_FindObjectsFinal": [U],
+    "C_VerifyInit": [U, C.POINTER(Mech), U],
+    "C_Verify": [U, P, U, P, U],
+    "C_EncapsulateKey": [U, C.POINTER(Mech), U, C.POINTER(Attr), U, P, C.POINTER(U), C.POINTER(U)],
+    "C_DecapsulateKey": [U, C.POINTER(Mech), U, C.POINTER(Attr), U, P, U, C.POINTER(U)],
+    "C_SignInit": [U, C.POINTER(Mech), U],
+    "C_Sign": [U, P, U, P, C.POINTER(U)],
+    "C_DecryptInit": [U, C.POINTER(Mech), U],
+    "C_Decrypt": [U, P, U, P, C.POINTER(U)],
+    "C_DeriveKey": [U, C.POINTER(Mech), U, C.POINTER(Attr), U, C.POINTER(U)],
+    "C_DestroyObject": [U, U],
+    "C_GenerateKeyPair": [
+        U,
+        C.POINTER(Mech),
+        C.POINTER(Attr),
+        U,
+        C.POINTER(Attr),
+        U,
+        C.POINTER(U),
+        C.POINTER(U),
+    ],
+    "C_GenerateRandom": [U, P, U],
+}.items():
+    f = getattr(lib, name)
+    f.argtypes = types
+    f.restype = U
+
+
+def check(rv):
+    if rv:
+        raise RuntimeError(f"PKCS11 error 0x{rv:x}")
+
+
+def attrs(values):
+    storage = [C.create_string_buffer(v) if isinstance(v, bytes) else U(v) for _, v in values]
+    return (
+        (Attr * len(values))(
+            *[
+                Attr(t, C.cast(C.pointer(v), P), len(raw) if isinstance(raw, bytes) else C.sizeof(U))
+                for (t, raw), v in zip(values, storage)
+            ]
+        ),
+        storage,
+    )
+
+
+s = U()
+
+
+def attr(key, t):
+    a = Attr(t, None, 0)
+    check(lib.C_GetAttributeValue(s, key, C.byref(a), 1))
+    if a.len > 8192:
+        raise RuntimeError("Attribute exceeds hardware-test buffer limit")
+    b = C.create_string_buffer(a.len)
+    a.value = C.cast(b, P)
+    check(lib.C_GetAttributeValue(s, key, C.byref(a), 1))
+    return b.raw[: a.len]
+
+
+def find(cls, id):
+    a, keep = attrs([(0, cls), (258, bytes([id]))])
+    check(lib.C_FindObjectsInit(s, a, len(a)))
+    try:
+        result = (U * 4)()
+        n = U()
+        check(lib.C_FindObjects(s, result, 4, C.byref(n)))
+        return list(result[: n.value])
+    finally:
+        check(lib.C_FindObjectsFinal(s))
+
+
+def key_for(cls, id):
+    keys = find(cls, id)
+    if len(keys) != 1:
+        raise RuntimeError(f"Expected exactly one class {cls} key with ID {id:02x}; found {len(keys)}")
+    return keys[0]
+
+
+def public(id):
+    key = key_for(2, id)
+    kind = int.from_bytes(attr(key, 256), "little")
+    if kind == 0:
+        return rsa.RSAPublicNumbers(
+            int.from_bytes(attr(key, 290), "big"), int.from_bytes(attr(key, 288), "big")
+        ).public_key()
+    if kind == 3:
+        params = attr(key, 384)
+        curve = {
+            bytes.fromhex("06082a8648ce3d030107"): ec.SECP256R1,
+            bytes.fromhex("06052b81040022"): ec.SECP384R1,
+            bytes.fromhex("06052b81040023"): ec.SECP521R1,
+        }[params]()
+        point = attr(key, 385)
+        start = 2 if point[1] < 128 else 2 + (point[1] & 127)
+        return ec.EllipticCurvePublicKey.from_encoded_point(curve, point[start:])
+    if kind == 64:
+        return ed25519.Ed25519PublicKey.from_public_bytes(attr(key, 385))
+    if kind == 65:
+        return x25519.X25519PublicKey.from_public_bytes(attr(key, 385))
+    raise RuntimeError(f"unsupported kind {kind}")
+
+
+def login(role, key):
+    check(lib.C_Login(s, role, key, len(key)))
+
+
+def sign(id, mechanism, data):
+    key = key_for(3, id)
+    check(lib.C_SignInit(s, C.byref(mechanism), key))
+    n = U()
+    check(lib.C_Sign(s, data, len(data), None, C.byref(n)))
+    out = C.create_string_buffer(n.value)
+    short = U(1)
+    if not lib.C_Sign(s, data, len(data), out, C.byref(short)) == 336:
+        raise AssertionError("Hardware check failed")
+    if not short.value == n.value:
+        raise AssertionError("Hardware check failed")
+    check(lib.C_Sign(s, data, len(data), out, C.byref(n)))
+    return out.raw[: n.value]
+
+
+def derive(id):
+    pub = public(id)
+    if isinstance(pub, x25519.X25519PublicKey):
+        peer = x25519.X25519PrivateKey.generate()
+        encoded = peer.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        expected = peer.exchange(pub)
+    else:
+        peer = ec.generate_private_key(pub.curve)
+        encoded = peer.public_key().public_bytes(
+            serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
+        )
+        expected = peer.exchange(ec.ECDH(), pub)
+    buf = C.create_string_buffer(encoded)
+    params = ECDH(1, 0, None, len(encoded), C.cast(buf, P))
+    m = Mech(4176, C.cast(C.pointer(params), P), C.sizeof(params))
+    a, keep = attrs(
+        [(0, 4), (256, 16), (353, len(expected)), (1, b"\x00"), (2, b"\x01"), (259, b"\x00"), (354, b"\x01")]
+    )
+    h = U()
+    check(lib.C_DeriveKey(s, C.byref(m), key_for(3, id), a, len(a), C.byref(h)))
+    actual = attr(h, 17)
+    check(lib.C_DestroyObject(s, h))
+    if not actual == expected:
+        raise AssertionError("Hardware and software shared secrets differ")
+    print(f"PASS ECDH/X25519 id={id:02x} {len(actual)} bytes", flush=True)
+
+
+def rsa_checks(id):
+    pub = public(id)
+    if not pub.public_numbers().n & 1:
+        raise AssertionError("pre-existing RSA modulus is even")
+    msg = b"CanoKey real hardware verification 2026-09-14"
+    for pss in [False, True]:
+        params = PSS(592, 2, 32)
+        m = Mech(
+            67 if pss else 64, C.cast(C.pointer(params), P) if pss else None, C.sizeof(params) if pss else 0
+        )
+        sig = sign(id, m, msg)
+        pad = padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32) if pss else padding.PKCS1v15()
+        pub.verify(sig, msg, pad, hashes.SHA256())
+        print("PASS RSA SHA256", "PSS" if pss else "PKCS1", flush=True)
+    for oaep in [False, True]:
+        pad = (
+            padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+            if oaep
+            else padding.PKCS1v15()
+        )
+        ct = pub.encrypt(msg, pad)
+        params = OAEP(592, 2, 1, None, 0)
+        m = Mech(
+            9 if oaep else 1, C.cast(C.pointer(params), P) if oaep else None, C.sizeof(params) if oaep else 0
+        )
+        check(lib.C_DecryptInit(s, C.byref(m), key_for(3, id)))
+        n = U()
+        check(lib.C_Decrypt(s, ct, len(ct), None, C.byref(n)))
+        out = C.create_string_buffer(n.value)
+        check(lib.C_Decrypt(s, ct, len(ct), out, C.byref(n)))
+        if not out.raw[: n.value] == msg:
+            raise AssertionError("Hardware check failed")
+        print("PASS RSA decrypt", "OAEP-SHA256" if oaep else "PKCS1", flush=True)
+
+
+def pqc_checks():
+    msg = b"Actual CanoKey ML-DSA verification"
+    m = Mech(29, None, 0)
+    sig = sign(args.mldsa_id, m, msg)
+    check(lib.C_VerifyInit(s, C.byref(m), key_for(2, args.mldsa_id)))
+    check(lib.C_Verify(s, msg, len(msg), sig, len(sig)))
+    if not len(sig) == 3309:
+        raise AssertionError("Hardware check failed")
+    print("PASS ML-DSA-65 hardware sign / host verify", flush=True)
+    m = Mech(23, None, 0)
+    a, keep = attrs([(259, b"\x00"), (354, b"\x01"), (353, 32)])
+    ct = C.create_string_buffer(1088)
+    n = U(1088)
+    host = U()
+    card = U()
+    check(
+        lib.C_EncapsulateKey(
+            s, C.byref(m), key_for(2, args.mlkem_id), a, len(a), ct, C.byref(n), C.byref(host)
+        )
+    )
+    try:
+        check(lib.C_DecapsulateKey(s, C.byref(m), key_for(3, args.mlkem_id), a, len(a), ct, n, C.byref(card)))
+        if not attr(host, 17) == attr(card, 17):
+            raise AssertionError("Hardware check failed")
+        print("PASS ML-KEM-768 host encapsulate / hardware decapsulate", flush=True)
+    finally:
+        if card.value:
+            check(lib.C_DestroyObject(s, card))
+        check(lib.C_DestroyObject(s, host))
+
+
+def certificate_checks():
+    id = args.certificate_id
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+    from datetime import datetime, timedelta, timezone
+
+    if not not find(1, id):
+        raise AssertionError("Refusing to overwrite an existing certificate")
+    before = public(id).public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    issuer = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "CanoKey hardware test")])
+    now = datetime.now(timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(public(id))
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(hours=1))
+        .sign(issuer, hashes.SHA256())
+        .public_bytes(serialization.Encoding.DER)
+    )
+    login(0, bytes.fromhex(os.environ["CNK_PIV_MANAGEMENT_KEY"]))
+    a, keep = attrs([(0, 1), (128, 0), (258, bytes([id])), (1, b"\x01"), (17, certificate)])
+    handle = U()
+    check(lib.C_CreateObject(s, a, len(a), C.byref(handle)))
+    try:
+        if not attr(handle, 17) == certificate:
+            raise AssertionError("Hardware check failed")
+        if not find(1, id) == [handle.value]:
+            raise AssertionError("Hardware check failed")
+        print("PASS certificate write/read byte equality", flush=True)
+    finally:
+        check(lib.C_DestroyObject(s, handle))
+    if not not find(1, id):
+        raise AssertionError("Hardware check failed")
+    if (
+        not public(id).public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        == before
+    ):
+        raise AssertionError("Hardware check failed")
+    print("PASS certificate delete preserves public key", flush=True)
+    check(lib.C_Logout(s))
+
+
+def ecdsa_checks(id):
+    pub = public(id)
+    for algorithm in [hashes.SHA256(), hashes.SHA512()]:
+        digest = hashes.Hash(algorithm)
+        digest.update(b"CanoKey hardware ECDSA verification")
+        data = digest.finalize()
+        sig = sign(id, Mech(4161, None, 0), data)
+        width = (pub.key_size + 7) // 8
+        if not len(sig) == 2 * width:
+            raise AssertionError("Wrong ECDSA signature length")
+        encoded = utils.encode_dss_signature(
+            int.from_bytes(sig[:width], "big"), int.from_bytes(sig[width:], "big")
+        )
+        pub.verify(encoded, data, ec.ECDSA(utils.Prehashed(algorithm)))
+        print(f"PASS ECDSA ID {id:02x}, {pub.key_size} bits, {algorithm.name}", flush=True)
+
+
+def eddsa_checks(id):
+    message = b"CanoKey Ed25519 hardware verification"
+    signature = sign(id, Mech(0x1057, None, 0), message)
+    public(id).verify(signature, message)
+    print(f"PASS Ed25519 ID {id:02x}, independent software verification", flush=True)
+
+
+def random_check():
+    output = C.create_string_buffer(1024)
+    check(lib.C_GenerateRandom(s, output, len(output)))
+    if not len(set(output.raw)) > 200:
+        raise AssertionError("Degenerate hardware random output")
+
+
+results = []
+
+
+def run_case(name, operation):
+    try:
+        operation()
+        results.append({"name": name, "status": "pass"})
+    except Exception as error:
+        detail = f"{type(error).__name__}: {error}"
+        results.append({"name": name, "status": "fail", "detail": detail})
+        print(f"FAIL {name}: {detail}", flush=True)
+
+
+def main():
+    initialized = False
+    opened = False
+    try:
+        check(lib.C_Initialize(None))
+        initialized = True
+        count = U()
+        check(lib.C_GetSlotList(1, None, C.byref(count)))
+        slots = (U * count.value)()
+        check(lib.C_GetSlotList(1, slots, C.byref(count)))
+        if args.slot not in slots:
+            raise RuntimeError("Requested slot is absent")
+        info = TokenInfo()
+        check(lib.C_GetTokenInfo(args.slot, C.byref(info)))
+        actual_serial = bytes(info.serial).rstrip(b" \x00").decode("ascii")
+        if actual_serial != args.serial:
+            raise RuntimeError(f"Token serial mismatch: {actual_serial}")
+        check(lib.C_OpenSession(args.slot, 6, None, None, C.byref(s)))
+        opened = True
+        if args.certificate_id is not None:
+            run_case("certificate write/read/delete", certificate_checks)
+            rv = lib.C_Logout(s)
+            if rv not in (0, 257):
+                check(rv)
+        login(1, os.environ["CNK_PIV_PIN"].encode())
+        for id in args.ecdsa_id:
+            run_case(f"ECDSA ID {id:02x}", lambda id=id: ecdsa_checks(id))
+        for id in args.eddsa_id:
+            run_case(f"Ed25519 ID {id:02x}", lambda id=id: eddsa_checks(id))
+        for id in args.derive_id:
+            run_case(f"agreement ID {id:02x}", lambda id=id: derive(id))
+        for id in args.rsa_id:
+            run_case(f"RSA ID {id:02x}", lambda id=id: rsa_checks(id))
+        if args.mldsa_id is not None:
+            run_case("ML-DSA and ML-KEM", pqc_checks)
+        run_case("hardware RNG 1024 bytes", random_check)
+    finally:
+        if opened:
+            lib.C_Logout(s)
+            check(lib.C_CloseSession(s))
+        if initialized:
+            check(lib.C_Finalize(None))
+    report = {
+        "time_utc": datetime.now(timezone.utc).isoformat(),
+        "module": str(args.module),
+        "module_sha256": hashlib.sha256(args.module.read_bytes()).hexdigest(),
+        "slot": args.slot,
+        "serial": args.serial,
+        "checks": results,
+    }
+    if args.report:
+        args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    failed = sum((row["status"] == "fail" for row in results))
+    print(f"{len(results) - failed}/{len(results)} requested hardware check groups passed", flush=True)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

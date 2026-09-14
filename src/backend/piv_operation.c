@@ -1,5 +1,6 @@
 #include "backend/piv_operation.h"
 #include "api/session.h"
+#include "internal/logging.h"
 
 #include <mbedtls/platform_util.h>
 
@@ -11,6 +12,8 @@ CK_RV cnk_piv_operation_status(uint32_t status, const CNK_LIBCANO_ERROR *error, 
   if (status == CNK_LIBCANO_INVALID_ARGUMENT)
     return CKR_ARGUMENTS_BAD;
   if (status == CNK_LIBCANO_PROTOCOL_ERROR && error != NULL) {
+    CNK_DEBUG("libcanokey failure: kind=%u phase=%u reference=%u status_word=0x%04x", error->kind, error->phase,
+              error->reference, error->status_word);
     switch (error->kind) {
     case CNK_LIBCANO_ERROR_NOT_FOUND:
       return absent;

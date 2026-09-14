@@ -292,3 +292,39 @@ All 29 original inline threads have individual replies. Review-body findings
 are answered with links to their source reviews because GitHub does not support
 nested replies to review summaries. Native ARM64 execution and hardware
 acceptance remain separate from these build and offline-test results.
+
+## Hardware checkpoint (2026-09-14)
+
+Real tests now run on reader `canokeys.org OpenPGP PIV OATH 0`, slot 0,
+serial 0, firmware `3.1.0-dev+gaa408988`, PIV 6.0.0. The previous offline
+success did not establish hardware interoperability: the first real public-key
+enumeration failed before GET METADATA because development suffixes disabled
+capabilities. Per the requested policy, libcanokey 4c12441 now uses the declared
+numeric base version by default while preserving identity and unknown-version
+handling.
+
+Hardware then exposed ordinary-slot ECDH rejection and raw-object framing
+incompatibility, repaired by 97f4dab. P-521 responses use nonminimal definite
+BER envelope lengths, fixed by f961dc2 while retaining strict DER signature
+validation. The C adapter now preserves short digest lengths so P-521 digest
+normalization occurs once. It also consumes raw container factories for data
+compatibility and directly exposes decoded certificate payloads.
+
+The management key was restored to the documented default at the user's
+request and verified by fresh authentication. Test keys were created in
+previously empty slots 87 (RSA-2048), 88 (P-521), 89 (X25519), and 8A (Ed25519).
+The first three also passed private-key import and exact public-key comparison.
+Temporary certificates were written/read/deleted on 87 with the key preserved.
+
+`scripts/hardware-crypto-test.py` records explicit slot/serial/key selections,
+independent software verification, exit status, and the tested DLL SHA-256.
+The hardware report documents remaining pre-existing key/metadata anomalies
+on 9D, 9E, 85 and 86; those slots were not reprovisioned. Hardware successes do
+not close the full concurrency, PIN-policy, managed-mode/minidriver or reset
+acceptance gates. See `docs/hardware-validation-2026-09-14.md` for the matrix.
+
+Final verification for this hardware checkpoint: x64 Debug and Release each
+pass 14/14 selected hardware groups. Windows x86/x64/ARM64 Debug/Release builds
+pass; x86/x64 C/Rust contract tests pass. Linux CTest and ASan/UBSan with leak
+detection each pass 10/10. Rust adapter tests, strict Clippy, libcanokey workspace
+tests, rustdoc and C/C++ ABI tests pass. Native ARM64 execution remains unrun.

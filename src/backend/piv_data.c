@@ -51,7 +51,7 @@ static CK_RV cnk_get_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
       session, pinVerified ? CNK_LIBCANO_CONTEXT_PIN_VERIFIED : CNK_LIBCANO_CONTEXT_SELECTED, &context);
   if (rv != CKR_OK)
     goto cleanup;
-  uint32_t status = cnk_piv_read_object_in_context_new(context, tag, tag_len, NULL, &operation, &error);
+  uint32_t status = cnk_piv_read_object_container_in_context_new(context, tag, tag_len, NULL, &operation, &error);
   rv = cnk_piv_operation_status(status, &error, CKR_DATA_INVALID);
   if (rv != CKR_OK)
     goto cleanup;
@@ -222,7 +222,7 @@ static CK_RV cnk_put_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
   if (rv != CKR_OK)
     goto cleanup;
   uint32_t status =
-      cnk_piv_write_object_in_context_new(context, tag, tag_len, data, data_len, NULL, &operation, &error);
+      cnk_piv_write_object_container_in_context_new(context, tag, tag_len, data, data_len, NULL, &operation, &error);
   rv = cnk_piv_operation_status(status, &error, CKR_DATA_INVALID);
   if (rv != CKR_OK)
     goto cleanup;

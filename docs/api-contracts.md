@@ -100,6 +100,14 @@ including lost responses and failures while parsing results. Dropping an
 operation does not roll back a card mutation. The C ABI transcript, management
 known-answer, and C caller failure-injection tests exercise these boundaries.
 
+Raw PIV-object consumers use the container-preserving read/write factories;
+normalized certificate payloads bypass the retired C certificate TLV parser.
+ECDSA supplies the original digest length (bounded by the scalar byte width),
+so libcanokey performs normalization exactly once, including P-521 bit handling.
+Development/build firmware suffixes retain their identity while using the
+numeric base-version compatibility matrix by default. Unknown base versions
+remain unknown, and observed algorithm configuration still controls wire IDs.
+
 ### Output and Failure Atomicity
 
 1. A NULL output buffer is a size query only. It must not perform irreversible
@@ -245,12 +253,12 @@ errors and unexpected F5 errors on supported versions do not select fallback.
 | `C_CopyObject` | `OBJECT` | Source session secret is snapshotted under `session->lock`; copied value is module-owned and zeroized after allocation. | Only copyable visible session secrets succeed. Failure publishes no new handle and leaves source unchanged. |
 | `C_DestroyObject` | `OBJECT` / `CARD-WRITE` | Holds `session->lock`; secret bytes are zeroized before handle becomes inactive. Certificate deletion retains the token management reservation through the selected-context card mutation. | Private visibility and destroyable policy are rechecked. Certificate deletion requires a read-write session and holds management authorization through the card mutation. Cache invalidation follows every attempted mutation, including uncertain failures. PIV keys/data return action prohibited. |
 | `C_GetObjectSize` | `OBJECT` | Uses ordinary attribute APIs; no returned pointer is retained. | Returns a coherent estimated object size or error; no object/operation state mutation. |
-| `C_GetAttributeValue` | `OBJECT` | Session secrets are read under `session->lock`; private visibility is checked at call time. Token attributes use call-local metadata/certificate buffers, backed by the standalone public snapshot cache when fresh. | Per-attribute unavailable/sensitive errors follow PKCS#11 rules. Size query is non-consuming; malformed card TLV never causes partial out-of-bounds copy. Managed mode bypasses the cache. Certificates report CKA_DESTROYABLE=true; PIV keys/data remain non-destroyable. |
+| `C_GetAttributeValue` | `OBJECT` | Session secrets are read under `session->lock`; private visibility is checked at call time. Token attributes use call-local metadata/certificate buffers, backed by the standalone public snapshot cache when fresh. | Per-attribute unavailable/sensitive errors follow PKCS#11 rules. Size query is non-consuming; malformed card TLV never causes partial out-of-bounds copy. Managed mode bypasses the cache. Certificate values are the already unwrapped/decompressed payload from libcanokey. Certificates report CKA_DESTROYABLE=true; PIV keys/data remain non-destroyable. |
 | `C_SetAttributeValue` | `OBJECT` | Mutable session-secret changes apply to a temporary snapshot under `session->lock`; template pointers are borrowed. | All attributes validate before commit. PIV token attributes are read-only; failure leaves the live secret unchanged. |
 | `C_FindObjectsInit` | `OP(FIND)` | Template is consumed during the call; result handles are copied into session-owned find state under `session->lock`. | Success starts exactly one find operation. Failure clears partial results. Private visibility is evaluated before queuing. |
 | `C_FindObjects` | `OP(FIND)` | Returns handles from session-owned queue while holding `session->lock`; token logout barrier is rechecked before return. | Returns at most requested count and advances position once. Logout invalidates queued private results; failure does not leak a private handle. |
 | `C_FindObjectsFinal` | `OP(FIND)` | Owns no caller data; clears session find state under lock. | Success/terminal failure leaves no active find operation and no queued handles. |
-| `C_CNK_GetPivData` | `SESSION` | Tag/output are borrowed; returned bytes belong to caller. Private reads may use a copied cached PIN for that card transaction only. | NULL output is size query. Logout/pending auth blocks private access; card/parse failure leaves token state unchanged. |
+| `C_CNK_GetPivData` | `SESSION` | Tag/output are borrowed; returned bytes preserve the validated raw 53/7E object container and belong to the caller. Private reads may use a copied cached PIN for that card transaction only. | NULL output is size query. Logout/pending auth blocks private access; card/parse failure leaves token state unchanged. |
 | `C_CNK_GetPivMetadataDirectory` | `SLOT-READ` | Entries and count are caller-owned; standalone mode may serve a token-lock-protected public directory snapshot, while managed mode performs a fresh read. No card/session pointer is retained. | A cache miss uses one version-gated metadata-directory APDU and one PIV transaction. A NULL entries pointer is always a count query; too-small follows two-stage rules; firmware before 5.7 returns `CKR_FUNCTION_NOT_SUPPORTED`. |
 | `C_CNK_ObjIdToPivTag` | `STATIC` | Pure fixed-table mapping; output belongs to caller. | Valid ID writes exactly one tag; invalid ID leaves no module state and returns object-handle error. |
 
@@ -282,9 +290,9 @@ errors and unexpected F5 errors on supported versions do not select fallback.
 | API | Profile | Lifetime and concurrency | Progress and exit guarantee |
 | --- | --- | --- | --- |
 | `C_SignInit` | `OP(SIGN)` | Mechanism parameters, metadata, public modulus, and multipart hash/message state become module-owned copies. | Publishes only after key/mechanism/policy validation. PIN-always starts unauthenticated and requires one context login. |
-| `C_Sign` | `OP(SIGN)` | Data/output borrowed; context PIN and signature temporaries are zeroized/consumed by real card operation. | NULL/too-small/auth-required preserve context. Success/terminal error clears it; context PIN authorizes only this operation. |
+| `C_Sign` | `OP(SIGN)` | Data/output borrowed; context PIN and signature temporaries are zeroized/consumed by real card operation. | NULL/too-small/auth-required preserve context. Success/terminal error clears it; context PIN authorizes only this operation. ECDSA preserves short digest lengths until libcanokey normalizes once, including P-521. |
 | `C_SignUpdate` | `OP(SIGN)` | Part is copied/hashed into module-owned multipart state under lock. | Success advances once; allocation/hash failure terminates as documented and leaves no partial exposed buffer. |
-| `C_SignFinal` | `OP(SIGN)` | Output is caller-owned; buffered message/hash remains module-owned until terminal call. | NULL/too-small/auth-required preserves state. Success/terminal error clears and zeroizes it. |
+| `C_SignFinal` | `OP(SIGN)` | Output is caller-owned; buffered message/hash remains module-owned until terminal call. | NULL/too-small/auth-required preserves state. Success/terminal error clears and zeroizes it. ECDSA preserves short digest lengths until libcanokey normalizes once, including P-521. |
 | `C_SignRecoverInit` | `UNSUPPORTED` | Does not allocate or alter sign state. | Returns `CKR_FUNCTION_NOT_SUPPORTED`. |
 | `C_SignRecover` | `UNSUPPORTED` | Does not consume input or existing sign state. | Returns `CKR_FUNCTION_NOT_SUPPORTED`. |
 | `C_VerifyInit` | `OP(VERIFY)` | Mechanism, public key, and independent hash/message state are module-owned copies. | Publishes only after validation; may coexist with standalone DIGEST. |
