@@ -91,6 +91,7 @@ enum {
   CNK_LIBCANO_ALG_P384 = 6,
   CNK_LIBCANO_ALG_P521 = 7,
   CNK_LIBCANO_ALG_SECP256K1 = 8,
+  CNK_LIBCANO_ALG_SM2 = 9,
   CNK_LIBCANO_ALG_ED25519 = 10,
   CNK_LIBCANO_ALG_X25519 = 11,
   CNK_LIBCANO_ALG_MLDSA65 = 12,
@@ -125,6 +126,9 @@ uint32_t cnk_piv_read_container_name_in_context_new(const CNK_LIBCANO_CONTEXT *,
 uint32_t cnk_piv_write_object_container_in_context_new(const CNK_LIBCANO_CONTEXT *, const uint8_t *, size_t,
                                                        const uint8_t *, size_t, const CNK_LIBCANO_OPTIONS *,
                                                        CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_write_certificate_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const uint8_t *, size_t,
+                                                  const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
+                                                  CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_delete_certificate_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const CNK_LIBCANO_OPTIONS *,
                                                    CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_authenticate_management_in_context_new(const CNK_LIBCANO_CONTEXT *, const CNK_LIBCANO_MANAGEMENT *,

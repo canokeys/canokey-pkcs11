@@ -171,41 +171,6 @@ CK_RV cnk_get_piv_data_by_tag_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION
   return cnk_get_piv_data_libcanokey(slotID, session, tag, tag_len, data, data_len, fetch_data);
 }
 
-CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data) {
-  CNK_LOG_FUNC(": slotID: %ld, tag: 0x%02X, data: %p, data_len: %p, fetch_data: %d", slotID, tag, data, data_len,
-               fetch_data);
-
-  // Where xx is mapped from the PIV tag as follows:
-  // 9A -> 05, 9C -> 0A, 9D -> 0B, 9E -> 01, 82 -> 0D, 83 -> 0E
-  CK_BYTE mapped_tag;
-  switch (tag) {
-  case 0x9A:
-    mapped_tag = PIV_OBJECT_TAG_CERT_9A;
-    break;
-  case 0x9C:
-    mapped_tag = PIV_OBJECT_TAG_CERT_9C;
-    break;
-  case 0x9D:
-    mapped_tag = PIV_OBJECT_TAG_CERT_9D;
-    break;
-  case 0x9E:
-    mapped_tag = PIV_OBJECT_TAG_CERT_9E;
-    break;
-  case 0x82:
-    mapped_tag = PIV_OBJECT_TAG_CERT_82;
-    break;
-  case 0x83:
-    mapped_tag = PIV_OBJECT_TAG_CERT_83;
-    break;
-  default:
-    mapped_tag = tag;
-    break; // Keep original tag if not in mapping
-  }
-
-  CK_BYTE object_tag[] = {0x5F, 0xC1, mapped_tag};
-  return cnk_get_piv_data_by_tag(slotID, object_tag, sizeof(object_tag), data, data_len, fetch_data);
-}
-
 static CK_RV cnk_put_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag,
                                          CK_ULONG tag_len, CK_BYTE_PTR data, CK_ULONG data_len) {
   CNK_ENSURE_NONNULL(session);
@@ -239,7 +204,8 @@ cleanup:
   return rv;
 }
 
-CK_RV cnk_delete_piv_certificate_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pivSlot) {
+static CK_RV mutate_certificate(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pivSlot,
+                                const CK_BYTE *certificate, CK_ULONG certificateLen) {
   CNK_ENSURE_NONNULL(session);
   CNK_LIBCANO_CONTEXT *context = NULL;
   CNK_LIBCANO_OPERATION *operation = NULL;
@@ -253,7 +219,10 @@ CK_RV cnk_delete_piv_certificate_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSIO
   rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context);
   if (rv != CKR_OK)
     goto cleanup;
-  uint32_t status = cnk_piv_delete_certificate_in_context_new(context, pivSlot, NULL, &operation, &error);
+  uint32_t status = certificate != NULL
+                        ? cnk_piv_write_certificate_in_context_new(context, pivSlot, certificate, certificateLen, NULL,
+                                                                   &operation, &error)
+                        : cnk_piv_delete_certificate_in_context_new(context, pivSlot, NULL, &operation, &error);
   rv = cnk_piv_operation_status(status, &error, CKR_DATA_INVALID);
   if (rv != CKR_OK)
     goto cleanup;
@@ -285,11 +254,14 @@ CK_RV cnk_put_piv_data_by_tag(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, co
   return cnk_put_piv_data_libcanokey(slotID, session, tag, tag_len, data, data_len);
 }
 
-CK_RV cnk_put_piv_data(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE tag, CK_BYTE_PTR data,
-                       CK_ULONG data_len) {
-  CNK_LOG_FUNC(": slotID: %ld, tag: 0x%02X, data: %p, data_len: %lu", slotID, tag, data, data_len);
-  CK_BYTE object_tag[] = {0x5F, 0xC1, tag};
-  return cnk_put_piv_data_by_tag(slotID, session, object_tag, sizeof(object_tag), data, data_len);
+CK_RV cnk_write_piv_certificate(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pivSlot,
+                                const CK_BYTE *certificate, CK_ULONG certificateLen) {
+  CNK_ENSURE_NONNULL(certificate);
+  return mutate_certificate(slotID, session, pivSlot, certificate, certificateLen);
+}
+
+CK_RV cnk_delete_piv_certificate_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pivSlot) {
+  return mutate_certificate(slotID, session, pivSlot, NULL, 0);
 }
 
 // Helper function to get firmware version and hardware name

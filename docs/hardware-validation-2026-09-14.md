@@ -114,3 +114,25 @@ python scripts/hardware-crypto-test.py `
 Use the corresponding Release paths to repeat that build's matrix. Omitting
 `--certificate-id` omits certificate writes/deletion. Use other explicit key IDs
 only after enumerating their actual types and policies.
+
+## Typed import and certificate regression
+
+After removing C import/certificate framing, the x64 Debug and Release matrices
+again pass 14/14 groups (build-windows-x64-Debug/c-reduction-hardware.json and
+build-windows-x64-Release/c-reduction-hardware.json). The explicit
+--replace-import-rsa-id 0a, --replace-import-p521-id 0b,
+--replace-import-x25519-id 0c and --replace-import-ed25519-id 0d run replaces only
+the four test keys created during this session. Every imported public key matches
+the software-generated key exactly; RSA sign/decrypt, P-521 sign/derive, X25519
+agreement and Ed25519 signatures pass independent verification. The import report
+is build-windows-x64-Release/c-reduction-imports.json. Both scripts verify slot 0
+and serial 0 before opening a write session. Originals remain unchanged.
+
+The corresponding minidriver propagation test now also reaches native x64
+CertPropSvc and Windows KSP. The matching 9A/9C/82 certificates are removed from
+the user store only after serializing their contexts, then automatically reappear
+after USB reinsertion with identical provider/container/KeySpec properties.
+KSP signatures verify against the certificates themselves. Existing invalid RSA
+material on 9D/9E prevents claiming a complete Windows matrix; the original binary
+shows the same problem. See the minidriver propagation report for fingerprints,
+artifact hashes, service log evidence and rollback verification.

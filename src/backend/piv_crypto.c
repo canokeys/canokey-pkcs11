@@ -4,6 +4,7 @@
 #include "api/object.h"
 #include "api/session.h"
 #include "internal/logging.h"
+#include "internal/piv_object.h"
 #include "internal/util.h"
 
 #include <mbedtls/platform_util.h>
@@ -337,66 +338,23 @@ cleanup:
   return rv;
 }
 
-CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
-                         CK_BYTE_PTR keyData, CK_ULONG keyDataLen) {
+CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CNK_PIV_IMPORT *material) {
   CNK_LIBCANO_CONTEXT *context = NULL;
   CNK_LIBCANO_OPERATION *operation = NULL;
-  CNK_LOG_FUNC(": slotID: %ld, algorithmType: 0x%02X, pivSlot: 0x%02X, keyData: %p, keyDataLen: %lu", slotID,
-               algorithmType, pivSlot, keyData, keyDataLen);
-  CNK_ENSURE_NONNULL(keyData);
-
-  uint32_t algorithm = 0;
-  CNK_ENSURE_OK(cnk_piv_generation_algorithm(algorithmType, &algorithm));
-  CNK_LIBCANO_BYTES components[5] = {0};
-  size_t componentCount = 0;
-  CK_BYTE pinPolicy = 0;
-  CK_BYTE touchPolicy = 0;
-  CK_BBOOL rsa =
-      algorithmType == PIV_ALG_RSA_2048 || algorithmType == PIV_ALG_RSA_3072 || algorithmType == PIV_ALG_RSA_4096;
-  CK_ULONG offset = 0;
-  while (offset < keyDataLen) {
-    CK_BYTE tag = keyData[offset++];
-    CK_LONG fail = 0;
-    CK_ULONG lengthSize = 0;
-    CK_ULONG length = tlvGetLengthSafe(keyData + offset, keyDataLen - offset, &fail, &lengthSize);
-    if (fail || lengthSize > keyDataLen - offset || length > keyDataLen - offset - lengthSize)
-      return CKR_DATA_INVALID;
-    offset += lengthSize;
-    const CK_BYTE *value = keyData + offset;
-    if (tag >= 1 && tag <= 5 && rsa) {
-      if (componentCount >= 5)
-        return CKR_DATA_INVALID;
-      components[componentCount++] = (CNK_LIBCANO_BYTES){value, length};
-    } else if (tag == 0x06 || tag == 0x07 || tag == 0x08 || tag == 0x09 || tag == 0x0A) {
-      components[0] = (CNK_LIBCANO_BYTES){value, length};
-      componentCount = 1;
-    } else if (tag == 0xAA && length == 1) {
-      pinPolicy = value[0];
-    } else if (tag == 0xAB && length == 1) {
-      touchPolicy = value[0];
-    }
-    offset += length;
-  }
-  if (componentCount != (rsa ? 5 : 1))
-    return CKR_DATA_INVALID;
-
+  CNK_ENSURE_NONNULL(session, material);
   CK_BBOOL attempted = CK_FALSE;
   SCARDHANDLE card = 0;
-  CK_RV rv = cnk_begin_key_write(slotID, session, pivSlot, &card);
+  CK_RV rv = cnk_begin_key_write(slotID, session, (CK_BYTE)material->parameters.slot, &card);
   if (rv != CKR_OK)
     return rv;
   CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
-  CNK_LIBCANO_KEY_PARAMETERS params = {.struct_size = sizeof(params),
-                                       .slot = pivSlot,
-                                       .algorithm = algorithm,
-                                       .pin_policy = pinPolicy,
-                                       .touch_policy = touchPolicy};
   uint32_t status = CNK_LIBCANO_OK;
   rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context);
   if (rv != CKR_OK)
     goto import_cleanup;
 
-  status = cnk_piv_import_key_in_context_new(context, &params, components, componentCount, NULL, &operation, &error);
+  status = cnk_piv_import_key_in_context_new(context, &material->parameters, material->components, material->count,
+                                             NULL, &operation, &error);
   if (status != CNK_LIBCANO_OK) {
     rv = cnk_libcanokey_status_with_error(status, &error);
     goto import_cleanup;

@@ -140,9 +140,8 @@ uint32_t cnk_piv_generate_key_in_context_new(const CNK_LIBCANO_CONTEXT *c, const
 uint32_t cnk_piv_import_key_in_context_new(const CNK_LIBCANO_CONTEXT *c, const CNK_LIBCANO_KEY_PARAMETERS *p,
                                            const CNK_LIBCANO_BYTES *b, size_t n, const CNK_LIBCANO_OPTIONS *o,
                                            CNK_LIBCANO_OPERATION **out, CNK_LIBCANO_ERROR *e) {
-  (void)p;
-  (void)b;
-  (void)n;
+  CHECK(p->slot == 0x9c && p->algorithm == CNK_LIBCANO_ALG_P256 && p->pin_policy == 1);
+  CHECK(n == 1 && b[0].len == 32 && b[0].data[31] == 1);
   (void)o;
   return construct(c, out, e);
 }
@@ -153,6 +152,13 @@ uint32_t cnk_piv_write_object_container_in_context_new(const CNK_LIBCANO_CONTEXT
   (void)tn;
   (void)d;
   (void)n;
+  (void)o;
+  return construct(c, out, e);
+}
+uint32_t cnk_piv_write_certificate_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint32_t slot, const uint8_t *der,
+                                                  size_t len, const CNK_LIBCANO_OPTIONS *o, CNK_LIBCANO_OPERATION **out,
+                                                  CNK_LIBCANO_ERROR *e) {
+  CHECK(slot == 0x9c && len == 3 && der[0] == 0x30 && der[1] == 1 && der[2] == 0);
   (void)o;
   return construct(c, out, e);
 }
@@ -377,10 +383,20 @@ static CK_RV call(unsigned kind, CK_BYTE *out, CK_ULONG *len) {
     return cnk_delete_piv_certificate_libcanokey(0, &session, 0x9c);
   case 2:
     return cnk_piv_generate_keypair(0, &session, PIV_ALG_RSA_2048, 0x9c, 1, 1, out, len);
-  case 3:
-    return cnk_piv_import_key(0, &session, PIV_ALG_ECC_256, 0x9c, value, 3);
+  case 3: {
+    CK_BYTE scalar[32] = {0};
+    scalar[31] = 1;
+    CNK_PIV_IMPORT material = {.parameters = {sizeof(CNK_LIBCANO_KEY_PARAMETERS), 0x9c, CNK_LIBCANO_ALG_P256, 1, 1},
+                               .components = {{scalar, sizeof(scalar)}},
+                               .count = 1};
+    return cnk_piv_import_key(0, &session, &material);
+  }
   case 4:
     return read_container_name_libcanokey(&session, 0x9c, out, len);
+  case 6: {
+    CK_BYTE der[] = {0x30, 1, 0};
+    return cnk_write_piv_certificate(0, &session, 0x9c, der, sizeof(der));
+  }
   default:
     return cnk_get_piv_data_libcanokey(0, &session, tag, 3, out, len, CK_TRUE);
   }
@@ -388,7 +404,7 @@ static CK_RV call(unsigned kind, CK_BYTE *out, CK_ULONG *len) {
 int main(void) {
   CK_BYTE output[512];
   CK_ULONG len;
-  for (unsigned kind = 0; kind < 6; kind++) {
+  for (unsigned kind = 0; kind < 7; kind++) {
     // Every failure from context construction through advance must release all
     // resources and must not publish a read result or a successful mutation.
     for (unsigned failure = 1; failure <= 7; failure++) {
@@ -398,7 +414,7 @@ int main(void) {
       len = sizeof(output);
       CHECK(call(kind, output, &len) == CKR_DEVICE_ERROR);
       CHECK(output[0] == 0xCC && len == sizeof(output));
-      CHECK(invalidations == (kind < 4 && sends != 0));
+      CHECK(invalidations == ((kind < 4 || kind == 6) && sends != 0));
       reset();
     }
     reset();
@@ -412,7 +428,7 @@ int main(void) {
     reset();
     len = sizeof(output);
     CHECK(call(kind, output, &len) == CKR_OK);
-    CHECK(sends == 1 && invalidations == (kind < 4));
+    CHECK(sends == 1 && invalidations == (kind < 4 || kind == 6));
     if (kind == 2)
       CHECK(len == 265 && output[0] == 0x81 && output[1] == 0x82 && output[260] == 0x82);
     reset();

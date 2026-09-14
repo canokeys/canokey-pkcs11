@@ -215,10 +215,6 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, c
 // Get serial number (4-byte big endian number)
 CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number);
 
-// Get PIV data from the CanoKey device. If fetch_data is CK_FALSE, only checks
-// existence and reports it through the return value.
-CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data);
-
 // Get a PIV data object by its full BER-TLV tag, for example 5F C1 02 or 7E.
 CK_RV cnk_get_piv_data_by_tag(CK_SLOT_ID slotID, const CK_BYTE *tag, CK_ULONG tag_len, CK_BYTE_PTR data,
                               CK_ULONG_PTR data_len, CK_BBOOL fetch_data);
@@ -228,9 +224,9 @@ CK_RV cnk_get_piv_data_by_tag_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION
                                            CK_ULONG tag_len, CK_BYTE_PTR data, CK_ULONG_PTR data_len,
                                            CK_BBOOL fetch_data);
 
-// Write a PIV data object. The tag is the one-byte 0x5FC1xx object tag.
-CK_RV cnk_put_piv_data(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE tag, CK_BYTE_PTR data,
-                       CK_ULONG data_len);
+// Write an uncompressed certificate payload; libcanokey owns PIV framing.
+CK_RV cnk_write_piv_certificate(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pivSlot,
+                                const CK_BYTE *certificate, CK_ULONG certificateLen);
 
 // Write a PIV data object by its full BER-TLV tag.
 CK_RV cnk_put_piv_data_by_tag(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag, CK_ULONG tag_len,
@@ -257,8 +253,6 @@ CK_RV cnk_get_piv_data_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BY
 
 // Read the firmware 5.7+ PIV metadata directory. Older firmware returns
 // CKR_FUNCTION_NOT_SUPPORTED so callers can fall back to per-slot probes.
-CK_RV cnk_get_piv_metadata_directory(CK_SLOT_ID slotID, CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
-                                     CK_ULONG_PTR entryCount);
 CK_RV cnk_get_piv_metadata_directory_cached(CNK_PKCS11_SESSION *session, CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
                                             CK_ULONG_PTR entryCount);
 void cnk_piv_public_cache_invalidate(CNK_PKCS11_SESSION *session);
@@ -279,10 +273,6 @@ CK_RV cnk_piv_generate_random(CK_SLOT_ID slotID, CK_BYTE_PTR output, CK_ULONG ou
 CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
                                CK_BYTE pinPolicy, CK_BYTE touchPolicy, CK_BYTE_PTR pbPublicKey,
                                CK_ULONG_PTR pcbPublicKey);
-
-// Import a PIV asymmetric private key.
-CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
-                         CK_BYTE_PTR keyData, CK_ULONG keyDataLen);
 
 // Sign data using PIV key
 // This function signs data using the PIV GENERAL AUTHENTICATE command

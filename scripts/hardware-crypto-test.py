@@ -3,6 +3,8 @@
 Requires cryptography, CNK_PIV_PIN, and explicit slot/serial/key selections.
 Certificate testing is opt-in and requires CNK_PIV_MANAGEMENT_KEY. It refuses
 an existing certificate, deletes its test certificate, and checks key retention.
+Explicit --replace-import-* options overwrite a selected certificate-free test
+slot with a fresh key and verify its public key and private operations.
 Opaque PKCS#11 structures use Windows packing; template storage stays alive
 through each borrowed C call. Credentials and shared secrets are never printed.
 """
@@ -58,14 +60,25 @@ for option in ["ecdsa-id", "eddsa-id", "derive-id", "rsa-id"]:
     parser.add_argument("--" + option, type=lambda x: int(x, 16), action="append", default=[])
 for option in ["mldsa-id", "mlkem-id", "certificate-id"]:
     parser.add_argument("--" + option, type=lambda x: int(x, 16))
+for kind in ["rsa", "p521", "x25519", "ed25519"]:
+    parser.add_argument(
+        "--replace-import-" + kind + "-id",
+        type=lambda x: int(x, 16),
+        help="Overwrite this certificate-free test slot with a fresh imported " + kind + " key",
+    )
 parser.add_argument("--report", type=Path)
 args = parser.parse_args()
 if os.name != "nt":
     parser.error("This ctypes layout targets native Windows only")
 if "CNK_PIV_PIN" not in os.environ:
     parser.error("CNK_PIV_PIN is required")
-if args.certificate_id is not None and "CNK_PIV_MANAGEMENT_KEY" not in os.environ:
-    parser.error("Certificate writes require CNK_PIV_MANAGEMENT_KEY")
+imports = [
+    (kind, getattr(args, "replace_import_" + kind + "_id")) for kind in ["rsa", "p521", "x25519", "ed25519"]
+]
+if (
+    args.certificate_id is not None or any(id is not None for _, id in imports)
+) and "CNK_PIV_MANAGEMENT_KEY" not in os.environ:
+    parser.error("Certificate writes and private-key imports require CNK_PIV_MANAGEMENT_KEY")
 if (args.mldsa_id is None) != (args.mlkem_id is None):
     parser.error("Specify both --mldsa-id and --mlkem-id")
 args.module = args.module.resolve()
@@ -424,6 +437,77 @@ def run_case(name, operation):
         print(f"FAIL {name}: {detail}", flush=True)
 
 
+def import_checks(id, kind):
+    if not 1 <= id <= 24 or find(1, id):
+        raise RuntimeError("Private-key import requires an explicit certificate-free PIV key slot")
+    if kind == "rsa":
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        numbers = key.private_numbers()
+        integer = lambda v: v.to_bytes((v.bit_length() + 7) // 8, "big")
+        values = [
+            (0x100, 0),
+            (0x120, integer(numbers.public_numbers.n)),
+            (0x122, integer(numbers.public_numbers.e)),
+        ]
+        values += [
+            (tag, integer(v))
+            for tag, v in zip(
+                range(0x124, 0x129), [numbers.p, numbers.q, numbers.dmp1, numbers.dmq1, numbers.iqmp]
+            )
+        ]
+    elif kind == "p521":
+        key = ec.generate_private_key(ec.SECP521R1())
+        scalar = key.private_numbers().private_value
+        # Exercise the PKCS#11 unsigned-integer convention, including omitted
+        # leading zeros, instead of preparing a PIV fixed-width scalar here.
+        values = [
+            (0x100, 3),
+            (0x180, bytes.fromhex("06052b81040023")),
+            (0x11, scalar.to_bytes((scalar.bit_length() + 7) // 8, "big")),
+        ]
+    else:
+        key = x25519.X25519PrivateKey.generate() if kind == "x25519" else ed25519.Ed25519PrivateKey.generate()
+        values = [
+            (0x100, 0x41 if kind == "x25519" else 0x40),
+            (0x180, bytes.fromhex("06032b656e" if kind == "x25519" else "06032b6570")),
+            (
+                0x11,
+                key.private_bytes(
+                    serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption()
+                ),
+            ),
+        ]
+    template, keep = attrs([(0, 3), (0x102, bytes([id])), (1, b"\1"), (2, b"\1")] + values)
+    handle = U()
+    login(0, bytes.fromhex(os.environ["CNK_PIV_MANAGEMENT_KEY"]))
+    try:
+        check(lib.C_CreateObject(s, template, len(template), C.byref(handle)))
+    finally:
+        check(lib.C_Logout(s))
+    expected = key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    actual = public(id).public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    if actual != expected:
+        raise RuntimeError("Imported public key differs from the software-generated key")
+    login(1, os.environ["CNK_PIV_PIN"].encode())
+    try:
+        if kind == "rsa":
+            rsa_checks(id)
+        elif kind == "p521":
+            ecdsa_checks(id)
+            derive(id)
+        elif kind == "x25519":
+            derive(id)
+        else:
+            eddsa_checks(id)
+    finally:
+        check(lib.C_Logout(s))
+    print(f"PASS {kind} import ID {id:02x}, exact public-key match and private operation", flush=True)
+
+
 def main():
     initialized = False
     opened = False
@@ -443,6 +527,11 @@ def main():
             raise RuntimeError(f"Token serial mismatch: {actual_serial}")
         check(lib.C_OpenSession(args.slot, 6, None, None, C.byref(s)))
         opened = True
+        for kind, id in imports:
+            if id is not None:
+                run_case(
+                    f"{kind} private-key import ID {id:02x}", lambda id=id, kind=kind: import_checks(id, kind)
+                )
         if args.certificate_id is not None:
             run_case("certificate write/read/delete", certificate_checks)
             rv = lib.C_Logout(s)

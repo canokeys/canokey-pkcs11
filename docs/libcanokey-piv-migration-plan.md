@@ -355,3 +355,51 @@ C_Initialize; both cycles then retained 129 records (132 with certificate checks
 Public-read raw mode recorded APDUs; credential tests used raw logging disabled.
 The tests use process-local configuration and do not establish installed
 Base CSP/KSP, CertPropSvc or native ARM64 runtime acceptance.
+
+## C removal and certificate propagation checkpoint (2026-09-14)
+
+Removed the unused C 3DES implementation, legacy metadata-directory parser and
+certificate-read shim. Private-key import now sends semantic parameters and
+component views directly to the Rust constructor: the C TLV builder and its
+second C parser are gone. Rust owns CRT padding and all PIV import framing; C
+retains PKCS#11 template size admission and its bounded EC scalar normalization.
+Certificate writes pass the payload directly to the existing typed context factory,
+removing C certificate framing and the now-unused PUT DATA certificate shim.
+The import descriptor and Rust operation share the existing management reservation,
+authenticated transaction, mutation-attempt invalidation and cleanup boundary.
+
+This increment adds 167 and removes 658 production C/header lines (net -491).
+Against the PR base f8f4c6e, production C/header changes are +1500/-1738 (net -238).
+Tests, documentation and the Rust adapter account for much of the total PR growth;
+line counts do not establish migration completion. PIN/PUK operations, protected
+management-data parsing, legacy device-info/configuration reads, F5 writes and
+configured-algorithm compatibility still need migration. Host crypto, PKCS#11
+objects/sessions, ownership and cache synchronization remain C responsibilities.
+The x64 Release DLL is 1,009,664 bytes, 1,024 bytes smaller than the preceding
+checkpoint; dead-code deletion mostly reduces maintenance, since the linker
+already discarded unreachable functions.
+
+Verification: Windows x86/x64/ARM64 Debug and Release builds pass; native x86/x64
+contract tests pass. Linux CTest and ASan/UBSan each pass 10/10. The real-card
+14-group crypto/certificate matrix passes. RSA-2048, P-521, X25519 and Ed25519
+imports into previously created test slots 87..8A pass exact public-key comparison
+and independent private-operation verification. The four test keys were replaced;
+no original key or provisioned certificate slot was overwritten. Explicit import
+options and the certificate-free guard are in scripts/hardware-crypto-test.py.
+
+An isolated x64 Release minidriver linked against these sources is 907,776 bytes
+(SHA-256 a178c3df098cea483f84d3e51923464bdb703edd7565fff71c0eadbf20661360).
+Using the existing Calais mapping, CertPropSvc automatically recreated the three
+valid matching development certificates for 9A, 9C and 82 after their backed-up
+user-store copies were removed and the card was USB-reset. Provider, container
+name and KeySpec stayed identical; silent Windows KSP signatures verified against
+the propagated certificates' public keys. Service logs identify the new source
+build and retain PKCS#11 diagnostics across contexts. The original deployed DLL
+was restored and its hash checked; Calais/logging registry values were unchanged.
+
+This is a three-certificate propagation result, not a six-slot acceptance claim.
+The existing 9D/9E RSA metadata and certificate/key problems also fail with the
+original deployed binary; slot 83 currently holds SM2 and is intentionally hidden
+from Windows. Native ARM64 runtime acceptance remains unrun. The minidriver
+workspace contains the reusable propagation test, rollback test and detailed
+report in docs/propagation-validation-2026-09-14.md.

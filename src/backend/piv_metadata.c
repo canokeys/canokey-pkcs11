@@ -494,66 +494,6 @@ cleanup:
   return rv;
 }
 
-CK_RV cnk_get_piv_metadata_directory(CK_SLOT_ID slotID, CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
-                                     CK_ULONG_PTR entryCount) {
-  CNK_ENSURE_NONNULL(entryCount);
-  SCARDHANDLE card = 0;
-  CK_RV rv = connectPiv(slotID, &card);
-  if (rv != CKR_OK)
-    return rv;
-  CK_BYTE version[3];
-  rv = readPivVersionOnCard(card, version);
-  if (rv != CKR_OK)
-    goto cleanup;
-  if (version[0] < 5 || (version[0] == 5 && version[1] < 7)) {
-    rv = CKR_FUNCTION_NOT_SUPPORTED;
-    goto cleanup;
-  }
-
-  CK_BYTE apdu[] = {0x00, 0xF7, 0x01, 0x00, 0x00};
-  CK_BYTE response[5 + CNK_PIV_METADATA_DIRECTORY_MAX_ENTRIES * 6 + 2];
-  DWORD responseLen = sizeof(response);
-  LONG pcscRv = cnk_transceive_apdu(card, apdu, sizeof(apdu), response, &responseLen, CK_TRUE);
-  if (pcscRv != SCARD_S_SUCCESS || responseLen < 2) {
-    rv = CKR_DEVICE_ERROR;
-    goto cleanup;
-  }
-  CK_BYTE sw1 = response[responseLen - 2];
-  CK_BYTE sw2 = response[responseLen - 1];
-  if (sw1 != 0x90 || sw2 != 0x00) {
-    rv = sw1 == 0x6D || (sw1 == 0x6A && (sw2 == 0x81 || sw2 == 0x86)) ? CKR_FUNCTION_NOT_SUPPORTED : CKR_DEVICE_ERROR;
-    goto cleanup;
-  }
-
-  CK_ULONG dataLen = responseLen - 2;
-  if (dataLen < 5 || response[0] != 0x01 || response[1] != 0x01 || response[2] != 0x01 || response[3] != 0x02 ||
-      response[4] != dataLen - 5 || response[4] % 6 != 0) {
-    rv = CKR_DEVICE_ERROR;
-    goto cleanup;
-  }
-  CK_ULONG required = response[4] / 6;
-  CK_ULONG capacity = entries == NULL ? 0 : *entryCount;
-  *entryCount = required;
-  if (entries == NULL) {
-    rv = CKR_OK;
-    goto cleanup;
-  }
-  if (capacity < required) {
-    rv = CKR_BUFFER_TOO_SMALL;
-    goto cleanup;
-  }
-  for (CK_ULONG i = 0; i < required; i++) {
-    const CK_BYTE *encoded = response + 5 + i * 6;
-    entries[i] =
-        (CNK_PIV_METADATA_DIRECTORY_ENTRY){encoded[0], encoded[1], encoded[2], encoded[3], encoded[4], encoded[5]};
-  }
-  rv = CKR_OK;
-
-cleanup:
-  cnk_disconnect_card(card);
-  return rv;
-}
-
 CK_RV cnk_get_piv_metadata_directory_cached(CNK_PKCS11_SESSION *session, CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
                                             CK_ULONG_PTR entryCount) {
   CNK_ENSURE_NONNULL(session, session->token, entryCount);

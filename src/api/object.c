@@ -25,9 +25,6 @@
 // Maximum size for certificate data buffer
 #define MAX_PIV_CERTIFICATE_OBJECT_SIZE 8192
 
-// Maximum size for PIV asymmetric key import data.
-#define MAX_PIV_IMPORT_KEY_SIZE 1400
-
 // Maximum size for generic PIV data objects exposed as CKO_DATA.
 #define MAX_PIV_DATA_OBJECT_SIZE 8192
 
@@ -1021,14 +1018,17 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
     if (valueAttr->pValue == NULL || valueAttr->ulValueLen == 0)
       CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad certificate value");
 
-    CK_BYTE certTag;
-    CK_BYTE certObject[MAX_PIV_CERTIFICATE_OBJECT_SIZE];
-    CK_ULONG certObjectLen = 0;
-    CNK_ENSURE_OK(CNK_ObjectIdToCertificateTag(objId, &certTag));
-    CNK_ENSURE_OK(cnk_build_piv_certificate_object((CK_BYTE_PTR)valueAttr->pValue, valueAttr->ulValueLen, certObject,
-                                                   sizeof(certObject), &certObjectLen));
+    // Preserve the historical 8192-byte encoded-object limit. PIV framing is
+    // produced only by libcanokey; the largest payload needs 13 framing bytes.
+    if (valueAttr->ulValueLen > 0xFFFF)
+      return CKR_DATA_LEN_RANGE;
+    if (valueAttr->ulValueLen > MAX_PIV_CERTIFICATE_OBJECT_SIZE - 13)
+      return CKR_BUFFER_TOO_SMALL;
+    CK_BYTE pivSlot;
+    CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &pivSlot));
     CNK_ENSURE_OK(cnk_token_begin_management_operation(session));
-    CK_RV writeRv = cnk_put_piv_data(session->slotId, session, certTag, certObject, certObjectLen);
+    CK_RV writeRv =
+        cnk_write_piv_certificate(session->slotId, session, pivSlot, valueAttr->pValue, valueAttr->ulValueLen);
     cnk_token_end_management_operation(session);
     CNK_ENSURE_OK(writeRv);
 
@@ -1038,59 +1038,17 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
 
   case CKO_PRIVATE_KEY: {
     CK_KEY_TYPE keyType;
-    CK_BYTE pivTag;
-    CK_BYTE algorithmType;
-    CK_BYTE importData[MAX_PIV_IMPORT_KEY_SIZE];
-    CK_ULONG importDataLen = 0;
-    CK_RV rv = CKR_OK;
-
-    rv = cnk_template_get_key_type(pTemplate, ulCount, CKA_KEY_TYPE, &keyType);
-    if (rv != CKR_OK)
-      goto cleanup_import;
-    rv = C_CNK_ObjIdToPivTag(objId, &pivTag);
-    if (rv != CKR_OK)
-      goto cleanup_import;
-
-    switch (keyType) {
-    case CKK_RSA:
-      rv = cnk_build_piv_rsa_import(pTemplate, ulCount, objId, importData, sizeof(importData), &importDataLen,
-                                    &algorithmType);
-      break;
-    case CKK_EC:
-      rv = cnk_build_piv_ec_import(pTemplate, ulCount, objId, importData, sizeof(importData), &importDataLen,
-                                   &algorithmType);
-      break;
-    case CKK_EC_EDWARDS:
-    case CKK_EC_MONTGOMERY:
-      rv = cnk_build_piv_25519_import(session, pTemplate, ulCount, objId, keyType, importData, sizeof(importData),
-                                      &importDataLen, &algorithmType);
-      break;
-    case CKK_ML_DSA:
-    case CKK_ML_KEM:
-      rv = cnk_build_piv_pqc_import(session, pTemplate, ulCount, objId, keyType, importData, sizeof(importData),
-                                    &importDataLen, &algorithmType);
-      break;
-    default:
-      rv = CKR_KEY_TYPE_INCONSISTENT;
-      goto cleanup_import;
-    }
-    if (rv != CKR_OK)
-      goto cleanup_import;
-
-    if (keyType == CKK_RSA || keyType == CKK_EC)
-      algorithmType = CNK_PivConfiguredAlgorithm(session, algorithmType);
-    if (algorithmType == 0) {
-      rv = CKR_MECHANISM_INVALID;
-      goto cleanup_import;
-    }
-
-    rv = cnk_token_begin_management_operation(session);
+    CNK_PIV_IMPORT material = {0};
+    CK_RV rv = cnk_template_get_key_type(pTemplate, ulCount, CKA_KEY_TYPE, &keyType);
+    if (rv == CKR_OK)
+      rv = cnk_prepare_piv_import(session, pTemplate, ulCount, objId, keyType, &material);
+    if (rv == CKR_OK)
+      rv = cnk_token_begin_management_operation(session);
     if (rv == CKR_OK) {
-      rv = cnk_piv_import_key(session->slotId, session, algorithmType, pivTag, importData, importDataLen);
+      rv = cnk_piv_import_key(session->slotId, session, &material);
       cnk_token_end_management_operation(session);
     }
-  cleanup_import:
-    mbedtls_platform_zeroize(importData, sizeof(importData));
+    mbedtls_platform_zeroize(&material, sizeof(material));
     if (rv != CKR_OK)
       return rv;
 

@@ -16,8 +16,9 @@ short-command chaining helper. Rust owns bounded conversations and zeroizing
 temporary copies; C owns PC/SC transactions, session/token reservations,
 authentication and all returned PKCS#11 buffers. The callback performs one raw
 transmit and never retains a Rust pointer. There is no Rust global lifecycle or
-credential cache. PIV semantics and host crypto still live in the existing C
-layers; see [migration scope and validation](libcanokey-experiment.md).
+credential cache. PIV semantics are migrating to typed context operations; host
+crypto and PKCS#11 state remain in C. See the current
+[migration plan](libcanokey-piv-migration-plan.md).
 
 ## Layers
 
@@ -291,3 +292,15 @@ host crypto. Profile probing shares the C executor, so its structured errors
 reach the same caller-provided logging sink. Detailed operation call/return
 traces are compiled with CNK_VERBOSE; explicit level-filtered diagnostic and
 APDU logging remains available in Release.
+
+Private-key import now passes semantic key parameters and component views directly
+from PKCS#11 template validation to libcanokey. There is no intermediate C TLV
+encoding/reparse. RSA width admission remains PKCS#11-specific; Rust pads CRT
+values. The C descriptor owns only a padded EC scalar and cannot be copied because
+its view points inside it. It and the Rust operation are cleared on every exit.
+Configured algorithm IDs gate availability; Rust receives semantic algorithms and
+uses its profile for wire encoding. Certificate writes similarly pass the
+uncompressed payload directly to the typed factory. The management reservation,
+fresh managed-slot absence check, transaction and mutation-attempt cache invalidation
+continue through the same cleanup boundary as before. Unused C 3DES, legacy
+metadata-directory parsing and certificate-read shims have been removed.
