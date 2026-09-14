@@ -132,4 +132,18 @@ CK_DEFINE_FUNCTION(CK_RV, C_CNK_UnblockPIN)(CK_SESSION_HANDLE hSession, CK_UTF8C
 // piv_tag: non-NULL pointer to the PIV tag
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_ObjIdToPivTag)(CK_BYTE obj_id, CK_BYTE *piv_tag);
 
+// F5 vendor extension. Names are raw UTF-16LE bytes, not CK_UTF8CHAR strings.
+// PIV references: 9A/9C/9D/9E, 82..95, F9 (not PKCS#11 object IDs).
+// Get uses a fresh, unauthenticated read even for a NULL-buffer size query.
+// Empty success means unnamed; CKR_KEY_HANDLE_INVALID means absent key.
+// PIV < 6.0.0 returns FUNCTION_NOT_SUPPORTED without sending F5, using the
+// same version gate as RNG. F5 errors on PIV >= 6.0.0 are not legacy fallback.
+#define CNK_PIV_CONTAINER_NAME_MAX_BYTES 78
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_GetContainerName)(CK_SESSION_HANDLE hSession, CK_BYTE pivSlot, CK_BYTE_PTR name,
+                                                  CK_ULONG_PTR nameLen);
+// RW session and SO/protected-management authorization required. Zero length clears.
+// A failed transport can follow a committed write: read back, never regenerate a key.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_SetContainerName)(CK_SESSION_HANDLE hSession, CK_BYTE pivSlot, CK_BYTE_PTR name,
+                                                  CK_ULONG nameLen);
+
 #endif /* PKCS11_CANOKEY_H */

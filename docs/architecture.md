@@ -1,10 +1,22 @@
 # CanoKey PKCS#11 Architecture
 
+The bounded F5 name extension lives in `src/api/container_name.c` and composes
+the shared PC/SC transaction and management-authentication primitives. See
+[container-names.md](container-names.md) for wire semantics and firmware fallback.
+
 `docs/api-contracts.md` is the normative ownership, concurrency, progress, and
 exit-state specification for every exported entry point. This document explains
 the larger component boundaries; implementation and review must satisfy both.
 
 ## Layers
+
+`backend/piv_key_write.c` guards managed key generation/import. After management
+authentication it reads uncached F7 metadata in the same PC/SC transaction.
+Only a status-only 6A82/6A88 reply permits writing; 9000 means occupied,
+irrespective of algorithm, and all other replies/errors block writing. The
+writer inherits the open transaction on success; failure closes it. The API
+entry point owns the management reservation throughout. Standalone provisioning
+keeps its explicit replacement behavior. No PIN or management-data policy changes.
 
 The module has four internal layers:
 

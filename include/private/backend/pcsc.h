@@ -235,6 +235,11 @@ CK_RV cnk_put_piv_data(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE t
 CK_RV cnk_put_piv_data_by_tag(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag, CK_ULONG tag_len,
                               CK_BYTE_PTR data, CK_ULONG data_len);
 
+// Like admin authentication, but managed key creation also requires a fresh
+// empty-slot response. Success transfers the same transaction to the writer;
+// failure releases it. Caller holds the token management reservation.
+CK_RV cnk_begin_key_write(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pivSlot, SCARDHANDLE *card);
+
 // Get metadata for a PIV key or object
 // This function retrieves metadata from a PIV key or object using the PIV metadata APDU command
 CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType, CK_BYTE_PTR pbPublicKey,
@@ -263,6 +268,9 @@ void cnk_piv_algorithm_extension_cache_invalidate(void);
 // Firmware 6.0+ exposes an unauthenticated PIV GET CHALLENGE command backed by
 // the token RNG. Older firmware reports supported = CK_FALSE.
 CK_RV cnk_piv_random_supported(CK_SLOT_ID slotID, CK_BBOOL *supported);
+// Shared version gate for RNG and F5 names. Card must already be selected;
+// reads PIV GET VERSION (00 FD), without reconnecting or resetting authentication.
+CK_RV cnk_piv_v6_supported_on_card(SCARDHANDLE card, CK_BBOOL *supported);
 CK_RV cnk_piv_generate_random(CK_SLOT_ID slotID, CK_BYTE_PTR output, CK_ULONG outputLen);
 
 // Generate a PIV asymmetric key pair.
