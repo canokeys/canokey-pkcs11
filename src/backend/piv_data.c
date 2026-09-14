@@ -255,6 +255,62 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR data, CK_ULON
   return cnk_get_piv_data_by_tag(slotID, object_tag, sizeof(object_tag), data, data_len, fetch_data);
 }
 
+static CK_RV cnk_put_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag,
+                                         CK_ULONG tag_len, CK_BYTE_PTR data, CK_ULONG data_len) {
+  CNK_ENSURE_NONNULL(session, tag);
+  SCARDHANDLE card = 0;
+  CK_RV rv = cnk_authenticate_admin_for_write(slotID, session, &card);
+  if (rv != CKR_OK)
+    return rv;
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  CNK_LIBCANO_CONTEXT *context = NULL;
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  uint32_t step = 0;
+  uint32_t status = CNK_LIBCANO_OK;
+  CK_BYTE response[8192] = {0};
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
+  uint32_t contextStatus = profile == NULL
+                               ? CNK_LIBCANO_INVALID_STATE
+                               : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context,
+                                                     &error);
+  cnk_mutex_unlock(&session->token->lock);
+  if (contextStatus != CNK_LIBCANO_OK ||
+      cnk_piv_write_object_in_context_new(context, tag, tag_len, data, data_len, NULL, &operation, &error) !=
+          CNK_LIBCANO_OK ||
+      cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
+    size_t commandLen = 0;
+    status = cnk_operation_command(operation, NULL, &commandLen);
+    if (status != CNK_LIBCANO_OK || commandLen == 0 || commandLen > 2048)
+      goto cleanup;
+    CK_BYTE command[2048];
+    status = cnk_operation_command(operation, command, &commandLen);
+    if (status != CNK_LIBCANO_OK)
+      goto cleanup;
+    DWORD responseLen = sizeof(response);
+    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS)
+      goto cleanup;
+    status = cnk_operation_advance(operation, response, responseLen, &step, &error);
+    if (status != CNK_LIBCANO_OK)
+      goto cleanup;
+  }
+  rv = step == CNK_LIBCANO_STEP_DONE ? CKR_OK : CKR_DEVICE_ERROR;
+  if (rv == CKR_OK)
+    cnk_piv_public_cache_invalidate(session);
+
+cleanup:
+  if (operation) cnk_operation_free(operation);
+  if (context) cnk_piv_context_free(context);
+  cnk_disconnect_card(card);
+  mbedtls_platform_zeroize(response, sizeof(response));
+  return rv;
+}
+
 CK_RV cnk_put_piv_data_by_tag(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag, CK_ULONG tag_len,
                               CK_BYTE_PTR data, CK_ULONG data_len) {
   CNK_LOG_FUNC(": slotID: %ld, tag: %p, tag_len: %lu, data: %p, data_len: %lu", slotID, tag, tag_len, data, data_len);
@@ -265,29 +321,9 @@ CK_RV cnk_put_piv_data_by_tag(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, co
   if (data_len > 0)
     CNK_ENSURE_NONNULL(data);
 
-  CK_BYTE object_data[2 + 4 + CNK_PIV_MAX_DATA_OBJECT_SIZE];
-  if (data_len > sizeof(object_data) - 2 - tag_len)
+  if (data_len > CNK_PIV_MAX_DATA_OBJECT_SIZE)
     CNK_RETURN(CKR_DATA_LEN_RANGE, "PIV data object too large");
-
-  object_data[0] = 0x5C;
-  object_data[1] = (CK_BYTE)tag_len;
-  memcpy(object_data + 2, tag, tag_len);
-  if (data_len > 0)
-    memcpy(object_data + 2 + tag_len, data, data_len);
-
-  SCARDHANDLE hCard = 0;
-  CK_RV rv = cnk_authenticate_admin_for_write(slotID, session, &hCard);
-  if (rv != CKR_OK)
-    return rv;
-
-  rv = cnk_transmit_chained_apdu(hCard, 0xDB, 0x3F, 0xFF, object_data, data_len + 2 + tag_len, NULL, NULL, CK_FALSE);
-  cnk_disconnect_card(hCard);
-  if (rv != CKR_OK)
-    CNK_RETURN(rv, "PUT DATA");
-  // A successful write may change certificate or key-adjacent public data;
-  // discard the standalone snapshot before exposing the result to callers.
-  cnk_piv_public_cache_invalidate(session);
-  CNK_RET_OK;
+  return cnk_put_piv_data_libcanokey(slotID, session, tag, tag_len, data, data_len);
 }
 
 CK_RV cnk_put_piv_data(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE tag, CK_BYTE_PTR data,

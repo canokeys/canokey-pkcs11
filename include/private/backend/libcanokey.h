@@ -39,7 +39,12 @@ enum {
 };
 
 enum { CNK_LIBCANO_OK = 0, CNK_LIBCANO_STEP_EXCHANGE = 1, CNK_LIBCANO_STEP_DONE = 2 };
-enum { CNK_LIBCANO_CONTEXT_SELECTED = 1, CNK_LIBCANO_CONTEXT_PIN_VERIFIED = 2 };
+enum {
+  CNK_LIBCANO_CONTEXT_SELECTED = 1,
+  CNK_LIBCANO_CONTEXT_PIN_VERIFIED = 2,
+  CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED = 3,
+  CNK_LIBCANO_CONTEXT_PIN_AND_MANAGEMENT_AUTHORIZED = 4,
+};
 enum {
   CNK_LIBCANO_INVALID_ARGUMENT = 1,
   CNK_LIBCANO_INVALID_STATE = 2,
@@ -93,6 +98,9 @@ uint32_t cnk_piv_read_metadata_directory_in_context_new(const CNK_LIBCANO_CONTEX
                                                         CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_read_container_name_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const CNK_LIBCANO_OPTIONS *,
                                                     CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_write_object_in_context_new(const CNK_LIBCANO_CONTEXT *, const uint8_t *, size_t, const uint8_t *,
+                                             size_t, const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
+                                             CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_decrypt_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, uint32_t, const uint8_t *, size_t,
                                         const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_derive_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, uint32_t, const uint8_t *, size_t,
