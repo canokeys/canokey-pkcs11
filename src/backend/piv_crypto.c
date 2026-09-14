@@ -78,6 +78,56 @@ static CK_RV cnk_libcanokey_private_algorithm(CK_BYTE algorithmType, uint32_t *a
   return cnk_libcanokey_sign_algorithm(algorithmType, algorithm, &kind);
 }
 
+static CK_RV cnk_encode_generated_public_key(const CNK_LIBCANO_OPERATION *operation, CK_BYTE algorithmType,
+                                             CK_BYTE_PTR output, CK_ULONG_PTR outputLen) {
+  CNK_ENSURE_NONNULL(operation, outputLen);
+  CK_BBOOL rsa = algorithmType == PIV_ALG_RSA_2048 || algorithmType == PIV_ALG_RSA_3072 ||
+                 algorithmType == PIV_ALG_RSA_4096;
+  uint32_t field = rsa ? CNK_LIBCANO_PUBLIC_MODULUS : CNK_LIBCANO_PUBLIC_POINT_OR_RAW;
+  size_t firstLen = 0;
+  if (cnk_operation_public_key_copy(operation, field, NULL, &firstLen) != CNK_LIBCANO_OK || firstLen > 4096)
+    return CKR_DEVICE_ERROR;
+  CK_BYTE first[4096];
+  if (cnk_operation_public_key_copy(operation, field, first, &firstLen) != CNK_LIBCANO_OK)
+    return CKR_DEVICE_ERROR;
+  CK_BYTE second[8] = {0};
+  size_t secondLen = 0;
+  if (rsa && (cnk_operation_public_key_copy(operation, CNK_LIBCANO_PUBLIC_EXPONENT, NULL, &secondLen) != CNK_LIBCANO_OK ||
+              secondLen > sizeof(second) ||
+              cnk_operation_public_key_copy(operation, CNK_LIBCANO_PUBLIC_EXPONENT, second, &secondLen) != CNK_LIBCANO_OK))
+    return CKR_DEVICE_ERROR;
+  CK_ULONG required = (rsa ? 2 : 1) + (firstLen < 128 ? 1 : firstLen <= 255 ? 2 : 3) + firstLen;
+  if (rsa)
+    required += 2 + (secondLen < 128 ? 1 : secondLen <= 255 ? 2 : 3) + secondLen;
+  CK_ULONG capacity = *outputLen;
+  *outputLen = required;
+  if (output == NULL)
+    return CKR_OK;
+  if (capacity < required)
+    return CKR_BUFFER_TOO_SMALL;
+  const CK_BYTE tags[2] = {rsa ? 0x81 : 0x86, 0x82};
+  const CK_BYTE *values[2] = {first, second};
+  const size_t lengths[2] = {firstLen, secondLen};
+  CK_ULONG offset = 0;
+  CK_ULONG count = rsa ? 2 : 1;
+  for (CK_ULONG i = 0; i < count; i++) {
+    output[offset++] = tags[i];
+    if (lengths[i] < 128)
+      output[offset++] = (CK_BYTE)lengths[i];
+    else if (lengths[i] <= 255) {
+      output[offset++] = 0x81;
+      output[offset++] = (CK_BYTE)lengths[i];
+    } else {
+      output[offset++] = 0x82;
+      output[offset++] = (CK_BYTE)(lengths[i] >> 8);
+      output[offset++] = (CK_BYTE)lengths[i];
+    }
+    memcpy(output + offset, values[i], lengths[i]);
+    offset += (CK_ULONG)lengths[i];
+  }
+  return CKR_OK;
+}
+
 typedef enum {
   CNK_PRIVATE_DECRYPT,
   CNK_PRIVATE_DERIVE,
@@ -325,68 +375,88 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
   return cnk_piv_sign_libcanokey(slotId, pSession, pData, cbDataLen, pSignature, pcbSignature);
 }
 
+static CK_RV cnk_piv_generation_algorithm(CK_BYTE wire, uint32_t *algorithm) {
+  switch (wire) {
+  case PIV_ALG_RSA_2048: *algorithm = CNK_LIBCANO_ALG_RSA_2048; return CKR_OK;
+  case PIV_ALG_RSA_3072: *algorithm = CNK_LIBCANO_ALG_RSA_3072; return CKR_OK;
+  case PIV_ALG_RSA_4096: *algorithm = CNK_LIBCANO_ALG_RSA_4096; return CKR_OK;
+  case PIV_ALG_ECC_256: *algorithm = CNK_LIBCANO_ALG_P256; return CKR_OK;
+  case PIV_ALG_ECC_384: *algorithm = CNK_LIBCANO_ALG_P384; return CKR_OK;
+  case PIV_ALG_ECC_521: *algorithm = CNK_LIBCANO_ALG_P521; return CKR_OK;
+  case PIV_ALG_SECP256K1: *algorithm = CNK_LIBCANO_ALG_SECP256K1; return CKR_OK;
+  case PIV_ALG_ED25519: *algorithm = CNK_LIBCANO_ALG_ED25519; return CKR_OK;
+  case PIV_ALG_X25519: *algorithm = CNK_LIBCANO_ALG_X25519; return CKR_OK;
+  case PIV_ALG_MLDSA65: *algorithm = CNK_LIBCANO_ALG_MLDSA65; return CKR_OK;
+  case PIV_ALG_MLKEM768: *algorithm = CNK_LIBCANO_ALG_MLKEM768; return CKR_OK;
+  default: return CKR_MECHANISM_INVALID;
+  }
+}
+
 CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
                                CK_BYTE pinPolicy, CK_BYTE touchPolicy, CK_BYTE_PTR pbPublicKey,
                                CK_ULONG_PTR pcbPublicKey) {
-  CNK_LOG_FUNC(": slotID: %ld, algorithmType: 0x%02X, pivSlot: 0x%02X, pinPolicy: %u, touchPolicy: %u", slotID,
-               algorithmType, pivSlot, pinPolicy, touchPolicy);
-  CNK_ENSURE_NONNULL(pbPublicKey, pcbPublicKey);
-
-  CK_BYTE data[16];
-  CK_ULONG data_len = 0;
-  data[data_len++] = 0xAC;
-  data[data_len++] = 0x03;
-  data[data_len++] = 0x80;
-  data[data_len++] = 0x01;
-  data[data_len++] = algorithmType;
-  data[data_len++] = 0xAA;
-  data[data_len++] = 0x01;
-  data[data_len++] = pinPolicy;
-  data[data_len++] = 0xAB;
-  data[data_len++] = 0x01;
-  data[data_len++] = touchPolicy;
-
-  CK_BYTE response[CNK_PIV_MAX_PUBLIC_KEY_RESPONSE];
-  CK_ULONG response_len = sizeof(response);
-  SCARDHANDLE hCard = 0;
-
-  CK_RV rv = cnk_begin_key_write(slotID, session, pivSlot, &hCard);
+  CNK_ENSURE_NONNULL(session, pbPublicKey, pcbPublicKey);
+  uint32_t algorithm = 0;
+  CNK_ENSURE_OK(cnk_piv_generation_algorithm(algorithmType, &algorithm));
+  SCARDHANDLE card = 0;
+  CK_RV rv = cnk_begin_key_write(slotID, session, pivSlot, &card);
   if (rv != CKR_OK)
     return rv;
-
-  rv = cnk_transmit_chained_apdu(hCard, 0x47, 0x00, pivSlot, data, data_len, response, &response_len, CK_TRUE);
-  cnk_disconnect_card(hCard);
-  if (rv != CKR_OK)
-    CNK_RETURN(rv, "GENERATE ASYMMETRIC KEY PAIR");
-  // The card mutation committed even if response parsing later fails, so a
-  // subsequent metadata query must perform a fresh hardware read.
-  cnk_piv_public_cache_invalidate(session);
-  if (response_len < 2)
-    CNK_RETURN(CKR_DEVICE_ERROR, "generate response too short");
-
-  CK_ULONG public_key_len = response_len - 2;
-  if (public_key_len < 2 || response[0] != 0x7F || response[1] != 0x49)
-    CNK_RETURN(CKR_DEVICE_ERROR, "bad generate public key response");
-
-  CK_ULONG encoded_offset = 2;
-  CK_ULONG encoded_len = public_key_len - encoded_offset;
-  CK_LONG fail = 0;
-  CK_ULONG wrapper_len_size = 0;
-  CK_ULONG wrapper_len =
-      tlvGetLengthSafe(response + encoded_offset, public_key_len - encoded_offset, &fail, &wrapper_len_size);
-  if (!fail && wrapper_len_size > 0 && wrapper_len == public_key_len - encoded_offset - wrapper_len_size) {
-    encoded_offset += wrapper_len_size;
-    encoded_len = wrapper_len;
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  CNK_LIBCANO_CONTEXT *context = NULL;
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  CNK_LIBCANO_KEY_PARAMETERS params = {.struct_size = sizeof(params),
+                                        .slot = pivSlot,
+                                        .algorithm = algorithm,
+                                        .pin_policy = pinPolicy,
+                                        .touch_policy = touchPolicy};
+  uint32_t step = 0;
+  uint32_t status = CNK_LIBCANO_OK;
+  CK_BYTE response[8192] = {0};
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
+  uint32_t contextStatus = profile == NULL
+                               ? CNK_LIBCANO_INVALID_STATE
+                               : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context,
+                                                     &error);
+  cnk_mutex_unlock(&session->token->lock);
+  if (contextStatus != CNK_LIBCANO_OK ||
+      cnk_piv_generate_key_in_context_new(context, &params, NULL, &operation, &error) != CNK_LIBCANO_OK ||
+      cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
   }
-
-  if (*pcbPublicKey < encoded_len) {
-    *pcbPublicKey = encoded_len;
-    CNK_RETURN(CKR_BUFFER_TOO_SMALL, "public key buffer too small");
+  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
+    size_t commandLen = 0;
+    status = cnk_operation_command(operation, NULL, &commandLen);
+    if (status != CNK_LIBCANO_OK || commandLen == 0 || commandLen > 2048)
+      goto cleanup;
+    CK_BYTE command[2048];
+    status = cnk_operation_command(operation, command, &commandLen);
+    if (status != CNK_LIBCANO_OK)
+      goto cleanup;
+    DWORD responseLen = sizeof(response);
+    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS)
+      goto cleanup;
+    status = cnk_operation_advance(operation, response, responseLen, &step, &error);
+    if (status != CNK_LIBCANO_OK)
+      goto cleanup;
   }
+  if (step != CNK_LIBCANO_STEP_DONE) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+  rv = cnk_encode_generated_public_key(operation, algorithmType, pbPublicKey, pcbPublicKey);
+  if (rv == CKR_OK)
+    cnk_piv_public_cache_invalidate(session);
 
-  memcpy(pbPublicKey, response + encoded_offset, encoded_len);
-  *pcbPublicKey = encoded_len;
-  CNK_RET_OK;
+cleanup:
+  if (operation) cnk_operation_free(operation);
+  if (context) cnk_piv_context_free(context);
+  cnk_disconnect_card(card);
+  mbedtls_platform_zeroize(response, sizeof(response));
+  return rv;
 }
 
 CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,

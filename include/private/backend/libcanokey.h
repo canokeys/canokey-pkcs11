@@ -28,6 +28,9 @@ typedef struct {
   uint8_t reference, flags, algorithm_id, origin, pin_policy, touch_policy, reserved[2];
   uint32_t issues;
 } CNK_LIBCANO_DIRECTORY_ENTRY;
+typedef struct {
+  uint32_t struct_size, slot, algorithm, pin_policy, touch_policy;
+} CNK_LIBCANO_KEY_PARAMETERS;
 enum {
   CNK_LIBCANO_METADATA_HAS_ALGORITHM = 1,
   CNK_LIBCANO_METADATA_HAS_POLICY = 2,
@@ -101,6 +104,12 @@ uint32_t cnk_piv_read_container_name_in_context_new(const CNK_LIBCANO_CONTEXT *,
 uint32_t cnk_piv_write_object_in_context_new(const CNK_LIBCANO_CONTEXT *, const uint8_t *, size_t, const uint8_t *,
                                              size_t, const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
                                              CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_generate_key_in_context_new(const CNK_LIBCANO_CONTEXT *, const CNK_LIBCANO_KEY_PARAMETERS *,
+                                             const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
+                                             CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_import_key_in_context_new(const CNK_LIBCANO_CONTEXT *, const CNK_LIBCANO_KEY_PARAMETERS *,
+                                           const void *, size_t, const CNK_LIBCANO_OPTIONS *,
+                                           CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_decrypt_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, uint32_t, const uint8_t *, size_t,
                                         const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_derive_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, uint32_t, const uint8_t *, size_t,
