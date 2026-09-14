@@ -971,8 +971,8 @@ CK_RV cnk_probe_libcanokey_profile(CK_SLOT_ID slotID, void **profile) {
     return rv;
   CK_BYTE response[8192];
   CNK_LIBCANO_PROFILE *candidate = NULL;
-  uint32_t status = cnk_profile_probe(cnk_protocol_transmit, (void *)(uintptr_t)card, response, sizeof(response),
-                                      &candidate);
+  CNK_PROTOCOL_TRANSPORT_CONTEXT transport = {.card = card, .status = SCARD_S_SUCCESS};
+  uint32_t status = cnk_profile_probe(cnk_protocol_transmit, &transport, response, sizeof(response), &candidate);
   cnk_disconnect_card(card);
   if (status != CNK_PROTOCOL_OK)
     return CKR_DEVICE_ERROR;

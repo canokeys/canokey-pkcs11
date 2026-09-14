@@ -17,6 +17,8 @@ $batch = Join-Path $build 'build.cmd'
 call "$vs\Common7\Tools\VsDevCmd.bat" -arch=$Arch -host_arch=x64
 if errorlevel 1 exit /b 1
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+rustup target add $triple
+if errorlevel 1 exit /b 1
 cmake -S "$repo" -B "$build" -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_TARGET=$triple -DCMAKE_CXX_COMPILER_TARGET=$triple -DCMAKE_BUILD_TYPE=$Config -DCNK_RUST_TARGET=$triple -DBUILD_UNIT_TESTING=OFF -DBUILD_REAL_TESTING=ON -DBUILD_PROTOCOL_TESTING=ON
 if errorlevel 1 exit /b 1
 cmake --build "$build"

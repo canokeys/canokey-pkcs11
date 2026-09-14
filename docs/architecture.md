@@ -66,14 +66,15 @@ transaction helpers so managed mode continues to use the minidriver's card
 handle and every operation balances `SCardBeginTransaction` with
 `cnk_disconnect_card`.
 
-## PC/SC Transaction Boundary
+## Reader Transaction Boundary
 
 Every actual card-backed PIV operation is one contiguous critical section. This
 is not the lifetime of a PKCS#11 session:
 
 ```text
 connect card -> SCardBeginTransaction -> SELECT PIV -> all dependent APDUs
--> parse/commit the result -> SCardEndTransaction -> disconnect card
+-> parse/commit the result -> SCardEndTransaction
+standalone: disconnect card; managed: retain caller-owned card handle
 ```
 
 The card must not be released between SELECT and the final APDU. This applies
@@ -106,13 +107,14 @@ SELECT must precede VERIFY, and no SELECT or applet switch may occur after
 VERIFY before the dependent operation completes. This firmware behavior is
 tested as a product invariant even though it is stricter than the standard.
 
-## PC/SC Transaction Boundary
+## Managed-Mode Transaction Boundary
 
 Every card-backed operation has one continuous physical-card critical section:
 
 ```text
 connect card -> SCardBeginTransaction -> SELECT PIV -> all APDUs -> parse result
--> SCardEndTransaction -> disconnect card
+-> SCardEndTransaction
+standalone: disconnect card; managed: retain caller-owned card handle
 ```
 
 The transaction must not be released between SELECT and the final APDU. This
@@ -121,12 +123,11 @@ operation, management-key authentication, and multi-step PIV responses. The
 backend must select PIV at the start of each transaction because another
 application may have been selected after the previous transaction ended.
 
-Reselecting the already-selected PIV application does not clear PIV application
-security status; SP 800-73 specifies that selecting the same PIV AID leaves its
-security indicators unchanged. Selecting another valid application clears the
-PIV application's application-local security indicators. Global security status
-has separate rules, so card authentication must still be modeled explicitly in
-token state rather than inferred from SELECT success.
+The current CanoKey firmware clears PIV PIN, PUK, and management status on every
+PIV SELECT, including a same-AID reselect. Selecting another valid application
+also clears the PIV application's application-local security indicators. Card
+authentication must therefore be modeled explicitly in token state rather than
+inferred from SELECT success.
 
 PC/SC serializes physical card transactions, including two PKCS#11 sessions
 using the same reader. It does not replace the other synchronization layers:

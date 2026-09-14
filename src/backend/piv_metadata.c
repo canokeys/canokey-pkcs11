@@ -14,33 +14,41 @@
 
 CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *session) {
   CNK_ENSURE_NONNULL(session, session->token);
-  CK_ULONG epoch = atomic_load(&g_cnk_managed_binding_epoch);
-  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
-  if (session->token->libcanokeyProfile != NULL && session->token->libcanokeyProfileEpoch == epoch) {
+  for (;;) {
+    CK_ULONG epoch = atomic_load(&g_cnk_managed_binding_epoch);
+    CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+    if (session->token->libcanokeyProfile != NULL && session->token->libcanokeyProfileEpoch == epoch) {
+      cnk_mutex_unlock(&session->token->lock);
+      return CKR_OK;
+    }
+    CNK_LIBCANO_PROFILE *old = session->token->libcanokeyProfile;
+    session->token->libcanokeyProfile = NULL;
+    session->token->libcanokeyProfileEpoch = 0;
     cnk_mutex_unlock(&session->token->lock);
+    if (old != NULL)
+      cnk_profile_free(old);
+
+    void *candidate = NULL;
+    CK_RV rv = cnk_probe_libcanokey_profile(session->slotId, &candidate);
+    if (rv != CKR_OK)
+      return rv;
+    CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+    CK_ULONG currentEpoch = atomic_load(&g_cnk_managed_binding_epoch);
+    if (currentEpoch != epoch) {
+      cnk_mutex_unlock(&session->token->lock);
+      cnk_profile_free(candidate);
+      continue;
+    }
+    if (session->token->libcanokeyProfile == NULL) {
+      session->token->libcanokeyProfile = candidate;
+      session->token->libcanokeyProfileEpoch = epoch;
+      candidate = NULL;
+    }
+    cnk_mutex_unlock(&session->token->lock);
+    if (candidate != NULL)
+      cnk_profile_free(candidate);
     return CKR_OK;
   }
-  CNK_LIBCANO_PROFILE *old = session->token->libcanokeyProfile;
-  session->token->libcanokeyProfile = NULL;
-  session->token->libcanokeyProfileEpoch = 0;
-  cnk_mutex_unlock(&session->token->lock);
-  if (old != NULL)
-    cnk_profile_free(old);
-
-  void *candidate = NULL;
-  CK_RV rv = cnk_probe_libcanokey_profile(session->slotId, &candidate);
-  if (rv != CKR_OK)
-    return rv;
-  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
-  if (session->token->libcanokeyProfile == NULL) {
-    session->token->libcanokeyProfile = candidate;
-    session->token->libcanokeyProfileEpoch = epoch;
-    candidate = NULL;
-  }
-  cnk_mutex_unlock(&session->token->lock);
-  if (candidate != NULL)
-    cnk_profile_free(candidate);
-  return CKR_OK;
 }
 
 static CK_RV cnk_get_metadata_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR algorithmType,
@@ -58,10 +66,11 @@ static CK_RV cnk_get_metadata_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pi
   CNK_PKCS11_TOKEN_STATE *token = session->token;
   CNK_ENSURE_OK(cnk_mutex_lock(&token->lock));
   CNK_LIBCANO_PROFILE *profile = token->libcanokeyProfile;
+  uint32_t contextStatus = profile == NULL
+                               ? CNK_LIBCANO_INVALID_STATE
+                               : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_SELECTED, &context, &error);
   cnk_mutex_unlock(&token->lock);
-  if (profile == NULL)
-    goto cleanup;
-  if (cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_SELECTED, &context, &error) != CNK_LIBCANO_OK)
+  if (contextStatus != CNK_LIBCANO_OK)
     goto cleanup;
   if (cnk_piv_get_metadata_in_context_new(context, pivTag, NULL, &operation, &error) != CNK_LIBCANO_OK)
     goto cleanup;
@@ -139,10 +148,11 @@ static CK_RV cnk_get_certificate_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE
   CK_RV rv = CKR_DEVICE_ERROR;
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
   CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
+  uint32_t contextStatus = profile == NULL
+                               ? CNK_LIBCANO_INVALID_STATE
+                               : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_SELECTED, &context, &error);
   cnk_mutex_unlock(&session->token->lock);
-  if (profile == NULL)
-    goto cleanup;
-  if (cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_SELECTED, &context, &error) != CNK_LIBCANO_OK ||
+  if (contextStatus != CNK_LIBCANO_OK ||
       cnk_piv_read_certificate_in_context_new(context, slot, NULL, &operation, &error) != CNK_LIBCANO_OK ||
       cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK)
     goto cleanup;

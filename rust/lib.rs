@@ -16,7 +16,7 @@ const ARGUMENT: u32 = 1;
 const TRANSPORT: u32 = 2;
 const SMALL: u32 = 3;
 const FAILED: u32 = 4;
-const BUDGET: usize = 1024 * 1024;
+const BUDGET: usize = 4096 * 255;
 
 /// Return the linked libcanokey C ABI revision. This keeps the Cargo static
 /// library wired to the PIV C ABI while the PKCS#11 transport migration remains

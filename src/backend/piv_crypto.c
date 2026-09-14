@@ -99,7 +99,6 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
   CNK_LIBCANO_PROFILE *profile = NULL;
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
   profile = session->token->libcanokeyProfile;
-  cnk_mutex_unlock(&session->token->lock);
 
   CNK_LIBCANO_CONTEXT *context = NULL;
   CNK_LIBCANO_OPERATION *operation = NULL;
@@ -111,7 +110,10 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
   uint32_t step = 0;
   CK_BYTE response[8192] = {0};
 
-  if (profile == NULL || cnk_piv_context_new(profile, contextState, &context, &error) != CNK_LIBCANO_OK ||
+  uint32_t contextStatus = profile == NULL ? CNK_LIBCANO_INVALID_STATE
+                                           : cnk_piv_context_new(profile, contextState, &context, &error);
+  cnk_mutex_unlock(&session->token->lock);
+  if (contextStatus != CNK_LIBCANO_OK ||
       cnk_piv_sign_in_context_new(context, session->signingContext.pivSlot, algorithm, kind, data, dataLen, NULL,
                                   &operation, &error) != CNK_LIBCANO_OK ||
       cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {

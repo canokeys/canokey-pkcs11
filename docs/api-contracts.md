@@ -60,15 +60,14 @@ standard because it also captures this module's internal safety invariants.
 6. Reader and slot-event locks protect only reader snapshots and event queues.
    A reader name used outside the lock must be copied first.
 
-### PC/SC Card Critical Section
+### Reader Transaction Critical Section
 
 1. Every card-backed API must keep `SCardBeginTransaction` through SELECT PIV,
    all command-chaining/multi-APDU steps, response parsing, and the final
    result copy. `SCardEndTransaction`/disconnect is the only release point.
-2. Each new transaction reselects PIV. Reselecting the same PIV AID preserves
-   PIV application security status; selecting another valid application clears
-   PIV application-local security indicators. SELECT success alone is never an
-   authorization proof.
+2. Each new transaction reselects PIV. Current CanoKey firmware clears PIV PIN,
+   PUK, and management status on every PIV SELECT, including a same-AID
+   reselect. SELECT success alone is never an authorization proof.
 3. PC/SC transaction serialization protects the physical card, not PKCS#11
    logical state. Different sessions may queue complete card operations, while
    their operation contexts remain independently protected by `session->lock`
@@ -112,7 +111,7 @@ failure/budget tests cover this boundary.
    not change allocator/binding ownership until every cleanup stage succeeds.
    Failed cleanup remains retryable with the original callbacks and allocator.
 
-### PC/SC Card Critical Section
+### Managed-Mode Card Transaction Ownership
 
 Managed mode supports one physical card per process. Multiple sessions and
 Windows contexts may refer to that card, but a second card must not be routed
@@ -120,7 +119,9 @@ through the same process-wide token state. Card-backed PIV operations must hold
 one reader transaction from connection
 through the final dependent APDU. The required sequence is `connect`,
 `SCardBeginTransaction`, `SELECT PIV`, all dependent APDUs, result
-parse/commit, `SCardEndTransaction`, and disconnect. No helper may release the
+parse/commit, and `SCardEndTransaction`. Standalone mode then disconnects the
+card; managed mode retains the caller-owned card handle and releases only the
+transaction and operation reservation. No helper may release the
 card or select another applet between those steps. This rule covers PIN
 verification plus a private operation, management-key authentication plus a
 write, command chaining, and multi-step responses.

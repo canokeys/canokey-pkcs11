@@ -49,7 +49,7 @@ brew install cmake cmocka ninja-build # macOS only
 2. Configure and build:
 
 ```bash
-CC=clang CXX=clang cmake -B build -DCMAKE_BUILD_TYPE=Debug -G Ninja -DENABLE_TESTING=ON . # Linux / macOS
+CC=clang CXX=clang cmake -B build -DCMAKE_BUILD_TYPE=Debug -G Ninja -DBUILD_TESTING=ON . # Linux / macOS
 cmake -B build -DCMAKE_BUILD_TYPE=Debug -G Ninja -DCMAKE_C_COMPILER=clang-cl # Windows developer prompt
 cmake --build build -v
 ```
