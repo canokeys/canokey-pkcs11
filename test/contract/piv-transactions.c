@@ -50,6 +50,7 @@ static atomic_bool pauseCacheRead, cacheReadPaused, releaseCacheRead;
 static atomic_uint revision;
 static atomic_bool pauseVerify, verifyPaused, releaseVerify;
 static atomic_bool failProfile, churnProfile;
+static atomic_bool teardownDone;
 static const CK_BYTE pin[] = "123456";
 
 static void wait_for(atomic_bool *flag) {
@@ -65,7 +66,7 @@ static LONG establish(DWORD scope, LPCVOID a, LPCVOID b, LPSCARDCONTEXT context)
   return SCARD_S_SUCCESS;
 }
 static LONG release_context(SCARDCONTEXT context) {
-  CHECK(context == 1);
+  CHECK(context == 1 && !activeCard && atomic_load(&connects) == atomic_load(&disconnects));
   return SCARD_S_SUCCESS;
 }
 static LONG readers(SCARDCONTEXT context, LPCSTR groups, LPSTR output, LPDWORD length) {
@@ -545,6 +546,69 @@ static void profile_contract(CK_SESSION_HANDLE a, CK_SESSION_HANDLE b) {
   puts("Profile expiry and failed callbacks preserve admitted transactions and ownership");
 }
 
+static THREAD_RESULT close_worker(void *opaque) {
+  Worker *worker = opaque;
+  worker->result = C_CloseSession(worker->session);
+  atomic_store(&teardownDone, true);
+  return THREAD_DONE;
+}
+static THREAD_RESULT finalize_worker(void *opaque) {
+  Worker *worker = opaque;
+  worker->result = C_Finalize(NULL);
+  atomic_store(&teardownDone, true);
+  return THREAD_DONE;
+}
+static void teardown_contract(CK_SESSION_HANDLE session, CK_BBOOL finalize) {
+  CK_MECHANISM mechanism = {CKM_RSA_X_509, NULL, 0};
+  CHECK(C_SignInit(session, &mechanism, CNK_MakeObjectHandle(0, CKO_PRIVATE_KEY, 2)) == CKR_OK);
+  atomic_store(&signPaused, false);
+  atomic_store(&releaseSign, false);
+  atomic_store(&failSign, false);
+  atomic_store(&teardownDone, false);
+  Worker signing = {.session = session}, closing = {.session = session};
+#ifdef _WIN32
+  HANDLE signer = CreateThread(NULL, 0, sign_worker, &signing, 0, NULL);
+  CHECK(signer);
+#else
+  pthread_t signer, closer;
+  CHECK(pthread_create(&signer, NULL, sign_worker, &signing) == 0);
+#endif
+  wait_for(&signPaused);
+  CNK_PKCS11_SESSION *reference = NULL;
+  CHECK(cnk_session_find(session, &reference) == CKR_OK);
+  CNK_PKCS11_SESSION *pinned = reference;
+  cnk_session_release_ref(&reference);
+  // The paused signer pins this pointer until released. Closing may reject new
+  // references now, but must not free its context, token or Rust operation.
+#ifdef _WIN32
+  HANDLE closer = CreateThread(NULL, 0, finalize ? finalize_worker : close_worker, &closing, 0, NULL);
+  CHECK(closer);
+#else
+  CHECK(pthread_create(&closer, NULL, finalize ? finalize_worker : close_worker, &closing) == 0);
+#endif
+  for (unsigned i = 0; i < 10000; i++) {
+    if (finalize ? !atomic_load(&g_cnk_is_initialized) : atomic_load(&pinned->closing))
+      break;
+    pause_ms();
+  }
+  CHECK(finalize ? !atomic_load(&g_cnk_is_initialized) : atomic_load(&pinned->closing));
+  CHECK(!atomic_load(&teardownDone) && activeCard == signCard && cards[signCard].stage == BEGUN);
+  if (finalize) {
+    CK_SESSION_HANDLE rejected = 0;
+    CHECK(C_OpenSession(0, CKF_SERIAL_SESSION, NULL, NULL, &rejected) == CKR_CRYPTOKI_NOT_INITIALIZED);
+  }
+  atomic_store(&releaseSign, true);
+#ifdef _WIN32
+  CHECK(WaitForSingleObject(signer, 10000) == WAIT_OBJECT_0 && WaitForSingleObject(closer, 10000) == WAIT_OBJECT_0);
+  CloseHandle(closer);
+  CloseHandle(signer);
+#else
+  CHECK(pthread_join(signer, NULL) == 0 && pthread_join(closer, NULL) == 0);
+#endif
+  CHECK(signing.result == CKR_OK && signing.length == 256 && signing.output[0] == 0xa5 && closing.result == CKR_OK);
+  CHECK(!activeCard && atomic_load(&connects) == atomic_load(&disconnects));
+}
+
 int main(void) {
   CNK_PCSC_TEST_TRANSPORT transport = {establish, release_context, readers,       connect_card, disconnect_card, begin,
                                        end,       transmit,        status_change, cancel};
@@ -631,8 +695,11 @@ int main(void) {
   }
   cache_contract(sessions[0]);
   profile_contract(sessions[0], sessions[1]);
+  teardown_contract(sessions[0], CK_FALSE);
+  CK_SESSION_INFO survivor;
+  CHECK(C_GetSessionInfo(sessions[1], &survivor) == CKR_OK && survivor.state == CKS_RW_USER_FUNCTIONS);
   CHECK(C_Logout(sessions[1]) == CKR_OK);
-  for (unsigned i = 0; i < 2; i++) {
+  for (unsigned i = 1; i < 2; i++) {
     CK_SESSION_INFO info;
     CHECK(C_GetSessionInfo(sessions[i], &info) == CKR_OK && info.state == CKS_RW_PUBLIC_SESSION);
     CHECK(C_CloseSession(sessions[i]) == CKR_OK);
@@ -640,6 +707,14 @@ int main(void) {
   CHECK(C_Finalize(NULL) == CKR_OK);
   CHECK(!activeCard && atomic_load(&connects) == atomic_load(&disconnects) &&
         atomic_load(&begins) == atomic_load(&ends));
-  puts("Two-session PIV transactions, context isolation, reservations and failure cleanup passed");
+  // Finalization must drain a card call and free both active and idle sessions.
+  CHECK(C_Initialize(NULL) == CKR_OK);
+  slotCount = 1;
+  CHECK(C_GetSlotList(CK_FALSE, &slot, &slotCount) == CKR_OK && slotCount == 1);
+  for (unsigned i = 0; i < 2; i++)
+    CHECK(C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &sessions[i]) == CKR_OK);
+  CHECK(C_Login(sessions[0], CKU_USER, (CK_UTF8CHAR_PTR)pin, 6) == CKR_OK);
+  teardown_contract(sessions[0], CK_TRUE);
+  puts("Two-session PIV transactions, cache/profile refresh, close/finalize and failure cleanup passed");
   return 0;
 }

@@ -129,7 +129,9 @@ one initialized lifetime; removal includes the last reader.
 The card performs private-key operations, key generation/import, PIV object writes
 and supported token RNG. The host performs hash/padding/KDF, RSA/ECDSA/ML-DSA verify,
 RSA public encryption, ML-KEM encapsulation and session AES/generic-secret creation.
-Mixed mechanisms do not advertise CKF_HW for their host operations.
+Mixed mechanisms do not advertise CKF_HW for their host operations. SM2 keys
+can be generated/imported and inspected; PKCS#11 signing/derivation with SM2
+remain unsupported and are not advertised.
 
 ## Build and diagnostics
 

@@ -1,6 +1,7 @@
 """Windows real-card PKCS#11 checks using cryptography for independent verification.
 
-Requires cryptography, CNK_PIV_PIN, and explicit slot/serial/key selections.
+Requires cryptography with ML-DSA/ML-KEM support, CNK_PIV_PIN, and explicit
+slot/serial/key selections. SM2 provisioning also requires an OpenSSL CLI.
 Certificate testing is opt-in and requires CNK_PIV_MANAGEMENT_KEY. It refuses
 an existing certificate, deletes its test certificate, and checks key retention.
 Explicit --replace-import-* / --replace-generate-* options overwrite a selected
@@ -14,6 +15,9 @@ import threading
 import subprocess
 import tempfile
 import time
+import base64
+import re
+import shutil
 import argparse
 import ctypes as C
 import hashlib
@@ -24,7 +28,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding, utils, x25519, ed25519
+from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding, utils, x25519, ed25519, mldsa, mlkem
 
 U = C.c_ulong
 B = C.c_ubyte
@@ -57,7 +61,18 @@ class PSS(C.Structure):
 
 
 RSA_BITS = {"rsa": 2048, "rsa3072": 3072, "rsa4096": 4096}
-KEY_KINDS = [*RSA_BITS, "p521", "x25519", "ed25519"]
+PQC_KINDS = {
+    "mldsa65": (0x4A, 0x1C, mldsa.MLDSA65PrivateKey),
+    "mlkem768": (0x49, 0x0F, mlkem.MLKEM768PrivateKey),
+}
+EC_CURVES = {
+    "p256": ("06082a8648ce3d030107", ec.SECP256R1),
+    "p384": ("06052b81040022", ec.SECP384R1),
+    "k256": ("06052b8104000a", ec.SECP256K1),
+    "p521": ("06052b81040023", ec.SECP521R1),
+}
+KEY_KINDS = [*PQC_KINDS, *RSA_BITS, *EC_CURVES, "x25519", "ed25519"]
+POLICY_KINDS = KEY_KINDS
 
 parser = argparse.ArgumentParser(
     description="Verify explicitly selected keys through a Windows PKCS11 DLL and independent software crypto."
@@ -107,6 +122,18 @@ parser.add_argument(
 parser.add_argument(
     "--reset-script", type=Path, help="Explicit PowerShell USB-reset helper for the external-write test"
 )
+for kind in POLICY_KINDS:
+    parser.add_argument(
+        "--policy-" + kind + "-id",
+        type=lambda x: int(x, 16),
+        help="Replace this certificate-free test slot to exercise all PIN policies",
+    )
+parser.add_argument(
+    "--sm2-provision-id",
+    type=lambda x: int(x, 16),
+    help="Replace a certificate-free EC test slot to validate SM2 generation/import; leave a P-521 fixture",
+)
+parser.add_argument("--openssl", type=Path, help="OpenSSL CLI for independent SM2 validation")
 parser.add_argument("--report", type=Path)
 args = parser.parse_args()
 if (args.external_write_id is None) != (args.reset_script is None):
@@ -119,12 +146,14 @@ if os.name != "nt":
     parser.error("This ctypes layout targets native Windows only")
 if "CNK_PIV_PIN" not in os.environ:
     parser.error("CNK_PIV_PIN is required")
+policies = [(kind, getattr(args, "policy_" + kind + "_id")) for kind in POLICY_KINDS]
 imports = [(kind, getattr(args, "replace_import_" + kind + "_id")) for kind in KEY_KINDS]
 generations = [(kind, getattr(args, "replace_generate_" + kind + "_id")) for kind in KEY_KINDS]
 if (
     args.certificate_id is not None
     or args.name_slot
-    or any(id is not None for _, id in imports + generations)
+    or args.sm2_provision_id is not None
+    or any(id is not None for _, id in imports + generations + policies)
 ) and "CNK_PIV_MANAGEMENT_KEY" not in os.environ:
     parser.error("Card write tests require CNK_PIV_MANAGEMENT_KEY")
 if args.pin_roundtrip_id is not None and "CNK_PIV_TEST_PIN" not in os.environ:
@@ -194,6 +223,8 @@ for name, types in {
     "C_DecapsulateKey": [U, C.POINTER(Mech), U, C.POINTER(Attr), U, P, U, C.POINTER(U)],
     "C_SignInit": [U, C.POINTER(Mech), U],
     "C_Sign": [U, P, U, P, C.POINTER(U)],
+    "C_SignUpdate": [U, P, U],
+    "C_SignFinal": [U, P, C.POINTER(U)],
     "C_EncryptInit": [U, C.POINTER(Mech), U],
     "C_Encrypt": [U, P, U, P, C.POINTER(U)],
     "C_DecryptInit": [U, C.POINTER(Mech), U],
@@ -283,6 +314,7 @@ def public(id):
             bytes.fromhex("06082a8648ce3d030107"): ec.SECP256R1,
             bytes.fromhex("06052b81040022"): ec.SECP384R1,
             bytes.fromhex("06052b81040023"): ec.SECP521R1,
+            bytes.fromhex("06052b8104000a"): ec.SECP256K1,
         }[params]()
         point = attr(key, 385)
         start = 2 if point[1] < 128 else 2 + (point[1] & 127)
@@ -291,6 +323,10 @@ def public(id):
         return ed25519.Ed25519PublicKey.from_public_bytes(attr(key, 385))
     if kind == 65:
         return x25519.X25519PublicKey.from_public_bytes(attr(key, 385))
+    if kind == 0x4A:
+        return mldsa.MLDSA65PublicKey.from_public_bytes(attr(key, 17))
+    if kind == 0x49:
+        return mlkem.MLKEM768PublicKey.from_public_bytes(attr(key, 17))
     raise RuntimeError(f"unsupported kind {kind}")
 
 
@@ -323,7 +359,7 @@ def verify(id, mechanism, data, signature):
         raise AssertionError("Host verification accepted a corrupted signature")
 
 
-def derive(id):
+def derive(id, private_secret=True, expected_error=None):
     pub = public(id)
     if isinstance(pub, x25519.X25519PublicKey):
         peer = x25519.X25519PrivateKey.generate()
@@ -339,10 +375,23 @@ def derive(id):
     params = ECDH(1, 0, None, len(encoded), C.cast(buf, P))
     m = Mech(4176, C.cast(C.pointer(params), P), C.sizeof(params))
     a, keep = attrs(
-        [(0, 4), (256, 16), (353, len(expected)), (1, b"\x00"), (2, b"\x01"), (259, b"\x00"), (354, b"\x01")]
+        [
+            (0, 4),
+            (256, 16),
+            (353, len(expected)),
+            (1, b"\x00"),
+            (2, bytes([private_secret])),
+            (259, b"\x00"),
+            (354, b"\x01"),
+        ]
     )
     h = U()
-    check(lib.C_DeriveKey(s, C.byref(m), key_for(3, id), a, len(a), C.byref(h)))
+    rv = lib.C_DeriveKey(s, C.byref(m), key_for(3, id), a, len(a), C.byref(h))
+    if expected_error is not None:
+        if rv != expected_error or h.value != 0:
+            raise AssertionError("One-shot PIN-always derive did not fail closed")
+        return
+    check(rv)
     actual = attr(h, 17)
     check(lib.C_DestroyObject(s, h))
     if not actual == expected:
@@ -401,35 +450,84 @@ def rsa_checks(id):
         print("PASS RSA decrypt", "OAEP-SHA256" if oaep else "PKCS1", flush=True)
 
 
-def pqc_checks():
-    msg = b"Actual CanoKey ML-DSA verification"
-    m = Mech(29, None, 0)
-    sig = sign(args.mldsa_id, m, msg)
-    check(lib.C_VerifyInit(s, C.byref(m), key_for(2, args.mldsa_id)))
-    check(lib.C_Verify(s, msg, len(msg), sig, len(sig)))
-    if not len(sig) == 3309:
-        raise AssertionError("Hardware check failed")
-    print("PASS ML-DSA-65 hardware sign / host verify", flush=True)
-    m = Mech(23, None, 0)
-    a, keep = attrs([(259, b"\x00"), (354, b"\x01"), (353, 32)])
-    ct = C.create_string_buffer(1088)
-    n = U(1088)
-    host = U()
+def mldsa_checks(id):
+    message = b"CanoKey independent ML-DSA verification"
+    mechanism = Mech(29, None, 0)
+    signature = sign(id, mechanism, message)
+    public(id).verify(signature, message)
+    verify(id, mechanism, message, signature)
+    if len(signature) != 3309:
+        raise AssertionError("Wrong ML-DSA signature length")
+    print("PASS ML-DSA-65 hardware sign / independent OpenSSL and PKCS11 verify", flush=True)
+
+
+def mlkem_checks(id, private_key=None, expected_error=None):
+    mechanism = Mech(23, None, 0)
+    attributes, keep = attrs([(259, b"\x00"), (354, b"\x01"), (353, 32), (2, b"\x00")])
+    expected, ciphertext = public(id).encapsulate()
     card = U()
+    rv = lib.C_DecapsulateKey(
+        s,
+        C.byref(mechanism),
+        key_for(3, id),
+        attributes,
+        len(attributes),
+        ciphertext,
+        len(ciphertext),
+        C.byref(card),
+    )
+    if expected_error is not None:
+        if rv != expected_error or card.value != 0:
+            raise AssertionError("One-shot PIN-always decapsulation did not fail closed")
+        return
+    check(rv)
+    try:
+        if attr(card, 17) != expected:
+            raise AssertionError("ML-KEM card secret differs from independent OpenSSL encapsulation")
+    finally:
+        check(lib.C_DestroyObject(s, card))
+    output = C.create_string_buffer(1088)
+    length, host, card = U(1088), U(), U()
     check(
         lib.C_EncapsulateKey(
-            s, C.byref(m), key_for(2, args.mlkem_id), a, len(a), ct, C.byref(n), C.byref(host)
+            s,
+            C.byref(mechanism),
+            key_for(2, id),
+            attributes,
+            len(attributes),
+            output,
+            C.byref(length),
+            C.byref(host),
         )
     )
     try:
-        check(lib.C_DecapsulateKey(s, C.byref(m), key_for(3, args.mlkem_id), a, len(a), ct, n, C.byref(card)))
-        if not attr(host, 17) == attr(card, 17):
-            raise AssertionError("Hardware check failed")
-        print("PASS ML-KEM-768 host encapsulate / hardware decapsulate", flush=True)
+        expected = attr(host, 17)
+        if private_key is not None and private_key.decapsulate(output.raw[: length.value]) != expected:
+            raise AssertionError("PKCS11 ML-KEM encapsulation differs from independent OpenSSL decapsulation")
+        check(
+            lib.C_DecapsulateKey(
+                s,
+                C.byref(mechanism),
+                key_for(3, id),
+                attributes,
+                len(attributes),
+                output,
+                length,
+                C.byref(card),
+            )
+        )
+        if attr(card, 17) != expected:
+            raise AssertionError("ML-KEM host/card secrets differ")
     finally:
         if card.value:
             check(lib.C_DestroyObject(s, card))
         check(lib.C_DestroyObject(s, host))
+    print("PASS ML-KEM-768 independent OpenSSL and PKCS11/card shared secrets", flush=True)
+
+
+def pqc_checks():
+    mldsa_checks(args.mldsa_id)
+    mlkem_checks(args.mlkem_id)
 
 
 def certificate_checks():
@@ -792,12 +890,16 @@ def names_checks(slots):
     )
 
 
-def verify_private_key(id, kind):
+def verify_private_key(id, kind, private_key=None):
     login(1, os.environ["CNK_PIV_PIN"].encode())
     try:
         if kind in RSA_BITS:
             rsa_checks(id)
-        elif kind == "p521":
+        elif kind == "mldsa65":
+            mldsa_checks(id)
+        elif kind == "mlkem768":
+            mlkem_checks(id, private_key)
+        elif kind in EC_CURVES:
             ecdsa_checks(id)
             derive(id)
         elif kind == "x25519":
@@ -818,7 +920,8 @@ def generate_checks(id, kind):
     )
     key_type, mechanism, params = {
         **{name: (0, 0, None) for name in RSA_BITS},
-        "p521": (3, 0x1040, "06052b81040023"),
+        **{name: (value[0], value[1], None) for name, value in PQC_KINDS.items()},
+        **{name: (3, 0x1040, value[0]) for name, value in EC_CURVES.items()},
         "x25519": (0x41, 0x1056, "06032b656e"),
         "ed25519": (0x40, 0x1055, "06032b6570"),
     }[kind]
@@ -826,7 +929,7 @@ def generate_checks(id, kind):
     attributes = (
         [(0x121, RSA_BITS[kind]), (0x122, b"\1\0\1")]
         if kind in RSA_BITS
-        else [(0x180, bytes.fromhex(params))]
+        else [(0x61D, 2)] if kind in PQC_KINDS else [(0x180, bytes.fromhex(params))]
     )
     pub, keep_pub = attrs([(0, 2)] + common + attributes)
     private, keep_private = attrs([(0, 3), (2, b"\1")] + common)
@@ -852,7 +955,9 @@ def generate_checks(id, kind):
     after = key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
     if after == before:
         raise RuntimeError("Generation did not replace the selected public key")
-    if (kind in RSA_BITS or kind == "p521") and key.key_size != RSA_BITS.get(kind, 521):
+    if (kind in RSA_BITS or kind in EC_CURVES) and key.key_size != (
+        RSA_BITS[kind] if kind in RSA_BITS else EC_CURVES[kind][1]().key_size
+    ):
         raise RuntimeError("Generated key has the wrong size")
     verify_private_key(id, kind)
     print(
@@ -861,10 +966,14 @@ def generate_checks(id, kind):
     )
 
 
-def import_checks(id, kind):
+def import_checks(id, kind, policy=2, exercise=True):
     if not 1 <= id <= 24 or find(1, id):
         raise RuntimeError("Private-key import requires an explicit certificate-free PIV key slot")
-    if kind in RSA_BITS:
+    if kind in PQC_KINDS:
+        key_type, _, key_class = PQC_KINDS[kind]
+        key = key_class.generate()
+        values = [(0x100, key_type), (0x61D, 2), (0x637, key.private_bytes_raw())]
+    elif kind in RSA_BITS:
         key = rsa.generate_private_key(public_exponent=65537, key_size=RSA_BITS[kind])
         numbers = key.private_numbers()
         integer = lambda v: v.to_bytes((v.bit_length() + 7) // 8, "big")
@@ -879,14 +988,14 @@ def import_checks(id, kind):
                 range(0x124, 0x129), [numbers.p, numbers.q, numbers.dmp1, numbers.dmq1, numbers.iqmp]
             )
         ]
-    elif kind == "p521":
-        key = ec.generate_private_key(ec.SECP521R1())
+    elif kind in EC_CURVES:
+        key = ec.generate_private_key(EC_CURVES[kind][1]())
         scalar = key.private_numbers().private_value
         # Exercise the PKCS#11 unsigned-integer convention, including omitted
         # leading zeros, instead of preparing a PIV fixed-width scalar here.
         values = [
             (0x100, 3),
-            (0x180, bytes.fromhex("06052b81040023")),
+            (0x180, bytes.fromhex(EC_CURVES[kind][0])),
             (0x11, scalar.to_bytes((scalar.bit_length() + 7) // 8, "big")),
         ]
     else:
@@ -901,7 +1010,17 @@ def import_checks(id, kind):
                 ),
             ),
         ]
-    template, keep = attrs([(0, 3), (0x102, bytes([id])), (1, b"\1"), (2, b"\1")] + values)
+    template, keep = attrs(
+        [
+            (0, 3),
+            (0x102, bytes([id])),
+            (1, b"\1"),
+            (2, bytes([policy != 1])),
+            (0xC34E4B01, bytes([policy])),
+            (0xC34E4B02, b"\1"),
+        ]
+        + values
+    )
     handle = U()
     login(0, bytes.fromhex(os.environ["CNK_PIV_MANAGEMENT_KEY"]))
     try:
@@ -916,8 +1035,265 @@ def import_checks(id, kind):
     )
     if actual != expected:
         raise RuntimeError("Imported public key differs from the software-generated key")
-    verify_private_key(id, kind)
-    print(f"PASS {kind} import ID {id:02x}, exact public-key match and private operation", flush=True)
+    if exercise:
+        verify_private_key(id, kind, key)
+        print(f"PASS {kind} import ID {id:02x}, exact public-key match and private operation", flush=True)
+        return None
+    return key
+
+
+def logout_if_logged_in():
+    rv = lib.C_Logout(s)
+    if rv not in (0, 0x101):
+        check(rv)
+
+
+def policy_sign(id, kind, policy):
+    pub = public(id)
+    private = key_for(3, id)
+    message = b"CanoKey PIN-always retry must sign this message exactly once"
+    code = (
+        64 if kind in RSA_BITS else 0x1044 if kind in EC_CURVES else {"ed25519": 0x1057, "mldsa65": 29}[kind]
+    )
+    mechanism = Mech(code, None, 0)
+
+    def validate(signature):
+        if kind in RSA_BITS:
+            pub.verify(signature, message, padding.PKCS1v15(), hashes.SHA256())
+        elif kind in EC_CURVES:
+            width = (pub.key_size + 7) // 8
+            encoded = utils.encode_dss_signature(
+                int.from_bytes(signature[:width], "big"), int.from_bytes(signature[width:], "big")
+            )
+            pub.verify(encoded, message, ec.ECDSA(hashes.SHA256()))
+        else:
+            pub.verify(signature, message)
+
+    for multipart in (False, True):
+        check(lib.C_SignInit(s, C.byref(mechanism), private))
+        if multipart:
+            if policy == 3:
+                if lib.C_SignUpdate(s, message[:13], 13) != 0x101:
+                    raise AssertionError("PIN-always Update accepted input before context login")
+                login(2, os.environ["CNK_PIV_PIN"].encode())
+            check(lib.C_SignUpdate(s, message[:13], 13))
+            check(lib.C_SignUpdate(s, message[13:], len(message) - 13))
+
+        def execute(output, length):
+            return (
+                lib.C_SignFinal(s, output, C.byref(length))
+                if multipart
+                else lib.C_Sign(s, message, len(message), output, C.byref(length))
+            )
+
+        length = U()
+        check(execute(None, length))
+        output = C.create_string_buffer(b"\xcc" * length.value)
+        small = U(1)
+        if execute(output, small) != 0x150 or small.value != length.value:
+            raise AssertionError("Signing preflight lost its operation or output size")
+        if policy == 3 and not multipart:
+            if execute(output, length) != 0x101 or output.raw[: length.value] != b"\xcc" * length.value:
+                raise AssertionError("PIN-always sign did not preserve its auth-required operation")
+            login(2, os.environ["CNK_PIV_PIN"].encode())
+        check(execute(output, length))
+        validate(output.raw[: length.value])
+        if execute(None, length) != 0x91:
+            raise AssertionError("Successful signing did not consume its context")
+    # Authentication/cancellation is operation-local, not reusable on a new Init.
+    check(lib.C_SignInit(s, C.byref(mechanism), private))
+    if policy == 3:
+        output = C.create_string_buffer(4096)
+        length = U(len(output))
+        if lib.C_Sign(s, message, len(message), output, C.byref(length)) != 0x101:
+            raise AssertionError("A previous context login authorized a new signature")
+        login(2, os.environ["CNK_PIV_PIN"].encode())
+    check(lib.C_SessionCancel(s, 0x800))
+    if lib.C_Login(s, 2, os.environ["CNK_PIV_PIN"].encode(), len(os.environ["CNK_PIV_PIN"])) != 0x91:
+        raise AssertionError("Cancelled signing retained context-specific authentication")
+
+
+def policy_decrypt(id, policy):
+    pub = public(id)
+    private = key_for(3, id)
+    message = b"PIN-policy decryption"
+    for oaep in (False, True):
+        pad = (
+            padding.OAEP(padding.MGF1(hashes.SHA256()), hashes.SHA256(), None) if oaep else padding.PKCS1v15()
+        )
+        ciphertext = pub.encrypt(message, pad)
+        parameters = OAEP(592, 2, 1, None, 0)
+        mechanism = Mech(
+            9 if oaep else 1,
+            C.cast(C.pointer(parameters), P) if oaep else None,
+            C.sizeof(parameters) if oaep else 0,
+        )
+        check(lib.C_DecryptInit(s, C.byref(mechanism), private))
+        length = U()
+        check(lib.C_Decrypt(s, ciphertext, len(ciphertext), None, C.byref(length)))
+        output = C.create_string_buffer(length.value)
+        if policy == 3:
+            if lib.C_Decrypt(s, ciphertext, len(ciphertext), output, C.byref(length)) != 0x101:
+                raise AssertionError("PIN-always decrypt did not require operation authentication")
+            login(2, os.environ["CNK_PIV_PIN"].encode())
+        check(lib.C_Decrypt(s, ciphertext, len(ciphertext), output, C.byref(length)))
+        if output.raw[: length.value] != message:
+            raise AssertionError("PIN-policy decrypt returned wrong plaintext")
+        check(lib.C_DecryptInit(s, C.byref(mechanism), private))
+        if policy == 3:
+            length = U(len(output))
+            if lib.C_Decrypt(s, ciphertext, len(ciphertext), output, C.byref(length)) != 0x101:
+                raise AssertionError("Context-specific decrypt authentication was reused")
+            login(2, os.environ["CNK_PIV_PIN"].encode())
+        check(lib.C_SessionCancel(s, 0x200))
+
+
+def policy_matrix(id, kind):
+    if not 1 <= id <= 24 or find(1, id):
+        raise RuntimeError("PIN-policy testing requires an explicit certificate-free test slot")
+    try:
+        for policy in (1, 2, 3):
+            logout_if_logged_in()
+            software = import_checks(id, kind, policy=policy, exercise=False)
+            if attr(key_for(2, id), 0xC34E4B01) != bytes([policy]):
+                raise AssertionError("Written PIN policy did not round-trip")
+            visible = find(3, id)
+            if bool(visible) != (policy == 1):
+                raise AssertionError("Private-key visibility disagrees with the PIN policy")
+            if policy != 1:
+                login(1, os.environ["CNK_PIV_PIN"].encode())
+            private_handle = key_for(3, id)
+            if attr(private_handle, 2) != bytes([policy != 1]) or attr(private_handle, 0x202) != bytes(
+                [policy == 3]
+            ):
+                raise AssertionError("PKCS11 private/always-authenticate attributes disagree with policy")
+            if kind in PQC_KINDS:
+                seed = Attr(0x637, None, 0)
+                if lib.C_GetAttributeValue(s, private_handle, C.byref(seed), 1) != 0x11:
+                    raise AssertionError("PQC seed is readable through the private-key object")
+            if kind not in ("x25519", "mlkem768"):
+                policy_sign(id, kind, policy)
+            if kind in RSA_BITS:
+                policy_decrypt(id, policy)
+            elif kind in EC_CURVES or kind == "x25519":
+                derive(id, private_secret=False, expected_error=0x101 if policy == 3 else None)
+            elif kind == "mlkem768":
+                mlkem_checks(id, software, expected_error=0x101 if policy == 3 else None)
+            if policy == 3 and kind in ("x25519", "mlkem768"):
+                if (
+                    lib.C_Login(s, 2, os.environ["CNK_PIV_PIN"].encode(), len(os.environ["CNK_PIV_PIN"]))
+                    != 0x91
+                ):
+                    raise AssertionError("One-shot operation exposed a context-login boundary")
+            info = SessionInfo()
+            check(lib.C_GetSessionInfo(s, C.byref(info)))
+            if info.state != (2 if policy == 1 else 3):
+                raise AssertionError("Key operations changed the token login role")
+            print(
+                f"PASS {kind} ID {id:02x} PIN policy {policy}, visibility, operations and cleanup", flush=True
+            )
+    finally:
+        logout_if_logged_in()
+        # These are explicitly replaceable fixtures, not the original card keys.
+        # Leave a PIN-once key; PQC reuse of the RSA fixture ends with RSA again.
+        import_checks(id, "rsa" if kind in PQC_KINDS else kind)
+
+
+def sm2_provisioning(id):
+    if not 1 <= id <= 24 or find(1, id):
+        raise RuntimeError("SM2 provisioning requires an explicit certificate-free test slot")
+    executable = (
+        args.openssl
+        or shutil.which("openssl")
+        or Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Git/usr/bin/openssl.exe"
+    )
+    if not Path(executable).is_file():
+        raise RuntimeError("Pass --openssl with a CLI supporting SM2")
+
+    def openssl(*arguments, data=None):
+        result = subprocess.run(
+            [str(executable), *arguments],
+            input=data,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        if result.returncode:
+            raise RuntimeError(
+                "OpenSSL SM2 validation failed: " + result.stderr.decode(errors="replace")[-500:]
+            )
+        return result.stdout
+
+    params = bytes.fromhex("06082a811ccf5501822d")
+
+    def point():
+        handle = key_for(2, id)
+        if attr(handle, 0x180) != params:
+            raise AssertionError("SM2 curve parameters differ")
+        encoded = attr(handle, 0x181)
+        if len(encoded) != 67 or encoded[:3] != b"\x04\x41\x04":
+            raise AssertionError("SM2 public point is not an uncompressed PKCS11 OCTET STRING")
+        return encoded[2:]
+
+    # Validate software support and obtain an independent scalar/public pair before card writes.
+    private_pem = openssl("genpkey", "-algorithm", "SM2")
+    description = openssl("pkey", "-text", "-noout", data=private_pem).decode("ascii")
+    scalar = bytes.fromhex(
+        "".join(re.findall(r"[0-9a-fA-F]{2}", description.split("priv:")[1].split("pub:")[0]))
+    )
+    expected = bytes.fromhex(
+        "".join(re.findall(r"[0-9a-fA-F]{2}", description.split("pub:")[1].split("ASN1 OID:")[0]))
+    )
+    if len(scalar) != 32 or len(expected) != 65 or "ASN1 OID: SM2" not in description:
+        raise AssertionError("Unexpected OpenSSL SM2 key representation")
+    common = [(0x100, 3), (0x102, bytes([id])), (1, b"\1")]
+    try:
+        login(0, bytes.fromhex(os.environ["CNK_PIV_MANAGEMENT_KEY"]))
+        try:
+            pub, keep_pub = attrs([(0, 2), (0x180, params)] + common)
+            private, keep_private = attrs([(0, 3), (2, b"\1")] + common)
+            mechanism = Mech(0x1040, None, 0)
+            a, b = U(), U()
+            check(
+                lib.C_GenerateKeyPair(
+                    s, C.byref(mechanism), pub, len(pub), private, len(private), C.byref(a), C.byref(b)
+                )
+            )
+        finally:
+            logout_if_logged_in()
+        generated = point()
+        # Canonical id-ecPublicKey/SM2 SPKI framing; OpenSSL validates the generated point.
+        der = bytes.fromhex("3059301306072a8648ce3d020106082a811ccf5501822d034200") + generated
+        pem = b"-----BEGIN PUBLIC KEY-----\n" + base64.b64encode(der) + b"\n-----END PUBLIC KEY-----\n"
+        openssl("pkey", "-pubin", "-pubcheck", "-noout", data=pem)
+        template, keep = attrs([(0, 3), (2, b"\1"), (0x180, params), (0x11, scalar)] + common)
+        login(0, bytes.fromhex(os.environ["CNK_PIV_MANAGEMENT_KEY"]))
+        try:
+            handle = U()
+            check(lib.C_CreateObject(s, template, len(template), C.byref(handle)))
+        finally:
+            logout_if_logged_in()
+        if point() != expected or point() == generated:
+            raise AssertionError("Imported SM2 point differs from independent scalar multiplication")
+        login(1, os.environ["CNK_PIV_PIN"].encode())
+        private = key_for(3, id)
+        if attr(private, 0x108) != b"\0" or attr(private, 0x10C) != b"\0":
+            raise AssertionError("SM2 advertised unsupported PKCS11 private operations")
+        mechanism = Mech(0x1041, None, 0)
+        if lib.C_SignInit(s, C.byref(mechanism), private) != 0x68:
+            raise AssertionError("SM2 signing returned an unexpected status")
+        peer = C.create_string_buffer(expected)
+        parameters = ECDH(1, 0, None, len(expected), C.cast(peer, P))
+        mechanism = Mech(4176, C.cast(C.pointer(parameters), P), C.sizeof(parameters))
+        secret = U()
+        if lib.C_DeriveKey(s, C.byref(mechanism), private, None, 0, C.byref(secret)) != 0x68 or secret.value:
+            raise AssertionError("SM2 derive escaped its unsupported-operation boundary")
+    finally:
+        logout_if_logged_in()
+        import_checks(id, "p521")
+    print(
+        "PASS SM2 generation/public-point validation, scalar import and PKCS11 operation bounds", flush=True
+    )
 
 
 def main():
@@ -946,6 +1322,16 @@ def main():
             run_case("unconfigured PIN-managed login rollback", unconfigured_management_check)
         if args.name_slot:
             run_case("F5 name read/write/restore", lambda: names_checks(args.name_slot))
+        for kind, id in policies:
+            if id is not None:
+                run_case(
+                    f"{kind} PIN-policy matrix ID {id:02x}", lambda id=id, kind=kind: policy_matrix(id, kind)
+                )
+        if args.sm2_provision_id is not None:
+            run_case(
+                f"SM2 provisioning ID {args.sm2_provision_id:02x}",
+                lambda: sm2_provisioning(args.sm2_provision_id),
+            )
         for kind, id in generations:
             if id is not None:
                 run_case(

@@ -20,10 +20,10 @@ passes the corresponding contract and hardware gates; do not add silent fallback
 | --- | --- | --- |
 | 0: profile/context | Immutable token profile with binding epoch; copied selected contexts; bounded executor, two-session transaction contract and guarded cache/profile refresh | Full reset/invalidation, close/finalize and concurrent transaction matrix |
 | 1: public reads | Typed metadata/public keys, certificates, session data, directory and ordinary/F9 name reads | Complete malformed/duplicate/gzip/buffer/cache matrix |
-| 2: signing | RSA, ECDSA, Ed25519 and streaming ML-DSA use Rust operations | Complete PIN-never/once/always, legacy-Le, size-query and cancellation matrix |
-| 3: other private operations | RSA decrypt, ECDH/X25519 and ML-KEM use Rust operations | Full PIN-policy, Windows endian/KDF and concurrent result-publication matrix |
-| 4: management/writes | Management challenge-response, key generation/import, certificate/data/F5 writes and certificate deletion | Credential commands and management metadata are migrated; complete write/failure matrix |
-| 5: remove duplicate C | Removed C APDU builders, credential/data/public-key parsers, 3DES the legacy callback adapter and session algorithm maps | Complete acceptance matrix |
+| 2: signing | RSA, ECDSA, Ed25519 and ML-DSA use Rust operations; PIN-policy and cancellation hardware matrix passes | Remaining legacy/error-path acceptance matrix |
+| 3: other private operations | RSA decrypt, ECDH/X25519 and ML-KEM use Rust operations | Remaining Windows endian/KDF and concurrent result-publication matrix |
+| 4: management/writes | Management challenge-response, key generation/import, certificate/data/F5 writes and certificate deletion | Remaining PIN/PUK protection and write/failure matrix |
+| 5: remove duplicate C | Removed C APDU builders, credential/data/public-key parsers, 3DES, the legacy callback adapter and session algorithm maps | Complete acceptance matrix |
 
 All production card transmission now flows through one C executor and raw PC/SC
 exchange. Rust owns SELECT, credential commands, metadata, version/configuration,
@@ -96,16 +96,20 @@ emulation. Passing a selected subset does not close the remaining gates.
 Reader: canokeys.org OpenPGP PIV OATH 0; serial 0; firmware
 3.1.0-dev+gaa408988; PIV 6.0.0. Re-enumerate before any provisioning.
 
-- x64 Debug/Release: 31 selected groups pass using scripts/hardware-crypto-test.py:
+- x64 Debug/Release: 53 selected groups pass using scripts/hardware-crypto-test.py:
   PIN change/cache/fresh-login/restore, F5 read/write/clear/restore, unconfigured
-  protection rollback, six key generations, six imports, independent private-operation
+  protection rollback, all supported key types' generation/import, independent private-operation
   verification, host RSA encryption and RSA/ECDSA verification, concurrent ECDSA/RNG
   from two sessions, certificate write/read/delete and RNG across the 64 KiB boundary.
+  Eleven algorithm variants cover all three PIN policies, including multipart
+  auth/size/cancel boundaries and fail-closed one-shot derive/decapsulation.
   An external writer plus USB reinsert proves event invalidation of a still-live
   cached key; the original session then signs/decrypts with the new test key.
-- Test slots 87..8A: RSA (2048/3072/4096), P-521, X25519 and Ed25519 generation/import
-  match public-key expectations and pass private operations. Slot 87 currently
-  holds the most recently tested RSA size; temporary certificates also use it.
+- Test slots 87..8A cover RSA-2048/3072/4096, P-256/384/521, secp256k1, Ed25519,
+  X25519, ML-DSA-65 and ML-KEM-768; independent OpenSSL checks verify results.
+  SM2 generation/import is checked separately and its unsupported PKCS#11
+  sign/derive boundary is retained. Final fixtures are RSA, P-521, X25519 and
+  Ed25519 with PIN-once policy; temporary certificates use slot 87.
 - Unconfigured PIN-managed login returns its expected policy error and rolls back
   USER state on the actual card. Malformed/protected PUK recovery uses a counted
   mutation seam with the real Rust parser; real PUK mutation remains unverified.

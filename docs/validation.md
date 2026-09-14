@@ -59,7 +59,11 @@ snapshot. Invalidation generations must also reject reads that finish after a
 concurrent invalidation, even if a mutex callback prevented clearing storage.
 The transaction fixture tests metadata, certificates, directory and configuration
 races, every token lock/unlock in their public-cache misses, profile expiry and
-refresh racing VERIFY. `--external-write-id` with an explicit `--reset-script`
+refresh racing VERIFY, and close/finalize draining an in-flight card call.
+`--policy-<algorithm>-id` exercises explicit replaceable slots under every PIN
+policy; the script leaves PIN-once fixtures. PQC verification uses independent
+cryptography/OpenSSL implementations; SM2 provisioning uses an OpenSSL CLI.
+`--external-write-id` with an explicit `--reset-script`
 checks a real external replacement and USB reinsert against a still-live cache. External mutations are expected to become visible after the 60-second
 TTL; no credential, card handle, selected applet, or authentication state may
 ever be retained in this cache.
