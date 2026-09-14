@@ -962,6 +962,24 @@ static LONG cnk_run_protocol(SCARDHANDLE card, const CNK_PROTOCOL_COMMAND *comma
   }
 }
 
+CK_RV cnk_probe_libcanokey_profile(CK_SLOT_ID slotID, void **profile) {
+  CNK_ENSURE_NONNULL(profile);
+  *profile = NULL;
+  SCARDHANDLE card = 0;
+  CK_RV rv = cnk_begin_piv_transaction(slotID, &card);
+  if (rv != CKR_OK)
+    return rv;
+  CK_BYTE response[8192];
+  CNK_LIBCANO_PROFILE *candidate = NULL;
+  uint32_t status = cnk_profile_probe(cnk_protocol_transmit, (void *)(uintptr_t)card, response, sizeof(response),
+                                      &candidate);
+  cnk_disconnect_card(card);
+  if (status != CNK_PROTOCOL_OK)
+    return CKR_DEVICE_ERROR;
+  *profile = candidate;
+  return CKR_OK;
+}
+
 CNK_TEST_API LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *pCommand, CK_ULONG cbCommand,
                                       CK_BYTE *pResponse, DWORD *pcbResponse, CK_BBOOL auto_get_response) {
   if (hCard == 0 || pCommand == NULL || pResponse == NULL || pcbResponse == NULL)

@@ -1,4 +1,6 @@
 #include "backend/pcsc.h"
+#include "backend/libcanokey.h"
+#include "backend/protocol.h"
 
 #include "api/session.h"
 #include "internal/logging.h"
@@ -9,6 +11,37 @@
 #include <psa/crypto.h>
 #include <stdlib.h>
 #include <string.h>
+
+static CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *session) {
+  CNK_ENSURE_NONNULL(session, session->token);
+  CK_ULONG epoch = atomic_load(&g_cnk_managed_binding_epoch);
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  if (session->token->libcanokeyProfile != NULL && session->token->libcanokeyProfileEpoch == epoch) {
+    cnk_mutex_unlock(&session->token->lock);
+    return CKR_OK;
+  }
+  CNK_LIBCANO_PROFILE *old = session->token->libcanokeyProfile;
+  session->token->libcanokeyProfile = NULL;
+  session->token->libcanokeyProfileEpoch = 0;
+  cnk_mutex_unlock(&session->token->lock);
+  if (old != NULL)
+    cnk_profile_free(old);
+
+  void *candidate = NULL;
+  CK_RV rv = cnk_probe_libcanokey_profile(session->slotId, &candidate);
+  if (rv != CKR_OK)
+    return rv;
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  if (session->token->libcanokeyProfile == NULL) {
+    session->token->libcanokeyProfile = candidate;
+    session->token->libcanokeyProfileEpoch = epoch;
+    candidate = NULL;
+  }
+  cnk_mutex_unlock(&session->token->lock);
+  if (candidate != NULL)
+    cnk_profile_free(candidate);
+  return CKR_OK;
+}
 #include <time.h>
 
 #if defined(_WIN32)
@@ -373,6 +406,9 @@ CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BY
                               CK_BYTE_PTR publicKey, CK_ULONG_PTR publicKeyLen, CK_BYTE_PTR pinPolicy,
                               CK_BYTE_PTR touchPolicy) {
   CNK_ENSURE_NONNULL(session, session->token, algorithmType);
+  /* Build the immutable libcanokey profile once per card binding. The legacy
+   * parser remains the fallback until its result path is switched below. */
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
   if (g_cnk_is_managed_mode || !atomic_load(&g_cnk_piv_metadata_cache_enabled)) {
     CNK_DEBUG("hardware metadata read (%s): PIV slot 0x%02X", g_cnk_is_managed_mode ? "managed mode" : "cache disabled",
               pivTag);

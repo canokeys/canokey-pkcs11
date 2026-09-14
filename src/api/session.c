@@ -2,6 +2,7 @@
 
 #include "api/operation.h"
 #include "backend/pcsc.h"
+#include "backend/protocol.h"
 #include "internal/logging.h"
 #include "internal/macros.h"
 #include "internal/util.h"
@@ -264,6 +265,10 @@ CK_RV cnk_session_manager_cleanup(void) {
     CNK_DEBUG("session manager cleanup: freeing token state");
     CNK_PKCS11_TOKEN_STATE *token = token_states;
     clear_token_auth(token);
+    if (token->libcanokeyProfile != NULL) {
+      cnk_profile_free(token->libcanokeyProfile);
+      token->libcanokeyProfile = NULL;
+    }
     CK_RV destroyRv = cnk_mutex_destroy(&token->lock);
     if (destroyRv != CKR_OK) {
       cleanupRv = destroyRv;
