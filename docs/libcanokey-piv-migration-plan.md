@@ -83,6 +83,10 @@ certificate propagation 测试通过。
 
 ## 阶段 2：sign
 
+当前进度：classic RSA/ECDSA/P-521/secp256k1/Ed25519 sign 已切换到
+libcanokey 的 selected-context operation；ML-DSA 仍等待 streaming context C ABI，
+因此本阶段出口条件尚未满足。
+
 libcanokey 负责 GENERAL AUTHENTICATE、PIV wire format、signature parsing、
 DER/P1363/raw result、legacy explicit-Le、chaining 和 card status。
 
