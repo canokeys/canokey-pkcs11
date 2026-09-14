@@ -25,6 +25,26 @@ static CK_RV cnk_libcanokey_sign_status(uint32_t status) {
   }
 }
 
+static CK_RV cnk_libcanokey_status_with_error(uint32_t status, const CNK_LIBCANO_ERROR *error) {
+  if (error != NULL) {
+    switch (error->kind) {
+    case CNK_LIBCANO_ERROR_UNSUPPORTED_FEATURE:
+      return CKR_FUNCTION_NOT_SUPPORTED;
+    case CNK_LIBCANO_ERROR_LIMIT_EXCEEDED:
+      return CKR_DATA_LEN_RANGE;
+    case CNK_LIBCANO_ERROR_NOT_FOUND:
+      return CKR_KEY_HANDLE_INVALID;
+    case CNK_LIBCANO_ERROR_AUTHENTICATION_FAILED:
+      return CKR_USER_NOT_LOGGED_IN;
+    case CNK_LIBCANO_ERROR_PIN_BLOCKED:
+      return CKR_PIN_LOCKED;
+    default:
+      break;
+    }
+  }
+  return cnk_libcanokey_sign_status(status);
+}
+
 static CK_RV cnk_libcanokey_sign_algorithm(CK_BYTE algorithmType, uint32_t *algorithm, uint32_t *kind) {
   CNK_ENSURE_NONNULL(algorithm, kind);
   switch (algorithmType) {
@@ -185,7 +205,7 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
     break;
   }
   if (status != CNK_LIBCANO_OK) {
-    rv = cnk_libcanokey_sign_status(status);
+    rv = cnk_libcanokey_status_with_error(status, &error);
     goto cleanup;
   }
   if (cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
@@ -197,7 +217,7 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
     size_t commandLen = 0;
     status = cnk_operation_command(operation, NULL, &commandLen);
     if (status != CNK_LIBCANO_OK) {
-      rv = cnk_libcanokey_sign_status(status);
+      rv = cnk_libcanokey_status_with_error(status, &error);
       goto cleanup;
     }
     if (commandLen == 0 || commandLen > 2048) {
@@ -207,7 +227,7 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
     CK_BYTE command[2048];
     status = cnk_operation_command(operation, command, &commandLen);
     if (status != CNK_LIBCANO_OK) {
-      rv = cnk_libcanokey_sign_status(status);
+      rv = cnk_libcanokey_status_with_error(status, &error);
       goto cleanup;
     }
     DWORD responseLen = sizeof(response);
@@ -217,7 +237,7 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
     }
     status = cnk_operation_advance(operation, response, responseLen, &step, &error);
     if (status != CNK_LIBCANO_OK) {
-      rv = cnk_libcanokey_sign_status(status);
+      rv = cnk_libcanokey_status_with_error(status, &error);
       goto cleanup;
     }
   }
@@ -228,7 +248,7 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
   size_t required = 0;
   status = cnk_operation_result_copy_bytes(operation, NULL, &required);
   if (status != CNK_LIBCANO_OK) {
-    rv = cnk_libcanokey_sign_status(status);
+    rv = cnk_libcanokey_status_with_error(status, &error);
     goto cleanup;
   }
   CK_ULONG capacity = *outputLen;
@@ -294,7 +314,7 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
                      : cnk_piv_sign_in_context_new(context, session->signingContext.pivSlot, algorithm, kind, data,
                                                    dataLen, NULL, &operation, &error);
   if (status != CNK_LIBCANO_OK) {
-    rv = cnk_libcanokey_sign_status(status);
+    rv = cnk_libcanokey_status_with_error(status, &error);
     goto cleanup;
   }
   if (cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
@@ -306,7 +326,7 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
     size_t commandLen = 0;
     status = cnk_operation_command(operation, NULL, &commandLen);
     if (status != CNK_LIBCANO_OK) {
-      rv = cnk_libcanokey_sign_status(status);
+      rv = cnk_libcanokey_status_with_error(status, &error);
       goto cleanup;
     }
     if (commandLen == 0 || commandLen > 2048) {
@@ -316,7 +336,7 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
     CK_BYTE command[2048];
     status = cnk_operation_command(operation, command, &commandLen);
     if (status != CNK_LIBCANO_OK) {
-      rv = cnk_libcanokey_sign_status(status);
+      rv = cnk_libcanokey_status_with_error(status, &error);
       goto cleanup;
     }
     DWORD responseLen = sizeof(response);
@@ -326,7 +346,7 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
     }
     status = cnk_operation_advance(operation, response, responseLen, &step, &error);
     if (status != CNK_LIBCANO_OK) {
-      rv = cnk_libcanokey_sign_status(status);
+      rv = cnk_libcanokey_status_with_error(status, &error);
       goto cleanup;
     }
   }
@@ -339,7 +359,7 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
   status = !streaming && kind == CNK_LIBCANO_SIGN_DIGEST ? cnk_operation_signature_p1363(operation, NULL, &required)
                                                          : cnk_operation_result_copy_bytes(operation, NULL, &required);
   if (status != CNK_LIBCANO_OK) {
-    rv = cnk_libcanokey_sign_status(status);
+    rv = cnk_libcanokey_status_with_error(status, &error);
     goto cleanup;
   }
   CK_ULONG capacity = *signatureLen;
@@ -477,7 +497,7 @@ CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, C
   }
   status = cnk_piv_generate_key_in_context_new(context, &params, NULL, &operation, &error);
   if (status != CNK_LIBCANO_OK) {
-    rv = cnk_libcanokey_sign_status(status);
+    rv = cnk_libcanokey_status_with_error(status, &error);
     goto cleanup;
   }
   if (cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
@@ -488,7 +508,7 @@ CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, C
     size_t commandLen = 0;
     status = cnk_operation_command(operation, NULL, &commandLen);
     if (status != CNK_LIBCANO_OK) {
-      rv = cnk_libcanokey_sign_status(status);
+      rv = cnk_libcanokey_status_with_error(status, &error);
       goto cleanup;
     }
     if (commandLen == 0 || commandLen > 2048) {
@@ -498,15 +518,17 @@ CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, C
     CK_BYTE command[2048];
     status = cnk_operation_command(operation, command, &commandLen);
     if (status != CNK_LIBCANO_OK) {
-      rv = cnk_libcanokey_sign_status(status);
+      rv = cnk_libcanokey_status_with_error(status, &error);
       goto cleanup;
     }
     DWORD responseLen = sizeof(response);
-    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS)
+    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS) {
+      rv = CKR_DEVICE_ERROR;
       goto cleanup;
+    }
     status = cnk_operation_advance(operation, response, responseLen, &step, &error);
     if (status != CNK_LIBCANO_OK) {
-      rv = cnk_libcanokey_sign_status(status);
+      rv = cnk_libcanokey_status_with_error(status, &error);
       goto cleanup;
     }
   }
@@ -601,7 +623,7 @@ CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE
   }
   status = cnk_piv_import_key_in_context_new(context, &params, components, componentCount, NULL, &operation, &error);
   if (status != CNK_LIBCANO_OK) {
-    rv = cnk_libcanokey_sign_status(status);
+    rv = cnk_libcanokey_status_with_error(status, &error);
     goto import_cleanup;
   }
   if (cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
@@ -611,18 +633,30 @@ CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE
   while (step == CNK_LIBCANO_STEP_EXCHANGE) {
     size_t commandLen = 0;
     status = cnk_operation_command(operation, NULL, &commandLen);
-    if (status != CNK_LIBCANO_OK || commandLen == 0 || commandLen > 2048)
+    if (status != CNK_LIBCANO_OK) {
+      rv = cnk_libcanokey_status_with_error(status, &error);
       goto import_cleanup;
+    }
+    if (commandLen == 0 || commandLen > 2048) {
+      rv = CKR_DEVICE_ERROR;
+      goto import_cleanup;
+    }
     CK_BYTE command[2048];
     status = cnk_operation_command(operation, command, &commandLen);
-    if (status != CNK_LIBCANO_OK)
+    if (status != CNK_LIBCANO_OK) {
+      rv = cnk_libcanokey_status_with_error(status, &error);
       goto import_cleanup;
+    }
     DWORD responseLen = sizeof(response);
-    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS)
+    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS) {
+      rv = CKR_DEVICE_ERROR;
       goto import_cleanup;
+    }
     status = cnk_operation_advance(operation, response, responseLen, &step, &error);
-    if (status != CNK_LIBCANO_OK)
+    if (status != CNK_LIBCANO_OK) {
+      rv = cnk_libcanokey_status_with_error(status, &error);
       goto import_cleanup;
+    }
   }
   rv = step == CNK_LIBCANO_STEP_DONE ? CKR_OK : CKR_DEVICE_ERROR;
   if (rv == CKR_OK)
