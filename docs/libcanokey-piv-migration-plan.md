@@ -209,7 +209,9 @@ authorization/cache/rollback 和 compatibility wrappers。
 - short output 不发送 APDU；
 - profile invalidation、close/finalize、card reset race；
 - two sessions 的 physical transaction serialization；
-- logout 不得清除 active operation 的 authorization。
+- logout 必须撤销尚未开始 card I/O 的 operation context；已经取得 token
+  reservation 并进入 card I/O 的 admitted operation 保留 authorization，直到
+  card work 和 result commit 完成，随后再清理 context。
 
 硬件验收顺序：metadata enumeration、certificate propagation、ECDSA/RSA sign、
 RSA decrypt、ECDH derive、certificate write、key generation/import、reset/reinsert、

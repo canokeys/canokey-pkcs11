@@ -56,8 +56,8 @@ mode bypasses the cache on every read so the minidriver owns refresh policy.
 byte-order/format conversion for card-backed private-key operations. Classic
 RSA, ECDSA, P-521, secp256k1, and Ed25519 GENERAL AUTHENTICATE framing and
 signature parsing are delegated to the typed libcanokey operation inside one
-caller-owned selected transaction. ML-DSA remains on the generic raw path until
-the streaming context C ABI is available. Key generation/import remain in this
+caller-owned selected transaction. ML-DSA uses the selected-context streaming
+operation. Key generation/import remain in this
 module during the later write migration. `backend/piv_auth.c` owns PIN, PUK, and
 management-key authentication. `backend/piv_data.c` owns PIV data objects and
 legacy version/serial commands. `backend/pcsc.c` is limited to reader discovery, slot
