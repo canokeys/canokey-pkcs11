@@ -145,7 +145,7 @@ ECDH fail-closed、Windows decrypt/derive tests 通过；旧 C decrypt/derive bu
 
 当前进度：libcanokey 已提供 selected-context management authentication，以及
 management-authorized object write、certificate write/delete、key generation/import
-工厂；PKCS#11 `PUT DATA`
+工厂；PKCS#11 management authorization、`PUT DATA`
 object/certificate 写入、key generation、private material import 和 certificate
 delete 已切换到 context mutation，并修复了 lock/status failure cleanup。完整
 mutation rollback、并发和硬件回归仍待完成；近期 review 暴露的 transaction
