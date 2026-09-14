@@ -1,4 +1,7 @@
 #include "backend/pcsc.h"
+#include "backend/libcanokey.h"
+
+#include "api/session.h"
 
 #include "api/session.h"
 #include "internal/logging.h"
@@ -9,6 +12,132 @@
 
 #define CNK_PIV_MAX_DATA_OBJECT_SIZE 8192
 #define PIV_PADDED_PIN_LEN 8
+
+static CK_RV map_libcanokey_object_error(const CNK_LIBCANO_OPERATION *operation, uint32_t status) {
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  if (operation != NULL && cnk_operation_error(operation, &error) == CNK_LIBCANO_OK) {
+    switch (error.kind) {
+    case CNK_LIBCANO_ERROR_NOT_FOUND:
+      return CKR_DATA_INVALID;
+    case CNK_LIBCANO_ERROR_AUTHENTICATION_FAILED:
+      return CKR_USER_NOT_LOGGED_IN;
+    case CNK_LIBCANO_ERROR_PIN_BLOCKED:
+      return CKR_PIN_LOCKED;
+    case CNK_LIBCANO_ERROR_UNSUPPORTED_FEATURE:
+      return CKR_FUNCTION_NOT_SUPPORTED;
+    case CNK_LIBCANO_ERROR_LIMIT_EXCEEDED:
+      return CKR_DATA_LEN_RANGE;
+    default:
+      break;
+    }
+  }
+  return status == CNK_LIBCANO_BUFFER_TOO_SMALL ? CKR_BUFFER_TOO_SMALL : CKR_DEVICE_ERROR;
+}
+
+static CK_RV cnk_get_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag,
+                                         CK_ULONG tag_len, CK_BYTE_PTR data, CK_ULONG_PTR data_len,
+                                         CK_BBOOL fetch_data) {
+  CNK_ENSURE_NONNULL(session, tag);
+  if (tag_len == 0 || tag_len > 4 || (fetch_data && data_len == NULL))
+    return CKR_ARGUMENTS_BAD;
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+
+  SCARDHANDLE card = 0;
+  CK_BYTE pin[PIV_PADDED_PIN_LEN] = {0};
+  CK_ULONG pinLen = 0;
+  CK_BBOOL pinVerified = CK_FALSE;
+  CK_RV rv = cnk_token_copy_pin(session, pin, &pinLen);
+  if (rv == CKR_OK) {
+    rv = cnk_verify_piv_pin_with_session_ex(slotID, session, pin, pinLen, NULL, &card);
+    pinVerified = rv == CKR_OK;
+  } else if (rv == CKR_USER_NOT_LOGGED_IN) {
+    rv = cnk_begin_piv_transaction(slotID, &card);
+  }
+  mbedtls_platform_zeroize(pin, sizeof(pin));
+  if (rv != CKR_OK)
+    return rv;
+
+  CNK_LIBCANO_CONTEXT *context = NULL;
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  uint32_t step = 0;
+  uint32_t status = CNK_LIBCANO_OK;
+  CK_BYTE response[8192] = {0};
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
+  uint32_t contextStatus = profile == NULL
+                               ? CNK_LIBCANO_INVALID_STATE
+                               : cnk_piv_context_new(profile,
+                                                     pinVerified ? CNK_LIBCANO_CONTEXT_PIN_VERIFIED
+                                                                 : CNK_LIBCANO_CONTEXT_SELECTED,
+                                                     &context, &error);
+  cnk_mutex_unlock(&session->token->lock);
+  if (contextStatus != CNK_LIBCANO_OK ||
+      cnk_piv_read_object_in_context_new(context, tag, tag_len, NULL, &operation, &error) != CNK_LIBCANO_OK ||
+      cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
+    size_t commandLen = 0;
+    status = cnk_operation_command(operation, NULL, &commandLen);
+    if (status != CNK_LIBCANO_OK || commandLen == 0 || commandLen > 2048) {
+      rv = map_libcanokey_object_error(operation, status);
+      goto cleanup;
+    }
+    CK_BYTE command[2048];
+    status = cnk_operation_command(operation, command, &commandLen);
+    if (status != CNK_LIBCANO_OK) {
+      rv = map_libcanokey_object_error(operation, status);
+      goto cleanup;
+    }
+    DWORD responseLen = sizeof(response);
+    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS) {
+      rv = CKR_DEVICE_ERROR;
+      goto cleanup;
+    }
+    status = cnk_operation_advance(operation, response, responseLen, &step, &error);
+    if (status != CNK_LIBCANO_OK) {
+      rv = map_libcanokey_object_error(operation, status);
+      goto cleanup;
+    }
+  }
+  if (step != CNK_LIBCANO_STEP_DONE) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+  size_t required = 0;
+  status = cnk_operation_result_copy_bytes(operation, NULL, &required);
+  if (status != CNK_LIBCANO_OK) {
+    rv = map_libcanokey_object_error(operation, status);
+    goto cleanup;
+  }
+  if (!fetch_data) {
+    rv = CKR_OK;
+    goto cleanup;
+  }
+  CK_ULONG capacity = *data_len;
+  *data_len = (CK_ULONG)required;
+  if (data == NULL) {
+    rv = CKR_OK;
+    goto cleanup;
+  }
+  if (capacity < required) {
+    rv = CKR_BUFFER_TOO_SMALL;
+    goto cleanup;
+  }
+  status = cnk_operation_result_copy_bytes(operation, data, &required);
+  rv = map_libcanokey_object_error(operation, status);
+
+cleanup:
+  if (operation != NULL)
+    cnk_operation_free(operation);
+  if (context != NULL)
+    cnk_piv_context_free(context);
+  cnk_disconnect_card(card);
+  mbedtls_platform_zeroize(response, sizeof(response));
+  return rv;
+}
 
 static CK_RV cnk_get_piv_data_on_card(SCARDHANDLE hCard, const CK_BYTE *tag, CK_ULONG tag_len, CK_BYTE_PTR data,
                                       CK_ULONG_PTR data_len, CK_BBOOL fetch_data) {
@@ -88,26 +217,7 @@ CK_RV cnk_get_piv_data_by_tag_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION
                                            CK_BBOOL fetch_data) {
   CNK_LOG_FUNC(": slotID: %ld, session: %p, tag: %p, tag_len: %lu, data: %p, data_len: %p, fetch_data: %d", slotID,
                session, tag, tag_len, data, data_len, fetch_data);
-
-  CNK_ENSURE_NONNULL(session);
-  SCARDHANDLE hCard = 0;
-
-  CK_RV rv;
-  CK_BYTE pin[PIV_PADDED_PIN_LEN];
-  CK_ULONG pinLen = 0;
-  CK_RV pinRv = cnk_token_copy_pin(session, pin, &pinLen);
-  if (pinRv == CKR_OK) {
-    rv = cnk_verify_piv_pin_with_session_ex(slotID, session, pin, pinLen, NULL, &hCard);
-    mbedtls_platform_zeroize(pin, sizeof(pin));
-  } else if (pinRv == CKR_USER_NOT_LOGGED_IN) {
-    rv = cnk_begin_piv_transaction(slotID, &hCard);
-  } else
-    return pinRv;
-  if (rv == CKR_OK)
-    rv = cnk_get_piv_data_on_card(hCard, tag, tag_len, data, data_len, fetch_data);
-
-  cnk_disconnect_card(hCard);
-  CNK_RETURN(rv, "GET DATA");
+  return cnk_get_piv_data_libcanokey(slotID, session, tag, tag_len, data, data_len, fetch_data);
 }
 
 CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR data, CK_ULONG_PTR data_len, CK_BBOOL fetch_data) {
