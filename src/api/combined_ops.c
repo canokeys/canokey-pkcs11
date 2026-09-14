@@ -387,11 +387,8 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   CNK_ENSURE_OK(CNK_GetPivPolicies(pPrivateKeyTemplate, ulPrivateKeyAttributeCount,
                                    CNK_DefaultPinPolicyForPivObjectId(privateId), &pinPolicy, &touchPolicy));
 
-  CK_BYTE publicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
-  CK_ULONG publicKeyLen = sizeof(publicKey);
   CNK_ENSURE_OK(cnk_token_begin_management_operation(session));
-  CK_RV generateRv = cnk_piv_generate_keypair(session->slotId, session, algorithmType, pivTag, pinPolicy, touchPolicy,
-                                              publicKey, &publicKeyLen);
+  CK_RV generateRv = cnk_piv_generate_keypair(session->slotId, session, algorithmType, pivTag, pinPolicy, touchPolicy);
   cnk_token_end_management_operation(session);
   CNK_ENSURE_OK(generateRv);
 
@@ -453,7 +450,7 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
 
   CK_BYTE algorithmType;
   CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objId);
-  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivTag, &algorithmType, NULL, NULL, &pinPolicy, NULL));
+  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivTag, &algorithmType, NULL, &pinPolicy, NULL));
 
   // C_DeriveKey has no Init boundary where PKCS#11 can accept a
   // CKU_CONTEXT_SPECIFIC login. Do not satisfy a PIN-always policy with the

@@ -57,7 +57,7 @@ CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *session) {
 }
 
 static CK_RV cnk_get_metadata_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR algorithmType,
-                                         CK_BYTE_PTR publicKey, CK_ULONG_PTR publicKeyLen, CK_BYTE_PTR pinPolicy,
+                                         CNK_PIV_PUBLIC_KEY *publicKey, CK_BYTE_PTR pinPolicy,
                                          CK_BYTE_PTR touchPolicy) {
   CNK_ENSURE_NONNULL(session, session->token, algorithmType);
   CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
@@ -81,8 +81,8 @@ static CK_RV cnk_get_metadata_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pi
   if (CNK_EXTERNAL_CALL(cnk_operation_metadata, operation, &metadata) != CNK_LIBCANO_OK ||
       (metadata.presence_flags & CNK_LIBCANO_METADATA_HAS_ALGORITHM) == 0)
     goto cleanup;
-  rv = publicKeyLen != NULL ? cnk_copy_piv_public_key(operation, publicKey, publicKeyLen) : CKR_OK;
-  if (rv == CKR_OK || rv == CKR_BUFFER_TOO_SMALL) {
+  rv = publicKey != NULL ? cnk_copy_piv_public_key(operation, publicKey) : CKR_OK;
+  if (rv == CKR_OK) {
     *algorithmType = metadata.algorithm_id;
     if (pinPolicy != NULL && (metadata.presence_flags & CNK_LIBCANO_METADATA_HAS_POLICY) != 0)
       *pinPolicy = metadata.pin_policy;
@@ -162,7 +162,6 @@ cleanup:
 #include <windows.h>
 #endif
 
-#define CNK_PIV_MAX_PUBLIC_KEY_RESPONSE 4096
 #define CNK_PIV_PUBLIC_CACHE_TTL_MS 60000
 #define CNK_PIV_EXTENSION_CACHE_SLOTS 64
 
@@ -221,24 +220,15 @@ static CK_LONG cnk_public_cache_index(CK_BYTE pivTag) {
 }
 
 static CK_RV cnk_copy_cached_metadata(const CNK_PIV_PUBLIC_CACHE_ENTRY *entry, CK_BYTE_PTR algorithmType,
-                                      CK_BYTE_PTR publicKey, CK_ULONG_PTR publicKeyLen, CK_BYTE_PTR pinPolicy,
-                                      CK_BYTE_PTR touchPolicy) {
+                                      CNK_PIV_PUBLIC_KEY *publicKey, CK_BYTE_PTR pinPolicy, CK_BYTE_PTR touchPolicy) {
   CNK_ENSURE_NONNULL(entry, algorithmType);
   *algorithmType = entry->algorithmType;
   if (pinPolicy != NULL)
     *pinPolicy = entry->pinPolicy;
   if (touchPolicy != NULL)
     *touchPolicy = entry->touchPolicy;
-  if (publicKeyLen == NULL)
-    return CKR_OK;
-
-  CK_ULONG capacity = *publicKeyLen;
-  *publicKeyLen = entry->publicKeyLen;
-  if (publicKey == NULL)
-    return CKR_OK;
-  if (capacity < entry->publicKeyLen)
-    return CKR_BUFFER_TOO_SMALL;
-  memcpy(publicKey, entry->publicKey, entry->publicKeyLen);
+  if (publicKey != NULL)
+    *publicKey = entry->publicKey;
   return CKR_OK;
 }
 
@@ -358,54 +348,49 @@ cleanup:
 }
 
 CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR algorithmType,
-                              CK_BYTE_PTR publicKey, CK_ULONG_PTR publicKeyLen, CK_BYTE_PTR pinPolicy,
-                              CK_BYTE_PTR touchPolicy) {
+                              CNK_PIV_PUBLIC_KEY *publicKey, CK_BYTE_PTR pinPolicy, CK_BYTE_PTR touchPolicy) {
   CNK_ENSURE_NONNULL(session, session->token, algorithmType);
   /* Build the immutable libcanokey profile once per card binding. */
   CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
   if (g_cnk_is_managed_mode || !atomic_load(&g_cnk_piv_metadata_cache_enabled)) {
     CNK_DEBUG("hardware metadata read (%s): PIV slot 0x%02X", g_cnk_is_managed_mode ? "managed mode" : "cache disabled",
               pivTag);
-    return cnk_get_metadata_libcanokey(session, pivTag, algorithmType, publicKey, publicKeyLen, pinPolicy, touchPolicy);
+    return cnk_get_metadata_libcanokey(session, pivTag, algorithmType, publicKey, pinPolicy, touchPolicy);
   }
 
   CK_LONG index = cnk_public_cache_index(pivTag);
   if (index < 0)
-    return cnk_get_metadata_libcanokey(session, pivTag, algorithmType, publicKey, publicKeyLen, pinPolicy, touchPolicy);
+    return cnk_get_metadata_libcanokey(session, pivTag, algorithmType, publicKey, pinPolicy, touchPolicy);
 
   uint64_t nowMs = cnk_public_cache_now_ms();
   CNK_PIV_PUBLIC_CACHE_ENTRY *entry = &session->token->pivPublicCache.slots[index];
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
   if (entry->metadataValid && cnk_public_cache_fresh(entry->metadataRefreshedAtMs, nowMs)) {
-    CK_RV copyRv = cnk_copy_cached_metadata(entry, algorithmType, publicKey, publicKeyLen, pinPolicy, touchPolicy);
+    CK_RV copyRv = cnk_copy_cached_metadata(entry, algorithmType, publicKey, pinPolicy, touchPolicy);
     cnk_mutex_unlock(&session->token->lock);
     CNK_DEBUG("cached metadata read: PIV slot 0x%02X", pivTag);
     return copyRv;
   }
   cnk_mutex_unlock(&session->token->lock);
 
-  CK_BYTE cachedPublicKey[CNK_PIV_PUBLIC_CACHE_MAX_PUBLIC_KEY];
-  CK_ULONG cachedPublicKeyLen = sizeof(cachedPublicKey);
+  CNK_PIV_PUBLIC_KEY cachedPublicKey;
   CK_BYTE cachedAlgorithmType = 0;
   CK_BYTE cachedPinPolicy = 0;
   CK_BYTE cachedTouchPolicy = 0;
   CNK_DEBUG("hardware metadata read: PIV slot 0x%02X", pivTag);
-  CK_RV rv = cnk_get_metadata_libcanokey(session, pivTag, &cachedAlgorithmType, cachedPublicKey, &cachedPublicKeyLen,
-                                         &cachedPinPolicy, &cachedTouchPolicy);
+  CK_RV rv = cnk_get_metadata_libcanokey(session, pivTag, &cachedAlgorithmType, &cachedPublicKey, &cachedPinPolicy,
+                                         &cachedTouchPolicy);
   if (rv != CKR_OK)
     return rv;
 
-  if (cachedPublicKeyLen > sizeof(entry->publicKey))
-    return CKR_DATA_LEN_RANGE;
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
   entry->algorithmType = cachedAlgorithmType;
   entry->pinPolicy = cachedPinPolicy;
   entry->touchPolicy = cachedTouchPolicy;
-  entry->publicKeyLen = cachedPublicKeyLen;
-  memcpy(entry->publicKey, cachedPublicKey, cachedPublicKeyLen);
+  entry->publicKey = cachedPublicKey;
   entry->metadataRefreshedAtMs = cnk_public_cache_now_ms();
   entry->metadataValid = CK_TRUE;
-  CK_RV copyRv = cnk_copy_cached_metadata(entry, algorithmType, publicKey, publicKeyLen, pinPolicy, touchPolicy);
+  CK_RV copyRv = cnk_copy_cached_metadata(entry, algorithmType, publicKey, pinPolicy, touchPolicy);
   cnk_mutex_unlock(&session->token->lock);
   return copyRv;
 }

@@ -103,16 +103,4 @@
 
 char *ck_strcasestr(const char *str, const char *pattern);
 
-/**
- * Parse the length field in TLV (Tag-Length-Value) format according to ASN.1 DER rules.
- *
- * @param data Pointer to the start of the length field
- * @param len Total available length of the data buffer
- * @param fail Pointer to an int that will be set to 1 if parsing fails, 0 otherwise
- * @param length_size Pointer to a size_t that will be set to the number of bytes used for length encoding
- *
- * @return The parsed length value as a uint16_t
- */
-CK_ULONG tlvGetLengthSafe(const CK_BYTE *data, const CK_ULONG len, CK_LONG *fail, CK_ULONG_PTR length_size);
-
 #endif // CNK_INTERNAL_UTIL_H

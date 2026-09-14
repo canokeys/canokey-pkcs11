@@ -244,12 +244,11 @@ static CK_RV handleDataAttribute(CK_ATTRIBUTE_PTR attribute, const PivDataObject
  *
  * @param attribute The attribute to handle
  * @param algorithmType The key algorithm type
- * @param pbPublicKey Public key data
- * @param cbPublicKey Length of public key data
+ * @param publicKey Owned, validated public components
  * @return CK_RV CKR_OK on success, error code otherwise
  */
 static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithmType,
-                                      CK_BYTE_PTR pbPublicKey, CK_ULONG cbPublicKey);
+                                      const CNK_PIV_PUBLIC_KEY *publicKey);
 
 /**
  * @brief Handle private key attributes
@@ -590,9 +589,8 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
     }
 
     CK_BYTE algorithmType = 0;
-    CK_BYTE publicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
-    CK_ULONG publicKeyLen = sizeof(publicKey);
-    rv = cnk_get_metadata_cached(session, pivTag, &algorithmType, publicKey, &publicKeyLen, pinPolicy, NULL);
+    CNK_PIV_PUBLIC_KEY publicKey;
+    rv = cnk_get_metadata_cached(session, pivTag, &algorithmType, &publicKey, pinPolicy, NULL);
     if (rv == CKR_OK) {
       *exists = CK_TRUE;
       return CKR_OK;
@@ -1324,8 +1322,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   CK_BYTE bAlgorithmType = 0;
   CK_BYTE bPinPolicy = 0;
   CK_BYTE bTouchPolicy = 0;
-  CK_BYTE abPublicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
-  CK_ULONG cbPublicKey = sizeof(abPublicKey);
+  CNK_PIV_PUBLIC_KEY abPublicKey;
 
   switch (objClass) {
   case CKO_DATA:
@@ -1338,13 +1335,14 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
   case CKO_PUBLIC_KEY:
   case CKO_PRIVATE_KEY: {
-    CK_RV rvMeta = cnk_get_metadata_cached(session, bPivSlot, &bAlgorithmType, abPublicKey, &cbPublicKey, &bPinPolicy,
-                                           &bTouchPolicy);
+    CK_RV rvMeta =
+        cnk_get_metadata_cached(session, bPivSlot, &bAlgorithmType, &abPublicKey, &bPinPolicy, &bTouchPolicy);
     if (rvMeta != CKR_OK) {
       CNK_DEBUG("Failed to get metadata for PIV slot 0x%02X: %lu", bPivSlot, rvMeta);
+      return rvMeta;
     } else {
       CNK_DEBUG("Retrieved algorithm type %u for PIV slot 0x%02X with public key size %lu", bAlgorithmType, bPivSlot,
-                cbPublicKey);
+                abPublicKey.valueLen);
     }
     break;
   }
@@ -1464,7 +1462,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       } else if (pTemplate[i].type == CKA_CNK_PIV_TOUCH_POLICY) {
         rv = setSingleAttributeValue(&pTemplate[i], &bTouchPolicy, sizeof(bTouchPolicy));
       } else {
-        rv = handlePublicKeyAttribute(session, &pTemplate[i], bAlgorithmType, abPublicKey, cbPublicKey);
+        rv = handlePublicKeyAttribute(session, &pTemplate[i], bAlgorithmType, &abPublicKey);
       }
       break;
 
@@ -1885,52 +1883,18 @@ static CK_RV setEcParamsAttribute(const CNK_PKCS11_SESSION *session, CK_ATTRIBUT
 
 // Handle public key specific attributes
 static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithm_type,
-                                      CK_BYTE_PTR pbPublicKey, CK_ULONG cbPublicKey) {
+                                      const CNK_PIV_PUBLIC_KEY *publicKey) {
   CNK_LOG_FUNC(" attribute = 0x%x, algorithm_type = 0x%x", attribute->type, algorithm_type);
 
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
   CK_KEY_TYPE keyType = algoType2KeyType(session, algorithm_type);
 
-  CK_BYTE_PTR pbModulus = NULL;
-  CK_ULONG cbModulus = 0;
-  CK_BYTE_PTR pbPublicExponent = NULL;
-  CK_ULONG cbPublicExponent = 0;
-  CK_BYTE_PTR pbPublicPoint = NULL;
-  CK_ULONG cbPublicPoint = 0;
-
-  // Parse the public key data. The public key data is encoded in TLV.
-  CK_ULONG vpos = 0; /* cursor inside the value buffer   */
-  while (vpos < cbPublicKey) {
-    /* ---- read inner tag --------------------------------------- */
-    CK_BYTE itag = pbPublicKey[vpos++];
-    if (vpos >= cbPublicKey)
-      break; /* malformed */
-    /* ---- read inner length (DER) ------------------------------ */
-    CK_LONG fail;
-    CK_ULONG lengthSize;
-    CK_ULONG ilen = tlvGetLengthSafe(&pbPublicKey[vpos], cbPublicKey - vpos, &fail, &lengthSize);
-    if (fail || lengthSize > cbPublicKey - vpos)
-      CNK_RETURN(CKR_DEVICE_ERROR, "Bad length in public-key TLV");
-    vpos += lengthSize;
-    if (ilen > cbPublicKey - vpos)
-      CNK_RETURN(CKR_DEVICE_ERROR, "Public-key TLV value exceeds response");
-    /* ---- RSA modulus lives in tag 0x81 ------------------------ */
-    if (itag == 0x81) {
-      pbModulus = pbPublicKey + vpos;
-      cbModulus = ilen;
-    }
-    /* ---- RSA public exponent lives in tag 0x82 ---------------- */
-    if (itag == 0x82) {
-      pbPublicExponent = pbPublicKey + vpos;
-      cbPublicExponent = ilen;
-    }
-    /* ---- ECC public point lives in tag 0x86 ---------------- */
-    if (itag == 0x86) {
-      pbPublicPoint = pbPublicKey + vpos;
-      cbPublicPoint = ilen;
-    }
-    vpos += ilen; /* advance to next inner TLV        */
-  }
+  const CK_BYTE *pbModulus = publicKey->value;
+  CK_ULONG cbModulus = publicKey->valueLen;
+  const CK_BYTE *pbPublicExponent = publicKey->exponent;
+  CK_ULONG cbPublicExponent = publicKey->exponentLen;
+  const CK_BYTE *pbPublicPoint = publicKey->value;
+  CK_ULONG cbPublicPoint = publicKey->valueLen;
 
   switch (attribute->type) {
   case CKA_KEY_TYPE:

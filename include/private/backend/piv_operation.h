@@ -30,6 +30,6 @@ CK_RV cnk_piv_read_metadata_fields(CNK_PKCS11_SESSION *session, SCARDHANDLE card
  * The caller retains operation, transaction and result ownership on every exit. */
 CK_RV cnk_run_piv_operation(SCARDHANDLE card, CNK_LIBCANO_OPERATION *operation, CK_RV absent, CK_BBOOL *attempted);
 
-CK_RV cnk_copy_piv_public_key(const CNK_LIBCANO_OPERATION *operation, CK_BYTE_PTR output, CK_ULONG_PTR outputLen);
+CK_RV cnk_copy_piv_public_key(const CNK_LIBCANO_OPERATION *operation, CNK_PIV_PUBLIC_KEY *output);
 
 #endif

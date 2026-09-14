@@ -297,7 +297,7 @@ int main(void) {
     token.libcanokeyProfile = NULL;
   }
   // The actual Rust profile maps D1 to RSA-3072. The C adapter must pass
-  // the semantic type to generation and classify its returned key as RSA.
+  // the semantic type to generation and complete the chained Rust key parser.
   generateWire = 0xd1;
   metadataProbes = 1;
   firmware = "3.1.0";
@@ -308,17 +308,13 @@ int main(void) {
   make_profile(&token.libcanokeyProfile);
   sends = failAt = malformedAt = deniedAt = 0;
   lockError = credentialError = CKR_OK;
-  CK_BYTE publicKey[512];
-  CK_ULONG length = sizeof(publicKey);
-  CK_RV generateRv = cnk_piv_generate_keypair(0, &session, generateWire, 0x9c, 1, 1, publicKey, &length);
+  CK_RV generateRv = cnk_piv_generate_keypair(0, &session, generateWire, 0x9c, 1, 1);
   if (generateRv != CKR_OK)
-    fprintf(stderr, "Generation failed: rv=%lx sends=%u length=%lu\n", generateRv, sends, length);
+    fprintf(stderr, "Generation failed: rv=%lx sends=%u\n", generateRv, sends);
   CHECK(generateRv == CKR_OK);
-  CHECK(sends == 5 && invalidations == 1 && length == 393 && !cards && !locked);
-  CHECK(publicKey[0] == 0x81 && publicKey[2] == 1 && publicKey[3] == 0x80 && publicKey[388] == 0x82);
+  CHECK(sends == 5 && invalidations == 1 && !cards && !locked);
   sends = 0;
-  length = sizeof(publicKey);
-  CHECK(cnk_piv_generate_keypair(0, &session, 0xfe, 0x9c, 1, 1, publicKey, &length) == CKR_MECHANISM_INVALID);
+  CHECK(cnk_piv_generate_keypair(0, &session, 0xfe, 0x9c, 1, 1) == CKR_MECHANISM_INVALID);
   CHECK(!sends && !cards && !locked);
   cnk_profile_free(token.libcanokeyProfile);
   generateWire = 0;

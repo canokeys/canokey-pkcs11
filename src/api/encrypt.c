@@ -13,12 +13,6 @@
 #include <mbedtls/platform_util.h>
 #include <string.h>
 
-// 0x81 + three-byte length + 512-byte modulus + 0x82 + length +
-// three-byte public exponent.
-#define CNK_RSA4096_PUBLIC_KEY_METADATA_MIN_SIZE 521
-_Static_assert(CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE >= CNK_RSA4096_PUBLIC_KEY_METADATA_MIN_SIZE,
-               "PIV public-key metadata buffer must hold RSA-4096 components");
-
 static CK_BBOOL isDecryptMechanism(CK_MECHANISM_TYPE mechanism) {
   switch (mechanism) {
   case CKM_RSA_X_509:
@@ -130,45 +124,6 @@ static CK_RV copyRsaCryptMechanism(CK_MECHANISM *destination, const CK_MECHANISM
   CNK_RET_OK;
 }
 
-static CK_RV getRsaPublicComponents(const CK_BYTE *publicKey, CK_ULONG publicKeyLen, const CK_BYTE **modulus,
-                                    CK_ULONG_PTR modulusLen, const CK_BYTE **exponent, CK_ULONG_PTR exponentLen) {
-  CNK_ENSURE_NONNULL(publicKey, modulus, modulusLen, exponent, exponentLen);
-  *modulus = NULL;
-  *exponent = NULL;
-  *modulusLen = 0;
-  *exponentLen = 0;
-
-  CK_ULONG vpos = 0;
-  while (vpos < publicKeyLen) {
-    CK_BYTE itag = publicKey[vpos++];
-    if (vpos >= publicKeyLen)
-      break;
-
-    CK_LONG fail = 0;
-    CK_ULONG lengthSize = 0;
-    CK_ULONG ilen = tlvGetLengthSafe(&publicKey[vpos], publicKeyLen - vpos, &fail, &lengthSize);
-    if (fail || lengthSize > publicKeyLen - vpos)
-      CNK_RETURN(CKR_DEVICE_ERROR, "Bad length in public-key TLV");
-    vpos += lengthSize;
-    if (ilen > publicKeyLen - vpos)
-      CNK_RETURN(CKR_DEVICE_ERROR, "Public-key TLV value exceeds response");
-
-    if (itag == 0x81) {
-      *modulus = publicKey + vpos;
-      *modulusLen = ilen;
-    } else if (itag == 0x82) {
-      *exponent = publicKey + vpos;
-      *exponentLen = ilen;
-    }
-
-    vpos += ilen;
-  }
-
-  if (*modulus == NULL || *exponent == NULL)
-    CNK_RETURN(CKR_DEVICE_ERROR, "RSA public-key component is missing");
-  CNK_RET_OK;
-}
-
 CK_RV C_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {
   CNK_LOG_FUNC(": hSession: %lu, pMechanism: %p, hKey: %lu", hSession, pMechanism, hKey);
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(pMechanism);
@@ -194,21 +149,17 @@ CK_RV C_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   // Encryption is a host public-key operation; metadata supplies the public
   // components while the private key remains on the card for C_Decrypt.
   CK_BYTE algorithmType;
-  CK_BYTE publicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
-  CK_ULONG publicKeyLen = sizeof(publicKey);
-  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivSlot, &algorithmType, publicKey, &publicKeyLen, NULL, NULL));
+  CNK_PIV_PUBLIC_KEY publicKey;
+  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivSlot, &algorithmType, &publicKey, NULL, NULL));
   if (!CNK_PivAlgorithmIsRsa(session, algorithmType))
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "encrypt key is not RSA");
 
-  const CK_BYTE *modulus, *exponent;
-  CK_ULONG modulusLen, exponentLen;
-  CNK_ENSURE_OK(getRsaPublicComponents(publicKey, publicKeyLen, &modulus, &modulusLen, &exponent, &exponentLen));
+  CK_ULONG modulusLen = publicKey.valueLen;
 
   cnk_reset_encrypting_context(session);
   session->encryptingContext.hKey = hKey;
-  session->encryptingContext.publicKeyLen = publicKeyLen;
   session->encryptingContext.modulusLen = modulusLen;
-  memcpy(session->encryptingContext.publicKey, publicKey, publicKeyLen);
+  session->encryptingContext.publicKey = publicKey;
   CK_RV rv = copyRsaCryptMechanism(&session->encryptingContext.mechanism, pMechanism);
   if (rv != CKR_OK) {
     cnk_reset_encrypting_context(session);
@@ -245,12 +196,10 @@ CK_RV C_Encrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLe
     return CKR_BUFFER_TOO_SMALL;
   }
 
-  const CK_BYTE *modulus, *exponent;
-  CK_ULONG parsedModulusLen, exponentLen;
-  CK_RV rv = getRsaPublicComponents(session->encryptingContext.publicKey, session->encryptingContext.publicKeyLen,
-                                    &modulus, &parsedModulusLen, &exponent, &exponentLen);
-  if (rv != CKR_OK)
-    goto cleanup;
+  const CNK_PIV_PUBLIC_KEY *key = &session->encryptingContext.publicKey;
+  const CK_BYTE *modulus = key->value, *exponent = key->exponent;
+  CK_ULONG parsedModulusLen = key->valueLen, exponentLen = key->exponentLen;
+  CK_RV rv = CKR_OK;
 
   CK_BYTE encoded[512];
   if (modulusLen > sizeof(encoded)) {
@@ -344,9 +293,8 @@ CK_RV C_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
 
   CK_BYTE algorithmType;
   CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objId);
-  CK_BYTE abPublicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
-  CK_ULONG cbPublicKey = sizeof(abPublicKey);
-  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
+  CNK_PIV_PUBLIC_KEY abPublicKey;
+  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivTag, &algorithmType, &abPublicKey, &pinPolicy, NULL));
 
   if (!CNK_PivPrivateKeyCanDecrypt(session, algorithmType))
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for decrypt");
@@ -354,11 +302,7 @@ CK_RV C_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   if (!CNK_PivAlgorithmIsRsa(session, algorithmType))
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "decrypt key is not RSA");
 
-  CK_ULONG cbModulus = 0;
-  const CK_BYTE *modulus, *exponent;
-  CK_ULONG exponentLen;
-  CNK_ENSURE_OK(getRsaPublicComponents(abPublicKey, cbPublicKey, &modulus, &cbModulus, &exponent, &exponentLen));
-  CNK_UNUSED(modulus, exponent, exponentLen);
+  CK_ULONG cbModulus = abPublicKey.valueLen;
 
   cnk_reset_decrypting_context(session);
 

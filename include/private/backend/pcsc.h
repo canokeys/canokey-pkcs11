@@ -1,6 +1,7 @@
 #ifndef CNK_BACKEND_PCSC_H
 #define CNK_BACKEND_PCSC_H
 
+#include "internal/public_key.h"
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
 
@@ -99,10 +100,6 @@ CK_DEFINE_FUNCTION(CK_RV, cnk_pcsc_set_test_transport)(const CNK_PCSC_TEST_TRANS
 #define PIV_ALG_SM2 0x54
 #define PIV_ALG_MLDSA65 0xE2
 #define PIV_ALG_MLKEM768 0xE3
-
-// Large enough for the encoded public-key value of every supported PIV
-// algorithm, including ML-DSA-65 and RSA-4096 modulus/exponent TLVs.
-#define CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE 2048
 
 typedef struct {
   CK_BYTE enabled;
@@ -236,16 +233,10 @@ CK_RV cnk_delete_piv_certificate_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSIO
 // failure releases it. Caller holds the token management reservation.
 CK_RV cnk_begin_key_write(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pivSlot, SCARDHANDLE *card);
 
-// Get metadata for a PIV key or object
-// This function retrieves metadata from a PIV key or object using the PIV metadata APDU command
-CK_RV cnk_get_metadata(CK_SLOT_ID slotID, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType, CK_BYTE_PTR pbPublicKey,
-                       CK_ULONG_PTR pulPublicKeyLen, CK_BYTE_PTR pbPinPolicy, CK_BYTE_PTR pbTouchPolicy);
-
 // Standalone-only public snapshot wrappers. Managed callers intentionally
 // bypass this cache because the minidriver owns its own refresh policy.
 CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType,
-                              CK_BYTE_PTR pbPublicKey, CK_ULONG_PTR pulPublicKeyLen, CK_BYTE_PTR pbPinPolicy,
-                              CK_BYTE_PTR pbTouchPolicy);
+                              CNK_PIV_PUBLIC_KEY *publicKey, CK_BYTE_PTR pbPinPolicy, CK_BYTE_PTR pbTouchPolicy);
 CK_RV cnk_get_piv_data_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR data, CK_ULONG_PTR data_len,
                               CK_BBOOL fetch_data);
 
@@ -269,8 +260,7 @@ CK_RV cnk_piv_generate_random(CK_SLOT_ID slotID, CK_BYTE_PTR output, CK_ULONG ou
 
 // Generate a PIV asymmetric key pair.
 CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
-                               CK_BYTE pinPolicy, CK_BYTE touchPolicy, CK_BYTE_PTR pbPublicKey,
-                               CK_ULONG_PTR pcbPublicKey);
+                               CK_BYTE pinPolicy, CK_BYTE touchPolicy);
 
 // Sign data using PIV key
 // This function signs data using the PIV GENERAL AUTHENTICATE command

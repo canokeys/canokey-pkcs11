@@ -1,6 +1,7 @@
 #ifndef CNK_API_SESSION_H
 #define CNK_API_SESSION_H
 
+#include "internal/public_key.h"
 #include "pkcs11.h"
 
 #include "internal/mutex.h"
@@ -26,7 +27,6 @@ typedef enum {
 } CNK_TOKEN_LOGIN_STATE;
 
 #define CNK_PIV_PUBLIC_CACHE_SLOT_COUNT 24
-#define CNK_PIV_PUBLIC_CACHE_MAX_PUBLIC_KEY 2048
 #define CNK_PIV_PUBLIC_CACHE_MAX_CERTIFICATE 8192
 
 // Public PIV data is safe to cache, unlike the credential fields below. The
@@ -39,8 +39,7 @@ typedef struct {
   CK_BYTE algorithmType;
   CK_BYTE pinPolicy;
   CK_BYTE touchPolicy;
-  CK_BYTE publicKey[CNK_PIV_PUBLIC_CACHE_MAX_PUBLIC_KEY];
-  CK_ULONG publicKeyLen;
+  CNK_PIV_PUBLIC_KEY publicKey;
   CK_BBOOL certificateValid;
   uint64_t certificateRefreshedAtMs;
   CK_BYTE certificate[CNK_PIV_PUBLIC_CACHE_MAX_CERTIFICATE];
@@ -171,8 +170,7 @@ typedef struct {
   CK_BYTE algorithmType;
   mbedtls_md_type_t mdType;
   CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
-  CK_BYTE publicKey[2048];
-  CK_ULONG publicKeyLen;
+  CNK_PIV_PUBLIC_KEY publicKey;
   CK_BYTE_PTR message;
   CK_ULONG messageLen;
   CK_ULONG messageCapacity;
@@ -181,8 +179,7 @@ typedef struct {
 typedef struct {
   CK_OBJECT_HANDLE hKey;
   CK_MECHANISM mechanism;
-  CK_BYTE publicKey[2048];
-  CK_ULONG publicKeyLen;
+  CNK_PIV_PUBLIC_KEY publicKey;
   CK_ULONG modulusLen;
 } CNK_PKCS11_ENCRYPTING_CONTEXT;
 

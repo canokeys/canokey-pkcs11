@@ -167,6 +167,8 @@ for name, types in {
     "C_DecapsulateKey": [U, C.POINTER(Mech), U, C.POINTER(Attr), U, P, U, C.POINTER(U)],
     "C_SignInit": [U, C.POINTER(Mech), U],
     "C_Sign": [U, P, U, P, C.POINTER(U)],
+    "C_EncryptInit": [U, C.POINTER(Mech), U],
+    "C_Encrypt": [U, P, U, P, C.POINTER(U)],
     "C_DecryptInit": [U, C.POINTER(Mech), U],
     "C_Decrypt": [U, P, U, P, C.POINTER(U)],
     "C_DeriveKey": [U, C.POINTER(Mech), U, C.POINTER(Attr), U, C.POINTER(U)],
@@ -284,6 +286,16 @@ def sign(id, mechanism, data):
     return out.raw[: n.value]
 
 
+def verify(id, mechanism, data, signature):
+    key = key_for(2, id)
+    check(lib.C_VerifyInit(s, C.byref(mechanism), key))
+    check(lib.C_Verify(s, data, len(data), signature, len(signature)))
+    corrupted = bytes([signature[0] ^ 1]) + signature[1:]
+    check(lib.C_VerifyInit(s, C.byref(mechanism), key))
+    if lib.C_Verify(s, data, len(data), corrupted, len(corrupted)) != 0xC0:
+        raise AssertionError("Host verification accepted a corrupted signature")
+
+
 def derive(id):
     pub = public(id)
     if isinstance(pub, x25519.X25519PublicKey):
@@ -324,7 +336,23 @@ def rsa_checks(id):
         sig = sign(id, m, msg)
         pad = padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32) if pss else padding.PKCS1v15()
         pub.verify(sig, msg, pad, hashes.SHA256())
+        verify(id, m, msg, sig)
         print("PASS RSA SHA256", "PSS" if pss else "PKCS1", flush=True)
+    # Independently check the host RSA public operation and its retry boundary.
+    m = Mech(3, None, 0)  # CKM_RSA_X_509
+    check(lib.C_EncryptInit(s, C.byref(m), key_for(2, id)))
+    n = U()
+    check(lib.C_Encrypt(s, msg, len(msg), None, C.byref(n)))
+    out = C.create_string_buffer(n.value)
+    short = U(1)
+    if lib.C_Encrypt(s, msg, len(msg), out, C.byref(short)) != 0x150 or short.value != n.value:
+        raise AssertionError("RSA encryption short-buffer retry failed")
+    check(lib.C_Encrypt(s, msg, len(msg), out, C.byref(n)))
+    numbers = pub.public_numbers()
+    expected = pow(int.from_bytes(msg, "big"), numbers.e, numbers.n).to_bytes(pub.key_size // 8, "big")
+    if out.raw[: n.value] != expected:
+        raise AssertionError("Host RSA encryption differs from independent modular exponentiation")
+    print("PASS RSA host encrypt and host verify/corrupted-signature rejection", flush=True)
     for oaep in [False, True]:
         pad = (
             padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
@@ -441,6 +469,7 @@ def ecdsa_checks(id):
             int.from_bytes(sig[:width], "big"), int.from_bytes(sig[width:], "big")
         )
         pub.verify(encoded, data, ec.ECDSA(utils.Prehashed(algorithm)))
+        verify(id, Mech(4161, None, 0), data, sig)
         print(f"PASS ECDSA ID {id:02x}, {pub.key_size} bits, {algorithm.name}", flush=True)
 
 

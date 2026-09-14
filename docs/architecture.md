@@ -83,6 +83,11 @@ mutations invalidate public snapshots before transaction release.
 
 ## Public snapshots and object model
 
+Public-key snapshots contain owned modulus/exponent, EC point or raw key bytes.
+Rust validates their card representation once; C no longer encodes and reparses
+public-key TLVs. Generation validates its Rust result and publishes handles only.
+PKCS#11 CKA_EC_POINT DER wrapping remains a host attribute responsibility.
+
 The standalone public cache holds only directory entries, key metadata and
 certificate bytes. Every read checks the 60-second TTL and metadata_cache /
 CNK_PIV_METADATA_CACHE controls. Managed mode bypasses it. Credentials, handles,

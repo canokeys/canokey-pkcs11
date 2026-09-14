@@ -225,59 +225,28 @@ CK_RV cnk_piv_read_metadata_fields(CNK_PKCS11_SESSION *session, SCARDHANDLE card
   return rv;
 }
 
-/* Compatibility encoding for the existing C public-key consumers. Both
- * metadata and generation must report precisely the bytes they write. */
-CK_RV cnk_copy_piv_public_key(const CNK_LIBCANO_OPERATION *operation, CK_BYTE_PTR output, CK_ULONG_PTR outputLen) {
-  if (operation == NULL || outputLen == NULL)
-    return CKR_ARGUMENTS_BAD;
-  uint32_t algorithm = 0;
-  if (CNK_EXTERNAL_CALL(cnk_operation_key_algorithm, operation, &algorithm) != CNK_LIBCANO_OK)
+// Copy all components before publishing the snapshot; no partial key escapes
+// an ABI failure. The result getters never advance or access the card.
+CK_RV cnk_copy_piv_public_key(const CNK_LIBCANO_OPERATION *operation, CNK_PIV_PUBLIC_KEY *output) {
+  CNK_ENSURE_NONNULL(operation, output);
+  CNK_PIV_PUBLIC_KEY key = {0};
+  if (CNK_EXTERNAL_CALL(cnk_operation_key_algorithm, operation, &key.algorithm) != CNK_LIBCANO_OK)
     return CKR_DEVICE_ERROR;
-  CK_BBOOL rsa = algorithm >= CNK_LIBCANO_ALG_RSA_1024 && algorithm <= CNK_LIBCANO_ALG_RSA_4096;
+  CK_BBOOL rsa = key.algorithm >= CNK_LIBCANO_ALG_RSA_1024 && key.algorithm <= CNK_LIBCANO_ALG_RSA_4096;
+  size_t length = sizeof(key.value);
   uint32_t field = rsa ? CNK_LIBCANO_PUBLIC_MODULUS : CNK_LIBCANO_PUBLIC_POINT_OR_RAW;
-  size_t firstLen = 0;
-  if (CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, field, NULL, &firstLen) != CNK_LIBCANO_OK ||
-      firstLen > 4096)
+  if (CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, field, key.value, &length) != CNK_LIBCANO_OK ||
+      length == 0 || length > sizeof(key.value))
     return CKR_DEVICE_ERROR;
-  CK_BYTE first[4096];
-  if (CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, field, first, &firstLen) != CNK_LIBCANO_OK)
-    return CKR_DEVICE_ERROR;
-  CK_BYTE second[8] = {0};
-  size_t secondLen = 0;
-  if (rsa && (CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, CNK_LIBCANO_PUBLIC_EXPONENT, NULL,
-                                &secondLen) != CNK_LIBCANO_OK ||
-              secondLen > sizeof(second) ||
-              CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, CNK_LIBCANO_PUBLIC_EXPONENT, second,
-                                &secondLen) != CNK_LIBCANO_OK))
-    return CKR_DEVICE_ERROR;
-  CK_ULONG required = 1 + (firstLen < 128 ? 1 : firstLen <= 255 ? 2 : 3) + firstLen;
-  if (rsa)
-    required += 1 + (secondLen < 128 ? 1 : secondLen <= 255 ? 2 : 3) + secondLen;
-  CK_ULONG capacity = *outputLen;
-  *outputLen = required;
-  if (output == NULL)
-    return CKR_OK;
-  if (capacity < required)
-    return CKR_BUFFER_TOO_SMALL;
-  const CK_BYTE tags[2] = {rsa ? 0x81 : 0x86, 0x82};
-  const CK_BYTE *values[2] = {first, second};
-  const size_t lengths[2] = {firstLen, secondLen};
-  CK_ULONG offset = 0;
-  CK_ULONG count = rsa ? 2 : 1;
-  for (CK_ULONG i = 0; i < count; i++) {
-    output[offset++] = tags[i];
-    if (lengths[i] < 128)
-      output[offset++] = (CK_BYTE)lengths[i];
-    else if (lengths[i] <= 255) {
-      output[offset++] = 0x81;
-      output[offset++] = (CK_BYTE)lengths[i];
-    } else {
-      output[offset++] = 0x82;
-      output[offset++] = (CK_BYTE)(lengths[i] >> 8);
-      output[offset++] = (CK_BYTE)lengths[i];
-    }
-    memcpy(output + offset, values[i], lengths[i]);
-    offset += (CK_ULONG)lengths[i];
+  key.valueLen = (CK_ULONG)length;
+  if (rsa) {
+    length = sizeof(key.exponent);
+    if (CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, CNK_LIBCANO_PUBLIC_EXPONENT, key.exponent,
+                          &length) != CNK_LIBCANO_OK ||
+        length == 0 || length > sizeof(key.exponent))
+      return CKR_DEVICE_ERROR;
+    key.exponentLen = (CK_ULONG)length;
   }
+  *output = key;
   return CKR_OK;
 }

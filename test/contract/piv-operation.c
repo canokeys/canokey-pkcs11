@@ -29,6 +29,7 @@ static unsigned cards, operations, contexts, sends, invalidations, locked, pinCo
 static unsigned failAt, phase, endless, responseSize = 2, badCommand;
 static uint32_t errorKind, profileStatus, publicAlgorithmStatus, finalStep = CNK_LIBCANO_STEP_DONE;
 static CK_RV lockError, unlockError;
+static uint32_t publicFieldFailure;
 _Atomic CK_ULONG g_cnk_managed_binding_epoch;
 atomic_int g_cnk_log_level = CNK_LOG_LEVEL_NONE;
 static char lastLog[1024], transcript[8192];
@@ -314,6 +315,8 @@ uint32_t cnk_operation_result_copy_bytes(const CNK_LIBCANO_OPERATION *o, uint8_t
 }
 uint32_t cnk_operation_public_key_copy(const CNK_LIBCANO_OPERATION *o, uint32_t field, uint8_t *out, size_t *len) {
   CHECK(o == &op);
+  if (field == publicFieldFailure)
+    return CNK_LIBCANO_RESULT_TYPE_MISMATCH;
   size_t n = field == CNK_LIBCANO_PUBLIC_MODULUS ? 256 : 3;
   if (out) {
     CHECK(*len >= n);
@@ -454,7 +457,7 @@ static CK_RV call(unsigned kind, CK_BYTE *out, CK_ULONG *len) {
   case 1:
     return cnk_delete_piv_certificate_libcanokey(0, &session, 0x9c);
   case 2:
-    return cnk_piv_generate_keypair(0, &session, PIV_ALG_RSA_2048, 0x9c, 1, 1, out, len);
+    return cnk_piv_generate_keypair(0, &session, PIV_ALG_RSA_2048, 0x9c, 1, 1);
   case 3: {
     CK_BYTE scalar[32] = {0};
     scalar[31] = 1;
@@ -503,8 +506,6 @@ int main(void) {
     len = sizeof(output);
     CHECK(call(kind, output, &len) == CKR_OK);
     CHECK(sends == 1 && invalidations == (kind < 4 || kind >= 6));
-    if (kind == 2)
-      CHECK(len == 265 && output[0] == 0x81 && output[1] == 0x82 && output[260] == 0x82);
     reset();
   }
   reset();
@@ -519,11 +520,25 @@ int main(void) {
   len = sizeof(output);
   CHECK(call(2, output, &len) == CKR_MECHANISM_INVALID && !sends && !invalidations);
   reset();
-  publicAlgorithmStatus = CNK_LIBCANO_RESULT_TYPE_MISMATCH;
-  len = sizeof(output);
-  memset(output, 0xCC, sizeof(output));
-  CHECK(call(2, output, &len) == CKR_DEVICE_ERROR && sends == 1 && invalidations == 1);
-  CHECK(output[0] == 0xCC && len == sizeof(output));
+  // Getter failures, including a failure after copying the modulus, must
+  // leave the complete caller snapshot untouched.
+  CNK_PIV_PUBLIC_KEY publicKey, original;
+  memset(&original, 0xcc, sizeof(original));
+  for (unsigned failure = 0; failure < 3; failure++) {
+    publicKey = original;
+    operations = 1;
+    publicAlgorithmStatus = failure == 0 ? CNK_LIBCANO_RESULT_TYPE_MISMATCH : 0;
+    publicFieldFailure = failure;
+    CHECK(cnk_copy_piv_public_key(&op, &publicKey) == CKR_DEVICE_ERROR);
+    CHECK(!memcmp(&publicKey, &original, sizeof(original)) && !sends);
+    cnk_operation_free(&op);
+    reset();
+  }
+  publicFieldFailure = 0;
+  operations = 1;
+  CHECK(cnk_copy_piv_public_key(&op, &publicKey) == CKR_OK);
+  CHECK(publicKey.algorithm == CNK_LIBCANO_ALG_RSA_2048 && publicKey.valueLen == 256 && publicKey.exponentLen == 3);
+  cnk_operation_free(&op);
   reset();
   for (unsigned n = 0; n < 2; n++) {
     reset();

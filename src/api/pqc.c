@@ -148,7 +148,7 @@ CK_RV C_EncapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
   CK_BYTE objectId, pivSlot, algorithmType;
   CNK_ENSURE_OK(CNK_ValidateObject(publicKey, session, CKO_PUBLIC_KEY, &objectId));
   CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objectId, &pivSlot));
-  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivSlot, &algorithmType, NULL, NULL, NULL, NULL));
+  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivSlot, &algorithmType, NULL, NULL, NULL));
   if (session->mlkem768Algorithm == 0 || algorithmType != session->mlkem768Algorithm)
     return CKR_KEY_TYPE_INCONSISTENT;
   CNK_PKCS11_SECRET_KEY_OBJECT prototype;
@@ -225,7 +225,7 @@ CK_RV C_DecapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
   CNK_ENSURE_OK(CNK_ValidateObject(privateKey, session, CKO_PRIVATE_KEY, &objectId));
   CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objectId, &pivSlot));
   CK_BYTE algorithmType, pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objectId);
-  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivSlot, &algorithmType, NULL, NULL, &pinPolicy, NULL));
+  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivSlot, &algorithmType, NULL, &pinPolicy, NULL));
   if (session->mlkem768Algorithm == 0 || algorithmType != session->mlkem768Algorithm)
     return CKR_KEY_TYPE_INCONSISTENT;
   // C_DecapsulateKey has no context-specific PIN parameter. Do not satisfy a

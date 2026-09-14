@@ -227,11 +227,10 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
 }
 
 CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
-                               CK_BYTE pinPolicy, CK_BYTE touchPolicy, CK_BYTE_PTR pbPublicKey,
-                               CK_ULONG_PTR pcbPublicKey) {
+                               CK_BYTE pinPolicy, CK_BYTE touchPolicy) {
   CNK_LIBCANO_CONTEXT *context = NULL;
   CNK_LIBCANO_OPERATION *operation = NULL;
-  CNK_ENSURE_NONNULL(session, pbPublicKey, pcbPublicKey);
+  CNK_ENSURE_NONNULL(session);
   uint32_t algorithm = 0;
   CK_RV rv = cnk_piv_resolve_algorithm(session, algorithmType, &algorithm);
   if (rv != CKR_OK)
@@ -260,8 +259,6 @@ CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, C
   rv = cnk_run_piv_operation(card, operation, CKR_KEY_HANDLE_INVALID, &attempted);
   if (rv != CKR_OK)
     goto cleanup;
-
-  rv = cnk_copy_piv_public_key(operation, pbPublicKey, pcbPublicKey);
 
 cleanup:
   if (attempted)
