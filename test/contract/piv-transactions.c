@@ -48,6 +48,7 @@ static atomic_bool signPaused, releaseSign, readerWaiting, failSign;
 static SCARDHANDLE signCard;
 static atomic_bool pauseCacheRead, cacheReadPaused, releaseCacheRead;
 static atomic_uint revision;
+static atomic_uint keyPolicy = 2;
 static atomic_bool pauseVerify, verifyPaused, releaseVerify;
 static atomic_bool failProfile, churnProfile;
 static atomic_bool teardownDone;
@@ -186,6 +187,7 @@ static LONG transmit(SCARDHANDLE card, LPCSCARD_IO_REQUEST sendPci, LPCBYTE comm
       CHECK(command[3] == 0x9c || command[3] == 0x9d);
       const CK_BYTE header[] = {1, 1, 7, 2, 2, 2, 1, 3, 1, 1, 4, 0x82, 1, 9, 0x81, 0x82, 1, 0};
       memcpy(output, header, sizeof(header));
+      output[5] = (CK_BYTE)atomic_load(&keyPolicy);
       n = sizeof(header);
       memset(output + n, atomic_load(&revision) ? (CK_BYTE)atomic_load(&revision) : command[3], 256);
       output[n + 255] |= 1;
@@ -224,7 +226,8 @@ static LONG transmit(SCARDHANDLE card, LPCSCARD_IO_REQUEST sendPci, LPCBYTE comm
       state->pendingLength = state->pendingOffset = 0;
       break;
     case 0x87: {
-      CHECK(state->verified && state->selects == 1 && state->verifies == 1 && command[3] == 0x9c);
+      CHECK(state->selects == 1 && command[3] == 0x9c);
+      CHECK(atomic_load(&keyPolicy) == 1 ? state->verifies == 0 : state->verified && state->verifies == 1);
       state->crypto++;
       if (command[0] & 0x10)
         break;
@@ -609,6 +612,49 @@ static void teardown_contract(CK_SESSION_HANDLE session, CK_BBOOL finalize) {
   CHECK(!activeCard && atomic_load(&connects) == atomic_load(&disconnects));
 }
 
+static void decrypt_preflight_contract(CK_SESSION_HANDLE session) {
+  CK_BYTE ciphertext[256], output[256];
+  memset(ciphertext, 0x11, sizeof(ciphertext));
+  CK_RSA_PKCS_OAEP_PARAMS oaep = {CKM_SHA256, CKG_MGF1_SHA256, CKZ_DATA_SPECIFIED, NULL, 0};
+  CK_MECHANISM mechanisms[] = {
+      {CKM_RSA_X_509, NULL, 0}, {CKM_RSA_PKCS, NULL, 0}, {CKM_RSA_PKCS_OAEP, &oaep, sizeof(oaep)}};
+  const CK_ULONG bounds[] = {256, 245, 190};
+  atomic_store(&releaseSign, true);
+  atomic_store(&failSign, false);
+  for (unsigned policy = 1; policy <= 3; policy++) {
+    atomic_store(&keyPolicy, policy);
+    for (unsigned kind = 0; kind < 3; kind++) {
+      CHECK(C_DecryptInit(session, &mechanisms[kind], CNK_MakeObjectHandle(0, CKO_PRIVATE_KEY, 2)) == CKR_OK);
+      unsigned before = atomic_load(&connects);
+      CK_ULONG length = 0;
+      CHECK(C_Decrypt(session, ciphertext, sizeof(ciphertext), NULL, &length) == CKR_OK && length == bounds[kind]);
+      memset(output, 0xcc, sizeof(output));
+      length = 1;
+      CHECK(C_Decrypt(session, ciphertext, sizeof(ciphertext), output, &length) == CKR_BUFFER_TOO_SMALL);
+      CHECK(length == bounds[kind] && output[0] == 0xcc && atomic_load(&connects) == before);
+      if (policy == 3)
+        CHECK(C_Login(session, CKU_CONTEXT_SPECIFIC, (CK_UTF8CHAR_PTR)pin, 6) == CKR_OK);
+      before = atomic_load(&connects);
+      length = bounds[kind] - 1;
+      CHECK(C_Decrypt(session, ciphertext, sizeof(ciphertext), output, &length) == CKR_BUFFER_TOO_SMALL);
+      CHECK(length == bounds[kind] && output[0] == 0xcc && atomic_load(&connects) == before);
+      CNK_PKCS11_SESSION *held = NULL;
+      CHECK(cnk_session_find(session, &held) == CKR_OK);
+      CHECK(held->decryptingContext.hKey != 0);
+      CHECK(held->decryptingContext.contextAuthenticated == (policy == 3));
+      cnk_session_release_ref(&held);
+      if (kind == 0) {
+        length = sizeof(output);
+        CHECK(C_Decrypt(session, ciphertext, sizeof(ciphertext), output, &length) == CKR_OK);
+        CHECK(length == 256 && output[0] == 0xa5 && atomic_load(&connects) == before + 1);
+      } else
+        CHECK(C_SessionCancel(session, CKF_DECRYPT) == CKR_OK);
+    }
+  }
+  atomic_store(&keyPolicy, 2);
+  puts("Decrypt size/short-buffer preflight preserves authentication without card I/O");
+}
+
 int main(void) {
   CNK_PCSC_TEST_TRANSPORT transport = {establish, release_context, readers,       connect_card, disconnect_card, begin,
                                        end,       transmit,        status_change, cancel};
@@ -693,6 +739,7 @@ int main(void) {
     CHECK(C_Sign(sessions[0], input, sizeof(input), NULL, &length) == CKR_OPERATION_NOT_INITIALIZED);
     CHECK(C_SessionCancel(sessions[1], CKF_SIGN) == CKR_OK);
   }
+  decrypt_preflight_contract(sessions[0]);
   cache_contract(sessions[0]);
   profile_contract(sessions[0], sessions[1]);
   teardown_contract(sessions[0], CK_FALSE);

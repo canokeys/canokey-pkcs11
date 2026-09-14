@@ -105,7 +105,10 @@ Session secrets support copy, secure destruction and policy-limited metadata/dig
 PIN-never keys are public objects (CKA_PRIVATE=false); PIN-once/always private
 objects become visible after USER login.
 
-NULL/short output preserves active digest/sign/encrypt/decrypt operations. Success,
+NULL/short output preserves active digest/sign/encrypt/decrypt operations.
+RSA decrypt preflight reports the mechanism's conservative bound (modulus bytes,
+minus padding overhead where applicable) before card I/O; retries must provide
+that capacity, including when the actual padded plaintext is shorter. Success,
 terminal error, signature mismatch and cancellation consume their contexts. Init
 copies mechanism parameters, including OAEP labels. PIN-always sign/decrypt use an
 operation-local context PIN; derive/decapsulation remain fail-closed without a

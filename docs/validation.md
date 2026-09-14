@@ -19,7 +19,9 @@ contexts remain valid and their token-wide login/logout reservations remain
 consistent. `piv-transactions-contract` runs the production PKCS#11/Rust paths
 against a transaction-enforcing PC/SC fixture, with concurrent sign/RNG and
 injected sign transport failure. The selected real-card script can repeat
-concurrent ECDSA/RNG with `--concurrent-id`.
+concurrent ECDSA/RNG with `--concurrent-id`. The same fixture counts card
+connections during RSA decrypt preflight across all three PIN policies and
+mechanisms; NULL/short buffers must preserve authentication without card I/O.
 
 ## State Invariants
 

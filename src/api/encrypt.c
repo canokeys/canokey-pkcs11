@@ -344,11 +344,14 @@ CK_RV C_Decrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pEncryptedData, CK_ULONG
   CK_BYTE rawData[512];
   CK_ULONG cbRawData = sizeof(rawData);
 
-  if (pData == NULL_PTR) {
-    // This is an upper bound for padded modes. No card operation occurs, and
-    // the decrypt context remains active for the real call.
-    CNK_ENSURE_OK(getDecryptOutputUpperBound(&session->decryptingContext, pulDataLen));
-    CNK_RET_OK;
+  CK_ULONG outputBound = 0;
+  CNK_ENSURE_OK(getDecryptOutputUpperBound(&session->decryptingContext, &outputBound));
+  // PKCS#11 3.2 section 5.2 permits a conservative decrypt length. Reject a
+  // smaller buffer before VERIFY/private I/O, preserving the operation and
+  // any PIN-always authentication for a retry with the reported capacity.
+  if (pData == NULL_PTR || *pulDataLen < outputBound) {
+    *pulDataLen = outputBound;
+    return pData == NULL_PTR ? CKR_OK : CKR_BUFFER_TOO_SMALL;
   }
   if (session->decryptingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS &&
       !session->decryptingContext.contextAuthenticated)

@@ -134,6 +134,11 @@ parser.add_argument(
     help="Replace a certificate-free EC test slot to validate SM2 generation/import; leave a P-521 fixture",
 )
 parser.add_argument("--openssl", type=Path, help="OpenSSL CLI for independent SM2 validation")
+parser.add_argument(
+    "--printed-roundtrip",
+    action="store_true",
+    help="Write/read/restore an empty PIV PRINTED object; refuses existing contents",
+)
 parser.add_argument("--report", type=Path)
 args = parser.parse_args()
 if (args.external_write_id is None) != (args.reset_script is None):
@@ -152,6 +157,7 @@ generations = [(kind, getattr(args, "replace_generate_" + kind + "_id")) for kin
 if (
     args.certificate_id is not None
     or args.name_slot
+    or args.printed_roundtrip
     or args.sm2_provision_id is not None
     or any(id is not None for _, id in imports + generations + policies)
 ) and "CNK_PIV_MANAGEMENT_KEY" not in os.environ:
@@ -1117,31 +1123,56 @@ def policy_decrypt(id, policy):
     pub = public(id)
     private = key_for(3, id)
     message = b"PIN-policy decryption"
-    for oaep in (False, True):
-        pad = (
-            padding.OAEP(padding.MGF1(hashes.SHA256()), hashes.SHA256(), None) if oaep else padding.PKCS1v15()
-        )
-        ciphertext = pub.encrypt(message, pad)
+    for mode in (3, 1, 9):
+        if mode == 3:
+            numbers = pub.public_numbers()
+            ciphertext = pow(int.from_bytes(message, "big"), numbers.e, numbers.n).to_bytes(
+                pub.key_size // 8, "big"
+            )
+            expected = message.rjust(pub.key_size // 8, b"\0")
+        else:
+            pad = (
+                padding.OAEP(padding.MGF1(hashes.SHA256()), hashes.SHA256(), None)
+                if mode == 9
+                else padding.PKCS1v15()
+            )
+            ciphertext = pub.encrypt(message, pad)
+            expected = message
         parameters = OAEP(592, 2, 1, None, 0)
         mechanism = Mech(
-            9 if oaep else 1,
-            C.cast(C.pointer(parameters), P) if oaep else None,
-            C.sizeof(parameters) if oaep else 0,
+            mode,
+            C.cast(C.pointer(parameters), P) if mode == 9 else None,
+            C.sizeof(parameters) if mode == 9 else 0,
         )
         check(lib.C_DecryptInit(s, C.byref(mechanism), private))
         length = U()
         check(lib.C_Decrypt(s, ciphertext, len(ciphertext), None, C.byref(length)))
-        output = C.create_string_buffer(length.value)
+        capacity = length.value
+        output = C.create_string_buffer(b"\xcc" * capacity)
+        small = U(1)
+        if (
+            lib.C_Decrypt(s, ciphertext, len(ciphertext), output, C.byref(small)) != 0x150
+            or small.value != capacity
+        ):
+            raise AssertionError("Decrypt short-buffer preflight lost its upper bound")
+        if output.raw[:capacity] != b"\xcc" * capacity:
+            raise AssertionError("Decrypt preflight wrote plaintext")
         if policy == 3:
             if lib.C_Decrypt(s, ciphertext, len(ciphertext), output, C.byref(length)) != 0x101:
                 raise AssertionError("PIN-always decrypt did not require operation authentication")
             login(2, os.environ["CNK_PIV_PIN"].encode())
+        small = U(capacity - 1)
+        if (
+            lib.C_Decrypt(s, ciphertext, len(ciphertext), output, C.byref(small)) != 0x150
+            or small.value != capacity
+        ):
+            raise AssertionError("Decrypt retry consumed its authenticated operation")
         check(lib.C_Decrypt(s, ciphertext, len(ciphertext), output, C.byref(length)))
-        if output.raw[: length.value] != message:
+        if output.raw[: length.value] != expected:
             raise AssertionError("PIN-policy decrypt returned wrong plaintext")
         check(lib.C_DecryptInit(s, C.byref(mechanism), private))
         if policy == 3:
-            length = U(len(output))
+            length = U(capacity)
             if lib.C_Decrypt(s, ciphertext, len(ciphertext), output, C.byref(length)) != 0x101:
                 raise AssertionError("Context-specific decrypt authentication was reused")
             login(2, os.environ["CNK_PIV_PIN"].encode())
@@ -1296,6 +1327,66 @@ def sm2_provisioning(id):
     )
 
 
+def printed_roundtrip():
+    oid = bytes.fromhex("60864801650307023001")
+
+    def read():
+        query, keep = attrs([(0, 0), (0x12, oid)])
+        check(lib.C_FindObjectsInit(s, query, len(query)))
+        try:
+            handles = (U * 2)()
+            count = U()
+            check(lib.C_FindObjects(s, handles, 2, C.byref(count)))
+            if count.value != 1:
+                raise RuntimeError("Expected an existing empty PRINTED object")
+            return attr(handles[0], 0x11)
+        finally:
+            check(lib.C_FindObjectsFinal(s))
+
+    def write(value, expected=0):
+        template, keep = attrs([(0, 0), (1, b"\1"), (0x12, oid), (0x11, value)])
+        handle = U()
+        rv = lib.C_CreateObject(s, template, len(template), C.byref(handle))
+        if rv != expected:
+            raise RuntimeError(f"PRINTED write status 0x{rv:x}, expected 0x{expected:x}")
+
+    original = None
+    attempted = False
+    try:
+        logout_if_logged_in()
+        login(1, os.environ["CNK_PIV_PIN"].encode())
+        original = read()
+        if original != b"\x53\x00":
+            raise RuntimeError("PRINTED contains existing data; refusing to overwrite it")
+        text = b"CanoKey test"
+        value = bytes([0x53, len(text) + 2, 1, len(text)]) + text
+        write(value, 0x101)
+        logout_if_logged_in()
+        write(value, 0x101)
+        login(0, bytes.fromhex(os.environ["CNK_PIV_MANAGEMENT_KEY"]))
+        attempted = True
+        write(value)
+        logout_if_logged_in()
+        login(1, os.environ["CNK_PIV_PIN"].encode())
+        if read() != value:
+            raise AssertionError("CKO_DATA did not preserve the complete PIV container")
+    finally:
+        logout_if_logged_in()
+        if attempted:
+            login(0, bytes.fromhex(os.environ["CNK_PIV_MANAGEMENT_KEY"]))
+            try:
+                write(original)
+            finally:
+                logout_if_logged_in()
+            login(1, os.environ["CNK_PIV_PIN"].encode())
+            try:
+                if read() != original:
+                    raise AssertionError("PRINTED restoration differs from its original bytes")
+            finally:
+                logout_if_logged_in()
+    print("PASS generic CKO_DATA read/write/restore and PUBLIC/USER write rejection", flush=True)
+
+
 def main():
     initialized = False
     opened = False
@@ -1322,6 +1413,8 @@ def main():
             run_case("unconfigured PIN-managed login rollback", unconfigured_management_check)
         if args.name_slot:
             run_case("F5 name read/write/restore", lambda: names_checks(args.name_slot))
+        if args.printed_roundtrip:
+            run_case("empty PRINTED data read/write/restore", printed_roundtrip)
         for kind, id in policies:
             if id is not None:
                 run_case(

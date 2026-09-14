@@ -52,7 +52,9 @@ PKCS#11 state are intentional C responsibilities, not migration leftovers.
 - A token reservation is the card-operation admission point. Logout revokes work
   not admitted; admitted work retains authorization through I/O and result commit.
 - NULL/short output preflight must not consume a private operation or send APDUs.
-  Getters never advance. Malformed/partial results must not be published.
+  RSA decrypt reports its conservative mechanism bound under PKCS#11 3.2 section
+  5.2; callers retry with that capacity. Getters never advance. Malformed/partial
+  results must not be published.
 - PIN-always sign/decrypt permit one operation-local context login. One-shot
   derive/decapsulation fail closed; no implicit PIN replay or retry.
 - Mutations never replay automatically. Dropping an operation is not rollback.
@@ -110,6 +112,8 @@ Reader: canokeys.org OpenPGP PIV OATH 0; serial 0; firmware
   SM2 generation/import is checked separately and its unsupported PKCS#11
   sign/derive boundary is retained. Final fixtures are RSA, P-521, X25519 and
   Ed25519 with PIN-once policy; temporary certificates use slot 87.
+- A separate empty-PRINTED CKO_DATA roundtrip preserves full container framing,
+  rejects PUBLIC/USER writes, and restores the original bytes after SO writes.
 - Unconfigured PIN-managed login returns its expected policy error and rolls back
   USER state on the actual card. Malformed/protected PUK recovery uses a counted
   mutation seam with the real Rust parser; real PUK mutation remains unverified.
