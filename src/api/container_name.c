@@ -1,9 +1,76 @@
 #include "api/session.h"
 #include "backend/pcsc.h"
+#include "backend/libcanokey.h"
 #include "internal/macros.h"
 #include "pkcs11_canokey.h"
 
 #include <string.h>
+
+static CK_BBOOL valid_name(const CK_BYTE *name, CK_ULONG len);
+
+static CK_RV read_container_name_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pivSlot, CK_BYTE_PTR name,
+                                             CK_ULONG_PTR nameLen) {
+  CNK_ENSURE_NONNULL(session, nameLen);
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  SCARDHANDLE card = 0;
+  CNK_ENSURE_OK(cnk_begin_piv_transaction(session->slotId, &card));
+  CNK_LIBCANO_CONTEXT *context = NULL;
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  uint32_t step = 0;
+  uint32_t status = CNK_LIBCANO_OK;
+  CK_BYTE response[8192] = {0};
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
+  uint32_t contextStatus = profile == NULL
+                               ? CNK_LIBCANO_INVALID_STATE
+                               : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_SELECTED, &context, &error);
+  cnk_mutex_unlock(&session->token->lock);
+  CK_RV rv = CKR_DEVICE_ERROR;
+  if (contextStatus != CNK_LIBCANO_OK ||
+      cnk_piv_read_container_name_in_context_new(context, pivSlot, NULL, &operation, &error) != CNK_LIBCANO_OK ||
+      cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK)
+    goto cleanup;
+  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
+    size_t commandLen = 0;
+    status = cnk_operation_command(operation, NULL, &commandLen);
+    if (status != CNK_LIBCANO_OK || commandLen == 0 || commandLen > 2048)
+      goto cleanup;
+    CK_BYTE command[2048];
+    status = cnk_operation_command(operation, command, &commandLen);
+    if (status != CNK_LIBCANO_OK)
+      goto cleanup;
+    DWORD responseLen = sizeof(response);
+    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS)
+      goto cleanup;
+    status = cnk_operation_advance(operation, response, responseLen, &step, &error);
+    if (status != CNK_LIBCANO_OK)
+      goto cleanup;
+  }
+  if (step != CNK_LIBCANO_STEP_DONE)
+    goto cleanup;
+  size_t required = 0;
+  if (cnk_operation_result_copy_bytes(operation, NULL, &required) != CNK_LIBCANO_OK)
+    goto cleanup;
+  CK_ULONG capacity = *nameLen;
+  *nameLen = (CK_ULONG)required;
+  if (name == NULL) {
+    rv = CKR_OK;
+    goto cleanup;
+  }
+  if (capacity < required) {
+    rv = CKR_BUFFER_TOO_SMALL;
+    goto cleanup;
+  }
+  if (cnk_operation_result_copy_bytes(operation, name, &required) != CNK_LIBCANO_OK)
+    goto cleanup;
+  rv = valid_name(name, (CK_ULONG)required) ? CKR_OK : CKR_DATA_INVALID;
+cleanup:
+  if (operation) cnk_operation_free(operation);
+  if (context) cnk_piv_context_free(context);
+  cnk_disconnect_card(card);
+  return rv;
+}
 
 static CK_BBOOL valid_slot(CK_BYTE slot) {
   return slot == 0x9A || slot == 0x9C || slot == 0x9D || slot == 0x9E || (slot >= 0x82 && slot <= 0x95) || slot == 0xF9;
@@ -91,13 +158,7 @@ CK_RV C_CNK_GetContainerName(CK_SESSION_HANDLE hSession, CK_BYTE pivSlot, CK_BYT
     return CKR_ARGUMENTS_BAD;
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  SCARDHANDLE card = 0;
-  CK_RV rv = cnk_begin_piv_transaction(session->slotId, &card);
-  if (rv != CKR_OK)
-    return rv;
-  rv = exchange_name(card, pivSlot, CK_FALSE, NULL, 0, name, nameLen);
-  cnk_disconnect_card(card);
-  return rv;
+  return read_container_name_libcanokey(session, pivSlot, name, nameLen);
 }
 
 CK_RV C_CNK_SetContainerName(CK_SESSION_HANDLE hSession, CK_BYTE pivSlot, CK_BYTE_PTR name, CK_ULONG nameLen) {

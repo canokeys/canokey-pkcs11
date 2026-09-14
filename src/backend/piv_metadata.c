@@ -608,6 +608,90 @@ CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BY
   return copyRv;
 }
 
+static CK_RV cnk_get_piv_metadata_directory_libcanokey(CNK_PKCS11_SESSION *session,
+                                                        CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
+                                                        CK_ULONG_PTR entryCount) {
+  CNK_ENSURE_NONNULL(session, entryCount);
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  SCARDHANDLE card = 0;
+  CNK_ENSURE_OK(cnk_begin_piv_transaction(session->slotId, &card));
+  CNK_LIBCANO_CONTEXT *context = NULL;
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  uint32_t step = 0;
+  uint32_t status = CNK_LIBCANO_OK;
+  CK_BYTE response[8192] = {0};
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
+  uint32_t contextStatus = profile == NULL
+                               ? CNK_LIBCANO_INVALID_STATE
+                               : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_SELECTED, &context, &error);
+  cnk_mutex_unlock(&session->token->lock);
+  if (contextStatus != CNK_LIBCANO_OK ||
+      cnk_piv_read_metadata_directory_in_context_new(context, NULL, &operation, &error) != CNK_LIBCANO_OK ||
+      cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
+    cnk_disconnect_card(card);
+    if (context) cnk_piv_context_free(context);
+    if (operation) cnk_operation_free(operation);
+    return CKR_DEVICE_ERROR;
+  }
+  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
+    size_t commandLen = 0;
+    status = cnk_operation_command(operation, NULL, &commandLen);
+    if (status != CNK_LIBCANO_OK || commandLen == 0 || commandLen > 2048)
+      goto directory_cleanup;
+    CK_BYTE command[2048];
+    status = cnk_operation_command(operation, command, &commandLen);
+    if (status != CNK_LIBCANO_OK)
+      goto directory_cleanup;
+    DWORD responseLen = sizeof(response);
+    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS) {
+      status = CNK_LIBCANO_PROTOCOL_ERROR;
+      goto directory_cleanup;
+    }
+    status = cnk_operation_advance(operation, response, responseLen, &step, &error);
+    if (status != CNK_LIBCANO_OK)
+      goto directory_cleanup;
+  }
+  if (step != CNK_LIBCANO_STEP_DONE) {
+    status = CNK_LIBCANO_PROTOCOL_ERROR;
+    goto directory_cleanup;
+  }
+  CNK_LIBCANO_DIRECTORY_INFO info = {.struct_size = sizeof(info)};
+  if (cnk_operation_directory_info(operation, &info) != CNK_LIBCANO_OK) {
+    status = CNK_LIBCANO_PROTOCOL_ERROR;
+    goto directory_cleanup;
+  }
+  CK_ULONG capacity = entries == NULL ? 0 : *entryCount;
+  *entryCount = info.count;
+  if (entries == NULL) {
+    status = CNK_LIBCANO_OK;
+    goto directory_cleanup;
+  }
+  if (capacity < info.count) {
+    status = CNK_LIBCANO_BUFFER_TOO_SMALL;
+    goto directory_cleanup;
+  }
+  for (CK_ULONG i = 0; i < info.count; i++) {
+    CNK_LIBCANO_DIRECTORY_ENTRY entry = {.struct_size = sizeof(entry)};
+    if (cnk_operation_directory_entry(operation, i, &entry) != CNK_LIBCANO_OK) {
+      status = CNK_LIBCANO_PROTOCOL_ERROR;
+      goto directory_cleanup;
+    }
+    entries[i] = (CNK_PIV_METADATA_DIRECTORY_ENTRY){entry.reference, entry.flags, entry.algorithm_id,
+                                                     entry.origin, entry.pin_policy, entry.touch_policy};
+  }
+  status = CNK_LIBCANO_OK;
+
+directory_cleanup:
+  if (operation) cnk_operation_free(operation);
+  if (context) cnk_piv_context_free(context);
+  cnk_disconnect_card(card);
+  mbedtls_platform_zeroize(response, sizeof(response));
+  return status == CNK_LIBCANO_OK ? CKR_OK
+                                  : status == CNK_LIBCANO_BUFFER_TOO_SMALL ? CKR_BUFFER_TOO_SMALL : CKR_DEVICE_ERROR;
+}
+
 CK_RV cnk_get_piv_metadata_directory(CK_SLOT_ID slotID, CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
                                      CK_ULONG_PTR entryCount) {
   CNK_ENSURE_NONNULL(entryCount);
@@ -673,7 +757,7 @@ CK_RV cnk_get_piv_metadata_directory_cached(CNK_PKCS11_SESSION *session, CNK_PIV
   CNK_ENSURE_NONNULL(session, session->token, entryCount);
   if (g_cnk_is_managed_mode || !atomic_load(&g_cnk_piv_metadata_cache_enabled)) {
     CNK_DEBUG("hardware metadata-directory read (%s)", g_cnk_is_managed_mode ? "managed mode" : "cache disabled");
-    return cnk_get_piv_metadata_directory(session->slotId, entries, entryCount);
+    return cnk_get_piv_metadata_directory_libcanokey(session, entries, entryCount);
   }
 
   uint64_t nowMs = cnk_public_cache_now_ms();
@@ -701,7 +785,7 @@ CK_RV cnk_get_piv_metadata_directory_cached(CNK_PKCS11_SESSION *session, CNK_PIV
   CNK_PIV_METADATA_DIRECTORY_ENTRY fetched[CNK_PIV_METADATA_DIRECTORY_MAX_ENTRIES];
   CK_ULONG fetchedCount = CNK_PIV_METADATA_DIRECTORY_MAX_ENTRIES;
   CNK_DEBUG("hardware metadata-directory read");
-  CK_RV rv = cnk_get_piv_metadata_directory(session->slotId, fetched, &fetchedCount);
+  CK_RV rv = cnk_get_piv_metadata_directory_libcanokey(session, fetched, &fetchedCount);
   if (rv != CKR_OK)
     return rv;
 

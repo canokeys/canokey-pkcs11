@@ -20,6 +20,14 @@ typedef struct {
   uint32_t struct_size, presence_flags;
   uint8_t algorithm_id, pin_policy, touch_policy, origin, is_default, retries_total, retries_remaining, reserved;
 } CNK_LIBCANO_METADATA;
+typedef struct {
+  uint32_t struct_size, version, decoded, count;
+} CNK_LIBCANO_DIRECTORY_INFO;
+typedef struct {
+  uint32_t struct_size;
+  uint8_t reference, flags, algorithm_id, origin, pin_policy, touch_policy, reserved[2];
+  uint32_t issues;
+} CNK_LIBCANO_DIRECTORY_ENTRY;
 enum {
   CNK_LIBCANO_METADATA_HAS_ALGORITHM = 1,
   CNK_LIBCANO_METADATA_HAS_POLICY = 2,
@@ -76,6 +84,10 @@ uint32_t cnk_piv_sign_streaming_in_context_new(const CNK_LIBCANO_CONTEXT *, uint
                                                CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_read_object_in_context_new(const CNK_LIBCANO_CONTEXT *, const uint8_t *, size_t,
                                             const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_read_metadata_directory_in_context_new(const CNK_LIBCANO_CONTEXT *, const CNK_LIBCANO_OPTIONS *,
+                                                        CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_read_container_name_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const CNK_LIBCANO_OPTIONS *,
+                                                    CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_decrypt_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, uint32_t, const uint8_t *, size_t,
                                         const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_derive_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, uint32_t, const uint8_t *, size_t,
@@ -87,6 +99,8 @@ uint32_t cnk_operation_advance(CNK_LIBCANO_OPERATION *, const uint8_t *, size_t,
 uint32_t cnk_operation_command(const CNK_LIBCANO_OPERATION *, uint8_t *, size_t *);
 uint32_t cnk_operation_result_copy_bytes(const CNK_LIBCANO_OPERATION *, uint8_t *, size_t *);
 uint32_t cnk_operation_metadata(const CNK_LIBCANO_OPERATION *, CNK_LIBCANO_METADATA *);
+uint32_t cnk_operation_directory_info(const CNK_LIBCANO_OPERATION *, CNK_LIBCANO_DIRECTORY_INFO *);
+uint32_t cnk_operation_directory_entry(const CNK_LIBCANO_OPERATION *, size_t, CNK_LIBCANO_DIRECTORY_ENTRY *);
 uint32_t cnk_operation_signature_p1363(const CNK_LIBCANO_OPERATION *, uint8_t *, size_t *);
 uint32_t cnk_operation_signature_der(const CNK_LIBCANO_OPERATION *, uint8_t *, size_t *);
 uint32_t cnk_operation_signature_encoding(const CNK_LIBCANO_OPERATION *, uint32_t *);
