@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.20)
 set(CNK_PKCS_TARGET "canokey_pkcs11")
 set(CNK_PKCS_LIB_NAME "canokey-pkcs11")
 project(${CNK_PKCS_TARGET} VERSION 0.1.0 LANGUAGES C)
@@ -110,6 +110,12 @@ else()
 endif()
 
 set(CNK_PKCS_LIBS nsync ${CNK_CRYPTO_LIBRARIES})
+include(cmake/libcanokey.cmake)
+
+if(MSVC)
+  add_compile_options(/Gy /Gw)
+  add_link_options(/INCREMENTAL:NO /OPT:REF /OPT:ICF)
+endif()
 
 file(GLOB_RECURSE CNK_PKCS_SRC CONFIGURE_DEPENDS src/*.c)
 
@@ -220,8 +226,15 @@ option(BUILD_UNIT_TESTING "Build unit test programs" ${BUILD_TESTING})
 option(BUILD_REAL_TESTING "Build real hardware test programs" ${BUILD_TESTING})
 option(RUN_REAL_TESTING "Register real hardware tests with CTest" OFF)
 option(BUILD_FUZZING "Build libFuzzer API and parser targets" OFF)
-if(BUILD_UNIT_TESTING OR BUILD_REAL_TESTING OR BUILD_FUZZING)
+option(BUILD_PROTOCOL_TESTING "Build the C/Rust ABI transcript test" ${BUILD_TESTING})
+if(BUILD_UNIT_TESTING OR BUILD_REAL_TESTING OR BUILD_FUZZING OR BUILD_PROTOCOL_TESTING)
   enable_testing()
+endif()
+
+if(BUILD_PROTOCOL_TESTING)
+  add_executable(test_protocol test/protocol.c)
+  target_link_libraries(test_protocol PRIVATE cnk_protocol)
+  add_test(NAME test_protocol COMMAND test_protocol)
 endif()
 
 if(BUILD_UNIT_TESTING)

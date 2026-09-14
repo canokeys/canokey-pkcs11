@@ -19,6 +19,26 @@ It uses PCSCLite on Linux, PCSC Framework on macOS, and native PC/SC APIs (`wins
 It could be built with CMake on Linux / Windows / macOS using `clang` (Linux / macOS) or `clang-cl` (Windows).
 GCC should be supported, but is not tested.
 
+This experimental branch also requires CMake 3.20+ and the latest stable Rust
+via rustup. Cargo builds the private protocol adapter as a static library;
+`Cargo.toml` pins libcanokey by Git revision and `Cargo.lock` pins its transitive
+dependencies. There is no libcanokey submodule or Rust DLL. Existing C crypto
+and synchronization submodules are still needed. See
+[the migration scope](docs/libcanokey-experiment.md) for the remaining PIV work.
+
+```text
+rustup toolchain install stable --profile minimal --component rustfmt,clippy
+rustup target add --toolchain stable i686-pc-windows-msvc x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+```
+
+The second command is only needed for Windows cross builds. On Windows,
+`scripts/build-windows.ps1 -Arch x64 -Config Release` initializes Visual Studio
+and selects matching C and Rust targets (`x86` and `arm64` are also supported).
+It only builds files. For direct CMake cross builds, set `CNK_RUST_TARGET` to
+the matching installed Rust target. Windows MSVC builds retain the normal
+dynamic C runtime; the Rust code and Rust standard library are linked statically.
+This branch targets Windows 10 / Server 2016 and newer, not Windows 7/8.1.
+
 1. Install Dependencies:
 
 ```bash

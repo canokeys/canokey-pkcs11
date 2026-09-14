@@ -10,6 +10,14 @@ guarantee. If a change cannot be described by the existing row/profile, update
 the contract before changing code. Run `python scripts/check-api-contracts.py`
 to verify that the exported inventory remains complete.
 
+For every card-backed path, verify the PC/SC transaction boundary:
+`connect -> SCardBeginTransaction -> SELECT PIV -> all dependent APDUs ->
+SCardEndTransaction -> disconnect`. No test may split SELECT from the operation
+it authorizes. Test two sessions performing different PIV operations: their
+physical card transactions must serialize, while their independent session
+contexts remain valid and their token-wide login/logout reservations remain
+consistent.
+
 ## State Invariants
 
 Review the token state as a state machine. The relevant states are `PUBLIC`,

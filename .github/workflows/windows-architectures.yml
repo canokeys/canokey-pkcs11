@@ -1,0 +1,41 @@
+name: Windows architectures
+on:
+  push:
+    branches: [master, codex/libcanokey]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86, x64, arm64]
+        config: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+          targets: i686-pc-windows-msvc,x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+      - run: python -m pip install -r cmake/tf-psa-crypto-generator-requirements.txt
+      - shell: pwsh
+        run: ./scripts/build-windows.ps1 -Arch ${{ matrix.arch }} -Config ${{ matrix.config }}
+      - if: matrix.arch != 'arm64'
+        run: ctest --test-dir build-windows-${{ matrix.arch }}-${{ matrix.config }} --output-on-failure
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pkcs11-${{ matrix.arch }}-${{ matrix.config }}
+          if-no-files-found: error
+          path: |
+            build-windows-${{ matrix.arch }}-${{ matrix.config }}/canokey-pkcs11.dll
+            build-windows-${{ matrix.arch }}-${{ matrix.config }}/test/real/*.exe

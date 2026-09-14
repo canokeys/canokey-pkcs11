@@ -60,6 +60,34 @@ standard because it also captures this module's internal safety invariants.
 6. Reader and slot-event locks protect only reader snapshots and event queues.
    A reader name used outside the lock must be copied first.
 
+### PC/SC Card Critical Section
+
+1. Every card-backed API must keep `SCardBeginTransaction` through SELECT PIV,
+   all command-chaining/multi-APDU steps, response parsing, and the final
+   result copy. `SCardEndTransaction`/disconnect is the only release point.
+2. Each new transaction reselects PIV. Reselecting the same PIV AID preserves
+   PIV application security status; selecting another valid application clears
+   PIV application-local security indicators. SELECT success alone is never an
+   authorization proof.
+3. PC/SC transaction serialization protects the physical card, not PKCS#11
+   logical state. Different sessions may queue complete card operations, while
+   their operation contexts remain independently protected by `session->lock`
+   and token-wide auth transitions remain protected by token reservations.
+
+### libcanokey Conversation Boundary
+
+The experimental protocol adapter holds Rust state only inside one synchronous
+C backend call. C retains the session/token reservations and PC/SC transaction
+through command chaining and GET RESPONSE. A raw callback transmits once; Rust
+never selects an applet, authenticates implicitly, reconnects, or retries I/O.
+Conversations stop after 4096 exchanges or one MiB of cumulative response data.
+Malformed/non-progressing continuation is terminal. Final status words retain
+their existing C interpretation; a failed intermediate chained status is a
+terminal device error. Rust drops and wipes command/response copies on every
+exit, and only a complete result is copied to C. Public size-query and mutation
+rollback guarantees below remain in force. The C ABI transcript test and Rust
+failure/budget tests cover this boundary.
+
 ### Output and Failure Atomicity
 
 1. A NULL output buffer is a size query only. It must not perform irreversible

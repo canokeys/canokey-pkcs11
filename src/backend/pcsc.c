@@ -1,11 +1,13 @@
 #include "backend/pcsc.h"
 #include "api/session.h"
+#include "backend/protocol.h"
 #include "internal/logging.h"
 #include "internal/mutex.h"
 #include "internal/util.h"
 #include "pkcs11.h"
 
 #include <ctype.h>
+#include <mbedtls/platform_util.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -913,140 +915,108 @@ CNK_TEST_API void cnk_disconnect_card(SCARDHANDLE hCard) {
   cnk_pcsc_operation_end();
 }
 
-// Helper function to transmit APDU commands and log both command and response
+/* The Rust conversation borrows this binding only while the caller retains
+ * its PC/SC transaction. Preserve native LONG errors without narrowing them
+ * across the fixed-width private ABI (LONG differs between PC/SC platforms). */
+typedef struct {
+  SCARDHANDLE card;
+  LONG status;
+} CNK_PROTOCOL_TRANSPORT_CONTEXT;
+
+static uint32_t cnk_protocol_transmit(void *opaque, const uint8_t *command, size_t command_len, uint8_t *response,
+                                      size_t *response_len) {
+  CNK_PROTOCOL_TRANSPORT_CONTEXT *context = opaque;
+  if (command_len > UINT32_MAX || *response_len > UINT32_MAX) {
+    context->status = SCARD_E_INVALID_PARAMETER;
+    return 1;
+  }
+  DWORD length = (DWORD)*response_len;
+  CNK_LOG_APDU_COMMAND(command, command_len);
+  context->status = SCardTransmit(context->card, SCARD_PCI_T1, command, (DWORD)command_len, NULL, response, &length);
+  if (context->status == SCARD_S_SUCCESS && length > *response_len)
+    context->status = SCARD_E_UNEXPECTED;
+  if (context->status == SCARD_S_SUCCESS)
+    CNK_LOG_APDU_RESPONSE(response, length);
+  *response_len = length;
+  return context->status == SCARD_S_SUCCESS ? 0 : 1;
+}
+
+static LONG cnk_run_protocol(SCARDHANDLE card, const CNK_PROTOCOL_COMMAND *command, CK_BYTE *response,
+                             DWORD *response_len) {
+  CNK_PROTOCOL_TRANSPORT_CONTEXT context = {.card = card, .status = SCARD_S_SUCCESS};
+  size_t length = *response_len;
+  uint32_t status = cnk_protocol_run(command, cnk_protocol_transmit, &context, response, &length);
+  switch (status) {
+  case CNK_PROTOCOL_OK:
+    *response_len = (DWORD)length;
+    return SCARD_S_SUCCESS;
+  case CNK_PROTOCOL_SMALL:
+    *response_len = (DWORD)length;
+    return SCARD_E_INSUFFICIENT_BUFFER;
+  case CNK_PROTOCOL_TRANSPORT:
+    return context.status;
+  case CNK_PROTOCOL_ARGUMENT:
+    return SCARD_E_INVALID_PARAMETER;
+  default:
+    return SCARD_E_UNEXPECTED;
+  }
+}
+
 CNK_TEST_API LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *pCommand, CK_ULONG cbCommand,
                                       CK_BYTE *pResponse, DWORD *pcbResponse, CK_BBOOL auto_get_response) {
-  DWORD available = *pcbResponse;
-  CNK_LOG_FUNC(": hCard = %p, pCommand = %p, cbCommand = %lu, pResponse = %p, available = %lu, auto_get_response = %d",
-               hCard, pCommand, cbCommand, pResponse, available, auto_get_response);
-
   if (hCard == 0 || pCommand == NULL || pResponse == NULL || pcbResponse == NULL)
-    CNK_RETURN(SCARD_E_INVALID_PARAMETER, "Invalid arguments");
+    return SCARD_E_INVALID_PARAMETER;
 
-  // Log the APDU command
-  CNK_LOG_APDU_COMMAND(pCommand, cbCommand);
-
-  // Transmit the command
-  LONG rv = SCardTransmit(hCard, SCARD_PCI_T1, pCommand, cbCommand, NULL, pResponse, pcbResponse);
-  if (rv != SCARD_S_SUCCESS) {
-    CNK_ERROR("SCardTransmit failed: 0x%lX", rv);
-    return rv;
-  }
-  CNK_LOG_APDU_RESPONSE(pResponse, *pcbResponse);
-
-  // If auto_get_response is false, return here
-  if (!auto_get_response)
-    CNK_RET_OK;
-
-  // At least two status bytes are expected
-  if (*pcbResponse < 2)
-    CNK_RETURN(SCARD_E_UNEXPECTED, "Response too short for status bytes");
-
-  // Get the data length and status bytes
-  DWORD data_len = (*pcbResponse > 2) ? (*pcbResponse - 2) : 0;
-  DWORD total_len = data_len;
-  CK_BYTE sw1 = pResponse[*pcbResponse - 2];
-  CK_BYTE sw2 = pResponse[*pcbResponse - 1];
-
-  // If SW1=0x61, loop to send GET RESPONSE
-  while (sw1 == 0x61) {
-    // Prepare GET RESPONSE APDU: 00 C0 00 00 Le
-    CK_BYTE get_resp_apdu[5] = {0x00, 0xC0, 0x00, 0x00, sw2};
-    CNK_DEBUG("Auto GET RESPONSE for %u bytes", sw2);
-    CNK_LOG_APDU_COMMAND(get_resp_apdu, sizeof(get_resp_apdu));
-
-    // Temporary buffer to receive this GET RESPONSE response
-    CK_BYTE temp[258];
-    DWORD temp_len = sizeof(temp);
-    rv = SCardTransmit(hCard, SCARD_PCI_T1, get_resp_apdu, sizeof(get_resp_apdu), NULL, temp, &temp_len);
-    if (rv != SCARD_S_SUCCESS) {
-      CNK_ERROR("GET RESPONSE failed: 0x%lX", rv);
-      return rv;
-    }
-    CNK_LOG_APDU_RESPONSE(temp, temp_len);
-
-    // Check length
-    if (temp_len < 2) {
-      CNK_ERROR("GET RESPONSE returned too short data");
-      return SCARD_E_UNEXPECTED;
-    }
-
-    // Update status bytes
-    sw1 = temp[temp_len - 2];
-    sw2 = temp[temp_len - 1];
-
-    // Calculate this chunk's data length (without status bytes)
-    DWORD chunk_len = temp_len - 2;
-    if (total_len + chunk_len > available) {
-      CNK_ERROR("Response buffer overflow: need %lu, have %lu", total_len + chunk_len, available);
-      return SCARD_E_INSUFFICIENT_BUFFER;
-    }
-
-    // Append this chunk's data to the main response buffer
-    memcpy(pResponse + total_len, temp, chunk_len);
-    total_len += chunk_len;
+  if (!auto_get_response) {
+    CNK_PROTOCOL_TRANSPORT_CONTEXT context = {.card = hCard};
+    size_t length = *pcbResponse;
+    (void)cnk_protocol_transmit(&context, pCommand, cbCommand, pResponse, &length);
+    *pcbResponse = (DWORD)length;
+    return context.status;
   }
 
-  // Append status bytes
-  pResponse[total_len++] = sw1;
-  pResponse[total_len++] = sw2;
-
-  // Update output length, only return data part (no status bytes)
-  *pcbResponse = total_len;
-  CNK_DEBUG("Total response length (data only): %lu bytes", total_len - 2);
-  CNK_LOG_APDU_RESPONSE(pResponse, total_len);
-
-  CNK_RET_OK;
+  /* Existing callers supply short APDUs. Decode their framing only; libcanokey
+   * owns continuation and response budgets. Never reinterpret an extended APDU
+   * or enable automatic 6C correction for a credential or mutation. */
+  if (cbCommand < 4 || cbCommand > 261)
+    return SCARD_E_INVALID_PARAMETER;
+  CNK_PROTOCOL_COMMAND command = {.get_response = 1};
+  memcpy(command.header, pCommand, sizeof(command.header));
+  if (cbCommand == 5)
+    command.le = pCommand[4] == 0 ? 256 : pCommand[4];
+  else if (cbCommand > 5) {
+    size_t data_len = pCommand[4];
+    if (data_len == 0 || (cbCommand != 5 + data_len && cbCommand != 6 + data_len))
+      return SCARD_E_INVALID_PARAMETER;
+    command.data = pCommand + 5;
+    command.data_len = data_len;
+    if (cbCommand == 6 + data_len)
+      command.le = pCommand[cbCommand - 1] == 0 ? 256 : pCommand[cbCommand - 1];
+  }
+  return cnk_run_protocol(hCard, &command, pResponse, pcbResponse);
 }
 
 CK_RV cnk_transmit_chained_apdu(SCARDHANDLE hCard, CK_BYTE ins, CK_BYTE p1, CK_BYTE p2, const CK_BYTE *data,
                                 CK_ULONG data_len, CK_BYTE *response, CK_ULONG_PTR response_len, CK_BBOOL request_le) {
   CNK_ENSURE_NONNULL(data);
-  if (response != NULL)
-    CNK_ENSURE_NONNULL(response_len);
-
-  CK_ULONG offset = 0;
-  LONG pcsc_rv = SCARD_S_SUCCESS;
+  if (hCard == 0 || (response != NULL && response_len == NULL))
+    return CKR_ARGUMENTS_BAD;
   CK_BYTE local_response[258];
-  CK_ULONG response_capacity = response != NULL ? *response_len : sizeof(local_response);
-
-  do {
-    CK_ULONG remaining = data_len - offset;
-    CK_ULONG chunk_len = remaining > 0xFF ? 0xFF : remaining;
-    CK_BBOOL has_more_chunks = remaining > chunk_len;
-    CK_BYTE apdu[5 + 255 + 1];
-    CK_ULONG apdu_len = 0;
-
-    apdu[apdu_len++] = has_more_chunks ? 0x10 : 0x00;
-    apdu[apdu_len++] = ins;
-    apdu[apdu_len++] = p1;
-    apdu[apdu_len++] = p2;
-    apdu[apdu_len++] = (CK_BYTE)chunk_len;
-    if (chunk_len > 0) {
-      memcpy(apdu + apdu_len, data + offset, chunk_len);
-      apdu_len += chunk_len;
-    }
-    if (!has_more_chunks && request_le)
-      apdu[apdu_len++] = 0x00;
-
-    CK_BYTE *response_buffer = !has_more_chunks && response != NULL ? response : local_response;
-    DWORD cbResponse = !has_more_chunks && response != NULL ? (DWORD)response_capacity : sizeof(local_response);
-    pcsc_rv = cnk_transceive_apdu(hCard, apdu, apdu_len, response_buffer, &cbResponse,
-                                  has_more_chunks ? CK_FALSE : request_le);
-    if (pcsc_rv != SCARD_S_SUCCESS)
-      CNK_RETURN(CKR_DEVICE_ERROR, "failed to transmit APDU");
-    if (cbResponse < 2)
-      CNK_RETURN(CKR_DEVICE_ERROR, "APDU response too short");
-
-    CK_BYTE sw1 = response_buffer[cbResponse - 2];
-    CK_BYTE sw2 = response_buffer[cbResponse - 1];
-    if (sw1 != 0x90 || sw2 != 0x00)
-      CNK_RETURN(CKR_DEVICE_ERROR, "APDU command failed");
-
-    offset += chunk_len;
-    if (!has_more_chunks && response != NULL)
-      *response_len = (CK_ULONG)cbResponse;
-  } while (offset < data_len);
-
-  CNK_RET_OK;
+  CK_BYTE *output = response != NULL ? response : local_response;
+  DWORD length = response != NULL ? (DWORD)*response_len : sizeof(local_response);
+  CNK_PROTOCOL_COMMAND command = {.header = {0, ins, p1, p2},
+                                  .data = data,
+                                  .data_len = data_len,
+                                  .le = request_le ? 256 : 0,
+                                  .chain = 1,
+                                  .get_response = request_le ? 1 : 0};
+  LONG status = cnk_run_protocol(hCard, &command, output, &length);
+  CK_RV rv = CKR_DEVICE_ERROR;
+  if (status == SCARD_S_SUCCESS && length >= 2 && output[length - 2] == 0x90 && output[length - 1] == 0) {
+    if (response != NULL)
+      *response_len = length;
+    rv = CKR_OK;
+  }
+  mbedtls_platform_zeroize(local_response, sizeof(local_response));
+  return rv;
 }

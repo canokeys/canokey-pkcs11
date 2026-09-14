@@ -5,3 +5,5 @@ build-*
 .windsurfrules
 .idea
 cmake-build-debug
+/target/
+!/scripts/build-windows.ps1
