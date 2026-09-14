@@ -118,6 +118,10 @@ PIN-never/once/always、legacy explicit-Le、size query 和 too-small tests 通�
 
 ## 阶段 3：decrypt、derive 和 one-shot private operations
 
+当前进度：libcanokey 已提供 selected-context 的 raw RSA decrypt、ECDH/X25519
+derive、ML-KEM decapsulation C ABI；PKCS#11 尚未切换到这些接口，阶段出口条件
+仍未满足。
+
 libcanokey 增加：
 
 ```rust
