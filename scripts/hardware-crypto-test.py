@@ -11,6 +11,9 @@ through each borrowed C call. Credentials and shared secrets are never printed.
 
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import subprocess
+import tempfile
+import time
 import argparse
 import ctypes as C
 import hashlib
@@ -95,8 +98,23 @@ parser.add_argument(
     type=lambda x: int(x, 16),
     help="Sign with this EC key while another session reads token RNG",
 )
+parser.add_argument("--public-key-id", type=lambda x: int(x, 16), action="append", default=[])
+parser.add_argument(
+    "--external-write-id",
+    type=lambda x: int(x, 16),
+    help="Replace this certificate-free test slot from a child process and verify reset invalidation",
+)
+parser.add_argument(
+    "--reset-script", type=Path, help="Explicit PowerShell USB-reset helper for the external-write test"
+)
 parser.add_argument("--report", type=Path)
 args = parser.parse_args()
+if (args.external_write_id is None) != (args.reset_script is None):
+    parser.error("--external-write-id and --reset-script must be used together")
+if args.external_write_id is not None:
+    if "CNK_PIV_MANAGEMENT_KEY" not in os.environ:
+        parser.error("CNK_PIV_MANAGEMENT_KEY is required for the external writer")
+    os.environ["CNK_PIV_METADATA_CACHE"] = "1"
 if os.name != "nt":
     parser.error("This ctypes layout targets native Windows only")
 if "CNK_PIV_PIN" not in os.environ:
@@ -155,6 +173,7 @@ for name, types in {
     "C_GetTokenInfo": [U, C.POINTER(TokenInfo)],
     "C_GetSessionInfo": [U, C.POINTER(SessionInfo)],
     "C_GetSlotList": [B, C.POINTER(U), C.POINTER(U)],
+    "C_WaitForSlotEvent": [U, C.POINTER(U), P],
     "C_CreateObject": [U, C.POINTER(Attr), U, C.POINTER(U)],
     "C_Initialize": [P],
     "C_Finalize": [P],
@@ -540,6 +559,102 @@ def concurrency_check(id):
     )
 
 
+def public_fingerprint(id):
+    encoded = public(id).public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def external_reset_check(id):
+    if not 1 <= id <= 24 or find(1, id):
+        raise RuntimeError("External replacement requires an explicit certificate-free test slot")
+    # Arm the reader watcher and discard initial insertion notifications.
+    slot = U()
+    for _ in range(16):
+        rv = lib.C_WaitForSlotEvent(1, C.byref(slot), None)
+        if rv == 8:
+            break
+        check(rv)
+    else:
+        raise RuntimeError("Initial reader events did not settle")
+    before = public_fingerprint(id)
+    with tempfile.TemporaryDirectory(prefix="cnk-external-write-") as directory:
+        report_path = Path(directory) / "child.json"
+        child = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--module",
+                str(args.module),
+                "--slot",
+                str(args.slot),
+                "--serial",
+                args.serial,
+                "--replace-generate-rsa-id",
+                f"{id:02x}",
+                "--public-key-id",
+                f"{id:02x}",
+                "--report",
+                str(report_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        if child.returncode:
+            raise RuntimeError("External writer failed: " + child.stdout[-2000:])
+        child_report = json.loads(report_path.read_text(encoding="utf-8"))
+        expected = child_report["public_key_sha256"][f"{id:02x}"]
+        if expected == before:
+            raise AssertionError("External generation did not replace the test key")
+        # A naturally expired TTL must not masquerade as successful event invalidation.
+        if public_fingerprint(id) != before:
+            raise RuntimeError("Parent cache expired before the reset; event-invalidation gate is unproven")
+        # This helper only resets USB power. It must not install drivers or mutate keys.
+        reset = subprocess.run(
+            ["pwsh", "-NoProfile", "-File", str(args.reset_script.resolve())],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+        if reset.returncode:
+            raise RuntimeError("USB reset failed: " + reset.stdout[-1000:])
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            rv = lib.C_WaitForSlotEvent(1, C.byref(slot), None)
+            if rv == 0 and slot.value == args.slot:
+                break
+            if rv not in (0, 8):
+                check(rv)
+            time.sleep(0.25)
+        else:
+            raise RuntimeError("No event for the selected CanoKey after reset")
+        info = TokenInfo()
+        check(lib.C_GetTokenInfo(args.slot, C.byref(info)))
+        if bytes(info.serial).rstrip(b" \x00").decode("ascii") != args.serial:
+            raise RuntimeError("Different token after reset")
+        if public_fingerprint(id) != expected:
+            raise AssertionError("Reader event did not invalidate the old public-key snapshot")
+        rsa_checks(id)
+    print(
+        "PASS external key replacement, USB reinsert event, cache refresh and private operations in the existing session",
+        flush=True,
+    )
+    return {
+        "key_id": f"{id:02x}",
+        "before_public_sha256": before,
+        "after_public_sha256": expected,
+        "event_slot": slot.value,
+    }
+
+
 def random_check():
     check(lib.C_GenerateRandom(s, None, 0))
     for length in [1, 256, 257, 1024, 65539]:
@@ -555,8 +670,11 @@ results = []
 
 def run_case(name, operation):
     try:
-        operation()
-        results.append({"name": name, "status": "pass"})
+        details = operation()
+        row = {"name": name, "status": "pass"}
+        if details is not None:
+            row["details"] = details
+        results.append(row)
     except Exception as error:
         detail = f"{type(error).__name__}: {error}"
         results.append({"name": name, "status": "fail", "detail": detail})
@@ -805,6 +923,7 @@ def import_checks(id, kind):
 def main():
     initialized = False
     opened = False
+    fingerprints = {}
     try:
         check(lib.C_Initialize(None))
         initialized = True
@@ -856,6 +975,11 @@ def main():
         if args.concurrent_id is not None:
             run_case("two-session concurrent ECDSA/RNG", lambda: concurrency_check(args.concurrent_id))
         run_case("hardware RNG length/chunk matrix", random_check)
+        if args.external_write_id is not None:
+            run_case(
+                "external write/reset/cache refresh", lambda: external_reset_check(args.external_write_id)
+            )
+        fingerprints = {f"{id:02x}": public_fingerprint(id) for id in args.public_key_id}
     finally:
         if opened:
             lib.C_Logout(s)
@@ -869,6 +993,7 @@ def main():
         "slot": args.slot,
         "serial": args.serial,
         "checks": results,
+        "public_key_sha256": fingerprints,
     }
     if args.report:
         args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

@@ -20,7 +20,7 @@ char *ck_strcasestr(const char *str, const char *pattern) {
     if (toupper(c1) == c0) {
       for (i = 1;; i++) {
         c2 = pattern[i];
-        if (c2 != '\0')
+        if (c2 == '\0')
           return (char *)str;
         c1 = str[i];
         if (toupper(c1) != toupper(c2))

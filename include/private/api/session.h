@@ -35,20 +35,20 @@ typedef enum {
 // handle or a selected applet between API calls.
 typedef struct {
   CK_BBOOL metadataValid;
-  uint64_t metadataRefreshedAtMs;
+  uint64_t metadataRefreshedAtMs, metadataGeneration;
   uint32_t algorithmType;
   CK_BYTE pinPolicy;
   CK_BYTE touchPolicy;
   CNK_PIV_PUBLIC_KEY publicKey;
   CK_BBOOL certificateValid;
-  uint64_t certificateRefreshedAtMs;
+  uint64_t certificateRefreshedAtMs, certificateGeneration;
   CK_BYTE certificate[CNK_PIV_PUBLIC_CACHE_MAX_CERTIFICATE];
   CK_ULONG certificateLen;
 } CNK_PIV_PUBLIC_CACHE_ENTRY;
 
 typedef struct {
   CK_BBOOL directoryValid;
-  uint64_t directoryRefreshedAtMs;
+  uint64_t directoryRefreshedAtMs, directoryGeneration;
   CK_ULONG directoryCount;
   CK_BYTE directory[CNK_PIV_PUBLIC_CACHE_SLOT_COUNT][6];
   CNK_PIV_PUBLIC_CACHE_ENTRY slots[CNK_PIV_PUBLIC_CACHE_SLOT_COUNT];
@@ -74,9 +74,12 @@ typedef struct CNK_PKCS11_TOKEN_STATE {
   _Atomic CK_BBOOL logoutPending;
   _Atomic CK_ULONG openSessions;
   _Atomic CK_ULONG readOnlySessions;
+  // Advances even when a failed application mutex prevents clearing storage.
+  _Atomic uint64_t publicCacheGeneration;
   CNK_PIV_PUBLIC_CACHE pivPublicCache;
   CNK_LIBCANO_PROFILE *libcanokeyProfile;
   CK_ULONG libcanokeyProfileEpoch;
+  uint64_t libcanokeyProfileRefreshedAtMs;
   CNK_PKCS11_MUTEX lock;
   struct CNK_PKCS11_TOKEN_STATE *next;
 } CNK_PKCS11_TOKEN_STATE;

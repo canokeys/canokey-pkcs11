@@ -55,7 +55,12 @@ current TTL, the `metadata_cache` configuration switch (or
 Managed mode must always read hardware. Tests and logs must distinguish cached
 reads from hardware reads and identify cache-disabled or managed bypasses.
 Successful local key, certificate, and PIV data writes must invalidate the
-snapshot. External mutations are expected to become visible after the 60-second
+snapshot. Invalidation generations must also reject reads that finish after a
+concurrent invalidation, even if a mutex callback prevented clearing storage.
+The transaction fixture tests metadata, certificates, directory and configuration
+races, every token lock/unlock in their public-cache misses, profile expiry and
+refresh racing VERIFY. `--external-write-id` with an explicit `--reset-script`
+checks a real external replacement and USB reinsert against a still-live cache. External mutations are expected to become visible after the 60-second
 TTL; no credential, card handle, selected applet, or authentication state may
 ever be retained in this cache.
 

@@ -18,7 +18,7 @@ passes the corresponding contract and hardware gates; do not add silent fallback
 
 | Stage | Implemented | Required before completion |
 | --- | --- | --- |
-| 0: profile/context | Immutable token profile with binding epoch; copied selected contexts; bounded executor and two-session transaction contract | Full reset/invalidation, close/finalize and concurrent transaction matrix |
+| 0: profile/context | Immutable token profile with binding epoch; copied selected contexts; bounded executor, two-session transaction contract and guarded cache/profile refresh | Full reset/invalidation, close/finalize and concurrent transaction matrix |
 | 1: public reads | Typed metadata/public keys, certificates, session data, directory and ordinary/F9 name reads | Complete malformed/duplicate/gzip/buffer/cache matrix |
 | 2: signing | RSA, ECDSA, Ed25519 and streaming ML-DSA use Rust operations | Complete PIN-never/once/always, legacy-Le, size-query and cancellation matrix |
 | 3: other private operations | RSA decrypt, ECDH/X25519 and ML-KEM use Rust operations | Full PIN-policy, Windows endian/KDF and concurrent result-publication matrix |
@@ -96,11 +96,13 @@ emulation. Passing a selected subset does not close the remaining gates.
 Reader: canokeys.org OpenPGP PIV OATH 0; serial 0; firmware
 3.1.0-dev+gaa408988; PIV 6.0.0. Re-enumerate before any provisioning.
 
-- x64 Debug/Release: 30 selected groups pass using scripts/hardware-crypto-test.py:
+- x64 Debug/Release: 31 selected groups pass using scripts/hardware-crypto-test.py:
   PIN change/cache/fresh-login/restore, F5 read/write/clear/restore, unconfigured
   protection rollback, six key generations, six imports, independent private-operation
   verification, host RSA encryption and RSA/ECDSA verification, concurrent ECDSA/RNG
   from two sessions, certificate write/read/delete and RNG across the 64 KiB boundary.
+  An external writer plus USB reinsert proves event invalidation of a still-live
+  cached key; the original session then signs/decrypts with the new test key.
 - Test slots 87..8A: RSA (2048/3072/4096), P-521, X25519 and Ed25519 generation/import
   match public-key expectations and pass private operations. Slot 87 currently
   holds the most recently tested RSA size; temporary certificates also use it.

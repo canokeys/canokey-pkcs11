@@ -595,6 +595,7 @@ CK_RV cnk_token_invalidate_public_cache(CK_SLOT_ID slotId) {
     return rv;
   CNK_PKCS11_TOKEN_STATE *token = find_token_state(slotId);
   if (token != NULL) {
+    atomic_fetch_add(&token->publicCacheGeneration, 1);
     rv = cnk_mutex_lock(&token->lock);
     if (rv == CKR_OK) {
       memset(&token->pivPublicCache, 0, sizeof(token->pivPublicCache));

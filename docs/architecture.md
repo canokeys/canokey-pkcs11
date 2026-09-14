@@ -37,8 +37,8 @@ C import TLV encode/reparse or certificate framing. Management-protection data
 is decoded by Rust: stored flags remain claims,
 malformed data cannot become unconfigured success, and PRINTED yields a validated,
 zeroizing 24-byte key copy. The C caller still owns authentication/cache commit.
-Backend algorithm conversion consults the profile before authentication and uses
-typed result algorithms; configured wire IDs are never treated as canonical IDs.
+Backend preflight consults the Rust profile before authentication. C uses semantic
+algorithms throughout; configured wire IDs remain inside Rust.
 F5 similarly delegates its command and UTF-16 validation to Rust; [container-names.md](container-names.md)
 defines the consumer's precise fallback and error mapping.
 
@@ -91,7 +91,12 @@ PKCS#11 CKA_EC_POINT DER wrapping remains a host attribute responsibility.
 The standalone public cache holds only directory entries, key metadata and
 certificate bytes. Every read checks the 60-second TTL and metadata_cache /
 CNK_PIV_METADATA_CACHE controls. Managed mode bypasses it. Credentials, handles,
-selected applets and authentication state never enter the cache.
+selected applets and authentication state never enter the cache. Atomic invalidation
+generations prevent old reads from repopulating a cleared snapshot, including
+failed application-lock callbacks. Configuration cache publication also retains
+the binding epoch captured before I/O. Profiles refresh after 60 seconds and keep
+the previous immutable value available to already admitted transactions until
+a replacement is published; refresh errors propagate.
 
 PIV handles encode slot, class and object ID; IDs 1..24 map to 9A/9C/9D/9E/82..95.
 Session-secret IDs start at 0x80. PIV objects are live views: certificate deletion

@@ -95,6 +95,9 @@ construction clones the immutable profile while holding the token lock, rejects
 an obsolete binding epoch, and never probes or selects. A failed unlock discards
 a provisional context instead of publishing success. Profile publication frees
 its candidate on a failed lock and permits at most three binding retries.
+Profiles expire after 60 seconds; refresh retains the old immutable profile until
+a successful replacement, so an admitted transaction can still clone it after
+VERIFY. Expired-profile refresh errors propagate; they never authorize fallback.
 Profile probing uses this same executor and error mapping; no separate callback
 loop discards its diagnostic fields. Error logs name the ABI status, semantic
 kind, phase and reference, with explicit absence for unreported SW/retry fields.
@@ -103,7 +106,10 @@ libcanokey challenge-response implementation; verification alone never caches
 the key. The caller commits credentials only after successful verification.
 
 Write attempts invalidate public caches before releasing the card transaction,
-including lost responses and failures while parsing results. Dropping an
+including lost responses and failures while parsing results. An atomic invalidation
+generation advances even when clearing cache storage fails. Readers capture it
+before I/O and publish only if it still matches; a pre-mutation read may return
+its own result but cannot resurrect an invalidated snapshot. Dropping an
 operation does not roll back a card mutation. The C ABI transcript, management
 known-answer, and C caller failure-injection tests exercise these boundaries.
 

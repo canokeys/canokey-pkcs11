@@ -12,22 +12,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+static uint64_t cnk_public_cache_now_ms(void);
+static CK_BBOOL cnk_public_cache_fresh(uint64_t refreshedAtMs, uint64_t nowMs);
+
 CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *session) {
   CNK_ENSURE_NONNULL(session, session->token);
   for (unsigned attempt = 0; attempt < 3; attempt++) {
     CK_ULONG epoch = atomic_load(&g_cnk_managed_binding_epoch);
     CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
-    if (session->token->libcanokeyProfile != NULL && session->token->libcanokeyProfileEpoch == epoch) {
-      cnk_mutex_unlock(&session->token->lock);
+    CK_BBOOL fresh = session->token->libcanokeyProfile != NULL && session->token->libcanokeyProfileEpoch == epoch &&
+                     cnk_public_cache_fresh(session->token->libcanokeyProfileRefreshedAtMs, cnk_public_cache_now_ms());
+    CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
+    if (fresh)
       return CKR_OK;
-    }
-    CNK_LIBCANO_PROFILE *old = session->token->libcanokeyProfile;
-    session->token->libcanokeyProfile = NULL;
-    session->token->libcanokeyProfileEpoch = 0;
-    cnk_mutex_unlock(&session->token->lock);
-    if (old != NULL)
-      CNK_EXTERNAL_VOID(cnk_profile_free, old);
 
+    // Keep the previous immutable profile while a refresh waits for the card.
+    // A transaction already admitted with that profile must be able to clone
+    // it after VERIFY; clearing it here would break that in-flight operation.
     void *candidate = NULL;
     CK_RV rv = cnk_probe_libcanokey_profile(session->slotId, &candidate);
     if (rv != CKR_OK)
@@ -37,21 +38,24 @@ CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *session) {
       CNK_EXTERNAL_VOID(cnk_profile_free, candidate);
       return rv;
     }
+    CNK_LIBCANO_PROFILE *retired = NULL;
     CK_ULONG currentEpoch = atomic_load(&g_cnk_managed_binding_epoch);
-    if (currentEpoch != epoch) {
-      cnk_mutex_unlock(&session->token->lock);
-      CNK_EXTERNAL_VOID(cnk_profile_free, candidate);
-      continue;
-    }
-    if (session->token->libcanokeyProfile == NULL) {
+    if (currentEpoch == epoch &&
+        (session->token->libcanokeyProfile == NULL || session->token->libcanokeyProfileEpoch != epoch ||
+         !cnk_public_cache_fresh(session->token->libcanokeyProfileRefreshedAtMs, cnk_public_cache_now_ms()))) {
+      retired = session->token->libcanokeyProfile;
       session->token->libcanokeyProfile = candidate;
       session->token->libcanokeyProfileEpoch = epoch;
+      session->token->libcanokeyProfileRefreshedAtMs = cnk_public_cache_now_ms();
       candidate = NULL;
     }
-    cnk_mutex_unlock(&session->token->lock);
+    rv = cnk_mutex_unlock(&session->token->lock);
+    if (retired != NULL)
+      CNK_EXTERNAL_VOID(cnk_profile_free, retired);
     if (candidate != NULL)
       CNK_EXTERNAL_VOID(cnk_profile_free, candidate);
-    return CKR_OK;
+    if (rv != CKR_OK || currentEpoch == epoch)
+      return rv;
   }
   return CKR_OPERATION_ACTIVE;
 }
@@ -173,10 +177,12 @@ typedef struct {
   CK_SLOT_ID slotId;
   uint64_t refreshedAtMs;
   CK_ULONG bindingEpoch;
+  uint64_t generation;
   CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
 } CNK_PIV_EXTENSION_CACHE_ENTRY;
 
 static CNK_PIV_EXTENSION_CACHE_ENTRY g_piv_extension_cache[CNK_PIV_EXTENSION_CACHE_SLOTS];
+static _Atomic uint64_t g_piv_extension_generation;
 
 static uint64_t cnk_public_cache_now_ms(void) {
 #if defined(_WIN32)
@@ -368,13 +374,15 @@ CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, uint3
   uint64_t nowMs = cnk_public_cache_now_ms();
   CNK_PIV_PUBLIC_CACHE_ENTRY *entry = &session->token->pivPublicCache.slots[index];
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
-  if (entry->metadataValid && cnk_public_cache_fresh(entry->metadataRefreshedAtMs, nowMs)) {
+  uint64_t generation = atomic_load(&session->token->publicCacheGeneration);
+  if (entry->metadataValid && entry->metadataGeneration == generation &&
+      cnk_public_cache_fresh(entry->metadataRefreshedAtMs, nowMs)) {
     CK_RV copyRv = cnk_copy_cached_metadata(entry, algorithmType, publicKey, pinPolicy, touchPolicy);
-    cnk_mutex_unlock(&session->token->lock);
+    CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
     CNK_DEBUG("cached metadata read: PIV slot 0x%02X", pivTag);
     return copyRv;
   }
-  cnk_mutex_unlock(&session->token->lock);
+  CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
 
   CNK_PIV_PUBLIC_KEY cachedPublicKey;
   uint32_t cachedAlgorithmType = 0;
@@ -387,15 +395,26 @@ CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, uint3
     return rv;
 
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
-  entry->algorithmType = cachedAlgorithmType;
-  entry->pinPolicy = cachedPinPolicy;
-  entry->touchPolicy = cachedTouchPolicy;
-  entry->publicKey = cachedPublicKey;
-  entry->metadataRefreshedAtMs = cnk_public_cache_now_ms();
-  entry->metadataValid = CK_TRUE;
-  CK_RV copyRv = cnk_copy_cached_metadata(entry, algorithmType, publicKey, pinPolicy, touchPolicy);
-  cnk_mutex_unlock(&session->token->lock);
-  return copyRv;
+  if (generation == atomic_load(&session->token->publicCacheGeneration)) {
+    entry->algorithmType = cachedAlgorithmType;
+    entry->pinPolicy = cachedPinPolicy;
+    entry->touchPolicy = cachedTouchPolicy;
+    entry->publicKey = cachedPublicKey;
+    entry->metadataRefreshedAtMs = nowMs;
+    entry->metadataGeneration = generation;
+    entry->metadataValid = CK_TRUE;
+  }
+  CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
+  // The read itself can linearize before an overlapping mutation. Its result
+  // remains valid for this call, but must not resurrect an invalidated cache.
+  *algorithmType = cachedAlgorithmType;
+  if (pinPolicy)
+    *pinPolicy = cachedPinPolicy;
+  if (touchPolicy)
+    *touchPolicy = cachedTouchPolicy;
+  if (publicKey)
+    *publicKey = cachedPublicKey;
+  return CKR_OK;
 }
 
 static CK_RV cnk_get_piv_metadata_directory_libcanokey(CNK_PKCS11_SESSION *session,
@@ -461,12 +480,14 @@ CK_RV cnk_get_piv_metadata_directory_cached(CNK_PKCS11_SESSION *session, CNK_PIV
   uint64_t nowMs = cnk_public_cache_now_ms();
   CNK_PIV_PUBLIC_CACHE *cache = &session->token->pivPublicCache;
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
-  if (cache->directoryValid && cnk_public_cache_fresh(cache->directoryRefreshedAtMs, nowMs)) {
+  uint64_t generation = atomic_load(&session->token->publicCacheGeneration);
+  if (cache->directoryValid && cache->directoryGeneration == generation &&
+      cnk_public_cache_fresh(cache->directoryRefreshedAtMs, nowMs)) {
     CK_ULONG required = cache->directoryCount;
     CK_ULONG capacity = entries == NULL ? 0 : *entryCount;
     *entryCount = required;
     if (entries != NULL && capacity < required) {
-      cnk_mutex_unlock(&session->token->lock);
+      CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
       return CKR_BUFFER_TOO_SMALL;
     }
     if (entries != NULL)
@@ -474,11 +495,11 @@ CK_RV cnk_get_piv_metadata_directory_cached(CNK_PKCS11_SESSION *session, CNK_PIV
         entries[i] =
             (CNK_PIV_METADATA_DIRECTORY_ENTRY){cache->directory[i][0], cache->directory[i][1], cache->directory[i][2],
                                                cache->directory[i][3], cache->directory[i][4], cache->directory[i][5]};
-    cnk_mutex_unlock(&session->token->lock);
+    CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
     CNK_DEBUG("cached metadata-directory read: %lu entries", required);
     return CKR_OK;
   }
-  cnk_mutex_unlock(&session->token->lock);
+  CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
 
   CNK_PIV_METADATA_DIRECTORY_ENTRY fetched[CNK_PIV_METADATA_DIRECTORY_MAX_ENTRIES];
   CK_ULONG fetchedCount = CNK_PIV_METADATA_DIRECTORY_MAX_ENTRIES;
@@ -488,20 +509,23 @@ CK_RV cnk_get_piv_metadata_directory_cached(CNK_PKCS11_SESSION *session, CNK_PIV
     return rv;
 
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
-  cache->directoryCount = fetchedCount;
-  for (CK_ULONG i = 0; i < fetchedCount; i++)
-    memcpy(cache->directory[i], &fetched[i], sizeof(fetched[i]));
-  cache->directoryRefreshedAtMs = cnk_public_cache_now_ms();
-  cache->directoryValid = CK_TRUE;
+  if (generation == atomic_load(&session->token->publicCacheGeneration)) {
+    cache->directoryCount = fetchedCount;
+    for (CK_ULONG i = 0; i < fetchedCount; i++)
+      memcpy(cache->directory[i], &fetched[i], sizeof(fetched[i]));
+    cache->directoryRefreshedAtMs = nowMs;
+    cache->directoryGeneration = generation;
+    cache->directoryValid = CK_TRUE;
+  }
   CK_ULONG capacity = entries == NULL ? 0 : *entryCount;
   *entryCount = fetchedCount;
   if (entries != NULL && capacity < fetchedCount) {
-    cnk_mutex_unlock(&session->token->lock);
+    CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
     return CKR_BUFFER_TOO_SMALL;
   }
   if (entries != NULL)
     memcpy(entries, fetched, fetchedCount * sizeof(*entries));
-  cnk_mutex_unlock(&session->token->lock);
+  CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
   return CKR_OK;
 }
 
@@ -520,29 +544,31 @@ CK_RV cnk_get_piv_data_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BY
   CNK_PIV_PUBLIC_CACHE_ENTRY *entry = &session->token->pivPublicCache.slots[index];
   uint64_t nowMs = cnk_public_cache_now_ms();
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
-  if (entry->certificateValid && cnk_public_cache_fresh(entry->certificateRefreshedAtMs, nowMs)) {
+  uint64_t generation = atomic_load(&session->token->publicCacheGeneration);
+  if (entry->certificateValid && entry->certificateGeneration == generation &&
+      cnk_public_cache_fresh(entry->certificateRefreshedAtMs, nowMs)) {
     CK_ULONG required = entry->certificateLen;
     if (!fetch_data) {
-      cnk_mutex_unlock(&session->token->lock);
+      CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
       CNK_DEBUG("cached certificate existence read: PIV slot 0x%02X", pivTag);
       return CKR_OK;
     }
     if (data_len == NULL) {
-      cnk_mutex_unlock(&session->token->lock);
+      CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
       return CKR_ARGUMENTS_BAD;
     }
     CK_ULONG capacity = *data_len;
     *data_len = required;
     if (data == NULL || capacity < required) {
-      cnk_mutex_unlock(&session->token->lock);
+      CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
       return data == NULL ? CKR_OK : CKR_BUFFER_TOO_SMALL;
     }
     memcpy(data, entry->certificate, required);
-    cnk_mutex_unlock(&session->token->lock);
+    CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
     CNK_DEBUG("cached certificate read: PIV slot 0x%02X", pivTag);
     return CKR_OK;
   }
-  cnk_mutex_unlock(&session->token->lock);
+  CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
 
   CK_BYTE fetched[CNK_PIV_PUBLIC_CACHE_MAX_CERTIFICATE];
   CK_ULONG fetchedLen = sizeof(fetched);
@@ -554,36 +580,42 @@ CK_RV cnk_get_piv_data_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BY
     return CKR_DATA_LEN_RANGE;
 
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
-  entry->certificateLen = fetchedLen;
-  memcpy(entry->certificate, fetched, fetchedLen);
-  entry->certificateRefreshedAtMs = cnk_public_cache_now_ms();
-  entry->certificateValid = CK_TRUE;
+  if (generation == atomic_load(&session->token->publicCacheGeneration)) {
+    entry->certificateLen = fetchedLen;
+    memcpy(entry->certificate, fetched, fetchedLen);
+    entry->certificateRefreshedAtMs = nowMs;
+    entry->certificateGeneration = generation;
+    entry->certificateValid = CK_TRUE;
+  }
   if (!fetch_data) {
-    cnk_mutex_unlock(&session->token->lock);
+    CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
     return CKR_OK;
   }
   if (data_len == NULL) {
-    cnk_mutex_unlock(&session->token->lock);
+    CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
     return CKR_ARGUMENTS_BAD;
   }
   CK_ULONG capacity = *data_len;
   *data_len = fetchedLen;
   if (data == NULL) {
-    cnk_mutex_unlock(&session->token->lock);
+    CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
     return CKR_OK;
   }
   if (capacity < fetchedLen) {
-    cnk_mutex_unlock(&session->token->lock);
+    CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
     return CKR_BUFFER_TOO_SMALL;
   }
   memcpy(data, fetched, fetchedLen);
-  cnk_mutex_unlock(&session->token->lock);
+  CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
   return CKR_OK;
 }
 
 void cnk_piv_public_cache_invalidate(CNK_PKCS11_SESSION *session) {
   if (session == NULL || session->token == NULL)
     return;
+  // Invalidate before trying the callback lock: a failed callback must not
+  // keep old data valid or allow an in-flight read to publish it later.
+  atomic_fetch_add(&session->token->publicCacheGeneration, 1);
   if (cnk_mutex_lock(&session->token->lock) != CKR_OK)
     return;
   memset(&session->token->pivPublicCache, 0, sizeof(session->token->pivPublicCache));
@@ -623,28 +655,34 @@ CK_RV cnk_get_piv_algorithm_extension_cached(CK_SLOT_ID slotID, CNK_PIV_ALGORITH
   CK_ULONG bindingEpoch = atomic_load(&g_cnk_managed_binding_epoch);
   CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
   CNK_PIV_EXTENSION_CACHE_ENTRY *entry = &g_piv_extension_cache[index];
-  if (entry->valid && entry->slotId == slotID && entry->bindingEpoch == bindingEpoch &&
-      cnk_public_cache_fresh(entry->refreshedAtMs, nowMs)) {
+  uint64_t generation = atomic_load(&g_piv_extension_generation);
+  if (entry->valid && entry->generation == generation && entry->slotId == slotID &&
+      entry->bindingEpoch == bindingEpoch && cnk_public_cache_fresh(entry->refreshedAtMs, nowMs)) {
     *config = entry->config;
-    cnk_mutex_unlock(&g_cnk_readers_mutex);
+    CNK_ENSURE_OK(cnk_mutex_unlock(&g_cnk_readers_mutex));
     return CKR_OK;
   }
-  cnk_mutex_unlock(&g_cnk_readers_mutex);
+  CNK_ENSURE_OK(cnk_mutex_unlock(&g_cnk_readers_mutex));
 
   CK_RV rv = cnk_get_piv_algorithm_extension(slotID, config);
   if (rv != CKR_OK)
     return rv;
   CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
-  entry->slotId = slotID;
-  entry->bindingEpoch = atomic_load(&g_cnk_managed_binding_epoch);
-  entry->config = *config;
-  entry->refreshedAtMs = cnk_public_cache_now_ms();
-  entry->valid = CK_TRUE;
-  cnk_mutex_unlock(&g_cnk_readers_mutex);
+  if (generation == atomic_load(&g_piv_extension_generation) &&
+      bindingEpoch == atomic_load(&g_cnk_managed_binding_epoch)) {
+    entry->slotId = slotID;
+    entry->bindingEpoch = bindingEpoch;
+    entry->generation = generation;
+    entry->config = *config;
+    entry->refreshedAtMs = nowMs;
+    entry->valid = CK_TRUE;
+  }
+  CNK_ENSURE_OK(cnk_mutex_unlock(&g_cnk_readers_mutex));
   return CKR_OK;
 }
 
 void cnk_piv_algorithm_extension_cache_invalidate(void) {
+  atomic_fetch_add(&g_piv_extension_generation, 1);
   if (cnk_mutex_lock(&g_cnk_readers_mutex) != CKR_OK)
     return;
   memset(g_piv_extension_cache, 0, sizeof(g_piv_extension_cache));
