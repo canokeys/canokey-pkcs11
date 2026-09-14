@@ -22,8 +22,14 @@ passes the corresponding contract and hardware gates; do not add silent fallback
 | 1: public reads | Typed metadata/public keys, certificates, session data, directory and ordinary/F9 name reads | Remove remaining legacy reads; full malformed/duplicate/gzip/buffer/cache matrix |
 | 2: signing | RSA, ECDSA, Ed25519 and streaming ML-DSA use Rust operations | Complete PIN-never/once/always, legacy-Le, size-query and cancellation matrix |
 | 3: other private operations | RSA decrypt, ECDH/X25519 and ML-KEM use Rust operations | Full PIN-policy, Windows endian/KDF and concurrent result-publication matrix |
-| 4: management/writes | Management challenge-response, key generation/import, certificate/data/F5 writes and certificate deletion | Move PIN/PUK and management-algorithm discovery; complete write/failure matrix |
-| 5: remove duplicate C | Removed C private-operation/import/certificate/data builders, management-data parsers and 3DES | Remove remaining device-info/configuration/RNG/PIN protocol code and session algorithm duplication |
+| 4: management/writes | Management challenge-response, key generation/import, certificate/data/F5 writes and certificate deletion | Credential commands and management metadata are migrated; complete write/failure matrix |
+| 5: remove duplicate C | Removed C APDU builders, credential/data parsers, 3DES and the legacy callback adapter | Remove public-key compatibility encoding and session algorithm duplication; complete acceptance matrix |
+
+All production card transmission now flows through one C executor and raw PC/SC
+exchange. Rust owns SELECT, credential commands, metadata, version/configuration,
+RNG and empty-slot semantics; the old C APDU decoder/Rust callback adapter is gone.
+Credential byte compatibility is explicit, and temporary PIN tests restore the
+original value. C still owns cache updates, reservations and provisioning policy.
 
 C now passes semantic import parameters and component views directly to Rust.
 C retains PKCS#11 RSA-width admission and one bounded, zeroized EC-padding buffer.
@@ -91,10 +97,10 @@ emulation. Passing a selected subset does not close the remaining gates.
 Reader: canokeys.org OpenPGP PIV OATH 0; serial 0; firmware
 3.1.0-dev+gaa408988; PIV 6.0.0. Re-enumerate before any provisioning.
 
-- x64 Debug/Release: 28 selected groups pass using scripts/hardware-crypto-test.py:
-  F5 read/write/clear/restore, unconfigured protection rollback, six key generations,
-  six imports, independent
-  private-operation verification, certificate write/read/delete and RNG.
+- x64 Debug/Release: 29 selected groups pass using scripts/hardware-crypto-test.py:
+  PIN change/cache/fresh-login/restore, F5 read/write/clear/restore, unconfigured
+  protection rollback, six key generations, six imports, independent private-operation
+  verification, certificate write/read/delete and RNG across the 64 KiB boundary.
 - Test slots 87..8A: RSA (2048/3072/4096), P-521, X25519 and Ed25519 generation/import
   match public-key expectations and pass private operations. Slot 87 currently
   holds the most recently tested RSA size; temporary certificates also use it.
@@ -111,7 +117,7 @@ Reader: canokeys.org OpenPGP PIV OATH 0; serial 0; firmware
   and 86 metadata have independent anomalies. Slot 83 is SM2 and outside the
   Windows view. These prevent claiming complete card/Windows acceptance.
 - Native ARM64 runtime and the complete PIN/reset/concurrency/write matrix remain
-  unverified. The minidriver still needs its logging rebind before each C_Initialize.
+  unverified. The minidriver must rebind logging before each C_Initialize.
 
 The test scripts write machine-readable reports with explicit selections and DLL
 hashes. Generated logs, key material and debugging chronology stay out of docs.

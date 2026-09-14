@@ -1,9 +1,9 @@
 // Exercise the production extension with isolated lifecycle/session/transport
 // seams. No PIN, key, or metadata write reaches a real card.
 #include "api/session.h"
+#include "backend/libcanokey.h"
 #include "backend/pcsc.h"
 #include "backend/piv_operation.h"
-#include "backend/protocol.h"
 #include "internal/lifecycle.h"
 #include "internal/logging.h"
 #include "pkcs11_canokey.h"
@@ -134,9 +134,7 @@ void cnk_piv_public_cache_invalidate(CNK_PKCS11_SESSION *s) {
   CHECK(s == &session);
   invalidations++;
 }
-LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *send, CK_ULONG sendLen, CK_BYTE *recv, DWORD *recvLen,
-                         CK_BBOOL sensitive) {
-  (void)sensitive;
+LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *send, CK_ULONG sendLen, CK_BYTE *recv, DWORD *recvLen) {
   CHECK(card == 123 && connections == 1 && refs == 1 && admissions == 1);
   CHECK(sendLen <= sizeof(request) && send[0] == 0 && send[1] == 0xF5);
   CHECK(send[2] == (isWrite ? 1 : 0));

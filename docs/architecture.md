@@ -18,14 +18,14 @@ current adaptation and remaining acceptance gates.
 | internal/crypto.c and crypto helpers | Host hashing, padding, KDF and public-key crypto |
 | backend/pcsc.c | Reader/slot lifecycle, transaction ownership and raw transport |
 | backend/piv_operation.c | Copied contexts, bounded Rust executor, error mapping and public-key compatibility |
-| backend/piv_metadata.c | Public snapshots; remaining version/configuration/retry/RNG helpers |
-| backend/piv_auth.c | Credential/cache integration; remaining PIN/PUK and management-algorithm helpers |
+| backend/piv_metadata.c | Public snapshots and typed version/configuration/retry/RNG operations |
+| backend/piv_auth.c | Credential/cache integration using Rust credential and management operations |
 | backend/piv_crypto.c, piv_data.c | Typed private/key/data/certificate operations and compatibility adapters |
 | backend/piv_key_write.c | Fresh managed-slot occupancy guard |
-| rust/lib.rs | Private synchronous libcanokey static-library adapter |
+| rust/lib.rs | Static linkage of the libcanokey C ABI |
 
-Libcanokey owns migrated APDU conversations, framing, parsing, typed errors and
-zeroizing temporary copies. C owns PC/SC, PKCS#11 state, returned buffers and
+Libcanokey owns APDU conversations, framing, parsing, typed errors and
+zeroizing temporary copies. C owns raw PC/SC exchange, PKCS#11 state, returned buffers and
 credential/reservation lifetime. Rust receives no connection lease or mutable
 application state. It performs no I/O except through caller-driven exchanges.
 
@@ -55,7 +55,8 @@ Current CanoKey firmware resets PIN/PUK/management status on SELECT, including
 same-AID selection. Probe before authentication; never SELECT or switch applets
 between authentication and its target. Selected-context factories copy the profile
 and never select/authenticate implicitly. Command/result getters never advance.
-The bounded executor frees operations, contexts and scratch on every exit.
+The bounded executor frees operations, contexts and scratch on every exit. The
+previous C APDU decoder and synchronous Rust callback loop have been removed.
 
 A session can span many transactions. Open/close and host-only Init/Update calls
 must not hold a transaction for the session's lifetime. PC/SC serializes physical
@@ -105,7 +106,11 @@ optionally decompressed payload. P-521 accepts definite BER response envelopes b
 strict DER signatures, and normalizes digest length exactly once. Firmware support
 uses observed profiles, distinguishes unknown from unsupported, and preserves the
 original development-version identity while using its declared base version.
-RNG/F5 retain their PIV 6.0 consumer gate. Reader names retain stable slot IDs within
+RNG checks the live PIV version before producing bytes; F5 retains its PIV 6.0
+consumer gate. Logical session opening can defer failed optional configuration
+reads for host-only work; card operations separately validate a Rust profile.
+Credential operations preserve the C raw 1..=8-byte form explicitly, without
+relaxing default Rust credential construction. Reader names retain stable slot IDs within
 one initialized lifetime; removal includes the last reader.
 
 ## Hardware versus host crypto

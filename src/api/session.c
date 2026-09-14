@@ -1,8 +1,8 @@
 #include "api/session.h"
 
 #include "api/operation.h"
+#include "backend/libcanokey.h"
 #include "backend/pcsc.h"
-#include "backend/protocol.h"
 #include "internal/logging.h"
 #include "internal/macros.h"
 #include "internal/util.h"
@@ -735,8 +735,13 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
     CNK_RETURN(CKR_SESSION_PARALLEL_NOT_SUPPORTED, "Invalid session flags");
 
   CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig = {0};
-  CK_BBOOL extensionEnabled =
-      cnk_get_piv_algorithm_extension_cached(slotID, &algorithmConfig) == CKR_OK && algorithmConfig.enabled;
+  CK_RV configurationRv = cnk_get_piv_algorithm_extension_cached(slotID, &algorithmConfig);
+  // Opening a logical session must still permit host-only digest/secret work
+  // when card configuration cannot be read. No extension is authorized by this
+  // observation; card-backed operations validate a live Rust profile separately.
+  if (configurationRv != CKR_OK)
+    CNK_DEBUG("Session opened without observed extension configuration: CK_RV=0x%lx", configurationRv);
+  CK_BBOOL extensionEnabled = configurationRv == CKR_OK && algorithmConfig.enabled;
 
   CNK_ENSURE_OK(cnk_mutex_lock(&session_mutex));
 
@@ -927,7 +932,7 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
   CK_RV cleanupRv = cnk_session_cancel_operations(session, ~(CK_FLAGS)0);
   CK_RV logoutRv = CKR_OK;
   if (lastSession && hadPin)
-    logoutRv = cnk_logout_piv_pin_with_session(session->slotId);
+    logoutRv = cnk_logout_piv_pin_with_session(session);
   if (lastSession) {
     CK_RV finalTokenLockRv = cnk_mutex_lock(&session->token->lock);
     if (finalTokenLockRv == CKR_OK) {
@@ -1111,7 +1116,7 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
       CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "No PIN-always private-key operation is active");
     if (signAlways && decryptAlways)
       CNK_RETURN(CKR_OPERATION_ACTIVE, "Context-specific login is ambiguous with two PIN-always operations");
-    rv = cnk_verify_piv_pin_for_context(session->slotId, pPin, ulPinLen, pPinTries);
+    rv = cnk_verify_piv_pin_for_context(session, pPin, ulPinLen, pPinTries);
     if (rv == CKR_OK) {
       CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
       if (session->token->logoutPending) {
@@ -1289,7 +1294,7 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
     if (retryRv != CKR_OK)
       return retryRv;
     if (cardLogoutPending) {
-      retryRv = cnk_logout_piv_pin_with_session(session->slotId);
+      retryRv = cnk_logout_piv_pin_with_session(session);
       if (retryRv != CKR_OK)
         return retryRv;
     }
@@ -1342,7 +1347,7 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
     cnk_mutex_unlock(&session->token->lock);
     return revokeRv;
   }
-  CK_RV logoutRv = hasPin ? cnk_logout_piv_pin_with_session(session->slotId) : CKR_OK;
+  CK_RV logoutRv = hasPin ? cnk_logout_piv_pin_with_session(session) : CKR_OK;
 
   CK_RV clearRv = cnk_mutex_lock(&session->token->lock);
   if (clearRv != CKR_OK) {

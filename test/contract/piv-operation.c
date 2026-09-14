@@ -133,6 +133,32 @@ static uint32_t construct(const CNK_LIBCANO_CONTEXT *context, CNK_LIBCANO_OPERAT
   }
   return rv;
 }
+CK_RV cnk_probe_device_profile(CK_SLOT_ID slot, uint32_t mode, void **profile) {
+  (void)slot;
+  (void)mode;
+  (void)profile;
+  abort();
+}
+uint32_t cnk_profile_firmware_version(const void *profile, uint32_t *version) {
+  (void)profile;
+  (void)version;
+  abort();
+}
+uint32_t cnk_profile_model_copy(const void *profile, uint8_t *output, size_t *length) {
+  (void)profile;
+  (void)output;
+  (void)length;
+  abort();
+}
+uint32_t cnk_profile_serial_u32(const void *profile, uint32_t *serial) {
+  (void)profile;
+  (void)serial;
+  abort();
+}
+void cnk_profile_free(CNK_LIBCANO_PROFILE *profile) {
+  (void)profile;
+  abort();
+}
 uint32_t cnk_profile_piv_algorithm_from_wire(const void *profile, uint32_t wire, uint32_t *algorithm) {
   CHECK(profile == (void *)1 && wire == PIV_ALG_RSA_2048 && locked == 1 && !cards);
   if (profileStatus)
@@ -146,6 +172,20 @@ uint32_t cnk_operation_key_algorithm(const CNK_LIBCANO_OPERATION *operation, uin
     return publicAlgorithmStatus;
   *algorithm = CNK_LIBCANO_ALG_RSA_2048;
   return CNK_LIBCANO_OK;
+}
+uint32_t cnk_piv_get_metadata_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint32_t ref, const CNK_LIBCANO_OPTIONS *o,
+                                             CNK_LIBCANO_OPERATION **out, CNK_LIBCANO_ERROR *e) {
+  (void)c;
+  (void)ref;
+  (void)o;
+  (void)out;
+  (void)e;
+  abort();
+}
+uint32_t cnk_operation_metadata(const CNK_LIBCANO_OPERATION *o, CNK_LIBCANO_METADATA *metadata) {
+  (void)o;
+  (void)metadata;
+  abort();
 }
 uint32_t cnk_piv_generate_key_in_context_new(const CNK_LIBCANO_CONTEXT *c, const CNK_LIBCANO_KEY_PARAMETERS *p,
                                              const CNK_LIBCANO_OPTIONS *o, CNK_LIBCANO_OPERATION **out,
@@ -233,9 +273,8 @@ uint32_t cnk_operation_command(const CNK_LIBCANO_OPERATION *o, uint8_t *data, si
   *len = badCommand ? (badCommand == 1 ? 0 : 2049) : 5;
   return CNK_LIBCANO_OK;
 }
-LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *command, CK_ULONG len, CK_BYTE *out, DWORD *outLen,
-                         CK_BBOOL getResponse) {
-  CHECK(card == 1 && cards == 1 && !locked && !getResponse && len == 5 && command[0] == 0xAA);
+LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *command, CK_ULONG len, CK_BYTE *out, DWORD *outLen) {
+  CHECK(card == 1 && cards == 1 && !locked && len == 5 && command[0] == 0xAA);
   sends++;
   if (status(NULL))
     return SCARD_E_COMM_DATA_LOST;

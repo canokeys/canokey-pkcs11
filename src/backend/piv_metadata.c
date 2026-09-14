@@ -1,6 +1,6 @@
+#include "backend/libcanokey.h"
 #include "backend/pcsc.h"
 #include "backend/piv_operation.h"
-#include "backend/protocol.h"
 
 #include "api/session.h"
 #include "internal/logging.h"
@@ -242,76 +242,57 @@ static CK_RV cnk_copy_cached_metadata(const CNK_PIV_PUBLIC_CACHE_ENTRY *entry, C
   return CKR_OK;
 }
 
-static CK_RV readPivVersionOnCard(SCARDHANDLE hCard, CK_BYTE version[3]) {
-  CK_BYTE apdu[] = {0x00, 0xFD, 0x00, 0x00, 0x00};
-  CK_BYTE response[5];
-  DWORD responseLen = sizeof(response);
-  LONG pcscRv = cnk_transceive_apdu(hCard, apdu, sizeof(apdu), response, &responseLen, CK_FALSE);
-  if (pcscRv != SCARD_S_SUCCESS || responseLen < 2)
-    return CKR_DEVICE_ERROR;
-  if (response[responseLen - 2] != 0x90 || response[responseLen - 1] != 0x00)
-    return CKR_FUNCTION_NOT_SUPPORTED;
-  if (responseLen != sizeof(response))
-    return CKR_DEVICE_ERROR;
-  memcpy(version, response, 3);
-  return CKR_OK;
+static CK_RV readPivVersionOnCard(SCARDHANDLE card, CK_BYTE version[3]) {
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_read_version_selected_new, NULL, &operation, &error);
+  CK_RV rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
+  if (rv == CKR_OK)
+    rv = cnk_run_piv_operation(card, operation, CKR_DEVICE_ERROR, NULL);
+  if (rv == CKR_OK) {
+    size_t length = 3;
+    status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, version, &length);
+    rv = status == CNK_LIBCANO_OK && length == 3 ? CKR_OK : CKR_DEVICE_ERROR;
+  }
+  if (operation)
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
+  return rv;
 }
 
 static CK_RV connectPiv(CK_SLOT_ID slotId, SCARDHANDLE *card) { return cnk_begin_piv_transaction(slotId, card); }
 
-static CK_RV readPivPinRetriesOnCard(SCARDHANDLE card, CK_BYTE pinReference, CK_BYTE_PTR pinTries) {
+static CK_RV readPivPinRetriesOnCard(CNK_PKCS11_SESSION *session, SCARDHANDLE card, CK_BYTE pinReference,
+                                     CK_BYTE_PTR pinTries) {
   CNK_ENSURE_NONNULL(pinTries);
   if (pinReference != CNK_PIV_PIN_TYPE_PIN && pinReference != CNK_PIV_PIN_TYPE_PUK)
     return CKR_ARGUMENTS_BAD;
-
-  CK_BYTE apdu[] = {0x00, 0xF7, 0x00, pinReference, 0x00};
-  CK_BYTE response[32];
-  DWORD responseLen = sizeof(response);
-  LONG pcscRv = cnk_transceive_apdu(card, apdu, sizeof(apdu), response, &responseLen, CK_FALSE);
-  if (pcscRv != SCARD_S_SUCCESS || responseLen < 2)
-    return CKR_DEVICE_ERROR;
-  CK_BYTE sw1 = response[responseLen - 2];
-  CK_BYTE sw2 = response[responseLen - 1];
-  if (sw1 != 0x90 || sw2 != 0x00)
-    return sw1 == 0x6D || (sw1 == 0x6A && (sw2 == 0x81 || sw2 == 0x86)) ? CKR_FUNCTION_NOT_SUPPORTED : CKR_DEVICE_ERROR;
-
-  CK_ULONG offset = 0;
-  CK_ULONG dataLen = responseLen - 2;
-  while (offset < dataLen) {
-    CK_BYTE tag = response[offset++];
-    CK_LONG fail = 0;
-    CK_ULONG lengthSize = 0;
-    CK_ULONG length = tlvGetLengthSafe(response + offset, dataLen - offset, &fail, &lengthSize);
-    if (fail || lengthSize > dataLen - offset)
-      return CKR_DEVICE_ERROR;
-    offset += lengthSize;
-    if (length > dataLen - offset)
-      return CKR_DEVICE_ERROR;
-    if (tag == 0x06) {
-      if (length != 2)
-        return CKR_DEVICE_ERROR;
-      *pinTries = response[offset + 1];
-      return CKR_OK;
-    }
-    offset += length;
-  }
-  return CKR_DEVICE_ERROR;
-}
-
-CK_RV cnk_get_piv_pin_retries(CK_SLOT_ID slotID, CK_BYTE pinReference, CK_BYTE_PTR pinTries) {
-  CNK_ENSURE_NONNULL(pinTries);
-  SCARDHANDLE card = 0;
-  CK_RV rv = connectPiv(slotID, &card);
+  CNK_LIBCANO_METADATA metadata = {.struct_size = sizeof(metadata)};
+  CK_RV rv = cnk_piv_read_metadata_fields(session, card, pinReference, &metadata, CKR_DEVICE_ERROR);
   if (rv != CKR_OK)
     return rv;
-  rv = readPivPinRetriesOnCard(card, pinReference, pinTries);
+  if (!(metadata.presence_flags & CNK_LIBCANO_METADATA_HAS_RETRIES))
+    return CKR_DEVICE_ERROR;
+  *pinTries = metadata.retries_remaining;
+  return CKR_OK;
+}
+
+CK_RV cnk_get_piv_pin_retries(CNK_PKCS11_SESSION *session, CK_BYTE pinReference, CK_BYTE_PTR pinTries) {
+  CNK_ENSURE_NONNULL(session, pinTries);
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  SCARDHANDLE card = 0;
+  CK_RV rv = connectPiv(session->slotId, &card);
+  if (rv != CKR_OK)
+    return rv;
+  rv = readPivPinRetriesOnCard(session, card, pinReference, pinTries);
   cnk_disconnect_card(card);
   return rv;
 }
 
-CK_RV cnk_block_piv_puk(CK_SLOT_ID slotID) {
+CK_RV cnk_block_piv_puk(CNK_PKCS11_SESSION *session) {
+  CNK_ENSURE_NONNULL(session);
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
   SCARDHANDLE card = 0;
-  CK_RV rv = connectPiv(slotID, &card);
+  CK_RV rv = connectPiv(session->slotId, &card);
   if (rv != CKR_OK)
     return rv;
 
@@ -327,7 +308,7 @@ CK_RV cnk_block_piv_puk(CK_SLOT_ID slotID) {
     replacementPuk[i] = (CK_BYTE)('0' + randomPuk[i] % 10);
   mbedtls_platform_zeroize(randomPuk, sizeof(randomPuk));
   CK_BYTE pinTries = 0;
-  rv = readPivPinRetriesOnCard(card, CNK_PIV_PIN_TYPE_PUK, &pinTries);
+  rv = readPivPinRetriesOnCard(session, card, CNK_PIV_PIN_TYPE_PUK, &pinTries);
   if (rv != CKR_OK || pinTries == 0)
     goto cleanup;
 
@@ -346,30 +327,17 @@ CK_RV cnk_block_piv_puk(CK_SLOT_ID slotID) {
         value /= 10;
       }
     }
-    CK_BYTE apdu[21] = {0x00, 0x24, 0x00, CNK_PIV_PIN_TYPE_PUK, 0x10};
-    memcpy(apdu + 5, oldPuk, sizeof(oldPuk));
-    memcpy(apdu + 5 + sizeof(oldPuk), replacementPuk, sizeof(replacementPuk));
-    CK_BYTE response[16];
-    DWORD responseLen = sizeof(response);
-    LONG pcscRv = cnk_transceive_apdu(card, apdu, sizeof(apdu), response, &responseLen, CK_FALSE);
-    if (pcscRv != SCARD_S_SUCCESS || responseLen < 2) {
-      rv = CKR_DEVICE_ERROR;
-      goto cleanup;
-    }
-    CK_BYTE sw1 = response[responseLen - 2];
-    CK_BYTE sw2 = response[responseLen - 1];
-    if (sw1 == 0x69 && sw2 == 0x83) {
+    rv = cnk_piv_credential_on_card(session, card, CNK_LIBCANO_CREDENTIAL_CHANGE_PUK, oldPuk, sizeof(oldPuk),
+                                    replacementPuk, sizeof(replacementPuk), &pinTries);
+    mbedtls_platform_zeroize(oldPuk, sizeof(oldPuk));
+    if (rv == CKR_PIN_LOCKED) {
       pinTries = 0;
       break;
     }
-    if (sw1 == 0x63 && (sw2 & 0xF0) == 0xC0) {
-      pinTries = sw2 & 0x0F;
+    if (rv == CKR_PIN_INCORRECT)
       continue;
-    }
-    if (sw1 != 0x90 || sw2 != 0x00) {
-      rv = CKR_DEVICE_ERROR;
+    if (rv != CKR_OK)
       goto cleanup;
-    }
     memcpy(knownPuk, replacementPuk, sizeof(knownPuk));
     pukKnown = CK_TRUE;
     // A successful change resets retries. Continue immediately with a known
@@ -377,7 +345,7 @@ CK_RV cnk_block_piv_puk(CK_SLOT_ID slotID) {
     pinTries = 0xFF;
   }
 
-  rv = readPivPinRetriesOnCard(card, CNK_PIV_PIN_TYPE_PUK, &pinTries);
+  rv = readPivPinRetriesOnCard(session, card, CNK_PIV_PIN_TYPE_PUK, &pinTries);
   if (rv == CKR_OK && pinTries != 0)
     rv = CKR_DEVICE_ERROR;
 
@@ -638,20 +606,22 @@ void cnk_piv_public_cache_invalidate(CNK_PKCS11_SESSION *session) {
 CK_RV cnk_get_piv_algorithm_extension(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config) {
   CNK_ENSURE_NONNULL(config);
   SCARDHANDLE card = 0;
-  CK_RV rv = connectPiv(slotID, &card);
-  if (rv != CKR_OK)
-    return rv;
-
-  CK_BYTE apdu[] = {0x00, 0xEE, 0x01, 0x00, 0x00};
-  CK_BYTE response[sizeof(*config) + 2];
-  DWORD responseLen = sizeof(response);
-  LONG pcscRv = cnk_transceive_apdu(card, apdu, sizeof(apdu), response, &responseLen, CK_FALSE);
+  CNK_ENSURE_OK(connectPiv(slotID, &card));
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_read_configuration_selected_new, NULL, &operation, &error);
+  CK_RV rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
+  if (rv == CKR_OK)
+    rv = cnk_run_piv_operation(card, operation, CKR_DEVICE_ERROR, NULL);
+  if (rv == CKR_OK) {
+    size_t length = sizeof(*config);
+    status = CNK_EXTERNAL_CALL(cnk_operation_piv_configuration_copy, operation, (CK_BYTE *)config, &length);
+    rv = status == CNK_LIBCANO_OK && length == sizeof(*config) ? CKR_OK : CKR_DEVICE_ERROR;
+  }
+  if (operation)
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
   cnk_disconnect_card(card);
-  if (pcscRv != SCARD_S_SUCCESS || responseLen != sizeof(response) || response[responseLen - 2] != 0x90 ||
-      response[responseLen - 1] != 0x00)
-    return CKR_FUNCTION_NOT_SUPPORTED;
-  memcpy(config, response, sizeof(*config));
-  return CKR_OK;
+  return rv;
 }
 
 CK_RV cnk_get_piv_algorithm_extension_cached(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config) {
@@ -722,36 +692,34 @@ CK_RV cnk_piv_generate_random(CK_SLOT_ID slotID, CK_BYTE_PTR output, CK_ULONG ou
   if (output == NULL && outputLen > 0)
     return CKR_ARGUMENTS_BAD;
   SCARDHANDLE card = 0;
-  CK_RV rv = connectPiv(slotID, &card);
-  if (rv != CKR_OK)
-    return rv;
-
-  CK_BBOOL supported = CK_FALSE;
-  rv = cnk_piv_v6_supported_on_card(card, &supported);
-  if (rv != CKR_OK || !supported) {
-    cnk_disconnect_card(card);
-    return rv == CKR_OK ? CKR_RANDOM_NO_RNG : rv;
-  }
-
+  CNK_ENSURE_OK(connectPiv(slotID, &card));
+  CK_RV rv = CKR_OK;
   CK_ULONG offset = 0;
-  while (offset < outputLen) {
-    CK_ULONG chunkLen = outputLen - offset;
-    if (chunkLen > 256)
-      chunkLen = 256;
-    CK_BYTE apdu[] = {0x00, 0x84, 0x00, 0x00, chunkLen == 256 ? 0 : (CK_BYTE)chunkLen};
-    CK_BYTE response[258];
-    DWORD responseLen = sizeof(response);
-    LONG pcscRv = cnk_transceive_apdu(card, apdu, sizeof(apdu), response, &responseLen, CK_FALSE);
-    if (pcscRv != SCARD_S_SUCCESS || responseLen != chunkLen + 2 || response[responseLen - 2] != 0x90 ||
-        response[responseLen - 1] != 0x00) {
-      rv = CKR_DEVICE_ERROR;
-      break;
+  // Bound each Rust result while preserving arbitrarily large caller buffers.
+  // All chunks retain this transaction; a later failure wipes the whole output.
+  do {
+    CK_ULONG chunk = outputLen - offset;
+    if (chunk > 65536)
+      chunk = 65536;
+    CNK_LIBCANO_OPERATION *operation = NULL;
+    CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+    uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_random_selected_new, chunk, NULL, &operation, &error);
+    rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
+    if (rv == CKR_OK)
+      rv = cnk_run_piv_operation(card, operation, CKR_DEVICE_ERROR, NULL);
+    if (rv == CKR_OK) {
+      size_t length = chunk;
+      status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, output ? output + offset : NULL, &length);
+      rv = status == CNK_LIBCANO_OK && length == chunk ? CKR_OK : CKR_DEVICE_ERROR;
     }
-    memcpy(output + offset, response, chunkLen);
-    offset += chunkLen;
-  }
+    if (operation)
+      CNK_EXTERNAL_VOID(cnk_operation_free, operation);
+    if (rv != CKR_OK)
+      break;
+    offset += chunk;
+  } while (offset < outputLen);
   cnk_disconnect_card(card);
   if (rv != CKR_OK && outputLen > 0)
     mbedtls_platform_zeroize(output, outputLen);
-  return rv;
+  return rv == CKR_FUNCTION_NOT_SUPPORTED ? CKR_RANDOM_NO_RNG : rv;
 }

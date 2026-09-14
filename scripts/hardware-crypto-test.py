@@ -83,6 +83,11 @@ parser.add_argument(
     action="store_true",
     help="Verify unconfigured PIN-managed login is rejected and its USER login is rolled back",
 )
+parser.add_argument(
+    "--pin-roundtrip-id",
+    type=lambda x: int(x, 16),
+    help="Temporarily change PIN to CNK_PIV_TEST_PIN, verify this EC key, then restore PIN",
+)
 parser.add_argument("--report", type=Path)
 args = parser.parse_args()
 if os.name != "nt":
@@ -97,6 +102,8 @@ if (
     or any(id is not None for _, id in imports + generations)
 ) and "CNK_PIV_MANAGEMENT_KEY" not in os.environ:
     parser.error("Card write tests require CNK_PIV_MANAGEMENT_KEY")
+if args.pin_roundtrip_id is not None and "CNK_PIV_TEST_PIN" not in os.environ:
+    parser.error("PIN roundtrip requires CNK_PIV_TEST_PIN")
 if (args.mldsa_id is None) != (args.mlkem_id is None):
     parser.error("Specify both --mldsa-id and --mlkem-id")
 args.module = args.module.resolve()
@@ -149,6 +156,7 @@ for name, types in {
     "C_CNK_LoginPinManaged": [U, P, U],
     "C_Login": [U, U, P, U],
     "C_Logout": [U],
+    "C_SetPIN": [U, P, U, P, U],
     "C_GetAttributeValue": [U, U, C.POINTER(Attr), U],
     "C_FindObjectsInit": [U, C.POINTER(Attr), U],
     "C_FindObjects": [U, C.POINTER(U), U, C.POINTER(U)],
@@ -444,10 +452,13 @@ def eddsa_checks(id):
 
 
 def random_check():
-    output = C.create_string_buffer(1024)
-    check(lib.C_GenerateRandom(s, output, len(output)))
-    if not len(set(output.raw)) > 200:
-        raise AssertionError("Degenerate hardware random output")
+    check(lib.C_GenerateRandom(s, None, 0))
+    for length in [1, 256, 257, 1024, 65539]:
+        output = C.create_string_buffer(length)
+        check(lib.C_GenerateRandom(s, output, length))
+        if length >= 1024 and len(set(output.raw)) <= 200:
+            raise AssertionError("Degenerate hardware random output")
+    print("PASS RNG lengths 0/1/256/257/1024/65539 and adapter chunk boundary", flush=True)
 
 
 results = []
@@ -461,6 +472,43 @@ def run_case(name, operation):
         detail = f"{type(error).__name__}: {error}"
         results.append({"name": name, "status": "fail", "detail": detail})
         print(f"FAIL {name}: {detail}", flush=True)
+
+
+def pin_roundtrip(id):
+    original = os.environ["CNK_PIV_PIN"].encode()
+    temporary = os.environ["CNK_PIV_TEST_PIN"].encode()
+    if not 6 <= len(temporary) <= 8 or temporary == original:
+        raise RuntimeError("Temporary PIN must differ and contain 6 to 8 bytes")
+    login(1, original)
+    # Resolve the test key before attempting a credential mutation.
+    public(id)
+    attempted = False
+    restored = False
+    try:
+        attempted = True
+        check(lib.C_SetPIN(s, original, len(original), temporary, len(temporary)))
+        # This uses the updated cached PIN, with no intervening login.
+        ecdsa_checks(id)
+        check(lib.C_Logout(s))
+        login(1, temporary)
+        check(lib.C_SetPIN(s, temporary, len(temporary), original, len(original)))
+        restored = True
+        check(lib.C_Logout(s))
+        login(1, original)
+        ecdsa_checks(id)
+    finally:
+        if attempted and not restored:
+            rv = lib.C_SetPIN(s, temporary, len(temporary), original, len(original))
+            # If the first change never committed, the temporary PIN is rejected.
+            # Verify the known original instead; never loop over candidate PINs.
+            if rv not in (0, 0xA0):
+                check(rv)
+            lib.C_Logout(s)
+            login(1, original)
+        rv = lib.C_Logout(s)
+        if rv not in (0, 0x101):
+            check(rv)
+    print("PASS PIN change, cached-PIN signing, fresh login and original-PIN restoration", flush=True)
 
 
 def unconfigured_management_check():
@@ -684,6 +732,8 @@ def main():
             raise RuntimeError(f"Token serial mismatch: {actual_serial}")
         check(lib.C_OpenSession(args.slot, 6, None, None, C.byref(s)))
         opened = True
+        if args.pin_roundtrip_id is not None:
+            run_case("PIN change/cache/restore", lambda: pin_roundtrip(args.pin_roundtrip_id))
         if args.pin_managed_unconfigured:
             run_case("unconfigured PIN-managed login rollback", unconfigured_management_check)
         if args.name_slot:
@@ -714,7 +764,7 @@ def main():
             run_case(f"RSA ID {id:02x}", lambda id=id: rsa_checks(id))
         if args.mldsa_id is not None:
             run_case("ML-DSA and ML-KEM", pqc_checks)
-        run_case("hardware RNG 1024 bytes", random_check)
+        run_case("hardware RNG length/chunk matrix", random_check)
     finally:
         if opened:
             lib.C_Logout(s)

@@ -7,6 +7,8 @@
 
 typedef struct CNK_LIBCANO_OPERATION CNK_LIBCANO_OPERATION;
 typedef struct CNK_LIBCANO_CONTEXT CNK_LIBCANO_CONTEXT;
+typedef struct CNK_LIBCANO_PROFILE CNK_LIBCANO_PROFILE;
+void cnk_profile_free(CNK_LIBCANO_PROFILE *profile);
 typedef struct {
   uint32_t struct_size;
   uint32_t kind, phase, reference, presence_flags;
@@ -51,6 +53,7 @@ enum {
 enum {
   CNK_LIBCANO_METADATA_HAS_ALGORITHM = 1,
   CNK_LIBCANO_METADATA_HAS_POLICY = 2,
+  CNK_LIBCANO_METADATA_HAS_RETRIES = 16,
 };
 enum {
   CNK_LIBCANO_PUBLIC_MODULUS = 1,
@@ -74,11 +77,13 @@ enum {
   CNK_LIBCANO_PANIC = 6,
 };
 enum {
+  CNK_LIBCANO_ERROR_INVALID_PIN = 2,
   CNK_LIBCANO_ERROR_INVALID_RESPONSE = 3,
   CNK_LIBCANO_ERROR_PROTOCOL_VIOLATION = 4,
   CNK_LIBCANO_ERROR_AUTHENTICATION_FAILED = 6,
   CNK_LIBCANO_ERROR_PIN_BLOCKED = 7,
   CNK_LIBCANO_ERROR_SECURITY_STATUS = 8,
+  CNK_LIBCANO_ERROR_CONDITIONS = 9,
   CNK_LIBCANO_ERROR_NOT_FOUND = 10,
   CNK_LIBCANO_ERROR_UNSUPPORTED_FEATURE = 12,
   CNK_LIBCANO_ERROR_LIMIT_EXCEEDED = 5,
@@ -107,12 +112,35 @@ enum {
   CNK_LIBCANO_SIGN_MESSAGE = 3,
 };
 
+enum {
+  CNK_LIBCANO_CREDENTIAL_VERIFY_PIN = 1,
+  CNK_LIBCANO_CREDENTIAL_LOGOUT = 2,
+  CNK_LIBCANO_CREDENTIAL_CHANGE_PIN = 3,
+  CNK_LIBCANO_CREDENTIAL_CHANGE_PUK = 4,
+  CNK_LIBCANO_CREDENTIAL_UNBLOCK_PIN = 5
+};
+uint32_t cnk_piv_read_version_selected_new(const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_read_configuration_selected_new(const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
+                                                 CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_random_selected_new(size_t, const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
+                                     CNK_LIBCANO_ERROR *);
+uint32_t cnk_operation_piv_configuration_copy(const CNK_LIBCANO_OPERATION *, uint8_t *, size_t *);
+uint32_t cnk_piv_select_application_new(const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_credential_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const uint8_t *, size_t,
+                                           const uint8_t *, size_t, const CNK_LIBCANO_OPTIONS *,
+                                           CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_profile_firmware_version(const void *, uint32_t *);
+uint32_t cnk_profile_model_copy(const void *, uint8_t *, size_t *);
+uint32_t cnk_profile_serial_u32(const void *, uint32_t *);
 uint32_t cnk_profile_piv_algorithm_from_wire(const void *, uint32_t, uint32_t *);
 uint32_t cnk_operation_key_algorithm(const CNK_LIBCANO_OPERATION *, uint32_t *);
 uint32_t cnk_probe_device_new(uint32_t, const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_operation_take_profile(CNK_LIBCANO_OPERATION *, void **);
 uint32_t cnk_piv_context_new(const void *, uint32_t, CNK_LIBCANO_CONTEXT **, CNK_LIBCANO_ERROR *);
 void cnk_piv_context_free(CNK_LIBCANO_CONTEXT *);
+uint32_t cnk_piv_require_empty_key_slot_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t,
+                                                       const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
+                                                       CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_get_metadata_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const CNK_LIBCANO_OPTIONS *,
                                              CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_read_certificate_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const CNK_LIBCANO_OPTIONS *,

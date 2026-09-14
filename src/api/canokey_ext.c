@@ -246,7 +246,7 @@ static CK_RV loginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, C
     rv = checkPinManagedAdminData(adminData, dataLen);
   if (rv == CKR_OK && requireBlockedPuk) {
     CK_BYTE pukTries = 0;
-    rv = cnk_get_piv_pin_retries(session->slotId, CNK_PIV_PIN_TYPE_PUK, &pukTries);
+    rv = cnk_get_piv_pin_retries(session, CNK_PIV_PIN_TYPE_PUK, &pukTries);
     if (rv == CKR_OK && pukTries != 0)
       rv = CKR_ACTION_PROHIBITED;
   }
@@ -326,7 +326,7 @@ CK_RV C_CNK_FinalizePinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin,
     }
     return rv;
   }
-  rv = cnk_block_piv_puk(session->slotId);
+  rv = cnk_block_piv_puk(session);
   if (rv != CKR_OK) {
     cnk_token_end_management_operation(session);
     if (establishedUserLogin) {

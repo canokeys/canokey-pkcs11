@@ -176,7 +176,7 @@ CK_RV cnk_run_piv_operation(SCARDHANDLE card, CNK_LIBCANO_OPERATION *operation, 
     DWORD responseLen = sizeof(response);
     if (attempted != NULL)
       *attempted = CK_TRUE;
-    LONG transport = cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE);
+    LONG transport = cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen);
     mbedtls_platform_zeroize(command, sizeof(command));
     if (transport != SCARD_S_SUCCESS || responseLen < 2 || responseLen > sizeof(response)) {
       CNK_DEBUG("PIV exchange failure: exchange=%zu PCSC=0x%08lx response_bytes=%lu", exchanges,
@@ -199,6 +199,29 @@ CK_RV cnk_run_piv_operation(SCARDHANDLE card, CNK_LIBCANO_OPERATION *operation, 
 cleanup:
   mbedtls_platform_zeroize(command, sizeof(command));
   mbedtls_platform_zeroize(response, sizeof(response));
+  return rv;
+}
+
+CK_RV cnk_piv_read_metadata_fields(CNK_PKCS11_SESSION *session, SCARDHANDLE card, CK_BYTE reference,
+                                   CNK_LIBCANO_METADATA *metadata, CK_RV absent) {
+  CNK_LIBCANO_CONTEXT *context = NULL;
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  CK_RV rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_SELECTED, &context);
+  if (rv != CKR_OK)
+    return rv;
+  uint32_t status =
+      CNK_EXTERNAL_CALL(cnk_piv_get_metadata_in_context_new, context, reference, NULL, &operation, &error);
+  rv = cnk_piv_operation_status(status, &error, absent);
+  if (rv == CKR_OK)
+    rv = cnk_run_piv_operation(card, operation, absent, NULL);
+  if (rv == CKR_OK) {
+    status = CNK_EXTERNAL_CALL(cnk_operation_metadata, operation, metadata);
+    rv = cnk_piv_operation_status(status, NULL, absent);
+  }
+  if (operation)
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
+  CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   return rv;
 }
 

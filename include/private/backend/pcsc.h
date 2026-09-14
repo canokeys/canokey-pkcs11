@@ -162,9 +162,8 @@ void cnk_load_managed_binding(SCARDCONTEXT *context, SCARDHANDLE *card);
 // PIV application functions
 CK_RV cnk_select_piv_application(SCARDHANDLE hCard);
 CK_RV cnk_begin_piv_transaction(CK_SLOT_ID slotID, SCARDHANDLE *phCard);
+CK_RV cnk_probe_device_profile(CK_SLOT_ID slotID, uint32_t mode, void **profile);
 CK_RV cnk_probe_libcanokey_profile(CK_SLOT_ID slotID, void **profile);
-CK_RV cnk_verify_piv_pin(SCARDHANDLE hCard, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
-CK_RV cnk_logout_piv_pin(SCARDHANDLE hCard);
 CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey);
 CK_RV cnk_change_piv_secret_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pinReference,
                                          CK_UTF8CHAR_PTR pOldPin, CK_ULONG ulOldPinLen, CK_UTF8CHAR_PTR pNewPin,
@@ -172,21 +171,22 @@ CK_RV cnk_change_piv_secret_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
 CK_RV cnk_unblock_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPuk,
                                        CK_ULONG ulPukLen, CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewPinLen,
                                        CK_BYTE_PTR pPinTries);
-CK_RV cnk_get_piv_pin_retries(CK_SLOT_ID slotID, CK_BYTE pinReference, CK_BYTE_PTR pPinTries);
-CK_RV cnk_block_piv_puk(CK_SLOT_ID slotID);
+CK_RV cnk_get_piv_pin_retries(CNK_PKCS11_SESSION *session, CK_BYTE pinReference, CK_BYTE_PTR pPinTries);
+CK_RV cnk_block_piv_puk(CNK_PKCS11_SESSION *session);
 
 // Function to verify PIN with session
 CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
                                       CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
 
-CK_RV cnk_verify_piv_pin_for_context(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries);
+CK_RV cnk_verify_piv_pin_for_context(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,
+                                     CK_BYTE_PTR pPinTries);
 
 // Extended version of verify PIN with option to control card disconnection
 CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
                                          CK_ULONG ulPinLen, CK_BYTE_PTR pPinTries, SCARDHANDLE *out_card);
 
 // Function to logout PIV PIN with session
-CK_RV cnk_logout_piv_pin_with_session(CK_SLOT_ID slotID);
+CK_RV cnk_logout_piv_pin_with_session(CNK_PKCS11_SESSION *session);
 
 CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot);
 
@@ -198,7 +198,7 @@ CNK_TEST_API void cnk_disconnect_card(SCARDHANDLE hCard);
 
 // Internal APDU transport shared by focused PIV backend modules.
 CNK_TEST_API LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *command, CK_ULONG commandLen, CK_BYTE *response,
-                                      DWORD *responseLen, CK_BBOOL autoGetResponse);
+                                      DWORD *responseLen);
 
 // Internal transaction helpers shared by PIV data and private-key modules.
 // The caller owns the returned transaction and must call cnk_disconnect_card.
@@ -206,8 +206,6 @@ CK_RV cnk_connect_for_private_key_operation(CK_SLOT_ID slotId, CNK_PKCS11_SESSIO
                                             const CK_BYTE *contextPin, CK_ULONG contextPinLen, SCARDHANDLE *card,
                                             const char *operationName);
 CK_RV cnk_authenticate_admin_for_write(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, SCARDHANDLE *card);
-CK_RV cnk_transmit_chained_apdu(SCARDHANDLE card, CK_BYTE ins, CK_BYTE p1, CK_BYTE p2, const CK_BYTE *data,
-                                CK_ULONG dataLen, CK_BYTE *response, CK_ULONG_PTR responseLen, CK_BBOOL requestLe);
 
 // Get firmware version and hardware name
 CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, char *hw_name, size_t hw_name_len);

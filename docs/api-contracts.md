@@ -75,11 +75,11 @@ standard because it also captures this module's internal safety invariants.
 
 ### libcanokey Conversation Boundary
 
-The protocol adapter and selected-context PIV executor keep Rust state inside
+The selected-context PIV executor keeps Rust state inside
 one synchronous C backend call. C owns admission, session/token reservations,
 and the selected PC/SC transaction until parsing and cache invalidation finish.
 `cnk_run_piv_operation` borrows the operation, transmits each command exactly
-once with C continuation disabled, and wipes command/response scratch on every
+once through a raw PC/SC exchange, and wipes command/response scratch on every
 exit. Libcanokey owns chaining, continuation and command-specific status parsing.
 Only an explicit Done step returns success; ABI failures, malformed responses,
 invalid steps and transport failures cannot inherit a successful lock result.

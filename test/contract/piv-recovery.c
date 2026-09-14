@@ -60,13 +60,12 @@ CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *s) {
   abort();
 }
 LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *command, CK_ULONG commandLen, CK_BYTE *response,
-                         DWORD *responseLen, CK_BBOOL continuation) {
+                         DWORD *responseLen) {
   (void)card;
   (void)command;
   (void)commandLen;
   (void)response;
   (void)responseLen;
-  (void)continuation;
   abort();
 }
 CK_RV cnk_api_admission_begin(CNK_API_ADMISSION_GUARD *g) {

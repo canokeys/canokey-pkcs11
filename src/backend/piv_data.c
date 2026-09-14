@@ -1,3 +1,4 @@
+#include "backend/libcanokey.h"
 #include "backend/pcsc.h"
 #include "backend/piv_operation.h"
 
@@ -200,160 +201,49 @@ CK_RV cnk_delete_piv_certificate_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSIO
   return mutate_certificate(slotID, session, pivSlot, NULL, 0);
 }
 
-// Helper function to get firmware version and hardware name
-CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, char *hw_name_out, size_t hw_name_len) {
-  SCARDHANDLE hCard;
-  char local_hw_name[256] = {0}; // Local buffer for hardware name
-
-  // Connect to the card for this operation
-  CK_RV rv = cnk_begin_card_transaction(slotID, &hCard);
-  if (rv != CKR_OK) {
-    return rv;
-  }
-
-  // Select the CanoKey AID: F000000000
-  CK_BYTE select_apdu[] = {0x00, 0xA4, 0x04, 0x00, 0x05, 0xF0, 0x00, 0x00, 0x00, 0x00};
-  CK_BYTE response[258];
-  DWORD response_len = sizeof(response);
-
-  // Use the transceive function to send the command and log both command and response
-  rv = cnk_transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len, CK_FALSE);
-  if (rv != SCARD_S_SUCCESS) {
-    cnk_disconnect_card(hCard);
-    return CKR_DEVICE_ERROR;
-  }
-
-  // Check if the select command was successful (SW1SW2 = 9000)
-  if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
-    cnk_disconnect_card(hCard);
-    return CKR_DEVICE_ERROR;
-  }
-
-  // First get the hardware name
-  CK_BYTE hw_version_apdu[] = {0x00, 0x31, 0x01, 0x00, 0x00};
-  response_len = sizeof(response);
-
-  // Send the hardware version command
-  LONG pcsc_rv =
-      cnk_transceive_apdu(hCard, hw_version_apdu, sizeof(hw_version_apdu), response, &response_len, CK_FALSE);
-  if (pcsc_rv == SCARD_S_SUCCESS && response_len >= 2 && response[response_len - 2] == 0x90 &&
-      response[response_len - 1] == 0x00) {
-
-    // Extract hardware name
-    size_t name_len = response_len - 2; // Exclude status bytes
-    if (name_len > sizeof(local_hw_name) - 1) {
-      name_len = sizeof(local_hw_name) - 1;
+CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *major, CK_BYTE *minor, char *model, size_t modelLen) {
+  CNK_ENSURE_NONNULL(major, minor);
+  void *profile = NULL;
+  CNK_ENSURE_OK(cnk_probe_device_profile(slotID, 0, &profile));
+  uint32_t version[3] = {0};
+  uint32_t status = CNK_EXTERNAL_CALL(cnk_profile_firmware_version, profile, version);
+  CK_RV rv = CKR_OK;
+  if (status != CNK_LIBCANO_OK && status != CNK_LIBCANO_RESULT_TYPE_MISMATCH)
+    rv = CKR_DEVICE_ERROR;
+  if (rv == CKR_OK) {
+    // Preserve the PKCS#11 version presentation; Rust owns text parsing.
+    *major = (CK_BYTE)version[0];
+    *minor = (CK_BYTE)(version[1] * 10 + version[2]);
+    if (model && modelLen) {
+      CK_BYTE name[256];
+      size_t length = sizeof(name);
+      status = CNK_EXTERNAL_CALL(cnk_profile_model_copy, profile, name, &length);
+      if (status == CNK_LIBCANO_RESULT_TYPE_MISMATCH) {
+        memcpy(name, "CanoKey", 7);
+        length = 7;
+      } else if (status != CNK_LIBCANO_OK) {
+        rv = CKR_DEVICE_ERROR;
+      }
+      if (rv == CKR_OK) {
+        if (length >= modelLen)
+          length = modelLen - 1;
+        memcpy(model, name, length);
+        model[length] = 0;
+      }
     }
-    memcpy(local_hw_name, response, name_len);
-    local_hw_name[name_len] = '\0';
-  } else {
-    // If hardware name retrieval fails, set a default
-    strcpy(local_hw_name, "CanoKey");
   }
-
-  // Now get the firmware version
-  CK_BYTE fw_version_apdu[] = {0x00, 0x31, 0x00, 0x00, 0x00};
-  response_len = sizeof(response);
-
-  // Send the firmware version command
-  pcsc_rv = cnk_transceive_apdu(hCard, fw_version_apdu, sizeof(fw_version_apdu), response, &response_len, CK_FALSE);
-  if (pcsc_rv != SCARD_S_SUCCESS) {
-    cnk_disconnect_card(hCard);
-    return CKR_DEVICE_ERROR;
-  }
-
-  // Check if the command was successful
-  if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
-    cnk_disconnect_card(hCard);
-    return CKR_DEVICE_ERROR;
-  }
-
-  // Parse firmware version string (format: "X.Y.Z")
-  char version_str[16] = {0};
-  size_t len = response_len - 2; // Exclude status bytes
-  if (len > sizeof(version_str) - 1) {
-    len = sizeof(version_str) - 1;
-  }
-  memcpy(version_str, response, len);
-  version_str[len] = '\0';
-
-  int v_major, v_minor, v_patch;
-  if (sscanf(version_str, "%d.%d.%d", &v_major, &v_minor, &v_patch) == 3) {
-    // For firmware version: major is the first part, minor is the second part * 10 + the third part
-    *fw_major = (CK_BYTE)v_major;
-    *fw_minor = (CK_BYTE)(v_minor * 10 + v_patch);
-  } else {
-    // Fallback if parsing fails
-    *fw_major = 0;
-    *fw_minor = 0;
-  }
-
-  // Copy the hardware name to the output buffer if provided
-  if (hw_name_out != NULL && hw_name_len > 0) {
-    strncpy(hw_name_out, local_hw_name, hw_name_len - 1);
-    hw_name_out[hw_name_len - 1] = '\0'; // Ensure null termination
-  }
-
-  // Disconnect from the card when done
-  cnk_disconnect_card(hCard);
-  return CKR_OK;
+  CNK_EXTERNAL_VOID(cnk_profile_free, profile);
+  return rv;
 }
 
-// Get serial number (4-byte big endian number)
-CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number) {
-  SCARDHANDLE hCard;
-
-  // Connect to the card for this operation
-  CK_RV rv = cnk_begin_card_transaction(slotID, &hCard);
-  if (rv != CKR_OK) {
-    return rv;
-  }
-
-  // Select the CanoKey AID: F000000000
-  CK_BYTE select_apdu[] = {0x00, 0xA4, 0x04, 0x00, 0x05, 0xF0, 0x00, 0x00, 0x00, 0x00};
-  CK_BYTE response[258];
-  DWORD response_len = sizeof(response);
-
-  // Use the transceive function to send the command and log both command and response
-  rv = cnk_transceive_apdu(hCard, select_apdu, sizeof(select_apdu), response, &response_len, CK_FALSE);
-  if (rv != SCARD_S_SUCCESS) {
-    cnk_disconnect_card(hCard);
-    return CKR_DEVICE_ERROR;
-  }
-
-  // Check if the select command was successful (SW1SW2 = 9000)
-  if (response_len < 2 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
-    cnk_disconnect_card(hCard);
-    return CKR_DEVICE_ERROR;
-  }
-
-  // Send the get serial number command: 00 32 00 00 00
-  CK_BYTE sn_apdu[] = {0x00, 0x32, 0x00, 0x00, 0x00};
-  response_len = sizeof(response);
-
-  // Send the command
-  LONG pcsc_rv = cnk_transceive_apdu(hCard, sn_apdu, sizeof(sn_apdu), response, &response_len, CK_FALSE);
-  if (pcsc_rv != SCARD_S_SUCCESS) {
-    cnk_disconnect_card(hCard);
-    return CKR_DEVICE_ERROR;
-  }
-
-  // Check if the command was successful
-  if (response_len < 6 || response[response_len - 2] != 0x90 || response[response_len - 1] != 0x00) {
-    cnk_disconnect_card(hCard);
-    return CKR_DEVICE_ERROR;
-  }
-
-  // Parse the 4-byte big endian serial number
-  if (response_len >= 6) { // 4 bytes + 2 status bytes
-    *serial_number = ((CK_ULONG)response[0] << 24) | ((CK_ULONG)response[1] << 16) | ((CK_ULONG)response[2] << 8) |
-                     (CK_ULONG)response[3];
-  } else {
-    // Fallback if response is too short
-    *serial_number = 0;
-  }
-
-  // Disconnect from the card when done
-  cnk_disconnect_card(hCard);
-  return CKR_OK;
+CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial) {
+  CNK_ENSURE_NONNULL(serial);
+  void *profile = NULL;
+  CNK_ENSURE_OK(cnk_probe_device_profile(slotID, 0, &profile));
+  uint32_t value = 0;
+  uint32_t status = CNK_EXTERNAL_CALL(cnk_profile_serial_u32, profile, &value);
+  if (status == CNK_LIBCANO_OK)
+    *serial = value;
+  CNK_EXTERNAL_VOID(cnk_profile_free, profile);
+  return status == CNK_LIBCANO_OK ? CKR_OK : CKR_DEVICE_ERROR;
 }

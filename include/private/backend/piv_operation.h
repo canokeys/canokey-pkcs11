@@ -15,6 +15,14 @@ CK_RV cnk_piv_context_for_session(CNK_PKCS11_SESSION *session, uint32_t state, C
  * extension IDs. The operation factory still owns capability authorization. */
 CK_RV cnk_piv_resolve_algorithm(CNK_PKCS11_SESSION *session, CK_BYTE wire, uint32_t *algorithm);
 
+/* Run an explicit credential action within the caller's selected transaction. */
+CK_RV cnk_piv_credential_on_card(CNK_PKCS11_SESSION *session, SCARDHANDLE card, uint32_t action, const CK_BYTE *old,
+                                 CK_ULONG oldLen, const CK_BYTE *replacement, CK_ULONG newLen, CK_BYTE *tries);
+
+/* Read scalar metadata in the caller's selected transaction; never SELECT. */
+CK_RV cnk_piv_read_metadata_fields(CNK_PKCS11_SESSION *session, SCARDHANDLE card, CK_BYTE reference,
+                                   CNK_LIBCANO_METADATA *metadata, CK_RV absent);
+
 /* Borrows an unstarted operation and an active card transaction.
  * The factory owns selection/authentication; context factories do neither.
  * Only libcanokey drives continuation/chaining. attempted is set before raw

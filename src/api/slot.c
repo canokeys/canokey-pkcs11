@@ -308,8 +308,11 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
   memcpy(supportedMechanisms, baseMechanisms, sizeof(baseMechanisms));
 
   CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig = {0};
-  CK_BBOOL extensionsSupported =
-      cnk_get_piv_algorithm_extension_cached(slotID, &algorithmConfig) == CKR_OK && algorithmConfig.enabled;
+  CK_RV configurationRv = cnk_get_piv_algorithm_extension_cached(slotID, &algorithmConfig);
+  if (configurationRv != CKR_OK && configurationRv != CKR_FUNCTION_NOT_SUPPORTED &&
+      configurationRv != CKR_USER_NOT_LOGGED_IN)
+    return configurationRv;
+  CK_BBOOL extensionsSupported = configurationRv == CKR_OK && algorithmConfig.enabled;
   if (extensionsSupported && algorithmConfig.ed25519 != 0) {
     supportedMechanisms[numMechanisms++] = CKM_EC_EDWARDS_KEY_PAIR_GEN;
     supportedMechanisms[numMechanisms++] = CKM_EDDSA;
@@ -417,8 +420,13 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
 
   CNK_PIV_ALGORITHM_EXTENSION_CONFIG config = {0};
   CK_BBOOL extensionEnabled = CK_FALSE;
-  if (mechanism_uses_algorithm_extension(type))
-    extensionEnabled = cnk_get_piv_algorithm_extension_cached(slotID, &config) == CKR_OK && config.enabled;
+  if (mechanism_uses_algorithm_extension(type)) {
+    CK_RV configurationRv = cnk_get_piv_algorithm_extension_cached(slotID, &config);
+    if (configurationRv != CKR_OK && configurationRv != CKR_FUNCTION_NOT_SUPPORTED &&
+        configurationRv != CKR_USER_NOT_LOGGED_IN)
+      return configurationRv;
+    extensionEnabled = configurationRv == CKR_OK && config.enabled;
+  }
 
   if (type == CKM_ML_DSA_KEY_PAIR_GEN || type == CKM_ML_DSA || type == CKM_ML_KEM_KEY_PAIR_GEN || type == CKM_ML_KEM) {
     if (!extensionEnabled ||
