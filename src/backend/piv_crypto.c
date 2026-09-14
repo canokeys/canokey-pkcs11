@@ -108,13 +108,16 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
 
   switch (operationKind) {
   case CNK_PRIVATE_DECRYPT:
-    status = cnk_piv_decrypt_in_context_new(context, pivSlot, algorithm, input, inputLen, NULL, &operation, &error);
+    status = CNK_EXTERNAL_CALL(cnk_piv_decrypt_in_context_new, context, pivSlot, algorithm, input, inputLen, NULL,
+                               &operation, &error);
     break;
   case CNK_PRIVATE_DERIVE:
-    status = cnk_piv_derive_in_context_new(context, pivSlot, algorithm, input, inputLen, NULL, &operation, &error);
+    status = CNK_EXTERNAL_CALL(cnk_piv_derive_in_context_new, context, pivSlot, algorithm, input, inputLen, NULL,
+                               &operation, &error);
     break;
   case CNK_PRIVATE_DECAPSULATE:
-    status = cnk_piv_decapsulate_in_context_new(context, pivSlot, input, inputLen, NULL, &operation, &error);
+    status = CNK_EXTERNAL_CALL(cnk_piv_decapsulate_in_context_new, context, pivSlot, input, inputLen, NULL, &operation,
+                               &error);
     break;
   }
   if (status != CNK_LIBCANO_OK) {
@@ -126,7 +129,7 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
     goto cleanup;
 
   size_t required = 0;
-  status = cnk_operation_result_copy_bytes(operation, NULL, &required);
+  status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, NULL, &required);
   if (status != CNK_LIBCANO_OK) {
     rv = cnk_libcanokey_status_with_error(status, &error);
     goto cleanup;
@@ -137,14 +140,14 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
     rv = CKR_BUFFER_TOO_SMALL;
     goto cleanup;
   }
-  status = cnk_operation_result_copy_bytes(operation, output, &required);
+  status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, output, &required);
   rv = cnk_libcanokey_sign_status(status);
 
 cleanup:
   if (operation != NULL)
-    cnk_operation_free(operation);
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
   if (context != NULL)
-    cnk_piv_context_free(context);
+    CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   cnk_disconnect_card(card);
   return rv;
 }
@@ -177,10 +180,11 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
   if (rv != CKR_OK)
     goto cleanup;
 
-  status = streaming ? cnk_piv_sign_streaming_in_context_new(context, session->signingContext.pivSlot, 1, data, dataLen,
-                                                             NULL, 0, NULL, &operation, &error)
-                     : cnk_piv_sign_in_context_new(context, session->signingContext.pivSlot, algorithm, kind, data,
-                                                   dataLen, NULL, &operation, &error);
+  status = streaming
+               ? CNK_EXTERNAL_CALL(cnk_piv_sign_streaming_in_context_new, context, session->signingContext.pivSlot, 1,
+                                   data, dataLen, NULL, 0, NULL, &operation, &error)
+               : CNK_EXTERNAL_CALL(cnk_piv_sign_in_context_new, context, session->signingContext.pivSlot, algorithm,
+                                   kind, data, dataLen, NULL, &operation, &error);
   if (status != CNK_LIBCANO_OK) {
     rv = cnk_libcanokey_status_with_error(status, &error);
     goto cleanup;
@@ -190,8 +194,9 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
     goto cleanup;
 
   size_t required = 0;
-  status = !streaming && kind == CNK_LIBCANO_SIGN_DIGEST ? cnk_operation_signature_p1363(operation, NULL, &required)
-                                                         : cnk_operation_result_copy_bytes(operation, NULL, &required);
+  status = !streaming && kind == CNK_LIBCANO_SIGN_DIGEST
+               ? CNK_EXTERNAL_CALL(cnk_operation_signature_p1363, operation, NULL, &required)
+               : CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, NULL, &required);
   if (status != CNK_LIBCANO_OK) {
     rv = cnk_libcanokey_status_with_error(status, &error);
     goto cleanup;
@@ -203,15 +208,15 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
     goto cleanup;
   }
   status = !streaming && kind == CNK_LIBCANO_SIGN_DIGEST
-               ? cnk_operation_signature_p1363(operation, signature, &required)
-               : cnk_operation_result_copy_bytes(operation, signature, &required);
+               ? CNK_EXTERNAL_CALL(cnk_operation_signature_p1363, operation, signature, &required)
+               : CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, signature, &required);
   rv = cnk_libcanokey_sign_status(status);
 
 cleanup:
   if (operation != NULL)
-    cnk_operation_free(operation);
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
   if (context != NULL)
-    cnk_piv_context_free(context);
+    CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   cnk_disconnect_card(card);
   return rv;
 }
@@ -316,7 +321,7 @@ CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, C
   if (rv != CKR_OK)
     goto cleanup;
 
-  status = cnk_piv_generate_key_in_context_new(context, &params, NULL, &operation, &error);
+  status = CNK_EXTERNAL_CALL(cnk_piv_generate_key_in_context_new, context, &params, NULL, &operation, &error);
   if (status != CNK_LIBCANO_OK) {
     rv = cnk_libcanokey_status_with_error(status, &error);
     goto cleanup;
@@ -331,9 +336,9 @@ cleanup:
   if (attempted)
     cnk_piv_public_cache_invalidate(session);
   if (operation)
-    cnk_operation_free(operation);
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
   if (context)
-    cnk_piv_context_free(context);
+    CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   cnk_disconnect_card(card);
   return rv;
 }
@@ -353,8 +358,8 @@ CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const C
   if (rv != CKR_OK)
     goto import_cleanup;
 
-  status = cnk_piv_import_key_in_context_new(context, &material->parameters, material->components, material->count,
-                                             NULL, &operation, &error);
+  status = CNK_EXTERNAL_CALL(cnk_piv_import_key_in_context_new, context, &material->parameters, material->components,
+                             material->count, NULL, &operation, &error);
   if (status != CNK_LIBCANO_OK) {
     rv = cnk_libcanokey_status_with_error(status, &error);
     goto import_cleanup;
@@ -367,9 +372,9 @@ import_cleanup:
   if (attempted)
     cnk_piv_public_cache_invalidate(session);
   if (operation)
-    cnk_operation_free(operation);
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
   if (context)
-    cnk_piv_context_free(context);
+    CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   cnk_disconnect_card(card);
   return rv;
 }

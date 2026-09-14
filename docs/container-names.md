@@ -24,8 +24,12 @@ can follow a committed name. Public snapshots invalidate before transmission.
 Firmware owns uniqueness, key replacement, reset and move semantics. The host
 does not emulate these by deleting keys, changing credentials or ADMIN DATA.
 
-Configure CNK_BUILD_CONTAINER_NAME_TESTS=ON for isolated API/transport tests.
-They link production extension code with fake lifecycle/session/transport
-seams; they cover status fallback, short APDU encoding, UTF-16, all slot values,
+The C extension delegates framing and UTF-16 validation to libcanokey. Its F9
+name reference is separate from ordinary key-operation slots. The C layer keeps
+only the PKCS#11 error/version policy, transaction and reservation boundaries.
+
+BUILD_PROTOCOL_TESTING enables the F5 contract test; it can also be selected with
+CNK_BUILD_CONTAINER_NAME_TESTS=ON. It links production C and the actual Rust ABI
+with fake lifecycle/session/transport seams; they cover status fallback, short APDU encoding, UTF-16, all slot values,
 buffer semantics, authorization failures and reservation/reference cleanup.
 They do not replace full concurrency/sanitizer or real-card integration tests.

@@ -240,7 +240,7 @@ CK_RV cnk_initialize_pcsc(void) {
     CNK_RET_OK;
 
   SCARDCONTEXT context = 0;
-  LONG rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &context);
+  LONG rv = CNK_EXTERNAL_CALL(SCardEstablishContext, SCARD_SCOPE_SYSTEM, NULL, NULL, &context);
   if (rv != SCARD_S_SUCCESS) {
     CNK_ERROR("SCardEstablishContext failed with error: 0x%lx", rv);
     return CKR_DEVICE_ERROR;
@@ -249,7 +249,7 @@ CK_RV cnk_initialize_pcsc(void) {
   SCARDCONTEXT expected = 0;
   if (!atomic_compare_exchange_strong(&g_cnk_pcsc_context, &expected, context)) {
     // Another thread published the process-wide context first.
-    SCardReleaseContext(context);
+    CNK_EXTERNAL_CALL(SCardReleaseContext, context);
   }
 
   CNK_RET_OK;
@@ -284,7 +284,7 @@ CK_RV cnk_list_readers(void) {
     cnk_mutex_unlock(&g_cnk_readers_mutex);
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
-  ULONG rv = SCardListReaders(context, NULL, NULL, &readers_len);
+  ULONG rv = CNK_EXTERNAL_CALL(SCardListReaders, context, NULL, NULL, &readers_len);
   if (rv == (ULONG)SCARD_E_NO_READERS_AVAILABLE || (rv == (ULONG)SCARD_S_SUCCESS && readers_len == 0)) {
     cnk_mutex_unlock(&g_cnk_readers_mutex);
     return CKR_OK;
@@ -304,7 +304,7 @@ CK_RV cnk_list_readers(void) {
   }
 
   // Get the actual readers list
-  rv = SCardListReaders(context, NULL, readers_buf, &readers_len);
+  rv = CNK_EXTERNAL_CALL(SCardListReaders, context, NULL, readers_buf, &readers_len);
   if (rv != SCARD_S_SUCCESS) {
     ck_free(readers_buf);
     cnk_mutex_unlock(&g_cnk_readers_mutex);
@@ -387,7 +387,7 @@ CK_RV cnk_cleanup_pcsc(void) {
   if (!backend_mutexes_initialized) {
     SCARDCONTEXT context = atomic_exchange(&g_cnk_pcsc_context, 0);
     if (context != 0) {
-      SCardReleaseContext(context);
+      CNK_EXTERNAL_CALL(SCardReleaseContext, context);
     }
     return CKR_OK;
   }
@@ -395,7 +395,7 @@ CK_RV cnk_cleanup_pcsc(void) {
   // Wake a blocked waiter before taking its serialization mutex.
   SCARDCONTEXT context = atomic_load(&g_cnk_pcsc_context);
   if (context)
-    SCardCancel(context);
+    CNK_EXTERNAL_CALL(SCardCancel, context);
   CK_RV rv = cnk_mutex_lock(&g_cnk_slot_event_mutex);
   if (rv != CKR_OK) {
     CNK_ERROR("Failed to lock slot-event state during PC/SC cleanup");
@@ -424,7 +424,7 @@ CK_RV cnk_cleanup_pcsc(void) {
 
   context = atomic_exchange(&g_cnk_pcsc_context, 0);
   if (context) {
-    SCardReleaseContext(context);
+    CNK_EXTERNAL_CALL(SCardReleaseContext, context);
   }
 
   g_cnk_num_readers = 0;
@@ -488,7 +488,7 @@ static void release_pcsc_operation_guard(CK_BBOOL *active) {
 CNK_TEST_API void cnk_cancel_pcsc_operations(void) {
   SCARDCONTEXT context = atomic_load(&g_cnk_pcsc_context);
   if (context != 0)
-    SCardCancel(context);
+    CNK_EXTERNAL_CALL(SCardCancel, context);
 }
 
 static void freeSlotEventReaders(CNK_SLOT_EVENT_READER *readers, CK_ULONG count) {
@@ -636,7 +636,7 @@ static CK_RV establishSlotEventBaseline(void) {
     freeSlotEventStates(states, slotIds, slot_event_reader_count);
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
-  LONG pcscRv = SCardGetStatusChange(context, 0, states, slot_event_reader_count + 1);
+  LONG pcscRv = CNK_EXTERNAL_CALL(SCardGetStatusChange, context, 0, states, slot_event_reader_count + 1);
   if (pcscRv == SCARD_S_SUCCESS) {
     for (CK_ULONG i = 0; i < slot_event_reader_count; i++)
       slot_event_readers[i].currentState = states[i].dwEventState & ~SCARD_STATE_CHANGED;
@@ -661,7 +661,7 @@ static CK_RV synchronizeSlotEventReadersAfterPnp(void) {
       freeSlotEventStates(states, slotIds, readerCount);
       return CKR_CRYPTOKI_NOT_INITIALIZED;
     }
-    LONG pcscRv = SCardGetStatusChange(context, 0, states, readerCount + 1);
+    LONG pcscRv = CNK_EXTERNAL_CALL(SCardGetStatusChange, context, 0, states, readerCount + 1);
     if (pcscRv != SCARD_S_SUCCESS && pcscRv != SCARD_E_TIMEOUT) {
       freeSlotEventStates(states, slotIds, readerCount);
       return CKR_DEVICE_ERROR;
@@ -713,7 +713,7 @@ CK_RV cnk_wait_for_slot_event(CK_FLAGS flags, CK_SLOT_ID_PTR slot) {
       freeSlotEventStates(states, slotIds, oldReaderCount);
       return CKR_CRYPTOKI_NOT_INITIALIZED;
     }
-    LONG pcscRv = SCardGetStatusChange(context, timeout, states, oldReaderCount + 1);
+    LONG pcscRv = CNK_EXTERNAL_CALL(SCardGetStatusChange, context, timeout, states, oldReaderCount + 1);
     if (pcscRv == SCARD_E_TIMEOUT) {
       freeSlotEventStates(states, slotIds, oldReaderCount);
       return CKR_NO_EVENT;
@@ -794,7 +794,7 @@ CNK_TEST_API CK_RV cnk_begin_card_transaction(CK_SLOT_ID slotID, SCARDHANDLE *ph
     *phCard = managedCard;
 
     // Begin transaction with default timeout of 2 seconds
-    LONG rv = SCardBeginTransaction(*phCard);
+    LONG rv = CNK_EXTERNAL_CALL(SCardBeginTransaction, *phCard);
     if (rv != SCARD_S_SUCCESS) {
       CNK_ERROR("SCardBeginTransaction failed with error: 0x%lx", rv);
       CNK_RETURN(CKR_DEVICE_ERROR, "SCardBeginTransaction failed");
@@ -855,8 +855,8 @@ CNK_TEST_API CK_RV cnk_begin_card_transaction(CK_SLOT_ID slotID, SCARDHANDLE *ph
   SCARDCONTEXT context = atomic_load(&g_cnk_pcsc_context);
   if (context == 0)
     CNK_RETURN(CKR_CRYPTOKI_NOT_INITIALIZED, "Cryptoki finalization is in progress");
-  LONG rv = SCardConnect(context, readerName, SCARD_SHARE_SHARED, SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1, phCard,
-                         &active_protocol);
+  LONG rv = CNK_EXTERNAL_CALL(SCardConnect, context, readerName, SCARD_SHARE_SHARED,
+                              SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1, phCard, &active_protocol);
   ck_free(readerName);
   if (rv != SCARD_S_SUCCESS) {
     CNK_ERROR("SCardConnect failed with error: 0x%lx", rv);
@@ -864,9 +864,9 @@ CNK_TEST_API CK_RV cnk_begin_card_transaction(CK_SLOT_ID slotID, SCARDHANDLE *ph
   }
 
   // Begin transaction with default timeout of 2 seconds
-  rv = SCardBeginTransaction(*phCard);
+  rv = CNK_EXTERNAL_CALL(SCardBeginTransaction, *phCard);
   if (rv != SCARD_S_SUCCESS) {
-    SCardDisconnect(*phCard, SCARD_LEAVE_CARD);
+    CNK_EXTERNAL_CALL(SCardDisconnect, *phCard, SCARD_LEAVE_CARD);
     CNK_ERROR("SCardBeginTransaction failed with error: 0x%lx", rv);
     CNK_RETURN(CKR_DEVICE_ERROR, "SCardBeginTransaction failed");
   }
@@ -903,7 +903,7 @@ CNK_TEST_API void cnk_disconnect_card(SCARDHANDLE hCard) {
   }
 
   // End transaction first
-  SCardEndTransaction(hCard, SCARD_LEAVE_CARD);
+  CNK_EXTERNAL_CALL(SCardEndTransaction, hCard, SCARD_LEAVE_CARD);
 
   // In managed mode, don't disconnect the card
   if (g_cnk_is_managed_mode) {
@@ -912,7 +912,7 @@ CNK_TEST_API void cnk_disconnect_card(SCARDHANDLE hCard) {
   }
 
   // In standalone mode, disconnect the card
-  SCardDisconnect(hCard, SCARD_LEAVE_CARD);
+  CNK_EXTERNAL_CALL(SCardDisconnect, hCard, SCARD_LEAVE_CARD);
   cnk_pcsc_operation_end();
 }
 
@@ -933,7 +933,8 @@ static uint32_t cnk_protocol_transmit(void *opaque, const uint8_t *command, size
   }
   DWORD length = (DWORD)*response_len;
   CNK_LOG_APDU_COMMAND(command, command_len);
-  context->status = SCardTransmit(context->card, SCARD_PCI_T1, command, (DWORD)command_len, NULL, response, &length);
+  context->status = CNK_EXTERNAL_CALL(SCardTransmit, context->card, SCARD_PCI_T1, command, (DWORD)command_len, NULL,
+                                      response, &length);
   if (context->status == SCARD_S_SUCCESS && length > *response_len)
     context->status = SCARD_E_UNEXPECTED;
   if (context->status == SCARD_S_SUCCESS)
@@ -946,7 +947,7 @@ static LONG cnk_run_protocol(SCARDHANDLE card, const CNK_PROTOCOL_COMMAND *comma
                              DWORD *response_len) {
   CNK_PROTOCOL_TRANSPORT_CONTEXT context = {.card = card, .status = SCARD_S_SUCCESS};
   size_t length = *response_len;
-  uint32_t status = cnk_protocol_run(command, cnk_protocol_transmit, &context, response, &length);
+  uint32_t status = CNK_EXTERNAL_CALL(cnk_protocol_run, command, cnk_protocol_transmit, &context, response, &length);
   switch (status) {
   case CNK_PROTOCOL_OK:
     *response_len = (DWORD)length;
@@ -972,13 +973,14 @@ CK_RV cnk_probe_libcanokey_profile(CK_SLOT_ID slotID, void **profile) {
     return rv;
   CNK_LIBCANO_OPERATION *operation = NULL;
   CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
-  uint32_t status = cnk_probe_device_new(1, NULL, &operation, &error);
+  uint32_t status = CNK_EXTERNAL_CALL(cnk_probe_device_new, 1, NULL, &operation, &error);
   rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
   if (rv == CKR_OK)
     rv = cnk_run_piv_operation(card, operation, CKR_DEVICE_ERROR, NULL);
   if (rv == CKR_OK)
-    rv = cnk_piv_operation_status(cnk_operation_take_profile(operation, profile), NULL, CKR_DEVICE_ERROR);
-  cnk_operation_free(operation);
+    rv = cnk_piv_operation_status(CNK_EXTERNAL_CALL(cnk_operation_take_profile, operation, profile), NULL,
+                                  CKR_DEVICE_ERROR);
+  CNK_EXTERNAL_VOID(cnk_operation_free, operation);
   cnk_disconnect_card(card);
   return rv;
 }

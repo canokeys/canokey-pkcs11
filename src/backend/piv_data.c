@@ -14,7 +14,7 @@
 static CK_RV map_libcanokey_object_error(const CNK_LIBCANO_OPERATION *operation, uint32_t status) {
   CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
   if (status == CNK_LIBCANO_PROTOCOL_ERROR && operation != NULL)
-    cnk_operation_error(operation, &error);
+    CNK_EXTERNAL_CALL(cnk_operation_error, operation, &error);
   return cnk_piv_operation_status(status, &error, CKR_DATA_INVALID);
 }
 
@@ -51,7 +51,8 @@ static CK_RV cnk_get_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
       session, pinVerified ? CNK_LIBCANO_CONTEXT_PIN_VERIFIED : CNK_LIBCANO_CONTEXT_SELECTED, &context);
   if (rv != CKR_OK)
     goto cleanup;
-  uint32_t status = cnk_piv_read_object_container_in_context_new(context, tag, tag_len, NULL, &operation, &error);
+  uint32_t status =
+      CNK_EXTERNAL_CALL(cnk_piv_read_object_container_in_context_new, context, tag, tag_len, NULL, &operation, &error);
   rv = cnk_piv_operation_status(status, &error, CKR_DATA_INVALID);
   if (rv != CKR_OK)
     goto cleanup;
@@ -59,7 +60,7 @@ static CK_RV cnk_get_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
   if (rv != CKR_OK)
     goto cleanup;
   size_t required = 0;
-  status = cnk_operation_result_copy_bytes(operation, NULL, &required);
+  status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, NULL, &required);
   if (status != CNK_LIBCANO_OK) {
     rv = map_libcanokey_object_error(operation, status);
     goto cleanup;
@@ -78,14 +79,14 @@ static CK_RV cnk_get_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
     rv = CKR_BUFFER_TOO_SMALL;
     goto cleanup;
   }
-  status = cnk_operation_result_copy_bytes(operation, data, &required);
+  status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, data, &required);
   rv = status == CNK_LIBCANO_OK ? CKR_OK : map_libcanokey_object_error(operation, status);
 
 cleanup:
   if (operation != NULL)
-    cnk_operation_free(operation);
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
   if (context != NULL)
-    cnk_piv_context_free(context);
+    CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   cnk_disconnect_card(card);
   return rv;
 }
@@ -186,8 +187,8 @@ static CK_RV cnk_put_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
   rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context);
   if (rv != CKR_OK)
     goto cleanup;
-  uint32_t status =
-      cnk_piv_write_object_container_in_context_new(context, tag, tag_len, data, data_len, NULL, &operation, &error);
+  uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_write_object_container_in_context_new, context, tag, tag_len, data,
+                                      data_len, NULL, &operation, &error);
   rv = cnk_piv_operation_status(status, &error, CKR_DATA_INVALID);
   if (rv != CKR_OK)
     goto cleanup;
@@ -197,9 +198,9 @@ cleanup:
   if (attempted)
     cnk_piv_public_cache_invalidate(session);
   if (operation)
-    cnk_operation_free(operation);
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
   if (context)
-    cnk_piv_context_free(context);
+    CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   cnk_disconnect_card(card);
   return rv;
 }
@@ -219,10 +220,10 @@ static CK_RV mutate_certificate(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, 
   rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context);
   if (rv != CKR_OK)
     goto cleanup;
-  uint32_t status = certificate != NULL
-                        ? cnk_piv_write_certificate_in_context_new(context, pivSlot, certificate, certificateLen, NULL,
-                                                                   &operation, &error)
-                        : cnk_piv_delete_certificate_in_context_new(context, pivSlot, NULL, &operation, &error);
+  uint32_t status = certificate != NULL ? CNK_EXTERNAL_CALL(cnk_piv_write_certificate_in_context_new, context, pivSlot,
+                                                            certificate, certificateLen, NULL, &operation, &error)
+                                        : CNK_EXTERNAL_CALL(cnk_piv_delete_certificate_in_context_new, context, pivSlot,
+                                                            NULL, &operation, &error);
   rv = cnk_piv_operation_status(status, &error, CKR_DATA_INVALID);
   if (rv != CKR_OK)
     goto cleanup;
@@ -232,9 +233,9 @@ cleanup:
   if (attempted)
     cnk_piv_public_cache_invalidate(session);
   if (operation)
-    cnk_operation_free(operation);
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
   if (context)
-    cnk_piv_context_free(context);
+    CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   cnk_disconnect_card(card);
   return rv;
 }

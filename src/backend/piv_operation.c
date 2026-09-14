@@ -97,7 +97,7 @@ CK_RV cnk_piv_context_for_session(CNK_PKCS11_SESSION *session, uint32_t state, C
   uint32_t status = CNK_LIBCANO_INVALID_STATE;
   if (session->token->libcanokeyProfile != NULL &&
       session->token->libcanokeyProfileEpoch == atomic_load(&g_cnk_managed_binding_epoch))
-    status = cnk_piv_context_new(session->token->libcanokeyProfile, state, context, &error);
+    status = CNK_EXTERNAL_CALL(cnk_piv_context_new, session->token->libcanokeyProfile, state, context, &error);
   cnk_mutex_unlock(&session->token->lock);
   return cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
 }
@@ -115,7 +115,7 @@ CK_RV cnk_run_piv_operation(SCARDHANDLE card, CNK_LIBCANO_OPERATION *operation, 
     rv = CKR_ARGUMENTS_BAD;
     goto cleanup;
   }
-  rv = cnk_piv_operation_status(cnk_operation_start(operation, &step, &error), &error, absent);
+  rv = cnk_piv_operation_status(CNK_EXTERNAL_CALL(cnk_operation_start, operation, &step, &error), &error, absent);
   if (rv != CKR_OK)
     goto cleanup;
   while (step == CNK_LIBCANO_STEP_EXCHANGE) {
@@ -124,7 +124,7 @@ CK_RV cnk_run_piv_operation(SCARDHANDLE card, CNK_LIBCANO_OPERATION *operation, 
       goto cleanup;
     }
     size_t required = 0;
-    rv = cnk_piv_operation_status(cnk_operation_command(operation, NULL, &required), NULL, absent);
+    rv = cnk_piv_operation_status(CNK_EXTERNAL_CALL(cnk_operation_command, operation, NULL, &required), NULL, absent);
     if (rv != CKR_OK)
       goto cleanup;
     if (required == 0 || required > sizeof(command)) {
@@ -132,7 +132,8 @@ CK_RV cnk_run_piv_operation(SCARDHANDLE card, CNK_LIBCANO_OPERATION *operation, 
       goto cleanup;
     }
     size_t commandLen = sizeof(command);
-    rv = cnk_piv_operation_status(cnk_operation_command(operation, command, &commandLen), NULL, absent);
+    rv = cnk_piv_operation_status(CNK_EXTERNAL_CALL(cnk_operation_command, operation, command, &commandLen), NULL,
+                                  absent);
     if (rv != CKR_OK)
       goto cleanup;
     if (commandLen != required) {
@@ -155,8 +156,8 @@ CK_RV cnk_run_piv_operation(SCARDHANDLE card, CNK_LIBCANO_OPERATION *operation, 
       goto cleanup;
     }
     totalResponse += responseLen;
-    rv = cnk_piv_operation_status(cnk_operation_advance(operation, response, responseLen, &step, &error), &error,
-                                  absent);
+    rv = cnk_piv_operation_status(
+        CNK_EXTERNAL_CALL(cnk_operation_advance, operation, response, responseLen, &step, &error), &error, absent);
     mbedtls_platform_zeroize(response, sizeof(response));
     if (rv != CKR_OK)
       goto cleanup;
@@ -178,17 +179,19 @@ CK_RV cnk_copy_piv_public_key(const CNK_LIBCANO_OPERATION *operation, CK_BYTE al
       algorithmType == PIV_ALG_RSA_2048 || algorithmType == PIV_ALG_RSA_3072 || algorithmType == PIV_ALG_RSA_4096;
   uint32_t field = rsa ? CNK_LIBCANO_PUBLIC_MODULUS : CNK_LIBCANO_PUBLIC_POINT_OR_RAW;
   size_t firstLen = 0;
-  if (cnk_operation_public_key_copy(operation, field, NULL, &firstLen) != CNK_LIBCANO_OK || firstLen > 4096)
+  if (CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, field, NULL, &firstLen) != CNK_LIBCANO_OK ||
+      firstLen > 4096)
     return CKR_DEVICE_ERROR;
   CK_BYTE first[4096];
-  if (cnk_operation_public_key_copy(operation, field, first, &firstLen) != CNK_LIBCANO_OK)
+  if (CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, field, first, &firstLen) != CNK_LIBCANO_OK)
     return CKR_DEVICE_ERROR;
   CK_BYTE second[8] = {0};
   size_t secondLen = 0;
-  if (rsa &&
-      (cnk_operation_public_key_copy(operation, CNK_LIBCANO_PUBLIC_EXPONENT, NULL, &secondLen) != CNK_LIBCANO_OK ||
-       secondLen > sizeof(second) ||
-       cnk_operation_public_key_copy(operation, CNK_LIBCANO_PUBLIC_EXPONENT, second, &secondLen) != CNK_LIBCANO_OK))
+  if (rsa && (CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, CNK_LIBCANO_PUBLIC_EXPONENT, NULL,
+                                &secondLen) != CNK_LIBCANO_OK ||
+              secondLen > sizeof(second) ||
+              CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, CNK_LIBCANO_PUBLIC_EXPONENT, second,
+                                &secondLen) != CNK_LIBCANO_OK))
     return CKR_DEVICE_ERROR;
   CK_ULONG required = 1 + (firstLen < 128 ? 1 : firstLen <= 255 ? 2 : 3) + firstLen;
   if (rsa)

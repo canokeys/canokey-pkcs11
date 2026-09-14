@@ -31,7 +31,7 @@ static uint32_t errorKind, finalStep = CNK_LIBCANO_STEP_DONE;
 static CK_RV lockError;
 _Atomic CK_ULONG g_cnk_managed_binding_epoch;
 atomic_int g_cnk_log_level = CNK_LOG_LEVEL_NONE;
-static char lastLog[1024];
+static char lastLog[1024], transcript[8192];
 
 void cnk_printlogf(const int level, const char *function, const char *file, const int line, const char *format, ...) {
   (void)level;
@@ -42,6 +42,8 @@ void cnk_printlogf(const int level, const char *function, const char *file, cons
   va_start(args, format);
   vsnprintf(lastLog, sizeof(lastLog), format, args);
   va_end(args);
+  size_t used = strlen(transcript);
+  snprintf(transcript + used, sizeof(transcript) - used, "%s\n", lastLog);
 }
 CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex) {
   (void)mutex;
@@ -168,6 +170,21 @@ uint32_t cnk_piv_delete_certificate_in_context_new(const CNK_LIBCANO_CONTEXT *c,
   (void)slot;
   (void)o;
   return construct(c, out, e);
+}
+uint32_t cnk_piv_set_container_name_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint32_t slot, const uint8_t *name,
+                                                   size_t len, const CNK_LIBCANO_OPTIONS *o,
+                                                   CNK_LIBCANO_OPERATION **out, CNK_LIBCANO_ERROR *e) {
+  (void)slot;
+  (void)name;
+  (void)len;
+  (void)o;
+  return construct(c, out, e);
+}
+uint32_t cnk_piv_container_name_validate(const uint8_t *name, size_t len, CNK_LIBCANO_ERROR *e) {
+  (void)name;
+  (void)len;
+  (void)e;
+  return CNK_LIBCANO_OK;
 }
 uint32_t cnk_piv_read_container_name_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint32_t slot,
                                                     const CNK_LIBCANO_OPTIONS *o, CNK_LIBCANO_OPERATION **out,
@@ -358,9 +375,9 @@ void cnk_token_end_management_operation(CNK_PKCS11_SESSION *s) {
   abort();
 }
 CK_RV cnk_piv_v6_supported_on_card(SCARDHANDLE card, CK_BBOOL *supported) {
-  (void)card;
-  (void)supported;
-  abort();
+  CHECK(card != 0);
+  *supported = CK_TRUE;
+  return CKR_OK;
 }
 
 static void reset(void) {
@@ -392,7 +409,9 @@ static CK_RV call(unsigned kind, CK_BYTE *out, CK_ULONG *len) {
     return cnk_piv_import_key(0, &session, &material);
   }
   case 4:
-    return read_container_name_libcanokey(&session, 0x9c, out, len);
+    return container_name_operation(&session, 0x9c, CK_FALSE, NULL, 0, out, len);
+  case 7:
+    return container_name_operation(&session, 0x9c, CK_TRUE, value, 2, NULL, NULL);
   case 6: {
     CK_BYTE der[] = {0x30, 1, 0};
     return cnk_write_piv_certificate(0, &session, 0x9c, der, sizeof(der));
@@ -404,7 +423,7 @@ static CK_RV call(unsigned kind, CK_BYTE *out, CK_ULONG *len) {
 int main(void) {
   CK_BYTE output[512];
   CK_ULONG len;
-  for (unsigned kind = 0; kind < 7; kind++) {
+  for (unsigned kind = 0; kind < 8; kind++) {
     // Every failure from context construction through advance must release all
     // resources and must not publish a read result or a successful mutation.
     for (unsigned failure = 1; failure <= 7; failure++) {
@@ -414,7 +433,7 @@ int main(void) {
       len = sizeof(output);
       CHECK(call(kind, output, &len) == CKR_DEVICE_ERROR);
       CHECK(output[0] == 0xCC && len == sizeof(output));
-      CHECK(invalidations == ((kind < 4 || kind == 6) && sends != 0));
+      CHECK(invalidations == (kind == 7 ? failure >= 3 : (kind < 4 || kind == 6) && sends != 0));
       reset();
     }
     reset();
@@ -428,7 +447,7 @@ int main(void) {
     reset();
     len = sizeof(output);
     CHECK(call(kind, output, &len) == CKR_OK);
-    CHECK(sends == 1 && invalidations == (kind < 4 || kind == 6));
+    CHECK(sends == 1 && invalidations == (kind < 4 || kind >= 6));
     if (kind == 2)
       CHECK(len == 265 && output[0] == 0x81 && output[1] == 0x82 && output[260] == 0x82);
     reset();
@@ -475,6 +494,36 @@ int main(void) {
       reset();
     }
   }
+  reset();
+  atomic_store(&g_cnk_log_level, CNK_LOG_LEVEL_DEBUG);
+  transcript[0] = 0;
+  len = sizeof(output);
+  CHECK(call(5, output, &len) == CKR_OK);
+  const char *cursor = transcript;
+  const char *const boundaries[] = {"cnk_piv_context_new completed: status=0x0",
+                                    "cnk_piv_read_object_container_in_context_new completed: status=0x0",
+                                    "cnk_operation_start completed: status=0x0",
+                                    "cnk_operation_command completed: status=0x0",
+                                    "cnk_operation_command completed: status=0x0",
+                                    "cnk_operation_advance completed: status=0x0",
+                                    "cnk_operation_result_copy_bytes completed: status=0x0",
+                                    "cnk_operation_result_copy_bytes completed: status=0x0",
+                                    "cnk_operation_free completed",
+                                    "cnk_piv_context_free completed"};
+  for (size_t i = 0; i < sizeof(boundaries) / sizeof(boundaries[0]); ++i) {
+    cursor = strstr(cursor, boundaries[i]);
+    CHECK(cursor != NULL);
+    cursor += strlen(boundaries[i]);
+  }
+  reset();
+  transcript[0] = 0;
+  failAt = 2;
+  len = sizeof(output);
+  CHECK(call(5, output, &len) == CKR_DEVICE_ERROR && sends == 0);
+  CHECK(strstr(transcript, "cnk_piv_read_object_container_in_context_new completed: status=0x5"));
+  CHECK(!strstr(transcript, "cnk_operation_start completed"));
+  CHECK(strstr(transcript, "cnk_piv_context_free completed"));
+  reset();
   CNK_LIBCANO_ERROR e = {.struct_size = sizeof(e), .kind = CNK_LIBCANO_ERROR_NOT_FOUND};
   CHECK(cnk_piv_operation_status(CNK_LIBCANO_OK, &e, CKR_DATA_INVALID) == CKR_OK);
   CHECK(cnk_piv_operation_status(CNK_LIBCANO_PANIC, &e, CKR_DATA_INVALID) == CKR_DEVICE_ERROR);

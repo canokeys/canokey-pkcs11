@@ -433,16 +433,17 @@ static CK_RV authenticateManagementKeyOnCard(CNK_PKCS11_SESSION *session, SCARDH
   rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_SELECTED, &context);
   if (rv != CKR_OK)
     goto cleanup;
-  uint32_t status = cnk_piv_authenticate_management_in_context_new(context, &management, NULL, &operation, &error);
+  uint32_t status =
+      CNK_EXTERNAL_CALL(cnk_piv_authenticate_management_in_context_new, context, &management, NULL, &operation, &error);
   rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
   if (rv != CKR_OK)
     goto cleanup;
   rv = cnk_run_piv_operation(card, operation, CKR_DEVICE_ERROR, NULL);
 cleanup:
   if (operation)
-    cnk_operation_free(operation);
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
   if (context)
-    cnk_piv_context_free(context);
+    CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   return rv;
 }
 

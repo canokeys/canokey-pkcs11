@@ -3,8 +3,8 @@
 Requires cryptography, CNK_PIV_PIN, and explicit slot/serial/key selections.
 Certificate testing is opt-in and requires CNK_PIV_MANAGEMENT_KEY. It refuses
 an existing certificate, deletes its test certificate, and checks key retention.
-Explicit --replace-import-* options overwrite a selected certificate-free test
-slot with a fresh key and verify its public key and private operations.
+Explicit --replace-import-* / --replace-generate-* options overwrite a selected
+certificate-free test slot and verify its public key and private operations.
 Opaque PKCS#11 structures use Windows packing; template storage stays alive
 through each borrowed C call. Credentials and shared secrets are never printed.
 """
@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from cryptography.hazmat.primitives import hashes, serialization
@@ -60,12 +61,20 @@ for option in ["ecdsa-id", "eddsa-id", "derive-id", "rsa-id"]:
     parser.add_argument("--" + option, type=lambda x: int(x, 16), action="append", default=[])
 for option in ["mldsa-id", "mlkem-id", "certificate-id"]:
     parser.add_argument("--" + option, type=lambda x: int(x, 16))
-for kind in ["rsa", "p521", "x25519", "ed25519"]:
-    parser.add_argument(
-        "--replace-import-" + kind + "-id",
-        type=lambda x: int(x, 16),
-        help="Overwrite this certificate-free test slot with a fresh imported " + kind + " key",
-    )
+for operation in ["import", "generate"]:
+    for kind in ["rsa", "p521", "x25519", "ed25519"]:
+        parser.add_argument(
+            "--replace-" + operation + "-" + kind + "-id",
+            type=lambda x: int(x, 16),
+            help="Overwrite this certificate-free test slot using " + operation + " for " + kind,
+        )
+parser.add_argument(
+    "--name-slot",
+    type=lambda x: int(x, 16),
+    action="append",
+    default=[],
+    help="Read/write/restore the name of this physical PIV slot; no key or certificate is changed",
+)
 parser.add_argument("--report", type=Path)
 args = parser.parse_args()
 if os.name != "nt":
@@ -75,10 +84,15 @@ if "CNK_PIV_PIN" not in os.environ:
 imports = [
     (kind, getattr(args, "replace_import_" + kind + "_id")) for kind in ["rsa", "p521", "x25519", "ed25519"]
 ]
+generations = [
+    (kind, getattr(args, "replace_generate_" + kind + "_id")) for kind in ["rsa", "p521", "x25519", "ed25519"]
+]
 if (
-    args.certificate_id is not None or any(id is not None for _, id in imports)
+    args.certificate_id is not None
+    or args.name_slot
+    or any(id is not None for _, id in imports + generations)
 ) and "CNK_PIV_MANAGEMENT_KEY" not in os.environ:
-    parser.error("Certificate writes and private-key imports require CNK_PIV_MANAGEMENT_KEY")
+    parser.error("Card write tests require CNK_PIV_MANAGEMENT_KEY")
 if (args.mldsa_id is None) != (args.mlkem_id is None):
     parser.error("Specify both --mldsa-id and --mlkem-id")
 args.module = args.module.resolve()
@@ -150,6 +164,8 @@ for name, types in {
         C.POINTER(U),
     ],
     "C_GenerateRandom": [U, P, U],
+    "C_CNK_GetContainerName": [U, B, P, C.POINTER(U)],
+    "C_CNK_SetContainerName": [U, B, P, U],
 }.items():
     f = getattr(lib, name)
     f.argtypes = types
@@ -437,6 +453,134 @@ def run_case(name, operation):
         print(f"FAIL {name}: {detail}", flush=True)
 
 
+def names_checks(slots):
+    def get(slot):
+        length = U()
+        check(lib.C_CNK_GetContainerName(s, slot, None, C.byref(length)))
+        if length.value > 78:
+            raise RuntimeError("Container name exceeds the public API limit")
+        output = C.create_string_buffer(length.value)
+        check(lib.C_CNK_GetContainerName(s, slot, output, C.byref(length)))
+        return output.raw[: length.value]
+
+    valid_slots = {0x9A, 0x9C, 0x9D, 0x9E, 0xF9, *range(0x82, 0x96)}
+    if not slots or len(set(slots)) != len(slots) or any(slot not in valid_slots for slot in slots):
+        raise RuntimeError("Select valid, distinct physical PIV references for name testing")
+    originals = {slot: get(slot) for slot in slots}
+    length = U()
+    if lib.C_CNK_GetContainerName(s, 0xF9, None, C.byref(length)) not in (0, 0x60):
+        raise RuntimeError("F9 name query lost its valid-reference/absent-key distinction")
+    name = ("cnk-" + uuid.uuid4().hex[:20] + "-\U0001f511").encode("utf-16le")
+    if lib.C_CNK_SetContainerName(s, slots[0], name, 1) != 0x20:
+        raise RuntimeError("Malformed UTF-16 was not rejected before authentication")
+    if lib.C_CNK_SetContainerName(s, slots[0], name, len(name)) != 0x101:
+        raise RuntimeError("Public name write did not require management authorization")
+    login(0, bytes.fromhex(os.environ["CNK_PIV_MANAGEMENT_KEY"]))
+    attempted = []
+    try:
+        attempted.append(slots[0])
+        check(lib.C_CNK_SetContainerName(s, slots[0], name, len(name)))
+        if get(slots[0]) != name:
+            raise RuntimeError("Name read differs from its UTF-16 write")
+        output = C.create_string_buffer(b"\xcc" * 80)
+        length = U(1)
+        if lib.C_CNK_GetContainerName(s, slots[0], output, C.byref(length)) != 0x150:
+            raise RuntimeError("Short name buffer did not report CKR_BUFFER_TOO_SMALL")
+        if length.value != len(name) or output.raw[:80] != b"\xcc" * 80:
+            raise RuntimeError("Short name buffer changed output or returned the wrong length")
+        if len(slots) > 1:
+            attempted.append(slots[1])
+            if lib.C_CNK_SetContainerName(s, slots[1], name, len(name)) != 0x20:
+                raise RuntimeError("Duplicate name did not retain CKR_DATA_INVALID")
+            if get(slots[1]) != originals[slots[1]]:
+                raise RuntimeError("Rejected duplicate changed the other name")
+        check(lib.C_CNK_SetContainerName(s, slots[0], None, 0))
+        if get(slots[0]) != b"":
+            raise RuntimeError("Name clear did not remove the name")
+    finally:
+        failures = []
+        for slot in reversed(attempted):
+            try:
+                old = originals[slot]
+                check(lib.C_CNK_SetContainerName(s, slot, old, len(old)))
+                if get(slot) != old:
+                    raise RuntimeError("Restored name differs")
+            except Exception:
+                failures.append(f"{slot:02x}")
+        check(lib.C_Logout(s))
+        if failures:
+            raise RuntimeError("Could not restore names in slots " + ", ".join(failures))
+    print(
+        "PASS F5 read/write/clear, duplicate rejection, F9 absence, short buffer and name restoration",
+        flush=True,
+    )
+
+
+def verify_private_key(id, kind):
+    login(1, os.environ["CNK_PIV_PIN"].encode())
+    try:
+        if kind == "rsa":
+            rsa_checks(id)
+        elif kind == "p521":
+            ecdsa_checks(id)
+            derive(id)
+        elif kind == "x25519":
+            derive(id)
+        else:
+            eddsa_checks(id)
+    finally:
+        check(lib.C_Logout(s))
+
+
+def generate_checks(id, kind):
+    if not 1 <= id <= 24 or find(1, id):
+        raise RuntimeError("Generation requires an explicit certificate-free PIV key slot")
+    before = (
+        public(id).public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        if find(2, id)
+        else None
+    )
+    key_type, mechanism, params = {
+        "rsa": (0, 0, None),
+        "p521": (3, 0x1040, "06052b81040023"),
+        "x25519": (0x41, 0x1056, "06032b656e"),
+        "ed25519": (0x40, 0x1055, "06032b6570"),
+    }[kind]
+    common = [(0x100, key_type), (0x102, bytes([id])), (1, b"\1")]
+    attributes = [(0x121, 2048), (0x122, b"\1\0\1")] if kind == "rsa" else [(0x180, bytes.fromhex(params))]
+    pub, keep_pub = attrs([(0, 2)] + common + attributes)
+    private, keep_private = attrs([(0, 3), (2, b"\1")] + common)
+    mech = Mech(mechanism, None, 0)
+    public_handle, private_handle = U(), U()
+    login(0, bytes.fromhex(os.environ["CNK_PIV_MANAGEMENT_KEY"]))
+    try:
+        check(
+            lib.C_GenerateKeyPair(
+                s,
+                C.byref(mech),
+                pub,
+                len(pub),
+                private,
+                len(private),
+                C.byref(public_handle),
+                C.byref(private_handle),
+            )
+        )
+    finally:
+        check(lib.C_Logout(s))
+    key = public(id)
+    after = key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    if after == before:
+        raise RuntimeError("Generation did not replace the selected public key")
+    if kind in ("rsa", "p521") and key.key_size != (2048 if kind == "rsa" else 521):
+        raise RuntimeError("Generated key has the wrong size")
+    verify_private_key(id, kind)
+    print(
+        f"PASS {kind} generation ID {id:02x}, fresh public key and independent private-operation verification",
+        flush=True,
+    )
+
+
 def import_checks(id, kind):
     if not 1 <= id <= 24 or find(1, id):
         raise RuntimeError("Private-key import requires an explicit certificate-free PIV key slot")
@@ -492,19 +636,7 @@ def import_checks(id, kind):
     )
     if actual != expected:
         raise RuntimeError("Imported public key differs from the software-generated key")
-    login(1, os.environ["CNK_PIV_PIN"].encode())
-    try:
-        if kind == "rsa":
-            rsa_checks(id)
-        elif kind == "p521":
-            ecdsa_checks(id)
-            derive(id)
-        elif kind == "x25519":
-            derive(id)
-        else:
-            eddsa_checks(id)
-    finally:
-        check(lib.C_Logout(s))
+    verify_private_key(id, kind)
     print(f"PASS {kind} import ID {id:02x}, exact public-key match and private operation", flush=True)
 
 
@@ -527,6 +659,13 @@ def main():
             raise RuntimeError(f"Token serial mismatch: {actual_serial}")
         check(lib.C_OpenSession(args.slot, 6, None, None, C.byref(s)))
         opened = True
+        if args.name_slot:
+            run_case("F5 name read/write/restore", lambda: names_checks(args.name_slot))
+        for kind, id in generations:
+            if id is not None:
+                run_case(
+                    f"{kind} key generation ID {id:02x}", lambda id=id, kind=kind: generate_checks(id, kind)
+                )
         for kind, id in imports:
             if id is not None:
                 run_case(

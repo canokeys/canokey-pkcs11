@@ -266,7 +266,7 @@ CK_RV cnk_session_manager_cleanup(void) {
     CNK_PKCS11_TOKEN_STATE *token = token_states;
     clear_token_auth(token);
     if (token->libcanokeyProfile != NULL) {
-      cnk_profile_free(token->libcanokeyProfile);
+      CNK_EXTERNAL_VOID(cnk_profile_free, token->libcanokeyProfile);
       token->libcanokeyProfile = NULL;
     }
     CK_RV destroyRv = cnk_mutex_destroy(&token->lock);

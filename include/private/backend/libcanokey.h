@@ -74,6 +74,8 @@ enum {
   CNK_LIBCANO_PANIC = 6,
 };
 enum {
+  CNK_LIBCANO_ERROR_INVALID_RESPONSE = 3,
+  CNK_LIBCANO_ERROR_PROTOCOL_VIOLATION = 4,
   CNK_LIBCANO_ERROR_AUTHENTICATION_FAILED = 6,
   CNK_LIBCANO_ERROR_PIN_BLOCKED = 7,
   CNK_LIBCANO_ERROR_SECURITY_STATUS = 8,
@@ -81,6 +83,7 @@ enum {
   CNK_LIBCANO_ERROR_UNSUPPORTED_FEATURE = 12,
   CNK_LIBCANO_ERROR_LIMIT_EXCEEDED = 5,
 };
+enum { CNK_LIBCANO_PHASE_PARSING = 4 };
 struct CNK_PKCS11_SESSION;
 CK_RV cnk_ensure_libcanokey_profile(struct CNK_PKCS11_SESSION *session);
 enum {
@@ -123,6 +126,10 @@ uint32_t cnk_piv_read_metadata_directory_in_context_new(const CNK_LIBCANO_CONTEX
                                                         CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_read_container_name_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const CNK_LIBCANO_OPTIONS *,
                                                     CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_container_name_validate(const uint8_t *, size_t, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_set_container_name_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const uint8_t *, size_t,
+                                                   const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
+                                                   CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_write_object_container_in_context_new(const CNK_LIBCANO_CONTEXT *, const uint8_t *, size_t,
                                                        const uint8_t *, size_t, const CNK_LIBCANO_OPTIONS *,
                                                        CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);

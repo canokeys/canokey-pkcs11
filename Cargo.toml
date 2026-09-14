@@ -10,8 +10,8 @@ path = "rust/lib.rs"
 crate-type = ["staticlib"]
 
 [dependencies]
-canokey-c = { git = "https://github.com/canokeys/libcanokey", rev = "8f23be9", default-features = false, features = ["piv"] }
-canokey-protocol = { git = "https://github.com/canokeys/libcanokey", rev = "8f23be9", default-features = false }
+canokey-c = { git = "https://github.com/canokeys/libcanokey", rev = "1ab07ee", default-features = false, features = ["piv"] }
+canokey-protocol = { git = "https://github.com/canokeys/libcanokey", rev = "1ab07ee", default-features = false }
 
 [profile.release]
 lto = "thin"
