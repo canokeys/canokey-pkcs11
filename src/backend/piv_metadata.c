@@ -42,6 +42,80 @@ static CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *session) {
     cnk_profile_free(candidate);
   return CKR_OK;
 }
+
+static CK_RV cnk_get_metadata_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR algorithmType,
+                                         CK_BYTE_PTR publicKey, CK_ULONG_PTR publicKeyLen, CK_BYTE_PTR pinPolicy,
+                                         CK_BYTE_PTR touchPolicy) {
+  CNK_ENSURE_NONNULL(session, session->token, algorithmType);
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  SCARDHANDLE card = 0;
+  CNK_ENSURE_OK(cnk_begin_piv_transaction(session->slotId, &card));
+  CNK_LIBCANO_CONTEXT *context = NULL;
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  uint32_t step = 0;
+  CK_RV rv = CKR_DEVICE_ERROR;
+  CNK_PKCS11_TOKEN_STATE *token = session->token;
+  CNK_ENSURE_OK(cnk_mutex_lock(&token->lock));
+  CNK_LIBCANO_PROFILE *profile = token->libcanokeyProfile;
+  cnk_mutex_unlock(&token->lock);
+  if (profile == NULL)
+    goto cleanup;
+  if (cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_SELECTED, &context, &error) != CNK_LIBCANO_OK)
+    goto cleanup;
+  if (cnk_piv_get_metadata_in_context_new(context, pivTag, NULL, &operation, &error) != CNK_LIBCANO_OK)
+    goto cleanup;
+  if (cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK)
+    goto cleanup;
+  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
+    size_t commandLen = 0;
+    if (cnk_operation_command(operation, NULL, &commandLen) != CNK_LIBCANO_OK || commandLen == 0)
+      goto cleanup;
+    CK_BYTE command[1024];
+    if (commandLen > sizeof(command) || cnk_operation_command(operation, command, &commandLen) != CNK_LIBCANO_OK)
+      goto cleanup;
+    CK_BYTE response[8192];
+    DWORD responseLen = sizeof(response);
+    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS)
+      goto cleanup;
+    if (cnk_operation_advance(operation, response, responseLen, &step, &error) != CNK_LIBCANO_OK)
+      goto cleanup;
+  }
+  if (step != CNK_LIBCANO_STEP_DONE)
+    goto cleanup;
+  size_t rawLen = 0;
+  if (cnk_operation_result_copy_bytes(operation, NULL, &rawLen) != CNK_LIBCANO_OK || rawLen > 4096)
+    goto cleanup;
+  CK_BYTE raw[4096];
+  if (cnk_operation_result_copy_bytes(operation, raw, &rawLen) != CNK_LIBCANO_OK)
+    goto cleanup;
+  CK_ULONG offset = 0;
+  CK_BBOOL sawAlgorithm = CK_FALSE;
+  while (offset < rawLen) {
+    CK_BYTE tag = raw[offset++];
+    CK_LONG fail = 0;
+    CK_ULONG lengthSize = 0;
+    CK_ULONG length = tlvGetLengthSafe(raw + offset, (CK_ULONG)(rawLen - offset), &fail, &lengthSize);
+    if (fail || lengthSize > rawLen - offset) goto cleanup;
+    offset += lengthSize;
+    if (length > rawLen - offset) goto cleanup;
+    const CK_BYTE *value = raw + offset;
+    if (tag == 0x01 && length == 1) { *algorithmType = value[0]; sawAlgorithm = CK_TRUE; }
+    else if (tag == 0x02 && length >= 2) { if (pinPolicy) *pinPolicy = value[0]; if (touchPolicy) *touchPolicy = value[1]; }
+    else if (tag == 0x04 && publicKeyLen) {
+      CK_ULONG capacity = *publicKeyLen; *publicKeyLen = length;
+      if (publicKey && capacity < length) { rv = CKR_BUFFER_TOO_SMALL; goto cleanup; }
+      if (publicKey) memcpy(publicKey, value, length);
+    }
+    offset += length;
+  }
+  rv = sawAlgorithm ? CKR_OK : CKR_DEVICE_ERROR;
+cleanup:
+  if (operation) cnk_operation_free(operation);
+  if (context) cnk_piv_context_free(context);
+  cnk_disconnect_card(card);
+  return rv;
+}
 #include <time.h>
 
 #if defined(_WIN32)
@@ -412,12 +486,12 @@ CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BY
   if (g_cnk_is_managed_mode || !atomic_load(&g_cnk_piv_metadata_cache_enabled)) {
     CNK_DEBUG("hardware metadata read (%s): PIV slot 0x%02X", g_cnk_is_managed_mode ? "managed mode" : "cache disabled",
               pivTag);
-    return cnk_get_metadata(session->slotId, pivTag, algorithmType, publicKey, publicKeyLen, pinPolicy, touchPolicy);
+    return cnk_get_metadata_libcanokey(session, pivTag, algorithmType, publicKey, publicKeyLen, pinPolicy, touchPolicy);
   }
 
   CK_LONG index = cnk_public_cache_index(pivTag);
   if (index < 0)
-    return cnk_get_metadata(session->slotId, pivTag, algorithmType, publicKey, publicKeyLen, pinPolicy, touchPolicy);
+    return cnk_get_metadata_libcanokey(session, pivTag, algorithmType, publicKey, publicKeyLen, pinPolicy, touchPolicy);
 
   uint64_t nowMs = cnk_public_cache_now_ms();
   CNK_PIV_PUBLIC_CACHE_ENTRY *entry = &session->token->pivPublicCache.slots[index];
@@ -436,8 +510,8 @@ CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BY
   CK_BYTE cachedPinPolicy = 0;
   CK_BYTE cachedTouchPolicy = 0;
   CNK_DEBUG("hardware metadata read: PIV slot 0x%02X", pivTag);
-  CK_RV rv = cnk_get_metadata(session->slotId, pivTag, &cachedAlgorithmType, cachedPublicKey, &cachedPublicKeyLen,
-                              &cachedPinPolicy, &cachedTouchPolicy);
+  CK_RV rv = cnk_get_metadata_libcanokey(session, pivTag, &cachedAlgorithmType, cachedPublicKey, &cachedPublicKeyLen,
+                                          &cachedPinPolicy, &cachedTouchPolicy);
   if (rv != CKR_OK)
     return rv;
 
