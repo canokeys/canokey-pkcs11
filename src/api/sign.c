@@ -392,7 +392,7 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objId);
   CK_BYTE abPublicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
   CK_ULONG cbPublicKey = sizeof(abPublicKey);
-  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
+  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
 
   if (!CNK_PivPrivateKeyCanSign(session, algorithmType))
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for signing");
@@ -821,7 +821,7 @@ CK_RV C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_O
   CK_BYTE algorithmType;
   CK_BYTE publicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
   CK_ULONG publicKeyLen = sizeof(publicKey);
-  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivSlot, &algorithmType, publicKey, &publicKeyLen, NULL, NULL));
+  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivSlot, &algorithmType, publicKey, &publicKeyLen, NULL, NULL));
   if (pMechanism->mechanism == CKM_ML_DSA) {
     if (algorithmType != session->mldsa65Algorithm)
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "verify key is not ML-DSA-65");

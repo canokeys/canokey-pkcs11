@@ -453,7 +453,7 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
 
   CK_BYTE algorithmType;
   CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objId);
-  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, NULL, NULL, &pinPolicy, NULL));
+  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivTag, &algorithmType, NULL, NULL, &pinPolicy, NULL));
 
   // C_DeriveKey has no Init boundary where PKCS#11 can accept a
   // CKU_CONTEXT_SPECIFIC login. Do not satisfy a PIN-always policy with the
