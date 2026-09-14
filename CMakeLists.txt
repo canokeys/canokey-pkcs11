@@ -263,12 +263,12 @@ if(BUILD_REAL_TESTING)
   add_subdirectory(test/real)
 endif()
 
-if(BUILD_FUZZING)
-  if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+if(BUILD_FUZZING OR BUILD_PROTOCOL_TESTING)
+  if(BUILD_FUZZING AND NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "BUILD_FUZZING requires Clang and libFuzzer")
   endif()
   # Keep the replaceable PC/SC transport out of the production library. Fuzz
-  # executables link this test-only twin, while release artifacts continue to
+  # and transaction-contract executables link this test-only twin; release artifacts continue to
   # use the transport-free ${CNK_PKCS_TARGET} target.
   set(CNK_FUZZ_TARGET "${CNK_PKCS_TARGET}-fuzz")
   add_library(${CNK_FUZZ_TARGET} SHARED ${CNK_PKCS_SRC} ${CNK_PKCS_HEADERS})
@@ -282,7 +282,17 @@ if(BUILD_FUZZING)
   target_link_libraries(${CNK_FUZZ_TARGET} PRIVATE ${CNK_PKCS_LIBS})
   set_target_properties(${CNK_FUZZ_TARGET} PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS TRUE
                                                        OUTPUT_NAME "${CNK_PKCS_LIB_NAME}-fuzz")
-  add_subdirectory(test/fuzz)
+  if(BUILD_FUZZING)
+    add_subdirectory(test/fuzz)
+  endif()
+  if(BUILD_PROTOCOL_TESTING)
+    find_package(Threads REQUIRED)
+    add_executable(piv-transactions-test test/contract/piv-transactions.c)
+    target_compile_definitions(piv-transactions-test PRIVATE CNK_LIB_SHARED CNK_TEST_TRANSPORT)
+    target_link_libraries(piv-transactions-test PRIVATE ${CNK_FUZZ_TARGET} nsync ${CNK_CRYPTO_LIBRARIES} Threads::Threads)
+    add_test(NAME piv-transactions-contract COMMAND piv-transactions-test)
+    set_tests_properties(piv-transactions-contract PROPERTIES TIMEOUT 30)
+  endif()
 endif()
 
 if(CNK_BUILD_CONTAINER_NAME_TESTS OR BUILD_PROTOCOL_TESTING)

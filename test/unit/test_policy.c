@@ -128,57 +128,48 @@ static void test_reject_invalid_touch_policy(void **state) {
 
 static void test_key_capabilities_by_algorithm(void **state) {
   (void)state;
-  CNK_PKCS11_SESSION session = {0};
 
-  assert_true(CNK_PivPrivateKeyCanSign(&session, PIV_ALG_RSA_2048));
-  assert_true(CNK_PivPrivateKeyCanDecrypt(&session, PIV_ALG_RSA_2048));
-  assert_false(CNK_PivPrivateKeyCanDerive(&session, PIV_ALG_RSA_2048));
+  assert_true(CNK_PivPrivateKeyCanSign(CNK_LIBCANO_ALG_RSA_2048));
+  assert_true(CNK_PivPrivateKeyCanDecrypt(CNK_LIBCANO_ALG_RSA_2048));
+  assert_false(CNK_PivPrivateKeyCanDerive(CNK_LIBCANO_ALG_RSA_2048));
 
-  assert_true(CNK_PivPrivateKeyCanSign(&session, PIV_ALG_ECC_256));
-  assert_false(CNK_PivPrivateKeyCanDecrypt(&session, PIV_ALG_ECC_256));
-  assert_true(CNK_PivPrivateKeyCanDerive(&session, PIV_ALG_ECC_256));
+  assert_true(CNK_PivPrivateKeyCanSign(CNK_LIBCANO_ALG_P256));
+  assert_false(CNK_PivPrivateKeyCanDecrypt(CNK_LIBCANO_ALG_P256));
+  assert_true(CNK_PivPrivateKeyCanDerive(CNK_LIBCANO_ALG_P256));
 
-  assert_true(CNK_PivPrivateKeyCanSign(&session, PIV_ALG_ECC_521));
-  assert_false(CNK_PivPrivateKeyCanDecrypt(&session, PIV_ALG_ECC_521));
-  assert_true(CNK_PivPrivateKeyCanDerive(&session, PIV_ALG_ECC_521));
+  assert_true(CNK_PivPrivateKeyCanSign(CNK_LIBCANO_ALG_P521));
+  assert_false(CNK_PivPrivateKeyCanDecrypt(CNK_LIBCANO_ALG_P521));
+  assert_true(CNK_PivPrivateKeyCanDerive(CNK_LIBCANO_ALG_P521));
 }
 
-static void test_configured_extension_algorithm_ids(void **state) {
+static void test_semantic_key_capabilities(void **state) {
   (void)state;
-  CNK_PKCS11_SESSION session = {0};
-  session.rsa3072Algorithm = 0x22;
-  session.rsa4096Algorithm = 0x50;
-  session.secp256k1Algorithm = 0x53;
-  session.secp521r1Algorithm = 0x15;
-  session.sm2Algorithm = 0x54;
-
-  assert_int_equal(CNK_PivConfiguredAlgorithm(&session, PIV_ALG_RSA_3072), 0x22);
-  assert_true(CNK_PivAlgorithmIsRsa(&session, 0x22));
-  assert_true(CNK_PivAlgorithmIsEc(&session, 0x15));
-  assert_true(CNK_PivPrivateKeyCanDerive(&session, 0x53));
-  assert_false(CNK_PivPrivateKeyCanSign(&session, 0x54));
-  assert_false(CNK_PivAlgorithmIsRsa(&session, PIV_ALG_RSA_3072));
+  assert_true(CNK_PivAlgorithmIsRsa(CNK_LIBCANO_ALG_RSA_3072));
+  assert_true(CNK_PivAlgorithmIsRsa(CNK_LIBCANO_ALG_RSA_4096));
+  assert_true(CNK_PivPrivateKeyCanDerive(CNK_LIBCANO_ALG_X25519));
+  assert_false(CNK_PivPrivateKeyCanSign(CNK_LIBCANO_ALG_SM2));
+  assert_false(CNK_PivAlgorithmIsRsa(0xD1));
 }
 
 static void test_p521_named_curve_parameters(void **state) {
   (void)state;
   static const CK_BYTE p521[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x23};
-  CK_BYTE algorithmType = 0;
+  uint32_t algorithmType = 0;
 
   assert_int_equal(cnk_ec_params_to_piv_algorithm(p521, sizeof(p521), &algorithmType), CKR_OK);
-  assert_int_equal(algorithmType, PIV_ALG_ECC_521);
+  assert_int_equal(algorithmType, CNK_LIBCANO_ALG_P521);
 }
 
 static void test_25519_named_curve_parameters(void **state) {
   (void)state;
   static const CK_BYTE ed25519[] = {0x06, 0x03, 0x2B, 0x65, 0x70};
   static const CK_BYTE x25519[] = {0x06, 0x03, 0x2B, 0x65, 0x6E};
-  CK_BYTE algorithmType = 0;
+  uint32_t algorithmType = 0;
 
   assert_int_equal(cnk_ec_params_to_piv_algorithm(ed25519, sizeof(ed25519), &algorithmType), CKR_OK);
-  assert_int_equal(algorithmType, PIV_ALG_ED25519);
+  assert_int_equal(algorithmType, CNK_LIBCANO_ALG_ED25519);
   assert_int_equal(cnk_ec_params_to_piv_algorithm(x25519, sizeof(x25519), &algorithmType), CKR_OK);
-  assert_int_equal(algorithmType, PIV_ALG_X25519);
+  assert_int_equal(algorithmType, CNK_LIBCANO_ALG_X25519);
 }
 
 int main(void) {
@@ -192,7 +183,7 @@ int main(void) {
       cmocka_unit_test(test_reject_invalid_pin_policy),
       cmocka_unit_test(test_reject_invalid_touch_policy),
       cmocka_unit_test(test_key_capabilities_by_algorithm),
-      cmocka_unit_test(test_configured_extension_algorithm_ids),
+      cmocka_unit_test(test_semantic_key_capabilities),
       cmocka_unit_test(test_p521_named_curve_parameters),
       cmocka_unit_test(test_25519_named_curve_parameters),
   };

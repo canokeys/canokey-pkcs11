@@ -87,6 +87,9 @@ The executor independently bounds exchanges to 4096 and total responses to one
 MiB, including status bytes. Typed absence maps to the caller's key/data error;
 a panic or ABI state/type mismatch remains a device error.
 
+All internal key algorithms use stable semantic codes; only Rust maps them to
+firmware wire IDs. Algorithm preflight queries the same immutable profile as the
+operation factory and preserves unsupported versus unknown errors.
 Profile probing finishes before opening the authenticated transaction. Context
 construction clones the immutable profile while holding the token lock, rejects
 an obsolete binding epoch, and never probes or selects. A failed unlock discards
@@ -225,7 +228,7 @@ backend boundary.
 
 | API | Profile | Lifetime and concurrency | Progress and exit guarantee |
 | --- | --- | --- | --- |
-| `C_OpenSession` | `SESSION` | Firmware configuration is read before `session_mutex`; new session/token counters publish atomically. | Failure publishes no handle/counter. Success returns one table-owned session with initialized lock/contexts. |
+| `C_OpenSession` | `SESSION` | Firmware configuration is read before `session_mutex`; new session/token counters publish atomically. Session creation performs no card I/O and stores no algorithm configuration. | Failure publishes no handle/counter. Success returns one table-owned session with initialized lock/contexts. |
 | `C_CloseSession` | `SESSION` | Sets a closing tombstone, owns a close reference, drains existing calls, then performs token accounting and cleanup. | Concurrent close gets invalid handle. Every failure restores table membership, counters, closing state, and logout barriers consistently; success invalidates handle and zeroizes secrets. |
 | `C_CloseAllSessions` | `SESSION` | Validates the slot, then iteratively snapshots one handle and delegates close without holding the table lock across cleanup/card I/O. | Invalid slots fail before mutation. Otherwise completes when no matching session remains and propagates the first non-stale close failure without corrupting remaining sessions. |
 | `C_GetSessionInfo` | `SESSION` | Holds session reference and reads table/token state under their owning locks. | Returns one coherent state/flags/slot snapshot; never mutates login or operation state. |

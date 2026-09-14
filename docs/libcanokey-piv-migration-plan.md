@@ -18,12 +18,12 @@ passes the corresponding contract and hardware gates; do not add silent fallback
 
 | Stage | Implemented | Required before completion |
 | --- | --- | --- |
-| 0: profile/context | Immutable token profile with binding epoch; copied selected contexts; bounded shared executor | Full reset/invalidation, close/finalize and concurrent transaction matrix |
+| 0: profile/context | Immutable token profile with binding epoch; copied selected contexts; bounded executor and two-session transaction contract | Full reset/invalidation, close/finalize and concurrent transaction matrix |
 | 1: public reads | Typed metadata/public keys, certificates, session data, directory and ordinary/F9 name reads | Complete malformed/duplicate/gzip/buffer/cache matrix |
 | 2: signing | RSA, ECDSA, Ed25519 and streaming ML-DSA use Rust operations | Complete PIN-never/once/always, legacy-Le, size-query and cancellation matrix |
 | 3: other private operations | RSA decrypt, ECDH/X25519 and ML-KEM use Rust operations | Full PIN-policy, Windows endian/KDF and concurrent result-publication matrix |
 | 4: management/writes | Management challenge-response, key generation/import, certificate/data/F5 writes and certificate deletion | Credential commands and management metadata are migrated; complete write/failure matrix |
-| 5: remove duplicate C | Removed C APDU builders, credential/data/public-key parsers, 3DES and the legacy callback adapter | Remove session algorithm duplication; complete acceptance matrix |
+| 5: remove duplicate C | Removed C APDU builders, credential/data/public-key parsers, 3DES the legacy callback adapter and session algorithm maps | Complete acceptance matrix |
 
 All production card transmission now flows through one C executor and raw PC/SC
 exchange. Rust owns SELECT, credential commands, metadata, version/configuration,
@@ -33,9 +33,8 @@ original value. C still owns cache updates, reservations and provisioning policy
 
 C now passes semantic import parameters and component views directly to Rust.
 C retains PKCS#11 RSA-width admission and one bounded, zeroized EC-padding buffer.
-No C import/public-key TLV encode/reparse or certificate framing remains. Backend wire IDs
-resolve through the immutable Rust profile; returned public keys use their typed
-algorithm. ADMIN DATA/PRINTED use Rust parsing, with empty policy distinguished
+No C import/public-key TLV encode/reparse or certificate framing remains. C uses semantic algorithm codes throughout; the immutable Rust profile owns
+support checks and wire-ID resolution. Logical sessions keep no algorithm maps. ADMIN DATA/PRINTED use Rust parsing, with empty policy distinguished
 from malformed data and PIN protection forbidding PUK recovery independently of
 the stored PUK-blocked claim. Public recovery reads never submit a cached PIN. Host crypto and
 PKCS#11 state are intentional C responsibilities, not migration leftovers.
@@ -97,10 +96,11 @@ emulation. Passing a selected subset does not close the remaining gates.
 Reader: canokeys.org OpenPGP PIV OATH 0; serial 0; firmware
 3.1.0-dev+gaa408988; PIV 6.0.0. Re-enumerate before any provisioning.
 
-- x64 Debug/Release: 29 selected groups pass using scripts/hardware-crypto-test.py:
+- x64 Debug/Release: 30 selected groups pass using scripts/hardware-crypto-test.py:
   PIN change/cache/fresh-login/restore, F5 read/write/clear/restore, unconfigured
   protection rollback, six key generations, six imports, independent private-operation
-  verification, host RSA encryption and RSA/ECDSA verification, certificate write/read/delete and RNG across the 64 KiB boundary.
+  verification, host RSA encryption and RSA/ECDSA verification, concurrent ECDSA/RNG
+  from two sessions, certificate write/read/delete and RNG across the 64 KiB boundary.
 - Test slots 87..8A: RSA (2048/3072/4096), P-521, X25519 and Ed25519 generation/import
   match public-key expectations and pass private operations. Slot 87 currently
   holds the most recently tested RSA size; temporary certificates also use it.

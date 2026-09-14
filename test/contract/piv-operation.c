@@ -160,12 +160,12 @@ void cnk_profile_free(CNK_LIBCANO_PROFILE *profile) {
   (void)profile;
   abort();
 }
-uint32_t cnk_profile_piv_algorithm_from_wire(const void *profile, uint32_t wire, uint32_t *algorithm) {
-  CHECK(profile == (void *)1 && wire == PIV_ALG_RSA_2048 && locked == 1 && !cards);
-  if (profileStatus)
-    return profileStatus;
-  *algorithm = CNK_LIBCANO_ALG_RSA_2048;
-  return CNK_LIBCANO_OK;
+uint32_t cnk_profile_piv_require_algorithm(const void *profile, uint32_t algorithm, CNK_LIBCANO_ERROR *error) {
+  CHECK(profile == (void *)1 && (algorithm == CNK_LIBCANO_ALG_RSA_2048 || algorithm == CNK_LIBCANO_ALG_P256) &&
+        locked == 1 && !cards);
+  if (error)
+    error->kind = errorKind;
+  return profileStatus;
 }
 uint32_t cnk_operation_key_algorithm(const CNK_LIBCANO_OPERATION *operation, uint32_t *algorithm) {
   CHECK(operation == &op && operations == 1);
@@ -457,7 +457,7 @@ static CK_RV call(unsigned kind, CK_BYTE *out, CK_ULONG *len) {
   case 1:
     return cnk_delete_piv_certificate_libcanokey(0, &session, 0x9c);
   case 2:
-    return cnk_piv_generate_keypair(0, &session, PIV_ALG_RSA_2048, 0x9c, 1, 1);
+    return cnk_piv_generate_keypair(0, &session, CNK_LIBCANO_ALG_RSA_2048, 0x9c, 1, 1);
   case 3: {
     CK_BYTE scalar[32] = {0};
     scalar[31] = 1;
@@ -519,6 +519,15 @@ int main(void) {
   profileStatus = CNK_LIBCANO_INVALID_ARGUMENT;
   len = sizeof(output);
   CHECK(call(2, output, &len) == CKR_MECHANISM_INVALID && !sends && !invalidations);
+  reset();
+  // Unsupported and unknown firmware evidence must fail before authentication.
+  profileStatus = CNK_LIBCANO_PROTOCOL_ERROR;
+  errorKind = CNK_LIBCANO_ERROR_UNSUPPORTED_FEATURE;
+  CHECK(call(2, output, &len) == CKR_MECHANISM_INVALID && !sends && !invalidations);
+  reset();
+  profileStatus = CNK_LIBCANO_PROTOCOL_ERROR;
+  errorKind = 14; // CapabilityUnknown has no guessed algorithm fallback.
+  CHECK(call(2, output, &len) == CKR_DEVICE_ERROR && !sends && !invalidations);
   reset();
   // Getter failures, including a failure after copying the modulus, must
   // leave the complete caller snapshot untouched.

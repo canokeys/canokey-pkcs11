@@ -16,7 +16,10 @@ SCardEndTransaction -> disconnect`. No test may split SELECT from the operation
 it authorizes. Test two sessions performing different PIV operations: their
 physical card transactions must serialize, while their independent session
 contexts remain valid and their token-wide login/logout reservations remain
-consistent.
+consistent. `piv-transactions-contract` runs the production PKCS#11/Rust paths
+against a transaction-enforcing PC/SC fixture, with concurrent sign/RNG and
+injected sign transport failure. The selected real-card script can repeat
+concurrent ECDSA/RNG with `--concurrent-id`.
 
 ## State Invariants
 

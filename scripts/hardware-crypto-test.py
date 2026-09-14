@@ -9,6 +9,8 @@ Opaque PKCS#11 structures use Windows packing; template storage stays alive
 through each borrowed C call. Credentials and shared secrets are never printed.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+import threading
 import argparse
 import ctypes as C
 import hashlib
@@ -88,6 +90,11 @@ parser.add_argument(
     type=lambda x: int(x, 16),
     help="Temporarily change PIN to CNK_PIV_TEST_PIN, verify this EC key, then restore PIN",
 )
+parser.add_argument(
+    "--concurrent-id",
+    type=lambda x: int(x, 16),
+    help="Sign with this EC key while another session reads token RNG",
+)
 parser.add_argument("--report", type=Path)
 args = parser.parse_args()
 if os.name != "nt":
@@ -153,6 +160,7 @@ for name, types in {
     "C_Finalize": [P],
     "C_OpenSession": [U, U, P, P, C.POINTER(U)],
     "C_CloseSession": [U],
+    "C_SessionCancel": [U, U],
     "C_CNK_LoginPinManaged": [U, P, U],
     "C_Login": [U, U, P, U],
     "C_Logout": [U],
@@ -480,6 +488,58 @@ def eddsa_checks(id):
     print(f"PASS Ed25519 ID {id:02x}, independent software verification", flush=True)
 
 
+def concurrency_check(id):
+    pub = public(id)
+    key = key_for(3, id)
+    other = U()
+    check(lib.C_OpenSession(args.slot, 6, None, None, C.byref(other)))
+    try:
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            for iteration in range(5):
+                ready = threading.Barrier(2)
+                digest = hashlib.sha256(f"CanoKey concurrent operation {iteration}".encode()).digest()
+
+                def sign_other():
+                    mechanism = Mech(4161, None, 0)
+                    check(lib.C_SignInit(other, C.byref(mechanism), key))
+                    output = C.create_string_buffer(132)
+                    length = U(len(output))
+                    ready.wait(timeout=10)
+                    check(lib.C_Sign(other, digest, len(digest), output, C.byref(length)))
+                    width = (pub.key_size + 7) // 8
+                    if length.value != width * 2:
+                        raise AssertionError("Concurrent signature has the wrong size")
+                    signature = utils.encode_dss_signature(
+                        int.from_bytes(output.raw[:width], "big"),
+                        int.from_bytes(output.raw[width : 2 * width], "big"),
+                    )
+                    pub.verify(signature, digest, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+
+                def read_random():
+                    output = C.create_string_buffer(32)
+                    ready.wait(timeout=10)
+                    check(lib.C_GenerateRandom(s, output, len(output)))
+                    if len(set(output.raw)) < 8:
+                        raise AssertionError("Concurrent RNG returned degenerate output")
+
+                signed = workers.submit(sign_other)
+                random = workers.submit(read_random)
+                signed.result()
+                random.result()
+        for session in (s, other):
+            info = SessionInfo()
+            check(lib.C_GetSessionInfo(session, C.byref(info)))
+            if info.state != 3:
+                raise AssertionError("Concurrent operations changed the shared USER login")
+    finally:
+        lib.C_SessionCancel(other, 0x800)
+        check(lib.C_CloseSession(other))
+    print(
+        "PASS two-session concurrent ECDSA/RNG, independent signature verification and shared USER state",
+        flush=True,
+    )
+
+
 def random_check():
     check(lib.C_GenerateRandom(s, None, 0))
     for length in [1, 256, 257, 1024, 65539]:
@@ -793,6 +853,8 @@ def main():
             run_case(f"RSA ID {id:02x}", lambda id=id: rsa_checks(id))
         if args.mldsa_id is not None:
             run_case("ML-DSA and ML-KEM", pqc_checks)
+        if args.concurrent_id is not None:
+            run_case("two-session concurrent ECDSA/RNG", lambda: concurrency_check(args.concurrent_id))
         run_case("hardware RNG length/chunk matrix", random_check)
     finally:
         if opened:

@@ -1,6 +1,7 @@
 #ifndef CNK_BACKEND_PCSC_H
 #define CNK_BACKEND_PCSC_H
 
+#include "backend/libcanokey.h"
 #include "internal/public_key.h"
 #include "pkcs11.h"
 #include "pkcs11_canokey.h"
@@ -86,20 +87,6 @@ CK_DEFINE_FUNCTION(CK_RV, cnk_pcsc_set_test_transport)(const CNK_PCSC_TEST_TRANS
 #define PIV_SLOT_82 5
 #define PIV_SLOT_83 6
 #define PIV_SLOT_COUNT 24
-
-// Algorithm types for PIV
-#define PIV_ALG_RSA_2048 0x07
-#define PIV_ALG_ECC_256 0x11
-#define PIV_ALG_ECC_384 0x14
-#define PIV_ALG_ECC_521 0x15
-#define PIV_ALG_ED25519 0xE0
-#define PIV_ALG_RSA_3072 0x05
-#define PIV_ALG_RSA_4096 0x16
-#define PIV_ALG_X25519 0xE1
-#define PIV_ALG_SECP256K1 0x53
-#define PIV_ALG_SM2 0x54
-#define PIV_ALG_MLDSA65 0xE2
-#define PIV_ALG_MLKEM768 0xE3
 
 typedef struct {
   CK_BYTE enabled;
@@ -235,13 +222,14 @@ CK_RV cnk_begin_key_write(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYT
 
 // Standalone-only public snapshot wrappers. Managed callers intentionally
 // bypass this cache because the minidriver owns its own refresh policy.
-CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR pbAlgorithmType,
+CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, uint32_t *pbAlgorithmType,
                               CNK_PIV_PUBLIC_KEY *publicKey, CK_BYTE_PTR pbPinPolicy, CK_BYTE_PTR pbTouchPolicy);
 CK_RV cnk_get_piv_data_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR data, CK_ULONG_PTR data_len,
                               CK_BBOOL fetch_data);
 
-// Read the firmware 5.7+ PIV metadata directory. Older firmware returns
-// CKR_FUNCTION_NOT_SUPPORTED so callers can fall back to per-slot probes.
+// Read the PIV metadata directory using the Rust profile. Unsupported features
+// return CKR_FUNCTION_NOT_SUPPORTED for per-slot fallback. Malformed or
+// unexpected directory data returns CKR_DEVICE_ERROR and must not fall back.
 CK_RV cnk_get_piv_metadata_directory_cached(CNK_PKCS11_SESSION *session, CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
                                             CK_ULONG_PTR entryCount);
 void cnk_piv_public_cache_invalidate(CNK_PKCS11_SESSION *session);
@@ -259,7 +247,7 @@ CK_RV cnk_piv_v6_supported_on_card(SCARDHANDLE card, CK_BBOOL *supported);
 CK_RV cnk_piv_generate_random(CK_SLOT_ID slotID, CK_BYTE_PTR output, CK_ULONG outputLen);
 
 // Generate a PIV asymmetric key pair.
-CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
+CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, uint32_t algorithmType, CK_BYTE pivSlot,
                                CK_BYTE pinPolicy, CK_BYTE touchPolicy);
 
 // Sign data using PIV key
@@ -274,12 +262,12 @@ CK_RV cnk_piv_decrypt(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_P
 
 // Perform ECDH key agreement using a PIV EC key
 // This function returns the raw shared secret from GENERAL AUTHENTICATE
-CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
+CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, uint32_t algorithmType, CK_BYTE pivSlot,
                    CK_BYTE pinPolicy, CK_BYTE_PTR pPublicData, CK_ULONG cbPublicData, CK_BYTE_PTR pSharedSecret,
                    CK_ULONG_PTR pcbSharedSecret);
 
-CK_RV cnk_piv_mlkem_decapsulate(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
-                                CK_BYTE pinPolicy, CK_BYTE_PTR pCiphertext, CK_ULONG cbCiphertext,
+CK_RV cnk_piv_mlkem_decapsulate(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, uint32_t algorithmType,
+                                CK_BYTE pivSlot, CK_BYTE pinPolicy, CK_BYTE_PTR pCiphertext, CK_ULONG cbCiphertext,
                                 CK_BYTE_PTR pSharedSecret, CK_ULONG_PTR pcbSharedSecret);
 
 #endif /* CNK_BACKEND_PCSC_H */

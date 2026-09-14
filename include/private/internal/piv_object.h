@@ -15,8 +15,8 @@ typedef struct {
   CK_BYTE scalar[66];
 } CNK_PIV_IMPORT;
 
-CK_RV cnk_prepare_piv_import(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount,
-                             CK_BYTE objectId, CK_KEY_TYPE keyType, CNK_PIV_IMPORT *material);
+CK_RV cnk_prepare_piv_import(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount, CK_BYTE objectId,
+                             CK_KEY_TYPE keyType, CNK_PIV_IMPORT *material);
 CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CNK_PIV_IMPORT *material);
 
 #endif // CNK_INTERNAL_PIV_OBJECT_H

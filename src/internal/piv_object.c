@@ -28,8 +28,7 @@ static CK_ULONG rsaWidthFromPrimeLength(CK_ULONG primeLen) {
   return 0;
 }
 
-static CK_RV prepareRsaImport(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount, CNK_PIV_IMPORT *material,
-                              CK_BYTE *canonicalAlgorithm) {
+static CK_RV prepareRsaImport(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount, CNK_PIV_IMPORT *material) {
   CK_ATTRIBUTE_PTR components[5];
   static const CK_ATTRIBUTE_TYPE types[] = {
       CKA_PRIME_1, CKA_PRIME_2, CKA_EXPONENT_1, CKA_EXPONENT_2, CKA_COEFFICIENT,
@@ -68,15 +67,12 @@ static CK_RV prepareRsaImport(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCou
   }
   switch (componentWidth) {
   case 128:
-    *canonicalAlgorithm = PIV_ALG_RSA_2048;
     material->parameters.algorithm = CNK_LIBCANO_ALG_RSA_2048;
     break;
   case 192:
-    *canonicalAlgorithm = PIV_ALG_RSA_3072;
     material->parameters.algorithm = CNK_LIBCANO_ALG_RSA_3072;
     break;
   case 256:
-    *canonicalAlgorithm = PIV_ALG_RSA_4096;
     material->parameters.algorithm = CNK_LIBCANO_ALG_RSA_4096;
     break;
   default:
@@ -93,15 +89,16 @@ static CK_RV prepareRsaImport(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCou
   return CKR_OK;
 }
 
-CK_RV cnk_prepare_piv_import(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount,
-                             CK_BYTE objectId, CK_KEY_TYPE keyType, CNK_PIV_IMPORT *material) {
-  CNK_ENSURE_NONNULL(session, material);
+CK_RV cnk_prepare_piv_import(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount, CK_BYTE objectId,
+                             CK_KEY_TYPE keyType, CNK_PIV_IMPORT *material) {
+  CNK_ENSURE_NONNULL(material);
   if (keyType != CKK_RSA && keyType != CKK_EC && keyType != CKK_EC_EDWARDS && keyType != CKK_EC_MONTGOMERY &&
       keyType != CKK_ML_DSA && keyType != CKK_ML_KEM)
     return CKR_KEY_TYPE_INCONSISTENT;
   memset(material, 0, sizeof(*material));
   material->parameters.struct_size = sizeof(material->parameters);
-  CK_BYTE pivSlot, pinPolicy, touchPolicy, canonical = 0;
+  CK_BYTE pivSlot, pinPolicy, touchPolicy;
+  uint32_t canonical = 0;
   CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objectId, &pivSlot));
   CNK_ENSURE_OK(CNK_GetPivPolicies(attributes, attributeCount, CNK_DefaultPinPolicyForPivObjectId(objectId), &pinPolicy,
                                    &touchPolicy));
@@ -109,7 +106,7 @@ CK_RV cnk_prepare_piv_import(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attri
   material->parameters.pin_policy = pinPolicy;
   material->parameters.touch_policy = touchPolicy;
   if (keyType == CKK_RSA) {
-    CNK_ENSURE_OK(prepareRsaImport(attributes, attributeCount, material, &canonical));
+    CNK_ENSURE_OK(prepareRsaImport(attributes, attributeCount, material));
   } else {
     CK_ATTRIBUTE_PTR value, params;
     CK_BBOOL pqc = keyType == CKK_ML_DSA || keyType == CKK_ML_KEM;
@@ -126,36 +123,30 @@ CK_RV cnk_prepare_piv_import(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attri
       memcpy(&parameterSet, params->pValue, sizeof(parameterSet));
       if (parameterSet != (keyType == CKK_ML_DSA ? CKP_ML_DSA_65 : CKP_ML_KEM_768))
         return CKR_ATTRIBUTE_VALUE_INVALID;
-      canonical = keyType == CKK_ML_DSA ? PIV_ALG_MLDSA65 : PIV_ALG_MLKEM768;
       material->parameters.algorithm = keyType == CKK_ML_DSA ? CNK_LIBCANO_ALG_MLDSA65 : CNK_LIBCANO_ALG_MLKEM768;
       width = keyType == CKK_ML_DSA ? 32 : 64;
     } else {
       CNK_ENSURE_OK(cnk_ec_params_to_piv_algorithm(params->pValue, params->ulValueLen, &canonical));
+      material->parameters.algorithm = canonical;
       if (keyType == CKK_EC_EDWARDS || keyType == CKK_EC_MONTGOMERY) {
-        if (canonical != (keyType == CKK_EC_EDWARDS ? PIV_ALG_ED25519 : PIV_ALG_X25519))
+        if (canonical != (keyType == CKK_EC_EDWARDS ? CNK_LIBCANO_ALG_ED25519 : CNK_LIBCANO_ALG_X25519))
           return CKR_TEMPLATE_INCONSISTENT;
-        material->parameters.algorithm = keyType == CKK_EC_EDWARDS ? CNK_LIBCANO_ALG_ED25519 : CNK_LIBCANO_ALG_X25519;
         width = 32;
       } else if (keyType == CKK_EC) {
         switch (canonical) {
-        case PIV_ALG_ECC_256:
-          material->parameters.algorithm = CNK_LIBCANO_ALG_P256;
+        case CNK_LIBCANO_ALG_P256:
           width = 32;
           break;
-        case PIV_ALG_ECC_384:
-          material->parameters.algorithm = CNK_LIBCANO_ALG_P384;
+        case CNK_LIBCANO_ALG_P384:
           width = 48;
           break;
-        case PIV_ALG_ECC_521:
-          material->parameters.algorithm = CNK_LIBCANO_ALG_P521;
+        case CNK_LIBCANO_ALG_P521:
           width = 66;
           break;
-        case PIV_ALG_SECP256K1:
-          material->parameters.algorithm = CNK_LIBCANO_ALG_SECP256K1;
+        case CNK_LIBCANO_ALG_SECP256K1:
           width = 32;
           break;
-        case PIV_ALG_SM2:
-          material->parameters.algorithm = CNK_LIBCANO_ALG_SM2;
+        case CNK_LIBCANO_ALG_SM2:
           width = 32;
           break;
         default:
@@ -177,7 +168,5 @@ CK_RV cnk_prepare_piv_import(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attri
       material->components[0] = (CNK_LIBCANO_BYTES){value->pValue, value->ulValueLen};
     }
   }
-  // Only admission uses the configured wire ID. The Rust API receives the
-  // semantic algorithm and owns its profile-specific APDU encoding.
-  return CNK_PivConfiguredAlgorithm(session, canonical) != 0 ? CKR_OK : CKR_MECHANISM_INVALID;
+  return CKR_OK;
 }

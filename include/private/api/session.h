@@ -36,7 +36,7 @@ typedef enum {
 typedef struct {
   CK_BBOOL metadataValid;
   uint64_t metadataRefreshedAtMs;
-  CK_BYTE algorithmType;
+  uint32_t algorithmType;
   CK_BYTE pinPolicy;
   CK_BYTE touchPolicy;
   CNK_PIV_PUBLIC_KEY publicKey;
@@ -136,7 +136,7 @@ typedef struct {
   CK_OBJECT_HANDLE hKey;
   CK_MECHANISM mechanism;
   CK_BYTE pivSlot;
-  CK_BYTE algorithmType;
+  uint32_t algorithmType;
   CK_BYTE pinPolicy;
   mbedtls_md_type_t mdType;
   CK_BYTE abModulus[512];
@@ -154,7 +154,7 @@ typedef struct {
   CK_OBJECT_HANDLE hKey;
   CK_MECHANISM mechanism;
   CK_BYTE pivSlot;
-  CK_BYTE algorithmType;
+  uint32_t algorithmType;
   CK_BYTE pinPolicy;
   CK_ULONG cbModulus;
   CK_BBOOL contextAuthenticated;
@@ -167,7 +167,7 @@ typedef struct {
 typedef struct {
   CK_OBJECT_HANDLE hKey;
   CK_MECHANISM mechanism;
-  CK_BYTE algorithmType;
+  uint32_t algorithmType;
   mbedtls_md_type_t mdType;
   CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
   CNK_PIV_PUBLIC_KEY publicKey;
@@ -193,15 +193,6 @@ typedef struct CNK_PKCS11_SESSION {
   CK_BBOOL isOpen;          // Flag indicating if the session is open
   _Atomic CK_BBOOL closing; // Close has started; reject new session references
   CNK_PKCS11_TOKEN_STATE *token;
-  CK_BYTE mldsa65Algorithm;  // Runtime PIV algorithm-extension ID
-  CK_BYTE mlkem768Algorithm; // Runtime PIV algorithm-extension ID
-  CK_BYTE ed25519Algorithm;  // Runtime PIV algorithm-extension ID
-  CK_BYTE x25519Algorithm;   // Runtime PIV algorithm-extension ID
-  CK_BYTE rsa3072Algorithm;  // Runtime PIV algorithm-extension ID
-  CK_BYTE rsa4096Algorithm;  // Runtime PIV algorithm-extension ID
-  CK_BYTE secp256k1Algorithm;
-  CK_BYTE secp521r1Algorithm;
-  CK_BYTE sm2Algorithm;
   CNK_PKCS11_MUTEX lock; // Session lock using abstract mutex
 
   // Object finding fields

@@ -108,31 +108,23 @@ CK_RV cnk_piv_context_for_session(CNK_PKCS11_SESSION *session, uint32_t state, C
   return rv;
 }
 
-CK_RV cnk_piv_resolve_algorithm(CNK_PKCS11_SESSION *session, CK_BYTE wire, uint32_t *algorithm) {
-  if (session == NULL || session->token == NULL || algorithm == NULL)
-    return CKR_ARGUMENTS_BAD;
-  CK_RV rv = cnk_ensure_libcanokey_profile(session);
-  if (rv != CKR_OK)
-    return rv;
-  rv = cnk_mutex_lock(&session->token->lock);
-  if (rv != CKR_OK)
-    return rv;
-  uint32_t resolved = 0;
-  rv = CKR_DEVICE_ERROR;
+CK_RV cnk_piv_require_algorithm(CNK_PKCS11_SESSION *session, uint32_t algorithm) {
+  CNK_ENSURE_NONNULL(session, session->token);
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  CK_RV rv = CKR_DEVICE_ERROR;
   if (session->token->libcanokeyProfile != NULL &&
       session->token->libcanokeyProfileEpoch == atomic_load(&g_cnk_managed_binding_epoch)) {
+    CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
     uint32_t status =
-        CNK_EXTERNAL_CALL(cnk_profile_piv_algorithm_from_wire, session->token->libcanokeyProfile, wire, &resolved);
-    rv = status == CNK_LIBCANO_OK                 ? CKR_OK
-         : status == CNK_LIBCANO_INVALID_ARGUMENT ? CKR_FUNCTION_NOT_SUPPORTED
-                                                  : CKR_DEVICE_ERROR;
+        CNK_EXTERNAL_CALL(cnk_profile_piv_require_algorithm, session->token->libcanokeyProfile, algorithm, &error);
+    rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
+    if (status == CNK_LIBCANO_INVALID_ARGUMENT || error.kind == CNK_LIBCANO_ERROR_UNSUPPORTED_FEATURE ||
+        error.kind == CNK_LIBCANO_ERROR_UNSUPPORTED_ALGORITHM)
+      rv = CKR_MECHANISM_INVALID;
   }
   CK_RV unlockRv = cnk_mutex_unlock(&session->token->lock);
-  if (rv == CKR_OK)
-    rv = unlockRv;
-  if (rv == CKR_OK)
-    *algorithm = resolved;
-  return rv;
+  return rv == CKR_OK ? unlockRv : rv;
 }
 
 CK_RV cnk_run_piv_operation(SCARDHANDLE card, CNK_LIBCANO_OPERATION *operation, CK_RV absent, CK_BBOOL *attempted) {

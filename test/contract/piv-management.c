@@ -308,7 +308,7 @@ int main(void) {
   make_profile(&token.libcanokeyProfile);
   sends = failAt = malformedAt = deniedAt = 0;
   lockError = credentialError = CKR_OK;
-  CK_RV generateRv = cnk_piv_generate_keypair(0, &session, generateWire, 0x9c, 1, 1);
+  CK_RV generateRv = cnk_piv_generate_keypair(0, &session, CNK_LIBCANO_ALG_RSA_3072, 0x9c, 1, 1);
   if (generateRv != CKR_OK)
     fprintf(stderr, "Generation failed: rv=%lx sends=%u\n", generateRv, sends);
   CHECK(generateRv == CKR_OK);

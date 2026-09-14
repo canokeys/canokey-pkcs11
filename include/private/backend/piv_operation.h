@@ -11,9 +11,9 @@ CK_RV cnk_piv_operation_status(uint32_t status, const CNK_LIBCANO_ERROR *error, 
  * while the caller holds an authenticated transaction. */
 CK_RV cnk_piv_context_for_session(CNK_PKCS11_SESSION *session, uint32_t state, CNK_LIBCANO_CONTEXT **context);
 
-/* Resolve from the immutable profile before authentication, without guessing
- * extension IDs. The operation factory still owns capability authorization. */
-CK_RV cnk_piv_resolve_algorithm(CNK_PKCS11_SESSION *session, CK_BYTE wire, uint32_t *algorithm);
+/* Require observed algorithm support before authentication. This local query
+ * does not select or authorize; operation factories revalidate their policy. */
+CK_RV cnk_piv_require_algorithm(CNK_PKCS11_SESSION *session, uint32_t algorithm);
 
 /* Run an explicit credential action within the caller's selected transaction. */
 CK_RV cnk_piv_credential_on_card(CNK_PKCS11_SESSION *session, SCARDHANDLE card, uint32_t action, const CK_BYTE *old,

@@ -86,6 +86,7 @@ enum {
   CNK_LIBCANO_ERROR_CONDITIONS = 9,
   CNK_LIBCANO_ERROR_NOT_FOUND = 10,
   CNK_LIBCANO_ERROR_UNSUPPORTED_FEATURE = 12,
+  CNK_LIBCANO_ERROR_UNSUPPORTED_ALGORITHM = 13,
   CNK_LIBCANO_ERROR_LIMIT_EXCEEDED = 5,
 };
 enum { CNK_LIBCANO_PHASE_PARSING = 4 };
@@ -132,7 +133,7 @@ uint32_t cnk_piv_credential_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t
 uint32_t cnk_profile_firmware_version(const void *, uint32_t *);
 uint32_t cnk_profile_model_copy(const void *, uint8_t *, size_t *);
 uint32_t cnk_profile_serial_u32(const void *, uint32_t *);
-uint32_t cnk_profile_piv_algorithm_from_wire(const void *, uint32_t, uint32_t *);
+uint32_t cnk_profile_piv_require_algorithm(const void *, uint32_t, CNK_LIBCANO_ERROR *);
 uint32_t cnk_operation_key_algorithm(const CNK_LIBCANO_OPERATION *, uint32_t *);
 uint32_t cnk_probe_device_new(uint32_t, const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_operation_take_profile(CNK_LIBCANO_OPERATION *, void **);

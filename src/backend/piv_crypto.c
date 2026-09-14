@@ -45,7 +45,7 @@ typedef enum {
   CNK_PRIVATE_DECAPSULATE,
 } CNK_PRIVATE_OPERATION;
 
-static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType,
+static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *session, uint32_t algorithmType,
                                         CK_BYTE pivSlot, CK_BYTE pinPolicy, CNK_PRIVATE_OPERATION operationKind,
                                         CK_BYTE_PTR input, CK_ULONG inputLen, const CK_BYTE *contextPin,
                                         CK_ULONG contextPinLen, CK_BYTE_PTR output, CK_ULONG_PTR outputLen,
@@ -53,11 +53,8 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
   CNK_LIBCANO_CONTEXT *context = NULL;
   CNK_LIBCANO_OPERATION *operation = NULL;
   CNK_ENSURE_NONNULL(session, output, outputLen, input);
-  uint32_t algorithm = 0;
-  if (operationKind == CNK_PRIVATE_DECAPSULATE)
-    CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
-  else
-    CNK_ENSURE_OK(cnk_piv_resolve_algorithm(session, algorithmType, &algorithm));
+  uint32_t algorithm = algorithmType;
+  CNK_ENSURE_OK(cnk_piv_require_algorithm(session, algorithm));
 
   SCARDHANDLE card = 0;
   CK_RV rv = cnk_connect_for_private_key_operation(slotId, session, pinPolicy, contextPin, contextPinLen, &card,
@@ -123,8 +120,8 @@ cleanup:
 static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *session, CK_BYTE_PTR data, CK_ULONG dataLen,
                                      CK_BYTE_PTR signature, CK_ULONG_PTR signatureLen) {
   CNK_ENSURE_NONNULL(session, signature, signatureLen, data);
-  uint32_t algorithm = 0;
-  CNK_ENSURE_OK(cnk_piv_resolve_algorithm(session, session->signingContext.algorithmType, &algorithm));
+  uint32_t algorithm = session->signingContext.algorithmType;
+  CNK_ENSURE_OK(cnk_piv_require_algorithm(session, algorithm));
   uint32_t kind = signing_input_kind(algorithm);
   if (kind == 0)
     return CKR_FUNCTION_NOT_SUPPORTED;
@@ -199,7 +196,7 @@ CK_RV cnk_piv_decrypt(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_P
                                     pRawData, pcbRawData, "decrypt");
 }
 
-CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
+CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, uint32_t algorithmType, CK_BYTE pivSlot,
                    CK_BYTE pinPolicy, CK_BYTE_PTR pPublicData, CK_ULONG cbPublicData, CK_BYTE_PTR pSharedSecret,
                    CK_ULONG_PTR pcbSharedSecret) {
   // C_DeriveKey has no context-specific authentication parameter. Refuse
@@ -210,8 +207,8 @@ CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algo
                                     pPublicData, cbPublicData, NULL, 0, pSharedSecret, pcbSharedSecret, "ECDH");
 }
 
-CK_RV cnk_piv_mlkem_decapsulate(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
-                                CK_BYTE pinPolicy, CK_BYTE_PTR pCiphertext, CK_ULONG cbCiphertext,
+CK_RV cnk_piv_mlkem_decapsulate(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, uint32_t algorithmType,
+                                CK_BYTE pivSlot, CK_BYTE pinPolicy, CK_BYTE_PTR pCiphertext, CK_ULONG cbCiphertext,
                                 CK_BYTE_PTR pSharedSecret, CK_ULONG_PTR pcbSharedSecret) {
   if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS)
     CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always ML-KEM requires context-specific authentication");
@@ -226,15 +223,14 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
   return cnk_piv_sign_libcanokey(slotId, pSession, pData, cbDataLen, pSignature, pcbSignature);
 }
 
-CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType, CK_BYTE pivSlot,
+CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, uint32_t algorithmType, CK_BYTE pivSlot,
                                CK_BYTE pinPolicy, CK_BYTE touchPolicy) {
   CNK_LIBCANO_CONTEXT *context = NULL;
   CNK_LIBCANO_OPERATION *operation = NULL;
   CNK_ENSURE_NONNULL(session);
-  uint32_t algorithm = 0;
-  CK_RV rv = cnk_piv_resolve_algorithm(session, algorithmType, &algorithm);
-  if (rv != CKR_OK)
-    return rv == CKR_FUNCTION_NOT_SUPPORTED ? CKR_MECHANISM_INVALID : rv;
+  uint32_t algorithm = algorithmType;
+  CNK_ENSURE_OK(cnk_piv_require_algorithm(session, algorithm));
+  CK_RV rv;
   CK_BBOOL attempted = CK_FALSE;
   SCARDHANDLE card = 0;
   rv = cnk_begin_key_write(slotID, session, pivSlot, &card);
@@ -275,6 +271,7 @@ CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const C
   CNK_LIBCANO_CONTEXT *context = NULL;
   CNK_LIBCANO_OPERATION *operation = NULL;
   CNK_ENSURE_NONNULL(session, material);
+  CNK_ENSURE_OK(cnk_piv_require_algorithm(session, material->parameters.algorithm));
   CK_BBOOL attempted = CK_FALSE;
   SCARDHANDLE card = 0;
   CK_RV rv = cnk_begin_key_write(slotID, session, (CK_BYTE)material->parameters.slot, &card);

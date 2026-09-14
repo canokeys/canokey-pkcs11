@@ -148,10 +148,10 @@ CK_RV C_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
 
   // Encryption is a host public-key operation; metadata supplies the public
   // components while the private key remains on the card for C_Decrypt.
-  CK_BYTE algorithmType;
+  uint32_t algorithmType;
   CNK_PIV_PUBLIC_KEY publicKey;
   CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivSlot, &algorithmType, &publicKey, NULL, NULL));
-  if (!CNK_PivAlgorithmIsRsa(session, algorithmType))
+  if (!CNK_PivAlgorithmIsRsa(algorithmType))
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "encrypt key is not RSA");
 
   CK_ULONG modulusLen = publicKey.valueLen;
@@ -291,15 +291,15 @@ CK_RV C_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_
   CNK_ENSURE_OK(CNK_ValidateObject(hKey, session, CKO_PRIVATE_KEY, &objId));
   CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &pivTag));
 
-  CK_BYTE algorithmType;
+  uint32_t algorithmType;
   CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objId);
   CNK_PIV_PUBLIC_KEY abPublicKey;
   CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivTag, &algorithmType, &abPublicKey, &pinPolicy, NULL));
 
-  if (!CNK_PivPrivateKeyCanDecrypt(session, algorithmType))
+  if (!CNK_PivPrivateKeyCanDecrypt(algorithmType))
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for decrypt");
 
-  if (!CNK_PivAlgorithmIsRsa(session, algorithmType))
+  if (!CNK_PivAlgorithmIsRsa(algorithmType))
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "decrypt key is not RSA");
 
   CK_ULONG cbModulus = abPublicKey.valueLen;

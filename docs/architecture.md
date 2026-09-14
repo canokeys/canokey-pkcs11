@@ -112,8 +112,9 @@ strict DER signatures, and normalizes digest length exactly once. Firmware suppo
 uses observed profiles, distinguishes unknown from unsupported, and preserves the
 original development-version identity while using its declared base version.
 RNG checks the live PIV version before producing bytes; F5 retains its PIV 6.0
-consumer gate. Logical session opening can defer failed optional configuration
-reads for host-only work; card operations separately validate a Rust profile.
+consumer gate. Logical session opening performs no card I/O and stores no algorithm mapping.
+Host policy uses semantic algorithm codes; card operations preflight support and
+encode wire identifiers through the same immutable Rust profile.
 Credential operations preserve the C raw 1..=8-byte form explicitly, without
 relaxing default Rust credential construction. Reader names retain stable slot IDs within
 one initialized lifetime; removal includes the last reader.

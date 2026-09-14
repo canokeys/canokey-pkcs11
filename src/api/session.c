@@ -710,9 +710,8 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
                Notify, phSession);
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(phSession);
 
-  // Validate the slot and read the firmware extension before taking the
-  // session-table lock. Both operations may perform a PC/SC round trip and
-  // must not stall unrelated session lookups.
+  // Validate the reader snapshot before taking the session-table lock.
+  // Session creation neither probes the card nor duplicates its profile.
   if (!g_cnk_is_managed_mode) {
     CK_RV readerLockRv = cnk_mutex_lock(&g_cnk_readers_mutex);
     if (readerLockRv != CKR_OK)
@@ -733,15 +732,6 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
 
   if (!(flags & CKF_SERIAL_SESSION))
     CNK_RETURN(CKR_SESSION_PARALLEL_NOT_SUPPORTED, "Invalid session flags");
-
-  CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig = {0};
-  CK_RV configurationRv = cnk_get_piv_algorithm_extension_cached(slotID, &algorithmConfig);
-  // Opening a logical session must still permit host-only digest/secret work
-  // when card configuration cannot be read. No extension is authorized by this
-  // observation; card-backed operations validate a live Rust profile separately.
-  if (configurationRv != CKR_OK)
-    CNK_DEBUG("Session opened without observed extension configuration: CK_RV=0x%lx", configurationRv);
-  CK_BBOOL extensionEnabled = configurationRv == CKR_OK && algorithmConfig.enabled;
 
   CNK_ENSURE_OK(cnk_mutex_lock(&session_mutex));
 
@@ -795,28 +785,6 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
     ck_free(session);
     cnk_mutex_unlock(&session_mutex);
     return rv;
-  }
-  // PQC and other extended algorithms remain unavailable unless the firmware
-  // extension was read successfully and explicitly enabled.
-  session->mldsa65Algorithm = 0;
-  session->mlkem768Algorithm = 0;
-  session->ed25519Algorithm = 0;
-  session->x25519Algorithm = 0;
-  session->rsa3072Algorithm = 0;
-  session->rsa4096Algorithm = 0;
-  session->secp256k1Algorithm = 0;
-  session->secp521r1Algorithm = 0;
-  session->sm2Algorithm = 0;
-  if (extensionEnabled) {
-    session->mldsa65Algorithm = algorithmConfig.mldsa65;
-    session->mlkem768Algorithm = algorithmConfig.mlkem768;
-    session->ed25519Algorithm = algorithmConfig.ed25519;
-    session->x25519Algorithm = algorithmConfig.x25519;
-    session->rsa3072Algorithm = algorithmConfig.rsa3072;
-    session->rsa4096Algorithm = algorithmConfig.rsa4096;
-    session->secp256k1Algorithm = algorithmConfig.secp256k1;
-    session->secp521r1Algorithm = algorithmConfig.secp521r1;
-    session->sm2Algorithm = algorithmConfig.sm2;
   }
   session->nextSecretKeyId = CNK_SESSION_SECRET_KEY_FIRST_ID;
 
