@@ -1,3 +1,4 @@
+#include "backend/libcanokey.h"
 #include "backend/pcsc.h"
 
 #include "api/session.h"
@@ -465,10 +466,14 @@ static CK_RV authenticateManagementKeyOnCard(SCARDHANDLE hCard, const CK_BYTE ke
 CK_RV cnk_authenticate_admin_for_write(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, SCARDHANDLE *hCard) {
   CNK_ENSURE_NONNULL(session, hCard);
 
+  CK_RV rv = cnk_ensure_libcanokey_profile(session);
+  if (rv != CKR_OK)
+    return rv;
+
   CK_BYTE managementKey[PIV_MANAGEMENT_KEY_LEN] = {0};
   CK_BBOOL connected = CK_FALSE;
   *hCard = 0;
-  CK_RV rv = cnk_token_copy_management_key(session, managementKey);
+  rv = cnk_token_copy_management_key(session, managementKey);
   if (rv != CKR_OK) {
     rv = CKR_USER_NOT_LOGGED_IN;
     goto cleanup;
@@ -477,7 +482,76 @@ CK_RV cnk_authenticate_admin_for_write(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *se
   if (rv != CKR_OK)
     goto cleanup;
   connected = CK_TRUE;
-  rv = authenticateManagementKeyOnCard(*hCard, managementKey);
+  CK_BYTE algorithm = 0;
+  rv = getManagementKeyAlgorithmOnCard(*hCard, &algorithm);
+  if (rv != CKR_OK)
+    goto cleanup;
+  CNK_LIBCANO_MANAGEMENT management = {.struct_size = sizeof(management),
+                                       .algorithm = algorithm == PIV_ALG_AES_192 ? CNK_LIBCANO_MANAGEMENT_AES192
+                                                                                 : CNK_LIBCANO_MANAGEMENT_TDES,
+                                       .mode = CNK_LIBCANO_AUTH_EXTERNAL,
+                                       .key = managementKey,
+                                       .key_len = sizeof(managementKey),
+                                       .challenge = NULL,
+                                       .challenge_len = 0};
+  CNK_LIBCANO_CONTEXT *context = NULL;
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  uint32_t step = 0;
+  uint32_t status = CNK_LIBCANO_OK;
+  CK_BYTE response[8192] = {0};
+  CNK_LIBCANO_PROFILE *profile = NULL;
+  rv = cnk_mutex_lock(&session->token->lock);
+  if (rv != CKR_OK)
+    goto cleanup;
+  profile = session->token->libcanokeyProfile;
+  uint32_t contextStatus = profile == NULL
+                               ? CNK_LIBCANO_INVALID_STATE
+                               : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_SELECTED, &context, &error);
+  cnk_mutex_unlock(&session->token->lock);
+  if (contextStatus != CNK_LIBCANO_OK ||
+      cnk_piv_authenticate_management_in_context_new(context, &management, NULL, &operation, &error) !=
+          CNK_LIBCANO_OK ||
+      cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
+    rv = CKR_DEVICE_ERROR;
+    if (operation)
+      cnk_operation_free(operation);
+    if (context)
+      cnk_piv_context_free(context);
+    goto cleanup;
+  }
+  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
+    size_t commandLen = 0;
+    status = cnk_operation_command(operation, NULL, &commandLen);
+    if (status != CNK_LIBCANO_OK || commandLen == 0 || commandLen > 2048) {
+      rv = CKR_DEVICE_ERROR;
+      break;
+    }
+    CK_BYTE command[2048];
+    status = cnk_operation_command(operation, command, &commandLen);
+    if (status != CNK_LIBCANO_OK) {
+      rv = CKR_DEVICE_ERROR;
+      break;
+    }
+    DWORD responseLen = sizeof(response);
+    if (cnk_transceive_apdu(*hCard, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) !=
+        SCARD_S_SUCCESS) {
+      rv = CKR_DEVICE_ERROR;
+      break;
+    }
+    status = cnk_operation_advance(operation, response, responseLen, &step, &error);
+    if (status != CNK_LIBCANO_OK) {
+      rv = CKR_PIN_INCORRECT;
+      break;
+    }
+  }
+  if (rv == CKR_OK && step != CNK_LIBCANO_STEP_DONE)
+    rv = CKR_DEVICE_ERROR;
+  if (operation)
+    cnk_operation_free(operation);
+  if (context)
+    cnk_piv_context_free(context);
+  mbedtls_platform_zeroize(response, sizeof(response));
 
 cleanup:
   mbedtls_platform_zeroize(managementKey, sizeof(managementKey));
