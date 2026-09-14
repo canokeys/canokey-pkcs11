@@ -11,7 +11,8 @@ CK_RV cnk_piv_operation_status(uint32_t status, const CNK_LIBCANO_ERROR *error, 
  * while the caller holds an authenticated transaction. */
 CK_RV cnk_piv_context_for_session(CNK_PKCS11_SESSION *session, uint32_t state, CNK_LIBCANO_CONTEXT **context);
 
-/* Borrows an unstarted operation and an already selected card transaction.
+/* Borrows an unstarted operation and an active card transaction.
+ * The factory owns selection/authentication; context factories do neither.
  * Only libcanokey drives continuation/chaining. attempted is set before raw
  * transport so callers invalidate write caches even after uncertain failures.
  * The caller retains operation, transaction and result ownership on every exit. */

@@ -4,7 +4,59 @@
 
 #include <mbedtls/platform_util.h>
 
+static const char *code_name(uint32_t value, const char *const *names, size_t count) {
+  return value < count ? names[value] : "Unknown";
+}
+
+static void log_libcanokey_error(uint32_t status, const CNK_LIBCANO_ERROR *error) {
+  static const char *const statuses[] = {
+      "OK", "InvalidArgument", "InvalidState", "BufferTooSmall", "ResultTypeMismatch", "ProtocolError", "Panic"};
+  static const char *const kinds[] = {"None",
+                                      "InvalidArgument",
+                                      "InvalidPin",
+                                      "InvalidResponse",
+                                      "ProtocolViolation",
+                                      "LimitExceeded",
+                                      "AuthenticationFailed",
+                                      "PinBlocked",
+                                      "SecurityStatusNotSatisfied",
+                                      "ConditionsNotSatisfied",
+                                      "NotFound",
+                                      "UnsupportedDevice",
+                                      "UnsupportedFeature",
+                                      "UnsupportedAlgorithm",
+                                      "CapabilityUnknown",
+                                      "UnsupportedProtocolVersion",
+                                      "UnexpectedStatusWord",
+                                      "OperationStateError",
+                                      "DeviceAuthenticationFailed"};
+  static const char *const phases[] = {"Construction",   "Select",  "Command",
+                                       "Authentication", "Parsing", "Conversation"};
+  static const char *const references[] = {
+      "None",       "PIN",      "PUK", "ManagementKey", "AdminPIN", "OATHAccess", "OpenPGPPW1Sign", "OpenPGPPW1Other",
+      "OpenPGPPW3", "ResetCode"};
+  if (status == CNK_LIBCANO_OK)
+    return;
+  if (error == NULL || error->kind == 0) {
+    CNK_DEBUG("libcanokey ABI failure: %s (%u)", code_name(status, statuses, sizeof(statuses) / sizeof(statuses[0])),
+              status);
+    return;
+  }
+  char sw[16] = "absent", retries[16] = "absent";
+  if (error->presence_flags & 1)
+    snprintf(sw, sizeof(sw), "%04X", (unsigned)error->status_word);
+  if (error->presence_flags & 2)
+    snprintf(retries, sizeof(retries), "%u", (unsigned)error->retries_remaining);
+  CNK_DEBUG("libcanokey failure: ABI=%s (%u), kind=%s (%u), phase=%s (%u), reference=%s (%u), SW=%s, retries=%s",
+            code_name(status, statuses, sizeof(statuses) / sizeof(statuses[0])), status,
+            code_name(error->kind, kinds, sizeof(kinds) / sizeof(kinds[0])), error->kind,
+            code_name(error->phase, phases, sizeof(phases) / sizeof(phases[0])), error->phase,
+            code_name(error->reference, references, sizeof(references) / sizeof(references[0])), error->reference, sw,
+            retries);
+}
+
 CK_RV cnk_piv_operation_status(uint32_t status, const CNK_LIBCANO_ERROR *error, CK_RV absent) {
+  log_libcanokey_error(status, error);
   if (status == CNK_LIBCANO_OK)
     return CKR_OK;
   if (status == CNK_LIBCANO_BUFFER_TOO_SMALL)
@@ -12,8 +64,6 @@ CK_RV cnk_piv_operation_status(uint32_t status, const CNK_LIBCANO_ERROR *error, 
   if (status == CNK_LIBCANO_INVALID_ARGUMENT)
     return CKR_ARGUMENTS_BAD;
   if (status == CNK_LIBCANO_PROTOCOL_ERROR && error != NULL) {
-    CNK_DEBUG("libcanokey failure: kind=%u phase=%u reference=%u status_word=0x%04x", error->kind, error->phase,
-              error->reference, error->status_word);
     switch (error->kind) {
     case CNK_LIBCANO_ERROR_NOT_FOUND:
       return absent;
@@ -95,6 +145,8 @@ CK_RV cnk_run_piv_operation(SCARDHANDLE card, CNK_LIBCANO_OPERATION *operation, 
     LONG transport = cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE);
     mbedtls_platform_zeroize(command, sizeof(command));
     if (transport != SCARD_S_SUCCESS || responseLen < 2 || responseLen > sizeof(response)) {
+      CNK_DEBUG("PIV exchange failure: exchange=%zu PCSC=0x%08lx response_bytes=%lu", exchanges,
+                (unsigned long)transport, (unsigned long)responseLen);
       rv = CKR_DEVICE_ERROR;
       goto cleanup;
     }

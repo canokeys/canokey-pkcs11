@@ -3,6 +3,7 @@
 #include "../../src/api/container_name.c"
 #include "../../src/backend/piv_crypto.c"
 #include "../../src/backend/piv_data.c"
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -30,13 +31,17 @@ static uint32_t errorKind, finalStep = CNK_LIBCANO_STEP_DONE;
 static CK_RV lockError;
 _Atomic CK_ULONG g_cnk_managed_binding_epoch;
 atomic_int g_cnk_log_level = CNK_LOG_LEVEL_NONE;
+static char lastLog[1024];
 
 void cnk_printlogf(const int level, const char *function, const char *file, const int line, const char *format, ...) {
   (void)level;
   (void)function;
   (void)file;
   (void)line;
-  (void)format;
+  va_list args;
+  va_start(args, format);
+  vsnprintf(lastLog, sizeof(lastLog), format, args);
+  va_end(args);
 }
 CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex) {
   (void)mutex;
@@ -461,6 +466,30 @@ int main(void) {
   CHECK(cnk_piv_operation_status(CNK_LIBCANO_PROTOCOL_ERROR, &e, CKR_KEY_HANDLE_INVALID) == CKR_KEY_HANDLE_INVALID);
   e.kind = CNK_LIBCANO_ERROR_SECURITY_STATUS;
   CHECK(cnk_piv_operation_status(CNK_LIBCANO_PROTOCOL_ERROR, &e, CKR_DATA_INVALID) == CKR_USER_NOT_LOGGED_IN);
+  atomic_store(&g_cnk_log_level, CNK_LOG_LEVEL_DEBUG);
+  e.kind = 3;
+  e.phase = 4;
+  e.reference = 0;
+  e.presence_flags = 0;
+  CHECK(cnk_piv_operation_status(CNK_LIBCANO_PROTOCOL_ERROR, &e, CKR_DATA_INVALID) == CKR_DEVICE_ERROR);
+  CHECK(strstr(lastLog, "InvalidResponse") && strstr(lastLog, "Parsing"));
+  CHECK(strstr(lastLog, "SW=absent") && strstr(lastLog, "retries=absent"));
+  e.kind = 6;
+  e.phase = 3;
+  e.reference = 1;
+  e.presence_flags = 3;
+  e.status_word = 0x63C2;
+  e.retries_remaining = 2;
+  CHECK(cnk_piv_operation_status(CNK_LIBCANO_PROTOCOL_ERROR, &e, CKR_DATA_INVALID) == CKR_USER_NOT_LOGGED_IN);
+  CHECK(strstr(lastLog, "AuthenticationFailed") && strstr(lastLog, "reference=PIN"));
+  CHECK(strstr(lastLog, "SW=63C2") && strstr(lastLog, "retries=2"));
+  e.kind = 1;
+  e.phase = 0;
+  e.presence_flags = 0;
+  CHECK(cnk_piv_operation_status(CNK_LIBCANO_INVALID_ARGUMENT, &e, CKR_DATA_INVALID) == CKR_ARGUMENTS_BAD);
+  CHECK(strstr(lastLog, "InvalidArgument") && strstr(lastLog, "Construction"));
+  CHECK(cnk_piv_operation_status(CNK_LIBCANO_PANIC, NULL, CKR_DATA_INVALID) == CKR_DEVICE_ERROR);
+  CHECK(strstr(lastLog, "Panic"));
   puts("PIV operation failure and ownership contracts passed");
   return 0;
 }

@@ -284,3 +284,10 @@ unwrapped/decompressed payloads. ECDSA digest normalization belongs to
 libcanokey; C preserves short digest lengths so P-521 is not shifted twice.
 Private RSA/agreement operations use all ordinary slots evidenced by the
 profile, with consumer usage policy and PIN authorization still enforced.
+
+The PIV-only C ABI build excludes optional Admin/OATH/OpenPGP factories and their
+operation variants. The final DLL still includes required PIV/curve code and
+host crypto. Profile probing shares the C executor, so its structured errors
+reach the same caller-provided logging sink. Detailed operation call/return
+traces are compiled with CNK_VERBOSE; explicit level-filtered diagnostic and
+APDU logging remains available in Release.

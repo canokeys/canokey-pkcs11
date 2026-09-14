@@ -1,5 +1,6 @@
 #include "backend/pcsc.h"
 #include "api/session.h"
+#include "backend/piv_operation.h"
 #include "backend/protocol.h"
 #include "internal/logging.h"
 #include "internal/mutex.h"
@@ -966,18 +967,20 @@ CK_RV cnk_probe_libcanokey_profile(CK_SLOT_ID slotID, void **profile) {
   CNK_ENSURE_NONNULL(profile);
   *profile = NULL;
   SCARDHANDLE card = 0;
-  CK_RV rv = cnk_begin_piv_transaction(slotID, &card);
+  CK_RV rv = cnk_begin_card_transaction(slotID, &card);
   if (rv != CKR_OK)
     return rv;
-  CK_BYTE response[8192];
-  CNK_LIBCANO_PROFILE *candidate = NULL;
-  CNK_PROTOCOL_TRANSPORT_CONTEXT transport = {.card = card, .status = SCARD_S_SUCCESS};
-  uint32_t status = cnk_profile_probe(cnk_protocol_transmit, &transport, response, sizeof(response), &candidate);
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  uint32_t status = cnk_probe_device_new(1, NULL, &operation, &error);
+  rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
+  if (rv == CKR_OK)
+    rv = cnk_run_piv_operation(card, operation, CKR_DEVICE_ERROR, NULL);
+  if (rv == CKR_OK)
+    rv = cnk_piv_operation_status(cnk_operation_take_profile(operation, profile), NULL, CKR_DEVICE_ERROR);
+  cnk_operation_free(operation);
   cnk_disconnect_card(card);
-  if (status != CNK_PROTOCOL_OK)
-    return CKR_DEVICE_ERROR;
-  *profile = candidate;
-  return CKR_OK;
+  return rv;
 }
 
 CNK_TEST_API LONG cnk_transceive_apdu(SCARDHANDLE hCard, const CK_BYTE *pCommand, CK_ULONG cbCommand,

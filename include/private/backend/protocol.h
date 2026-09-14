@@ -10,8 +10,6 @@
 typedef uint32_t (*CNK_PROTOCOL_TRANSMIT)(void *context, const uint8_t *command, size_t command_len, uint8_t *response,
                                           size_t *response_len);
 typedef struct CNK_LIBCANO_PROFILE CNK_LIBCANO_PROFILE;
-uint32_t cnk_profile_probe(CNK_PROTOCOL_TRANSMIT transmit, void *context, uint8_t *response,
-                           size_t response_capacity, CNK_LIBCANO_PROFILE **out);
 void cnk_profile_free(CNK_LIBCANO_PROFILE *profile);
 
 typedef struct {

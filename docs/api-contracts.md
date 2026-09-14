@@ -91,6 +91,9 @@ Profile probing finishes before opening the authenticated transaction. Context
 construction clones the immutable profile while holding the token lock, rejects
 an obsolete binding epoch, and never probes or selects. Profile publication
 frees its candidate on a failed lock and permits at most three binding retries.
+Profile probing uses this same executor and error mapping; no separate callback
+loop discards its diagnostic fields. Error logs name the ABI status, semantic
+kind, phase and reference, with explicit absence for unreported SW/retry fields.
 SO login, protected management login, and write authorization share the same
 libcanokey challenge-response implementation; verification alone never caches
 the key. The caller commits credentials only after successful verification.

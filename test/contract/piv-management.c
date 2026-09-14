@@ -181,6 +181,26 @@ LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *command, CK_ULONG n, C
   }
   return SCARD_S_SUCCESS;
 }
+static void make_profile(CNK_LIBCANO_PROFILE **profile) {
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  uint32_t step = 0;
+  CHECK(cnk_probe_device_new(1, NULL, &operation, NULL) == CNK_LIBCANO_OK);
+  CHECK(cnk_operation_start(operation, &step, NULL) == CNK_LIBCANO_OK);
+  for (unsigned count = 0; step == CNK_LIBCANO_STEP_EXCHANGE; count++) {
+    CHECK(count < 20);
+    CK_BYTE command[2048], response[8192];
+    size_t commandLen = sizeof(command), responseLen = sizeof(response);
+    CHECK(cnk_operation_command(operation, command, &commandLen) == CNK_LIBCANO_OK);
+    CHECK(probe(NULL, command, commandLen, response, &responseLen) == 0);
+    CHECK(cnk_operation_advance(operation, response, responseLen, &step, NULL) == CNK_LIBCANO_OK);
+  }
+  CHECK(step == CNK_LIBCANO_STEP_DONE);
+  void *result = NULL;
+  CHECK(cnk_operation_take_profile(operation, &result) == CNK_LIBCANO_OK);
+  *profile = result;
+  cnk_operation_free(operation);
+}
+
 int main(void) {
   session.token = &token;
   const char *versions[] = {"3.0.3", "3.1.0", "1.3"};
@@ -192,8 +212,7 @@ int main(void) {
           key);
     unhex(v == 1 ? "00112233445566778899aabbccddeeff" : "fedcba9876543210", plain);
     unhex(v == 1 ? "dda97ca4864cdfe06eaf70a0ec0d7191" : "0737f6c53750d4a4", cipher);
-    CK_BYTE scratch[8192];
-    CHECK(cnk_profile_probe(probe, NULL, scratch, sizeof(scratch), &token.libcanokeyProfile) == 0);
+    make_profile(&token.libcanokeyProfile);
     for (unsigned write = 0; write < 2; write++) {
       for (unsigned fail = 0; fail <= 3; fail++) {
         failAt = fail;

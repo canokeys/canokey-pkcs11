@@ -102,6 +102,8 @@ enum {
   CNK_LIBCANO_SIGN_MESSAGE = 3,
 };
 
+uint32_t cnk_probe_device_new(uint32_t, const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_operation_take_profile(CNK_LIBCANO_OPERATION *, void **);
 uint32_t cnk_piv_context_new(const void *, uint32_t, CNK_LIBCANO_CONTEXT **, CNK_LIBCANO_ERROR *);
 void cnk_piv_context_free(CNK_LIBCANO_CONTEXT *);
 uint32_t cnk_piv_get_metadata_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const CNK_LIBCANO_OPTIONS *,

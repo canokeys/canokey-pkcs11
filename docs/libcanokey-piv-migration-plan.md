@@ -328,3 +328,30 @@ pass 14/14 selected hardware groups. Windows x86/x64/ARM64 Debug/Release builds
 pass; x86/x64 C/Rust contract tests pass. Linux CTest and ASan/UBSan with leak
 detection each pass 10/10. Rust adapter tests, strict Clippy, libcanokey workspace
 tests, rustdoc and C/C++ ABI tests pass. Native ARM64 execution remains unrun.
+
+## Size, diagnostics and minidriver audit (2026-09-14)
+
+The measured x64 Release PKCS#11 DLL was 1,026,560 bytes, mostly executable code
+and read-only data, with section garbage collection and ThinLTO already enabled.
+The nominal PIV C-ABI feature still retained other applet operation variants.
+Libcanokey 8f23be9 now gates those variants/factories; the measured DLL is
+1,010,688 bytes with the diagnostic changes below. The modest reduction confirms
+that PIV/curve code, ABI machinery and host crypto account for most of the size.
+
+Profile probing now uses the same C-owned operation executor as other migrated
+paths, preserving the structured libcanokey error instead of dropping it in a
+second Rust callback loop. Diagnostic records name ABI status, error kind,
+phase and reference, and print SW/retries only when their presence flags are set.
+Release retains explicit DEBUG/APDU logging; entry/return traces remain subject
+to CNK_VERBOSE. The core still provides categories/fields rather than detailed
+parser offsets or Rust stack traces.
+
+An isolated minidriver build against the updated PKCS#11 passed actual direct
+DDI tests for two acquire/delete cycles, cmapfile and certificate reads, USER
+login and signatures on containers 0, 1 and 4, verified by Windows BCrypt.
+The logging audit found that final C_Finalize cleared the PKCS#11 sink: record
+counts were 129 then zero. A prepared minidriver patch rebinds logging before
+C_Initialize; both cycles then retained 129 records (132 with certificate checks).
+Public-read raw mode recorded APDUs; credential tests used raw logging disabled.
+The tests use process-local configuration and do not establish installed
+Base CSP/KSP, CertPropSvc or native ARM64 runtime acceptance.
