@@ -1,5 +1,5 @@
-#include "backend/pcsc.h"
 #include "backend/libcanokey.h"
+#include "backend/pcsc.h"
 #include "backend/protocol.h"
 
 #include "api/session.h"
@@ -67,7 +67,9 @@ static CK_RV cnk_get_metadata_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pi
   uint32_t step = 0;
   CK_RV rv = CKR_DEVICE_ERROR;
   CNK_PKCS11_TOKEN_STATE *token = session->token;
-  CNK_ENSURE_OK(cnk_mutex_lock(&token->lock));
+  rv = cnk_mutex_lock(&token->lock);
+  if (rv != CKR_OK)
+    goto cleanup;
   CNK_LIBCANO_PROFILE *profile = token->libcanokeyProfile;
   uint32_t contextStatus = profile == NULL
                                ? CNK_LIBCANO_INVALID_STATE
@@ -109,8 +111,10 @@ static CK_RV cnk_get_metadata_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pi
   else
     rv = CKR_OK;
 cleanup:
-  if (operation) cnk_operation_free(operation);
-  if (context) cnk_piv_context_free(context);
+  if (operation)
+    cnk_operation_free(operation);
+  if (context)
+    cnk_piv_context_free(context);
   cnk_disconnect_card(card);
   return rv;
 }
@@ -135,7 +139,11 @@ static CK_RV cnk_get_certificate_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE
   CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
   uint32_t step = 0;
   CK_RV rv = CKR_DEVICE_ERROR;
-  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  CK_RV lockRv = cnk_mutex_lock(&session->token->lock);
+  if (lockRv != CKR_OK) {
+    cnk_disconnect_card(card);
+    return lockRv;
+  }
   CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
   uint32_t contextStatus = profile == NULL
                                ? CNK_LIBCANO_INVALID_STATE
@@ -161,19 +169,31 @@ static CK_RV cnk_get_certificate_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE
   if (step != CNK_LIBCANO_STEP_DONE)
     goto cleanup;
   size_t required = 0;
-  if (cnk_operation_result_copy_bytes(operation, NULL, &required) != CNK_LIBCANO_OK || required > CNK_PIV_PUBLIC_CACHE_MAX_CERTIFICATE)
+  if (cnk_operation_result_copy_bytes(operation, NULL, &required) != CNK_LIBCANO_OK ||
+      required > CNK_PIV_PUBLIC_CACHE_MAX_CERTIFICATE)
     goto cleanup;
-  if (!fetchData) { rv = CKR_OK; goto cleanup; }
+  if (!fetchData) {
+    rv = CKR_OK;
+    goto cleanup;
+  }
   CK_ULONG capacity = *dataLen;
   *dataLen = (CK_ULONG)required;
-  if (data == NULL) { rv = CKR_OK; goto cleanup; }
-  if (capacity < required) { rv = CKR_BUFFER_TOO_SMALL; goto cleanup; }
+  if (data == NULL) {
+    rv = CKR_OK;
+    goto cleanup;
+  }
+  if (capacity < required) {
+    rv = CKR_BUFFER_TOO_SMALL;
+    goto cleanup;
+  }
   if (cnk_operation_result_copy_bytes(operation, data, &required) != CNK_LIBCANO_OK)
     goto cleanup;
   rv = CKR_OK;
 cleanup:
-  if (operation) cnk_operation_free(operation);
-  if (context) cnk_piv_context_free(context);
+  if (operation)
+    cnk_operation_free(operation);
+  if (context)
+    cnk_piv_context_free(context);
   cnk_disconnect_card(card);
   return rv;
 }
@@ -211,8 +231,8 @@ static uint64_t cnk_public_cache_now_ms(void) {
 static CK_RV cnk_copy_typed_public_key(const CNK_LIBCANO_OPERATION *operation, CK_BYTE algorithmType,
                                        CK_BYTE_PTR output, CK_ULONG_PTR outputLen) {
   CNK_ENSURE_NONNULL(operation, outputLen);
-  CK_BBOOL rsa = algorithmType == PIV_ALG_RSA_2048 || algorithmType == PIV_ALG_RSA_3072 ||
-                 algorithmType == PIV_ALG_RSA_4096;
+  CK_BBOOL rsa =
+      algorithmType == PIV_ALG_RSA_2048 || algorithmType == PIV_ALG_RSA_3072 || algorithmType == PIV_ALG_RSA_4096;
   uint32_t field = rsa ? CNK_LIBCANO_PUBLIC_MODULUS : CNK_LIBCANO_PUBLIC_POINT_OR_RAW;
   size_t firstLen = 0;
   uint32_t status = cnk_operation_public_key_copy(operation, field, NULL, &firstLen);
@@ -233,10 +253,17 @@ static CK_RV cnk_copy_typed_public_key(const CNK_LIBCANO_OPERATION *operation, C
   }
   CK_ULONG required = 0;
   if (rsa)
-    required = 2 + (firstLen < 128 ? 1 : firstLen <= 255 ? 2 : 3) + firstLen +
-               2 + (secondLen < 128 ? 1 : secondLen <= 255 ? 2 : 3) + secondLen;
+    required = 1 +
+               (firstLen < 128    ? 1
+                : firstLen <= 255 ? 2
+                                  : 3) +
+               firstLen + 1 +
+               (secondLen < 128    ? 1
+                : secondLen <= 255 ? 2
+                                   : 3) +
+               secondLen;
   else
-    required = 2 + (firstLen < 128 ? 1 : firstLen <= 255 ? 2 : 3) + firstLen;
+    required = 1 + (firstLen < 128 ? 1 : firstLen <= 255 ? 2 : 3) + firstLen;
   CK_ULONG capacity = *outputLen;
   *outputLen = required;
   if (output == NULL)
@@ -503,7 +530,7 @@ CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BY
   CK_BYTE cachedTouchPolicy = 0;
   CNK_DEBUG("hardware metadata read: PIV slot 0x%02X", pivTag);
   CK_RV rv = cnk_get_metadata_libcanokey(session, pivTag, &cachedAlgorithmType, cachedPublicKey, &cachedPublicKeyLen,
-                                          &cachedPinPolicy, &cachedTouchPolicy);
+                                         &cachedPinPolicy, &cachedTouchPolicy);
   if (rv != CKR_OK)
     return rv;
 
@@ -523,8 +550,8 @@ CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BY
 }
 
 static CK_RV cnk_get_piv_metadata_directory_libcanokey(CNK_PKCS11_SESSION *session,
-                                                        CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
-                                                        CK_ULONG_PTR entryCount) {
+                                                       CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,
+                                                       CK_ULONG_PTR entryCount) {
   CNK_ENSURE_NONNULL(session, entryCount);
   CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
   SCARDHANDLE card = 0;
@@ -535,7 +562,11 @@ static CK_RV cnk_get_piv_metadata_directory_libcanokey(CNK_PKCS11_SESSION *sessi
   uint32_t step = 0;
   uint32_t status = CNK_LIBCANO_OK;
   CK_BYTE response[8192] = {0};
-  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  CK_RV lockRv = cnk_mutex_lock(&session->token->lock);
+  if (lockRv != CKR_OK) {
+    cnk_disconnect_card(card);
+    return lockRv;
+  }
   CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
   uint32_t contextStatus = profile == NULL
                                ? CNK_LIBCANO_INVALID_STATE
@@ -545,8 +576,10 @@ static CK_RV cnk_get_piv_metadata_directory_libcanokey(CNK_PKCS11_SESSION *sessi
       cnk_piv_read_metadata_directory_in_context_new(context, NULL, &operation, &error) != CNK_LIBCANO_OK ||
       cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
     cnk_disconnect_card(card);
-    if (context) cnk_piv_context_free(context);
-    if (operation) cnk_operation_free(operation);
+    if (context)
+      cnk_piv_context_free(context);
+    if (operation)
+      cnk_operation_free(operation);
     return CKR_DEVICE_ERROR;
   }
   while (step == CNK_LIBCANO_STEP_EXCHANGE) {
@@ -592,18 +625,21 @@ static CK_RV cnk_get_piv_metadata_directory_libcanokey(CNK_PKCS11_SESSION *sessi
       status = CNK_LIBCANO_PROTOCOL_ERROR;
       goto directory_cleanup;
     }
-    entries[i] = (CNK_PIV_METADATA_DIRECTORY_ENTRY){entry.reference, entry.flags, entry.algorithm_id,
-                                                     entry.origin, entry.pin_policy, entry.touch_policy};
+    entries[i] = (CNK_PIV_METADATA_DIRECTORY_ENTRY){entry.reference, entry.flags,      entry.algorithm_id,
+                                                    entry.origin,    entry.pin_policy, entry.touch_policy};
   }
   status = CNK_LIBCANO_OK;
 
 directory_cleanup:
-  if (operation) cnk_operation_free(operation);
-  if (context) cnk_piv_context_free(context);
+  if (operation)
+    cnk_operation_free(operation);
+  if (context)
+    cnk_piv_context_free(context);
   cnk_disconnect_card(card);
   mbedtls_platform_zeroize(response, sizeof(response));
-  return status == CNK_LIBCANO_OK ? CKR_OK
-                                  : status == CNK_LIBCANO_BUFFER_TOO_SMALL ? CKR_BUFFER_TOO_SMALL : CKR_DEVICE_ERROR;
+  return status == CNK_LIBCANO_OK                 ? CKR_OK
+         : status == CNK_LIBCANO_BUFFER_TOO_SMALL ? CKR_BUFFER_TOO_SMALL
+                                                  : CKR_DEVICE_ERROR;
 }
 
 CK_RV cnk_get_piv_metadata_directory(CK_SLOT_ID slotID, CNK_PIV_METADATA_DIRECTORY_ENTRY *entries,

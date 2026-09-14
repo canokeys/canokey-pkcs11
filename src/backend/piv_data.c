@@ -1,5 +1,5 @@
-#include "backend/pcsc.h"
 #include "backend/libcanokey.h"
+#include "backend/pcsc.h"
 
 #include "api/session.h"
 
@@ -63,14 +63,15 @@ static CK_RV cnk_get_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
   uint32_t step = 0;
   uint32_t status = CNK_LIBCANO_OK;
   CK_BYTE response[8192] = {0};
-  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  rv = cnk_mutex_lock(&session->token->lock);
+  if (rv != CKR_OK)
+    goto cleanup;
   CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
-  uint32_t contextStatus = profile == NULL
-                               ? CNK_LIBCANO_INVALID_STATE
-                               : cnk_piv_context_new(profile,
-                                                     pinVerified ? CNK_LIBCANO_CONTEXT_PIN_VERIFIED
-                                                                 : CNK_LIBCANO_CONTEXT_SELECTED,
-                                                     &context, &error);
+  uint32_t contextStatus =
+      profile == NULL
+          ? CNK_LIBCANO_INVALID_STATE
+          : cnk_piv_context_new(profile, pinVerified ? CNK_LIBCANO_CONTEXT_PIN_VERIFIED : CNK_LIBCANO_CONTEXT_SELECTED,
+                                &context, &error);
   cnk_mutex_unlock(&session->token->lock);
   if (contextStatus != CNK_LIBCANO_OK ||
       cnk_piv_read_object_in_context_new(context, tag, tag_len, NULL, &operation, &error) != CNK_LIBCANO_OK ||
@@ -127,7 +128,7 @@ static CK_RV cnk_get_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
     goto cleanup;
   }
   status = cnk_operation_result_copy_bytes(operation, data, &required);
-  rv = map_libcanokey_object_error(operation, status);
+  rv = status == CNK_LIBCANO_OK ? CKR_OK : map_libcanokey_object_error(operation, status);
 
 cleanup:
   if (operation != NULL)
@@ -258,23 +259,26 @@ CK_RV cnk_get_piv_data(CK_SLOT_ID slotID, CK_BYTE tag, CK_BYTE_PTR data, CK_ULON
 static CK_RV cnk_put_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag,
                                          CK_ULONG tag_len, CK_BYTE_PTR data, CK_ULONG data_len) {
   CNK_ENSURE_NONNULL(session, tag);
-  SCARDHANDLE card = 0;
-  CK_RV rv = cnk_authenticate_admin_for_write(slotID, session, &card);
+  CK_RV rv = cnk_ensure_libcanokey_profile(session);
   if (rv != CKR_OK)
     return rv;
-  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  SCARDHANDLE card = 0;
+  rv = cnk_authenticate_admin_for_write(slotID, session, &card);
+  if (rv != CKR_OK)
+    return rv;
   CNK_LIBCANO_CONTEXT *context = NULL;
   CNK_LIBCANO_OPERATION *operation = NULL;
   CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
   uint32_t step = 0;
   uint32_t status = CNK_LIBCANO_OK;
   CK_BYTE response[8192] = {0};
-  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  rv = cnk_mutex_lock(&session->token->lock);
+  if (rv != CKR_OK)
+    goto cleanup;
   CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
-  uint32_t contextStatus = profile == NULL
-                               ? CNK_LIBCANO_INVALID_STATE
-                               : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context,
-                                                     &error);
+  uint32_t contextStatus =
+      profile == NULL ? CNK_LIBCANO_INVALID_STATE
+                      : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context, &error);
   cnk_mutex_unlock(&session->token->lock);
   if (contextStatus != CNK_LIBCANO_OK ||
       cnk_piv_write_object_in_context_new(context, tag, tag_len, data, data_len, NULL, &operation, &error) !=
@@ -304,8 +308,10 @@ static CK_RV cnk_put_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
     cnk_piv_public_cache_invalidate(session);
 
 cleanup:
-  if (operation) cnk_operation_free(operation);
-  if (context) cnk_piv_context_free(context);
+  if (operation)
+    cnk_operation_free(operation);
+  if (context)
+    cnk_piv_context_free(context);
   cnk_disconnect_card(card);
   mbedtls_platform_zeroize(response, sizeof(response));
   return rv;
@@ -313,6 +319,8 @@ cleanup:
 
 CK_RV cnk_delete_piv_certificate_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pivSlot) {
   CNK_ENSURE_NONNULL(session);
+  CNK_LIBCANO_CONTEXT *context = NULL;
+  CNK_LIBCANO_OPERATION *operation = NULL;
   SCARDHANDLE card = 0;
   CK_RV rv = cnk_authenticate_admin_for_write(slotID, session, &card);
   if (rv != CKR_OK)
@@ -320,8 +328,6 @@ CK_RV cnk_delete_piv_certificate_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSIO
   rv = cnk_ensure_libcanokey_profile(session);
   if (rv != CKR_OK)
     goto cleanup;
-  CNK_LIBCANO_CONTEXT *context = NULL;
-  CNK_LIBCANO_OPERATION *operation = NULL;
   CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
   uint32_t step = 0;
   uint32_t status = CNK_LIBCANO_OK;
@@ -330,10 +336,9 @@ CK_RV cnk_delete_piv_certificate_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSIO
   if (rv != CKR_OK)
     goto cleanup;
   CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
-  uint32_t contextStatus = profile == NULL
-                               ? CNK_LIBCANO_INVALID_STATE
-                               : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context,
-                                                     &error);
+  uint32_t contextStatus =
+      profile == NULL ? CNK_LIBCANO_INVALID_STATE
+                      : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context, &error);
   cnk_mutex_unlock(&session->token->lock);
   if (contextStatus != CNK_LIBCANO_OK) {
     rv = CKR_DEVICE_ERROR;
@@ -376,8 +381,10 @@ CK_RV cnk_delete_piv_certificate_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSIO
   if (rv == CKR_OK)
     cnk_piv_public_cache_invalidate(session);
 cleanup:
-  if (operation) cnk_operation_free(operation);
-  if (context) cnk_piv_context_free(context);
+  if (operation)
+    cnk_operation_free(operation);
+  if (context)
+    cnk_piv_context_free(context);
   cnk_disconnect_card(card);
   mbedtls_platform_zeroize(response, sizeof(response));
   return rv;
