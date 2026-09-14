@@ -38,6 +38,9 @@ enum {
   CNK_LIBCANO_ALG_P521 = 7,
   CNK_LIBCANO_ALG_SECP256K1 = 8,
   CNK_LIBCANO_ALG_ED25519 = 10,
+  CNK_LIBCANO_ALG_X25519 = 11,
+  CNK_LIBCANO_ALG_MLDSA65 = 12,
+  CNK_LIBCANO_ALG_MLKEM768 = 13,
 };
 enum {
   CNK_LIBCANO_SIGN_RSA_BLOCK = 1,
@@ -53,6 +56,17 @@ uint32_t cnk_piv_read_certificate_in_context_new(const CNK_LIBCANO_CONTEXT *, ui
                                                  CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_sign_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, uint32_t, uint32_t, const uint8_t *, size_t,
                                      const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_sign_streaming_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, uint32_t, const uint8_t *, size_t,
+                                               const uint8_t *, size_t, const CNK_LIBCANO_OPTIONS *,
+                                               CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_read_object_in_context_new(const CNK_LIBCANO_CONTEXT *, const uint8_t *, size_t,
+                                            const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_decrypt_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, uint32_t, const uint8_t *, size_t,
+                                        const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_derive_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, uint32_t, const uint8_t *, size_t,
+                                       const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_decapsulate_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const uint8_t *, size_t,
+                                            const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_operation_start(CNK_LIBCANO_OPERATION *, uint32_t *, CNK_LIBCANO_ERROR *);
 uint32_t cnk_operation_advance(CNK_LIBCANO_OPERATION *, const uint8_t *, size_t, uint32_t *, CNK_LIBCANO_ERROR *);
 uint32_t cnk_operation_command(const CNK_LIBCANO_OPERATION *, uint8_t *, size_t *);

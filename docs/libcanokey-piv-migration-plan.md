@@ -83,9 +83,9 @@ certificate propagation 测试通过。
 
 ## 阶段 2：sign
 
-当前进度：classic RSA/ECDSA/P-521/secp256k1/Ed25519 sign 已切换到
-libcanokey 的 selected-context operation；ML-DSA 仍等待 streaming context C ABI，
-因此本阶段出口条件尚未满足。
+当前进度：RSA/ECDSA/P-521/secp256k1/Ed25519 和 ML-DSA sign 均已切换到
+libcanokey 的 selected-context operation；旧 C signing builder 已删除。硬件矩阵
+和完整 PIN-policy 回归仍待完成，因此本阶段出口条件尚未满足。
 
 libcanokey 负责 GENERAL AUTHENTICATE、PIV wire format、signature parsing、
 DER/P1363/raw result、legacy explicit-Le、chaining 和 card status。
@@ -118,9 +118,9 @@ PIN-never/once/always、legacy explicit-Le、size query 和 too-small tests 通�
 
 ## 阶段 3：decrypt、derive 和 one-shot private operations
 
-当前进度：libcanokey 已提供 selected-context 的 raw RSA decrypt、ECDH/X25519
-derive、ML-KEM decapsulation C ABI；PKCS#11 尚未切换到这些接口，阶段出口条件
-仍未满足。
+当前进度：selected-context 的 raw RSA decrypt、ECDH/X25519 derive、ML-KEM
+decapsulation C ABI 已接入 PKCS#11；旧 C private-operation builder 已删除。硬件
+字节序、KDF、PIN-policy 和 Windows API 回归仍待完成，因此阶段出口条件仍未满足。
 
 libcanokey 增加：
 

@@ -10,22 +10,6 @@
 #include <string.h>
 
 #define CNK_PIV_MAX_PUBLIC_KEY_RESPONSE 4096
-#define CNK_PIV_MAX_GENERAL_AUTH_INPUT 65520
-#define CNK_PIV_MAX_GENERAL_AUTH_RESPONSE 4096
-#define PIV_PADDED_PIN_LEN 8
-
-static void freeScopedBuffer(CK_BYTE **buffer) {
-  if (buffer != NULL && *buffer != NULL) {
-    ck_free(*buffer);
-    *buffer = NULL;
-  }
-}
-
-static void zeroize_general_auth_response(CK_BYTE **response) {
-  if (response != NULL && *response != NULL)
-    mbedtls_platform_zeroize(*response, CNK_PIV_MAX_GENERAL_AUTH_RESPONSE);
-}
-
 static CK_RV cnk_libcanokey_sign_status(uint32_t status) {
   switch (status) {
   case CNK_LIBCANO_OK:
@@ -76,9 +60,133 @@ static CK_RV cnk_libcanokey_sign_algorithm(CK_BYTE algorithmType, uint32_t *algo
     *algorithm = CNK_LIBCANO_ALG_ED25519;
     *kind = CNK_LIBCANO_SIGN_MESSAGE;
     return CKR_OK;
+  case PIV_ALG_MLDSA65:
+    *algorithm = CNK_LIBCANO_ALG_MLDSA65;
+    *kind = CNK_LIBCANO_SIGN_MESSAGE;
+    return CKR_OK;
   default:
     return CKR_FUNCTION_NOT_SUPPORTED;
   }
+}
+
+static CK_RV cnk_libcanokey_private_algorithm(CK_BYTE algorithmType, uint32_t *algorithm) {
+  if (algorithmType == PIV_ALG_X25519) {
+    *algorithm = CNK_LIBCANO_ALG_X25519;
+    return CKR_OK;
+  }
+  uint32_t kind = 0;
+  return cnk_libcanokey_sign_algorithm(algorithmType, algorithm, &kind);
+}
+
+typedef enum {
+  CNK_PRIVATE_DECRYPT,
+  CNK_PRIVATE_DERIVE,
+  CNK_PRIVATE_DECAPSULATE,
+} CNK_PRIVATE_OPERATION;
+
+static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *session, CK_BYTE algorithmType,
+                                        CK_BYTE pivSlot, CK_BYTE pinPolicy, CNK_PRIVATE_OPERATION operationKind,
+                                        CK_BYTE_PTR input, CK_ULONG inputLen, const CK_BYTE *contextPin,
+                                        CK_ULONG contextPinLen, CK_BYTE_PTR output, CK_ULONG_PTR outputLen,
+                                        const char *operationName) {
+  CNK_ENSURE_NONNULL(session, output, outputLen, input);
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  uint32_t algorithm = 0;
+  if (operationKind != CNK_PRIVATE_DECAPSULATE)
+    CNK_ENSURE_OK(cnk_libcanokey_private_algorithm(algorithmType, &algorithm));
+
+  SCARDHANDLE card = 0;
+  CK_RV rv = cnk_connect_for_private_key_operation(slotId, session, pinPolicy, contextPin, contextPinLen, &card,
+                                                    operationName);
+  if (rv != CKR_OK)
+    return rv;
+
+  CNK_LIBCANO_CONTEXT *context = NULL;
+  CNK_LIBCANO_OPERATION *operation = NULL;
+  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  uint32_t step = 0;
+  uint32_t status = CNK_LIBCANO_OK;
+  CK_BYTE response[8192] = {0};
+  uint32_t contextState = pinPolicy == CNK_PIV_PIN_POLICY_NEVER ? CNK_LIBCANO_CONTEXT_SELECTED
+                                                                 : CNK_LIBCANO_CONTEXT_PIN_VERIFIED;
+
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
+  uint32_t contextStatus = profile == NULL ? CNK_LIBCANO_INVALID_STATE
+                                            : cnk_piv_context_new(profile, contextState, &context, &error);
+  cnk_mutex_unlock(&session->token->lock);
+  if (contextStatus != CNK_LIBCANO_OK) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+
+  switch (operationKind) {
+  case CNK_PRIVATE_DECRYPT:
+    status = cnk_piv_decrypt_in_context_new(context, pivSlot, algorithm, input, inputLen, NULL, &operation, &error);
+    break;
+  case CNK_PRIVATE_DERIVE:
+    status = cnk_piv_derive_in_context_new(context, pivSlot, algorithm, input, inputLen, NULL, &operation, &error);
+    break;
+  case CNK_PRIVATE_DECAPSULATE:
+    status = cnk_piv_decapsulate_in_context_new(context, pivSlot, input, inputLen, NULL, &operation, &error);
+    break;
+  }
+  if (status != CNK_LIBCANO_OK || cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
+    rv = cnk_libcanokey_sign_status(status);
+    goto cleanup;
+  }
+
+  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
+    size_t commandLen = 0;
+    status = cnk_operation_command(operation, NULL, &commandLen);
+    if (status != CNK_LIBCANO_OK || commandLen == 0 || commandLen > 2048) {
+      rv = cnk_libcanokey_sign_status(status);
+      goto cleanup;
+    }
+    CK_BYTE command[2048];
+    status = cnk_operation_command(operation, command, &commandLen);
+    if (status != CNK_LIBCANO_OK) {
+      rv = cnk_libcanokey_sign_status(status);
+      goto cleanup;
+    }
+    DWORD responseLen = sizeof(response);
+    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS) {
+      rv = CKR_DEVICE_ERROR;
+      goto cleanup;
+    }
+    status = cnk_operation_advance(operation, response, responseLen, &step, &error);
+    if (status != CNK_LIBCANO_OK) {
+      rv = cnk_libcanokey_sign_status(status);
+      goto cleanup;
+    }
+  }
+  if (step != CNK_LIBCANO_STEP_DONE) {
+    rv = CKR_DEVICE_ERROR;
+    goto cleanup;
+  }
+  size_t required = 0;
+  status = cnk_operation_result_copy_bytes(operation, NULL, &required);
+  if (status != CNK_LIBCANO_OK) {
+    rv = cnk_libcanokey_sign_status(status);
+    goto cleanup;
+  }
+  CK_ULONG capacity = *outputLen;
+  *outputLen = (CK_ULONG)required;
+  if (capacity < required) {
+    rv = CKR_BUFFER_TOO_SMALL;
+    goto cleanup;
+  }
+  status = cnk_operation_result_copy_bytes(operation, output, &required);
+  rv = cnk_libcanokey_sign_status(status);
+
+cleanup:
+  if (operation != NULL)
+    cnk_operation_free(operation);
+  if (context != NULL)
+    cnk_piv_context_free(context);
+  cnk_disconnect_card(card);
+  mbedtls_platform_zeroize(response, sizeof(response));
+  return rv;
 }
 
 static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *session, CK_BYTE_PTR data,
@@ -88,6 +196,7 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
 
   uint32_t algorithm = 0, kind = 0;
   CNK_ENSURE_OK(cnk_libcanokey_sign_algorithm(session->signingContext.algorithmType, &algorithm, &kind));
+  CK_BBOOL streaming = session->signingContext.algorithmType == session->mldsa65Algorithm;
 
   SCARDHANDLE card = 0;
   CK_RV rv = cnk_connect_for_private_key_operation(
@@ -114,8 +223,10 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
                                            : cnk_piv_context_new(profile, contextState, &context, &error);
   cnk_mutex_unlock(&session->token->lock);
   if (contextStatus != CNK_LIBCANO_OK ||
-      cnk_piv_sign_in_context_new(context, session->signingContext.pivSlot, algorithm, kind, data, dataLen, NULL,
-                                  &operation, &error) != CNK_LIBCANO_OK ||
+      (streaming ? cnk_piv_sign_streaming_in_context_new(context, session->signingContext.pivSlot, 1, data, dataLen,
+                                                         NULL, 0, NULL, &operation, &error)
+                 : cnk_piv_sign_in_context_new(context, session->signingContext.pivSlot, algorithm, kind, data, dataLen,
+                                               NULL, &operation, &error)) != CNK_LIBCANO_OK ||
       cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
     rv = CKR_DEVICE_ERROR;
     goto cleanup;
@@ -151,8 +262,8 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
   }
 
   size_t required = 0;
-  status = kind == CNK_LIBCANO_SIGN_DIGEST ? cnk_operation_signature_p1363(operation, NULL, &required)
-                                           : cnk_operation_result_copy_bytes(operation, NULL, &required);
+  status = !streaming && kind == CNK_LIBCANO_SIGN_DIGEST ? cnk_operation_signature_p1363(operation, NULL, &required)
+                                                         : cnk_operation_result_copy_bytes(operation, NULL, &required);
   if (status != CNK_LIBCANO_OK) {
     rv = cnk_libcanokey_sign_status(status);
     goto cleanup;
@@ -163,7 +274,7 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
     rv = CKR_BUFFER_TOO_SMALL;
     goto cleanup;
   }
-  status = kind == CNK_LIBCANO_SIGN_DIGEST
+  status = !streaming && kind == CNK_LIBCANO_SIGN_DIGEST
                ? cnk_operation_signature_p1363(operation, signature, &required)
                : cnk_operation_result_copy_bytes(operation, signature, &required);
   rv = cnk_libcanokey_sign_status(status);
@@ -178,251 +289,13 @@ cleanup:
   return rv;
 }
 
-static CK_RV cnk_piv_general_authenticate_raw(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType,
-                                              CK_BYTE pivSlot, CK_BYTE pinPolicy, CK_BYTE inputTag, CK_BYTE_PTR pData,
-                                              CK_ULONG cbDataLen, CK_BYTE_PTR pOutput, CK_ULONG_PTR pcbOutput,
-                                              const CK_BYTE *contextPin, CK_ULONG contextPinLen,
-                                              const char *operationName) {
-  SCARDHANDLE hCard = 0;
-  CK_RV rv = CKR_OK;
-
-  CNK_ENSURE_NONNULL(pOutput, pcbOutput);
-
-  if (cbDataLen > 0)
-    CNK_ENSURE_NONNULL(pData);
-
-  if (cbDataLen > CNK_PIV_MAX_GENERAL_AUTH_INPUT)
-    CNK_RETURN(CKR_DATA_LEN_RANGE, "GENERAL AUTHENTICATE input exceeds firmware limit");
-
-  rv = cnk_connect_for_private_key_operation(slotId, pSession, pinPolicy, contextPin, contextPinLen, &hCard,
-                                             operationName);
-  if (rv != CKR_OK)
-    return rv;
-
-  // Size the transient template to this request instead of consuming about
-  // 64 KiB from an arbitrary host application's thread stack.
-  CK_BYTE *tlv_data __attribute__((cleanup(freeScopedBuffer))) = ck_malloc(cbDataLen + 16);
-  if (tlv_data == NULL) {
-    cnk_disconnect_card(hCard);
-    return CKR_HOST_MEMORY;
-  }
-  CK_ULONG tlv_len = 0;
-
-  // Start with the outer Dynamic Authentication Template (tag 0x7C)
-  tlv_data[tlv_len++] = 0x7C;
-  // We'll fill in the length later once we know the total length
-  CK_ULONG len_pos = tlv_len++;
-
-  // Add the Response tag (0x82) with zero length
-  tlv_data[tlv_len++] = 0x82;
-  tlv_data[tlv_len++] = 0x00;
-
-  // Add the operation input tag with the raw input data.
-  tlv_data[tlv_len++] = inputTag;
-
-  // Encode the length of the input data
-  if (cbDataLen > 255) {
-    // Use two-byte length encoding for lengths > 255
-    tlv_data[tlv_len++] = 0x82;                               // Two-byte length marker
-    tlv_data[tlv_len++] = (CK_BYTE)((cbDataLen >> 8) & 0xFF); // Length high byte
-    tlv_data[tlv_len++] = (CK_BYTE)(cbDataLen & 0xFF);        // Length low byte
-  } else if (cbDataLen >= 0x80) {
-    tlv_data[tlv_len++] = 0x81;
-    tlv_data[tlv_len++] = (CK_BYTE)cbDataLen;
-  } else {
-    // DER short form is valid only below 128 bytes.
-    tlv_data[tlv_len++] = (CK_BYTE)cbDataLen;
-  }
-
-  // Copy the raw input data
-  if (cbDataLen > 0) {
-    memcpy(tlv_data + tlv_len, pData, cbDataLen);
-    tlv_len += cbDataLen;
-  }
-
-  // Now fill in the length of the outer template
-  // The length needs to be updated based on the total length of the contents
-  CK_ULONG content_len = tlv_len - len_pos - 1;
-  if (content_len > 0xFF) {
-    // Need to shift everything to make room for 3-byte length
-    memmove(tlv_data + len_pos + 3, tlv_data + len_pos + 1, tlv_len - len_pos - 1);
-
-    // Store the original calculated length before modification
-    // Update positions sequentially to avoid undefined behavior
-    tlv_data[len_pos] = 0x82; // Two-byte length marker
-    len_pos++;
-
-    tlv_data[len_pos] = (CK_BYTE)((content_len >> 8) & 0xFF); // Length high byte
-    len_pos++;
-
-    tlv_data[len_pos] = (CK_BYTE)(content_len & 0xFF); // Length low byte
-
-    tlv_len += 2; // Adjust total length for the extra length bytes
-  } else if (content_len >= 0x80) {
-    memmove(tlv_data + len_pos + 2, tlv_data + len_pos + 1, content_len);
-    tlv_data[len_pos] = 0x81;
-    tlv_data[len_pos + 1] = (CK_BYTE)content_len;
-    tlv_len += 1;
-  } else {
-    tlv_data[len_pos] = (CK_BYTE)content_len;
-  }
-
-  // Build the GENERAL AUTHENTICATE APDU
-  // CanoKey rejects extended GENERAL AUTHENTICATE APDUs for RSA-sized data, so
-  // large templates are sent with short APDU command chaining.
-  CK_BYTE abAuthApdu[262];
-  CK_ULONG cbAuthApdu = 0;
-
-  CK_BYTE response[CNK_PIV_MAX_GENERAL_AUTH_RESPONSE] = {0};
-#if defined(__clang__) || defined(__GNUC__)
-  CK_BYTE *responseGuard __attribute__((cleanup(zeroize_general_auth_response))) = response;
-#else
-#error "CanoKey GENERAL AUTH response cleanup requires compiler cleanup support"
-#endif
-  DWORD cbResponse = sizeof(response); // Use DWORD for PC/SC API compatibility
-  LONG pcsc_rv = SCARD_S_SUCCESS;
-
-  if (tlv_len <= 255) {
-    // APDU header
-    abAuthApdu[cbAuthApdu++] = 0x00;                    // CLA
-    abAuthApdu[cbAuthApdu++] = 0x87;                    // INS - GENERAL AUTHENTICATE
-    abAuthApdu[cbAuthApdu++] = algorithmType;           // P1 - Algorithm
-    abAuthApdu[cbAuthApdu++] = pivSlot;                 // P2 - Key reference (PIV slot)
-    abAuthApdu[cbAuthApdu++] = (CK_BYTE)tlv_len;        // Lc
-    memcpy(abAuthApdu + cbAuthApdu, tlv_data, tlv_len); // Data
-    cbAuthApdu += tlv_len;
-    abAuthApdu[cbAuthApdu++] = 0x00; // Le (request max available)
-
-    CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command for %s", operationName);
-    pcsc_rv = cnk_transceive_apdu(hCard, abAuthApdu, cbAuthApdu, response, &cbResponse, CK_TRUE);
-  } else {
-    CK_ULONG offset = 0;
-    CK_ULONG remaining = tlv_len;
-
-    while (remaining > 0) {
-      CK_ULONG chunk_len = remaining > 0xFF ? 0xFF : remaining;
-      CK_BBOOL has_more_chunks = remaining > chunk_len;
-      cbAuthApdu = 0;
-
-      // Set the ISO command-chaining bit while more chunks follow.
-      abAuthApdu[cbAuthApdu++] = has_more_chunks ? 0x10 : 0x00;      // CLA
-      abAuthApdu[cbAuthApdu++] = 0x87;                               // INS - GENERAL AUTHENTICATE
-      abAuthApdu[cbAuthApdu++] = algorithmType;                      // P1 - Algorithm
-      abAuthApdu[cbAuthApdu++] = pivSlot;                            // P2 - Key reference (PIV slot)
-      abAuthApdu[cbAuthApdu++] = (CK_BYTE)chunk_len;                 // Lc
-      memcpy(abAuthApdu + cbAuthApdu, tlv_data + offset, chunk_len); // Data chunk
-      cbAuthApdu += chunk_len;
-
-      if (!has_more_chunks)
-        abAuthApdu[cbAuthApdu++] = 0x00; // Le (request max available)
-
-      cbResponse = sizeof(response);
-      CNK_DEBUG("Sending PIV GENERAL AUTHENTICATE command chunk for %s: offset=%lu, length=%lu, more=%d", operationName,
-                offset, chunk_len, has_more_chunks);
-      pcsc_rv = cnk_transceive_apdu(hCard, abAuthApdu, cbAuthApdu, response, &cbResponse,
-                                    has_more_chunks ? CK_FALSE : CK_TRUE);
-      if (pcsc_rv != SCARD_S_SUCCESS)
-        break;
-
-      if (cbResponse < 2) {
-        CNK_ERROR("GENERAL AUTHENTICATE chunk response too short");
-        pcsc_rv = SCARD_E_UNEXPECTED;
-        break;
-      }
-
-      if (has_more_chunks) {
-        CK_BYTE sw1 = response[cbResponse - 2];
-        CK_BYTE sw2 = response[cbResponse - 1];
-        if (sw1 != 0x90 || sw2 != 0x00) {
-          CNK_ERROR("GENERAL AUTHENTICATE chunk returned error status: %02X%02X", sw1, sw2);
-          cnk_disconnect_card(hCard);
-          CNK_RETURN(CKR_DEVICE_ERROR, "Failed to send GENERAL AUTHENTICATE command chunk");
-        }
-      }
-
-      offset += chunk_len;
-      remaining -= chunk_len;
-    }
-  }
-
-  if (pcsc_rv != SCARD_S_SUCCESS) {
-    cnk_disconnect_card(hCard);
-    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to send GENERAL AUTHENTICATE command");
-  }
-
-  if (cbResponse < 2) {
-    cnk_disconnect_card(hCard);
-    CNK_RETURN(CKR_DEVICE_ERROR, "GENERAL AUTHENTICATE response too short");
-  }
-
-  CK_BYTE sw1 = response[cbResponse - 2];
-  CK_BYTE sw2 = response[cbResponse - 1];
-  if (sw1 != 0x90 || sw2 != 0x00) {
-    CNK_ERROR("GENERAL AUTHENTICATE returned error status: %02X%02X", sw1, sw2);
-    cnk_disconnect_card(hCard);
-    CNK_RETURN(CKR_DEVICE_ERROR, "GENERAL AUTHENTICATE failed");
-  }
-
-  // Remove the SW from the response
-  cbResponse -= 2;
-
-  // Parse the response: 7C len1 82 len2 <raw result>
-  if (cbResponse < 4) {
-    cnk_disconnect_card(hCard);
-    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: too short");
-  }
-  if (response[0] != 0x7C) {
-    cnk_disconnect_card(hCard);
-    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: missing 7C tag");
-  }
-
-  CK_ULONG offset = 1;
-  CK_LONG fail = 0;
-  CK_ULONG lengthSize = 0;
-  CK_ULONG outerLength = tlvGetLengthSafe(response + offset, cbResponse - offset, &fail, &lengthSize);
-  if (fail || offset + lengthSize + outerLength > cbResponse) {
-    cnk_disconnect_card(hCard);
-    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: bad outer length");
-  }
-  offset += lengthSize;
-
-  if (offset >= cbResponse || response[offset] != 0x82) {
-    cnk_disconnect_card(hCard);
-    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: missing 82 tag");
-  }
-  offset++;
-
-  fail = 0;
-  lengthSize = 0;
-  CK_ULONG outputLength = tlvGetLengthSafe(response + offset, cbResponse - offset, &fail, &lengthSize);
-  if (fail || offset + lengthSize + outputLength > cbResponse) {
-    cnk_disconnect_card(hCard);
-    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid response format: bad output length");
-  }
-  offset += lengthSize;
-
-  CNK_DEBUG("Raw GENERAL AUTHENTICATE output length for %s: %lu, buffer size: %lu", operationName, outputLength,
-            *pcbOutput);
-
-  if (outputLength > *pcbOutput) {
-    cnk_disconnect_card(hCard);
-    *pcbOutput = outputLength;
-    CNK_RETURN(CKR_BUFFER_TOO_SMALL, "Output buffer too small for GENERAL AUTHENTICATE response");
-  }
-
-  memcpy(pOutput, response + offset, outputLength);
-  *pcbOutput = outputLength;
-
-  cnk_disconnect_card(hCard);
-  return CKR_OK;
-}
-
 CK_RV cnk_piv_decrypt(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pEncryptedData,
                       CK_ULONG cbEncryptedData, CK_BYTE_PTR pRawData, CK_ULONG_PTR pcbRawData) {
-  return cnk_piv_general_authenticate_raw(
-      slotId, pSession, pSession->decryptingContext.algorithmType, pSession->decryptingContext.pivSlot,
-      pSession->decryptingContext.pinPolicy, 0x81, pEncryptedData, cbEncryptedData, pRawData, pcbRawData,
-      pSession->decryptingContext.contextPin, pSession->decryptingContext.contextPinLen, "decrypt");
+  return cnk_piv_private_libcanokey(slotId, pSession, pSession->decryptingContext.algorithmType,
+                                    pSession->decryptingContext.pivSlot, pSession->decryptingContext.pinPolicy,
+                                    CNK_PRIVATE_DECRYPT, pEncryptedData, cbEncryptedData,
+                                    pSession->decryptingContext.contextPin, pSession->decryptingContext.contextPinLen,
+                                    pRawData, pcbRawData, "decrypt");
 }
 
 CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
@@ -432,36 +305,23 @@ CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algo
   // PIN-always keys rather than silently reusing the token-wide USER PIN.
   if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS)
     CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always ECDH requires context-specific authentication");
-  return cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, pinPolicy, 0x85, pPublicData,
-                                          cbPublicData, pSharedSecret, pcbSharedSecret, NULL, 0, "ECDH");
+  return cnk_piv_private_libcanokey(slotId, pSession, algorithmType, pivSlot, pinPolicy, CNK_PRIVATE_DERIVE,
+                                    pPublicData, cbPublicData, NULL, 0, pSharedSecret, pcbSharedSecret, "ECDH");
 }
 
 CK_RV cnk_piv_mlkem_decapsulate(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE algorithmType, CK_BYTE pivSlot,
                                 CK_BYTE pinPolicy, CK_BYTE_PTR pCiphertext, CK_ULONG cbCiphertext,
                                 CK_BYTE_PTR pSharedSecret, CK_ULONG_PTR pcbSharedSecret) {
-  CK_BYTE pin[PIV_PADDED_PIN_LEN] = {0};
-  CK_ULONG pinLen = 0;
-  if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS) {
-    CK_RV rv = cnk_token_copy_pin(pSession, pin, &pinLen);
-    if (rv != CKR_OK)
-      return rv;
-  }
-  CK_RV rv = cnk_piv_general_authenticate_raw(slotId, pSession, algorithmType, pivSlot, pinPolicy, 0x81, pCiphertext,
-                                              cbCiphertext, pSharedSecret, pcbSharedSecret, pinLen == 0 ? NULL : pin,
-                                              pinLen, "ML-KEM decapsulate");
-  mbedtls_platform_zeroize(pin, sizeof(pin));
-  return rv;
+  if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS)
+    CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always ML-KEM requires context-specific authentication");
+  return cnk_piv_private_libcanokey(slotId, pSession, algorithmType, pivSlot, pinPolicy, CNK_PRIVATE_DECAPSULATE,
+                                    pCiphertext, cbCiphertext, NULL, 0, pSharedSecret, pcbSharedSecret,
+                                    "ML-KEM decapsulate");
 }
 
-// Sign data using the typed libcanokey PIV operation. ML-DSA remains on the
-// generic raw path until the C ABI exposes its streaming context factory.
+// Sign data using typed libcanokey PIV operations, including streaming ML-DSA.
 CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pData, CK_ULONG cbDataLen,
                    CK_BYTE_PTR pSignature, CK_ULONG_PTR pcbSignature) {
-  if (pSession->signingContext.algorithmType == pSession->mldsa65Algorithm)
-    return cnk_piv_general_authenticate_raw(
-        slotId, pSession, pSession->signingContext.algorithmType, pSession->signingContext.pivSlot,
-        pSession->signingContext.pinPolicy, 0x81, pData, cbDataLen, pSignature, pcbSignature,
-        pSession->signingContext.contextPin, pSession->signingContext.contextPinLen, "ML-DSA sign");
   return cnk_piv_sign_libcanokey(slotId, pSession, pData, cbDataLen, pSignature, pcbSignature);
 }
 
