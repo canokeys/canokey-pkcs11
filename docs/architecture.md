@@ -256,3 +256,21 @@ The current large files still have identifiable future boundaries:
 
 These are ownership-driven splits. File length alone is not a reason to create
 another module or expose a formerly static helper.
+
+## Selected-context PIV executor
+
+`backend/piv_operation.c` owns the C/Rust execution boundary used by metadata,
+certificate/data reads, container-name reads, private operations, management
+authentication and mutations. It clones the profile under the token lock and
+runs a bounded command/response loop inside the caller's selected PC/SC
+transaction. It owns and wipes transport scratch; the caller frees the context
+and operation and ends the transaction. All migrated paths use the same typed
+error mapping and public-key compatibility encoding. Management login and
+write authorization share libcanokey's authentication machine.
+
+Token authorization reservations, credential publication, PKCS#11 handle
+publication, and public cache invalidation remain in C. Mutation attempts
+invalidate caches before transaction release even when completion is uncertain.
+The remaining legacy management-algorithm metadata probe and PIN/data/name
+compatibility paths are still migration work; this executor does not imply
+that those business rules have moved to Rust.

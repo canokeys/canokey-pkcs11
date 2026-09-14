@@ -519,9 +519,19 @@ static void test_create_object_validates_template_before_management_login(void *
   assert_int_equal(C_CloseSession(session), CKR_OK);
 }
 
+static void test_certificate_delete_rejects_read_only_session(void **state) {
+  (void)state;
+  CK_SESSION_HANDLE session;
+  assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION, NULL, NULL, &session), CKR_OK);
+  CK_OBJECT_HANDLE certificate = CNK_MakeObjectHandle(0, CKO_CERTIFICATE, 1);
+  assert_int_equal(C_DestroyObject(session, certificate), CKR_SESSION_READ_ONLY);
+  assert_int_equal(C_CloseSession(session), CKR_OK);
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test(test_unsupported_slot_functions_require_initialization),
+      cmocka_unit_test_setup_teardown(test_certificate_delete_rejects_read_only_session, setup, teardown),
       cmocka_unit_test_setup_teardown(test_close_does_not_deadlock_template_find, setup, teardown),
       cmocka_unit_test_setup_teardown(test_cancel_serializes_with_digest_update, setup, teardown),
       cmocka_unit_test_setup_teardown(test_close_waits_for_digest_update, setup, teardown),

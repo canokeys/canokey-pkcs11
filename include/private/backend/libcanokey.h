@@ -76,6 +76,7 @@ enum {
 enum {
   CNK_LIBCANO_ERROR_AUTHENTICATION_FAILED = 6,
   CNK_LIBCANO_ERROR_PIN_BLOCKED = 7,
+  CNK_LIBCANO_ERROR_SECURITY_STATUS = 8,
   CNK_LIBCANO_ERROR_NOT_FOUND = 10,
   CNK_LIBCANO_ERROR_UNSUPPORTED_FEATURE = 12,
   CNK_LIBCANO_ERROR_LIMIT_EXCEEDED = 5,
@@ -123,9 +124,9 @@ uint32_t cnk_piv_write_object_in_context_new(const CNK_LIBCANO_CONTEXT *, const 
                                              CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_delete_certificate_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const CNK_LIBCANO_OPTIONS *,
                                                    CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
-uint32_t cnk_piv_authenticate_management_in_context_new(const CNK_LIBCANO_CONTEXT *,
-                                                        const CNK_LIBCANO_MANAGEMENT *, const CNK_LIBCANO_OPTIONS *,
-                                                        CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_authenticate_management_in_context_new(const CNK_LIBCANO_CONTEXT *, const CNK_LIBCANO_MANAGEMENT *,
+                                                        const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
+                                                        CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_generate_key_in_context_new(const CNK_LIBCANO_CONTEXT *, const CNK_LIBCANO_KEY_PARAMETERS *,
                                              const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
                                              CNK_LIBCANO_ERROR *);

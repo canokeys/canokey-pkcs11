@@ -149,7 +149,7 @@ management-authorized object write、certificate write/delete、key generation/i
 object/certificate 写入、key generation、private material import 和 certificate
 delete 已切换到 context mutation，并修复了 lock/status failure cleanup。完整
 mutation rollback、并发和硬件回归仍待完成；近期 review 暴露的 transaction
-cleanup、typed error mapping 和 generated-key output-length 问题已修复。
+cleanup、typed error mapping 和 generated-key output-length 问题见下方修复记录。
 
 libcanokey 负责 External/Mutual management authentication、algorithm selection、
 ADMIN DATA/PRINTED parsing、certificate PUT DATA/delete、PIV data writes、key
@@ -224,3 +224,37 @@ native ARM64 propagation。
 libcanokey 与 PKCS#11 使用 stacked PR。每个 PKCS#11 commit 固定 libcanokey
 具体 Git revision 并更新 Cargo.lock。只有当前阶段出口条件和 CI 全绿后进入下
 一阶段；不得把未迁移的 C fallback 宣称为已完成迁移。
+
+## Review repair checkpoint (2026-09-14)
+
+Reviewed PR #5 comments in reviews 5196542652 and 5197023753 against the code.
+The selected-context calls now share a bounded C executor and lock-scoped
+profile clone. Failed ABI/transport/parse paths cannot return a stale CKR_OK.
+Data reads preserve successful copy results; the shared metadata/generated
+public-key encoder reports exact TLV lengths. Profile probes no longer run
+inside write transactions. Every attempted mutation invalidates public caches,
+including uncertain completion. Certificate deletion rejects read-only sessions
+and reports CKA_DESTROYABLE consistently with its implemented behavior.
+
+SO and protected management verification now share the libcanokey authentication
+machine used by write authorization. Libcanokey revision d52d1aa preserves legacy
+explicit Le without reselecting. Both Cargo dependencies use the same revision.
+The C management transcript test covers TDES (1.3/3.0.3) and AES-192 (3.1.0),
+transport failure at each exchange, malformed challenges, rejected cryptograms,
+mutex failure, and transaction transfer/release. C ABI failure injection covers
+PUT DATA, certificate deletion, generation/import, data/name reads, output
+queries, exact RSA lengths, obsolete profile epochs and conversation budgets.
+
+This checkpoint does not complete stages 0–5. Remaining acceptance includes
+full profile reset/cache-generation races, PIN and protected-object format
+migration, configured algorithm IDs, F5 compatibility and attestation naming,
+full mutation/concurrency transcripts, and cross-repository/hardware validation.
+Legacy management-algorithm metadata and PIN operations still live in C.
+
+Validation for this checkpoint: Windows x86/x64/ARM64 Debug and Release builds
+pass; all three C/Rust contract tests run successfully on x86 and x64. Linux
+CTest passes 10/10 normally and 10/10 with ASan/UBSan and leak detection.
+PKCS#11 Rust adapter tests (9), strict Clippy, and API coverage (118/118) pass.
+Libcanokey workspace tests, strict Clippy, rustdoc, and C/C++ ABI transcripts
+pass. ARM64 executables were built but not run locally; real-card/minidriver
+acceptance and full PR-head CI are separate outstanding checks.

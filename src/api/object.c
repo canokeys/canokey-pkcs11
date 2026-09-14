@@ -1170,11 +1170,13 @@ CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
     CNK_RET_OK;
   }
 
-  CNK_ENSURE_OK(CNK_ValidateObject(hObject, session, 0, NULL));
   CK_OBJECT_CLASS objectClass;
   CK_BYTE objectId;
   extractObjectInfo(hObject, NULL, &objectClass, &objectId);
   if (objectClass == CKO_CERTIFICATE) {
+    if (!(session->flags & CKF_RW_SESSION))
+      CNK_RETURN(CKR_SESSION_READ_ONLY, "Certificate deletion requires a read-write session");
+    CNK_ENSURE_OK(CNK_ValidateObject(hObject, session, 0, NULL));
     CK_BYTE pivSlot;
     CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objectId, &pivSlot));
     CNK_ENSURE_OK(cnk_token_begin_management_operation(session));
@@ -1182,6 +1184,7 @@ CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
     cnk_token_end_management_operation(session);
     CNK_RETURN(deleteRv, "certificate deletion");
   }
+  CNK_ENSURE_OK(CNK_ValidateObject(hObject, session, 0, NULL));
   // PIV key and data token objects have no general PKCS#11 deletion semantics.
   CNK_RETURN(CKR_ACTION_PROHIBITED, "PIV token objects are not destroyable");
 }
@@ -1471,7 +1474,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
     case CKA_COPYABLE:
     case CKA_DESTROYABLE: {
-      bbool = CK_FALSE;
+      bbool = pTemplate[i].type == CKA_DESTROYABLE && objClass == CKO_CERTIFICATE;
       rv = setSingleAttributeValue(&pTemplate[i], &bbool, sizeof(bbool));
       break;
     }

@@ -1,6 +1,6 @@
 #include "api/session.h"
-#include "backend/libcanokey.h"
 #include "backend/pcsc.h"
+#include "backend/piv_operation.h"
 #include "internal/macros.h"
 #include "pkcs11_canokey.h"
 
@@ -17,40 +17,18 @@ static CK_RV read_container_name_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE
   CNK_LIBCANO_CONTEXT *context = NULL;
   CNK_LIBCANO_OPERATION *operation = NULL;
   CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
-  uint32_t step = 0;
-  uint32_t status = CNK_LIBCANO_OK;
-  CK_BYTE response[8192] = {0};
-  CK_RV rv = CKR_DEVICE_ERROR;
-  rv = cnk_mutex_lock(&session->token->lock);
+  CK_RV rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_SELECTED, &context);
   if (rv != CKR_OK)
     goto cleanup;
-  CNK_LIBCANO_PROFILE *profile = session->token->libcanokeyProfile;
-  uint32_t contextStatus = profile == NULL
-                               ? CNK_LIBCANO_INVALID_STATE
-                               : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_SELECTED, &context, &error);
-  cnk_mutex_unlock(&session->token->lock);
-  if (contextStatus != CNK_LIBCANO_OK ||
-      cnk_piv_read_container_name_in_context_new(context, pivSlot, NULL, &operation, &error) != CNK_LIBCANO_OK ||
-      cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK)
+  uint32_t status = cnk_piv_read_container_name_in_context_new(context, pivSlot, NULL, &operation, &error);
+  rv = cnk_piv_operation_status(status, &error, CKR_KEY_HANDLE_INVALID);
+  if (rv != CKR_OK)
     goto cleanup;
-  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
-    size_t commandLen = 0;
-    status = cnk_operation_command(operation, NULL, &commandLen);
-    if (status != CNK_LIBCANO_OK || commandLen == 0 || commandLen > 2048)
-      goto cleanup;
-    CK_BYTE command[2048];
-    status = cnk_operation_command(operation, command, &commandLen);
-    if (status != CNK_LIBCANO_OK)
-      goto cleanup;
-    DWORD responseLen = sizeof(response);
-    if (cnk_transceive_apdu(card, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) != SCARD_S_SUCCESS)
-      goto cleanup;
-    status = cnk_operation_advance(operation, response, responseLen, &step, &error);
-    if (status != CNK_LIBCANO_OK)
-      goto cleanup;
-  }
-  if (step != CNK_LIBCANO_STEP_DONE)
+  rv = cnk_run_piv_operation(card, operation, CKR_KEY_HANDLE_INVALID, NULL);
+  if (rv != CKR_OK)
     goto cleanup;
+  // Getters do not advance or retry the card operation.
+  rv = CKR_DEVICE_ERROR;
   size_t required = 0;
   if (cnk_operation_result_copy_bytes(operation, NULL, &required) != CNK_LIBCANO_OK)
     goto cleanup;

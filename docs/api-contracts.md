@@ -75,17 +75,30 @@ standard because it also captures this module's internal safety invariants.
 
 ### libcanokey Conversation Boundary
 
-The experimental protocol adapter holds Rust state only inside one synchronous
-C backend call. C retains the session/token reservations and PC/SC transaction
-through command chaining and GET RESPONSE. A raw callback transmits once; Rust
-never selects an applet, authenticates implicitly, reconnects, or retries I/O.
-Conversations stop after 4096 exchanges or one MiB of cumulative response data.
-Malformed/non-progressing continuation is terminal. Final status words retain
-their existing C interpretation; a failed intermediate chained status is a
-terminal device error. Rust drops and wipes command/response copies on every
-exit, and only a complete result is copied to C. Public size-query and mutation
-rollback guarantees below remain in force. The C ABI transcript test and Rust
-failure/budget tests cover this boundary.
+The protocol adapter and selected-context PIV executor keep Rust state inside
+one synchronous C backend call. C owns admission, session/token reservations,
+and the selected PC/SC transaction until parsing and cache invalidation finish.
+`cnk_run_piv_operation` borrows the operation, transmits each command exactly
+once with C continuation disabled, and wipes command/response scratch on every
+exit. Libcanokey owns chaining, continuation and command-specific status parsing.
+Only an explicit Done step returns success; ABI failures, malformed responses,
+invalid steps and transport failures cannot inherit a successful lock result.
+The executor independently bounds exchanges to 4096 and total responses to one
+MiB, including status bytes. Typed absence maps to the caller's key/data error;
+a panic or ABI state/type mismatch remains a device error.
+
+Profile probing finishes before opening the authenticated transaction. Context
+construction clones the immutable profile while holding the token lock, rejects
+an obsolete binding epoch, and never probes or selects. Profile publication
+frees its candidate on a failed lock and permits at most three binding retries.
+SO login, protected management login, and write authorization share the same
+libcanokey challenge-response implementation; verification alone never caches
+the key. The caller commits credentials only after successful verification.
+
+Write attempts invalidate public caches before releasing the card transaction,
+including lost responses and failures while parsing results. Dropping an
+operation does not roll back a card mutation. The C ABI transcript, management
+known-answer, and C caller failure-injection tests exercise these boundaries.
 
 ### Output and Failure Atomicity
 
@@ -230,9 +243,9 @@ errors and unexpected F5 errors on supported versions do not select fallback.
 | `C_CNK_SetContainerName` | `CARD-WRITE` | Borrowed name validates before card work. RW session and management reservation span SELECT, management authentication and one short F5 write. | Zero length clears. No retry: a failed transport can follow a committed write. Cache invalidates before transmission. Every exit releases card, reservation, reference and admission; no key/PIN/ADMIN DATA mutation. |
 | `C_CreateObject` | `OBJECT` / `CARD-WRITE` | Template is borrowed and its class/object identity is validated before authentication. Session-secret data is copied under `session->lock`; PIV private/certificate/data writes hold management reservation and zeroize import buffers. | Managed private-key import requires fresh explicit absence in the same authenticated transaction; occupied keys return CKR_ACTION_PROHIBITED, unknown state blocks the write. Standalone replacement is unchanged. Session object publishes only after full validation; a committed card mutation is never represented as rolled back. |
 | `C_CopyObject` | `OBJECT` | Source session secret is snapshotted under `session->lock`; copied value is module-owned and zeroized after allocation. | Only copyable visible session secrets succeed. Failure publishes no new handle and leaves source unchanged. |
-| `C_DestroyObject` | `OBJECT` / `CARD-WRITE` | Holds `session->lock`; secret bytes are zeroized before handle becomes inactive. Certificate deletion retains the token management reservation through the selected-context card mutation. | Private visibility and destroyable policy are rechecked. PIV certificates are deleted only after management authorization and cache invalidation; PIV keys/data remain unchanged and return action prohibited. |
+| `C_DestroyObject` | `OBJECT` / `CARD-WRITE` | Holds `session->lock`; secret bytes are zeroized before handle becomes inactive. Certificate deletion retains the token management reservation through the selected-context card mutation. | Private visibility and destroyable policy are rechecked. Certificate deletion requires a read-write session and holds management authorization through the card mutation. Cache invalidation follows every attempted mutation, including uncertain failures. PIV keys/data return action prohibited. |
 | `C_GetObjectSize` | `OBJECT` | Uses ordinary attribute APIs; no returned pointer is retained. | Returns a coherent estimated object size or error; no object/operation state mutation. |
-| `C_GetAttributeValue` | `OBJECT` | Session secrets are read under `session->lock`; private visibility is checked at call time. Token attributes use call-local metadata/certificate buffers, backed by the standalone public snapshot cache when fresh. | Per-attribute unavailable/sensitive errors follow PKCS#11 rules. Size query is non-consuming; malformed card TLV never causes partial out-of-bounds copy. Managed mode bypasses the cache. |
+| `C_GetAttributeValue` | `OBJECT` | Session secrets are read under `session->lock`; private visibility is checked at call time. Token attributes use call-local metadata/certificate buffers, backed by the standalone public snapshot cache when fresh. | Per-attribute unavailable/sensitive errors follow PKCS#11 rules. Size query is non-consuming; malformed card TLV never causes partial out-of-bounds copy. Managed mode bypasses the cache. Certificates report CKA_DESTROYABLE=true; PIV keys/data remain non-destroyable. |
 | `C_SetAttributeValue` | `OBJECT` | Mutable session-secret changes apply to a temporary snapshot under `session->lock`; template pointers are borrowed. | All attributes validate before commit. PIV token attributes are read-only; failure leaves the live secret unchanged. |
 | `C_FindObjectsInit` | `OP(FIND)` | Template is consumed during the call; result handles are copied into session-owned find state under `session->lock`. | Success starts exactly one find operation. Failure clears partial results. Private visibility is evaluated before queuing. |
 | `C_FindObjects` | `OP(FIND)` | Returns handles from session-owned queue while holding `session->lock`; token logout barrier is rechecked before return. | Returns at most requested count and advances position once. Logout invalidates queued private results; failure does not leak a private handle. |

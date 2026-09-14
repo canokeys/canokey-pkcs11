@@ -1,9 +1,7 @@
-#include "backend/libcanokey.h"
 #include "backend/pcsc.h"
+#include "backend/piv_operation.h"
 
 #include "api/session.h"
-#include "internal/crypto.h"
-#include "internal/des.h"
 #include "internal/logging.h"
 #include "internal/util.h"
 
@@ -15,7 +13,6 @@
 #define PIV_ALG_AES_192 0x0A
 #define PIV_MANAGEMENT_KEY_SLOT 0x9B
 #define PIV_MANAGEMENT_KEY_LEN 24
-#define PIV_MAX_MANAGEMENT_CHALLENGE_LEN 16
 
 // Verify a PIN after the caller has selected PIV in the same card transaction.
 // CanoKey's PIV SELECT resets PIN/admin status, so this variant must not select
@@ -417,152 +414,60 @@ static CK_RV getManagementKeyAlgorithmOnCard(SCARDHANDLE hCard, CK_BYTE *algorit
   CNK_RETURN(CKR_DEVICE_ERROR, "Management key algorithm metadata is missing");
 }
 
-static CK_RV authenticateManagementKeyOnCard(SCARDHANDLE hCard, const CK_BYTE key[PIV_MANAGEMENT_KEY_LEN]) {
-  CK_BYTE algorithm;
-  CNK_ENSURE_OK(getManagementKeyAlgorithmOnCard(hCard, &algorithm));
-
-  CK_ULONG challengeLen = algorithm == PIV_ALG_AES_192 ? 16 : 8;
-  CK_BYTE capdu[9 + PIV_MAX_MANAGEMENT_CHALLENGE_LEN];
-  CK_BYTE rapdu[4 + PIV_MAX_MANAGEMENT_CHALLENGE_LEN + 2];
-  CK_BYTE hostCryptogram[PIV_MAX_MANAGEMENT_CHALLENGE_LEN];
-  DWORD rapduLen = sizeof(rapdu);
-
-  memcpy(capdu, (CK_BYTE[]){0x00, 0x87, algorithm, PIV_MANAGEMENT_KEY_SLOT, 0x04, 0x7C, 0x02, 0x81, 0x00}, 9);
-  LONG pcscRv = cnk_transceive_apdu(hCard, capdu, 9, rapdu, &rapduLen, CK_TRUE);
-  if (pcscRv != SCARD_S_SUCCESS || rapduLen != 4 + challengeLen + 2 || rapdu[0] != 0x7C ||
-      rapdu[1] != 2 + challengeLen || rapdu[2] != 0x81 || rapdu[3] != challengeLen || rapdu[rapduLen - 2] != 0x90 ||
-      rapdu[rapduLen - 1] != 0x00) {
-    CNK_RETURN(CKR_DEVICE_ERROR, "Failed to get management key challenge");
-  }
-
-  CK_RV rv = algorithm == PIV_ALG_AES_192 ? cnk_aes192_encrypt_block(key, rapdu + 4, hostCryptogram)
-                                          : cnk_des3_encrypt_block(key, rapdu + 4, hostCryptogram);
-  if (rv != CKR_OK) {
-    mbedtls_platform_zeroize(hostCryptogram, sizeof(hostCryptogram));
-    return rv;
-  }
-
-  capdu[0] = 0x00;
-  capdu[1] = 0x87;
-  capdu[2] = algorithm;
-  capdu[3] = PIV_MANAGEMENT_KEY_SLOT;
-  capdu[4] = (CK_BYTE)(4 + challengeLen);
-  capdu[5] = 0x7C;
-  capdu[6] = (CK_BYTE)(2 + challengeLen);
-  capdu[7] = 0x82;
-  capdu[8] = (CK_BYTE)challengeLen;
-  memcpy(capdu + 9, hostCryptogram, challengeLen);
-  mbedtls_platform_zeroize(hostCryptogram, sizeof(hostCryptogram));
-
-  rapduLen = sizeof(rapdu);
-  pcscRv = cnk_transceive_apdu(hCard, capdu, 9 + challengeLen, rapdu, &rapduLen, CK_TRUE);
-  mbedtls_platform_zeroize(capdu, sizeof(capdu));
-  if (pcscRv != SCARD_S_SUCCESS || rapduLen != 2 || rapdu[0] != 0x90 || rapdu[1] != 0x00)
-    CNK_RETURN(CKR_PIN_INCORRECT, "Management key authentication failed");
-
-  CNK_RET_OK;
-}
-
-CK_RV cnk_authenticate_admin_for_write(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, SCARDHANDLE *hCard) {
-  CNK_ENSURE_NONNULL(session, hCard);
-
-  CK_RV rv = cnk_ensure_libcanokey_profile(session);
-  if (rv != CKR_OK)
-    return rv;
-
-  CK_BYTE managementKey[PIV_MANAGEMENT_KEY_LEN] = {0};
-  CK_BBOOL connected = CK_FALSE;
-  *hCard = 0;
-  rv = cnk_token_copy_management_key(session, managementKey);
-  if (rv != CKR_OK) {
-    rv = CKR_USER_NOT_LOGGED_IN;
-    goto cleanup;
-  }
-  rv = cnk_begin_piv_transaction(slotID, hCard);
-  if (rv != CKR_OK)
-    goto cleanup;
-  connected = CK_TRUE;
-  CK_BYTE algorithm = 0;
-  rv = getManagementKeyAlgorithmOnCard(*hCard, &algorithm);
-  if (rv != CKR_OK)
-    goto cleanup;
-  CNK_LIBCANO_MANAGEMENT management = {.struct_size = sizeof(management),
-                                       .algorithm = algorithm == PIV_ALG_AES_192 ? CNK_LIBCANO_MANAGEMENT_AES192
-                                                                                 : CNK_LIBCANO_MANAGEMENT_TDES,
-                                       .mode = CNK_LIBCANO_AUTH_EXTERNAL,
-                                       .key = managementKey,
-                                       .key_len = sizeof(managementKey),
-                                       .challenge = NULL,
-                                       .challenge_len = 0};
+static CK_RV authenticateManagementKeyOnCard(CNK_PKCS11_SESSION *session, SCARDHANDLE card,
+                                             const CK_BYTE key[PIV_MANAGEMENT_KEY_LEN]) {
   CNK_LIBCANO_CONTEXT *context = NULL;
   CNK_LIBCANO_OPERATION *operation = NULL;
   CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
-  uint32_t step = 0;
-  uint32_t status = CNK_LIBCANO_OK;
-  CK_BYTE response[8192] = {0};
-  CNK_LIBCANO_PROFILE *profile = NULL;
-  rv = cnk_mutex_lock(&session->token->lock);
+  CK_BYTE algorithm = 0;
+  CK_RV rv = getManagementKeyAlgorithmOnCard(card, &algorithm);
+  if (rv != CKR_OK)
+    return rv;
+  CNK_LIBCANO_MANAGEMENT management = {
+      .struct_size = sizeof(management),
+      .algorithm = algorithm == PIV_ALG_AES_192 ? CNK_LIBCANO_MANAGEMENT_AES192 : CNK_LIBCANO_MANAGEMENT_TDES,
+      .mode = CNK_LIBCANO_AUTH_EXTERNAL,
+      .key = key,
+      .key_len = PIV_MANAGEMENT_KEY_LEN,
+  };
+  rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_SELECTED, &context);
   if (rv != CKR_OK)
     goto cleanup;
-  profile = session->token->libcanokeyProfile;
-  uint32_t contextStatus = profile == NULL
-                               ? CNK_LIBCANO_INVALID_STATE
-                               : cnk_piv_context_new(profile, CNK_LIBCANO_CONTEXT_SELECTED, &context, &error);
-  cnk_mutex_unlock(&session->token->lock);
-  if (contextStatus != CNK_LIBCANO_OK ||
-      cnk_piv_authenticate_management_in_context_new(context, &management, NULL, &operation, &error) !=
-          CNK_LIBCANO_OK ||
-      cnk_operation_start(operation, &step, &error) != CNK_LIBCANO_OK) {
-    rv = CKR_DEVICE_ERROR;
-    if (operation)
-      cnk_operation_free(operation);
-    if (context)
-      cnk_piv_context_free(context);
+  uint32_t status = cnk_piv_authenticate_management_in_context_new(context, &management, NULL, &operation, &error);
+  rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
+  if (rv != CKR_OK)
     goto cleanup;
-  }
-  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
-    size_t commandLen = 0;
-    status = cnk_operation_command(operation, NULL, &commandLen);
-    if (status != CNK_LIBCANO_OK || commandLen == 0 || commandLen > 2048) {
-      rv = CKR_DEVICE_ERROR;
-      break;
-    }
-    CK_BYTE command[2048];
-    status = cnk_operation_command(operation, command, &commandLen);
-    if (status != CNK_LIBCANO_OK) {
-      rv = CKR_DEVICE_ERROR;
-      break;
-    }
-    DWORD responseLen = sizeof(response);
-    if (cnk_transceive_apdu(*hCard, command, (CK_ULONG)commandLen, response, &responseLen, CK_FALSE) !=
-        SCARD_S_SUCCESS) {
-      rv = CKR_DEVICE_ERROR;
-      break;
-    }
-    status = cnk_operation_advance(operation, response, responseLen, &step, &error);
-    if (status != CNK_LIBCANO_OK) {
-      rv = CKR_PIN_INCORRECT;
-      break;
-    }
-  }
-  if (rv == CKR_OK && step != CNK_LIBCANO_STEP_DONE)
-    rv = CKR_DEVICE_ERROR;
+  rv = cnk_run_piv_operation(card, operation, CKR_DEVICE_ERROR, NULL);
+cleanup:
   if (operation)
     cnk_operation_free(operation);
   if (context)
     cnk_piv_context_free(context);
-  mbedtls_platform_zeroize(response, sizeof(response));
+  return rv;
+}
 
+CK_RV cnk_authenticate_admin_for_write(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, SCARDHANDLE *hCard) {
+  CNK_ENSURE_NONNULL(session, hCard);
+  *hCard = 0;
+  // Profile probing may select Admin/PIV; finish it before authorization.
+  CK_RV rv = cnk_ensure_libcanokey_profile(session);
+  if (rv != CKR_OK)
+    return rv;
+  CK_BYTE managementKey[PIV_MANAGEMENT_KEY_LEN] = {0};
+  rv = cnk_token_copy_management_key(session, managementKey);
+  if (rv != CKR_OK)
+    goto cleanup;
+  rv = cnk_begin_piv_transaction(slotID, hCard);
+  if (rv != CKR_OK)
+    goto cleanup;
+  rv = authenticateManagementKeyOnCard(session, *hCard, managementKey);
 cleanup:
   mbedtls_platform_zeroize(managementKey, sizeof(managementKey));
-  if (rv != CKR_OK) {
-    if (connected)
-      cnk_disconnect_card(*hCard);
+  if (rv != CKR_OK && *hCard != 0) {
+    cnk_disconnect_card(*hCard);
     *hCard = 0;
-    return rv;
   }
-
-  CNK_RET_OK;
+  return rv;
 }
 
 // Card operation function for logout
@@ -650,6 +555,8 @@ CK_RV cnk_verify_piv_pin_for_context(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK
  * pKey: 24-byte raw management key.
  */
 CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey) {
+  CNK_ENSURE_NONNULL(session, pKey);
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
   SCARDHANDLE hCard;
   CK_RV rv;
 
@@ -657,7 +564,7 @@ CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey) {
   // through the challenge-response APDUs.
   CNK_ENSURE_OK(cnk_begin_piv_transaction(session->slotId, &hCard));
 
-  rv = authenticateManagementKeyOnCard(hCard, pKey);
+  rv = authenticateManagementKeyOnCard(session, hCard, pKey);
   cnk_disconnect_card(hCard);
   CNK_RETURN(rv, "");
 }
