@@ -35,6 +35,19 @@ typedef struct {
   const uint8_t *data;
   size_t len;
 } CNK_LIBCANO_BYTES;
+typedef struct {
+  uint32_t struct_size, algorithm, mode;
+  const uint8_t *key;
+  size_t key_len;
+  const uint8_t *challenge;
+  size_t challenge_len;
+} CNK_LIBCANO_MANAGEMENT;
+enum {
+  CNK_LIBCANO_MANAGEMENT_TDES = 1,
+  CNK_LIBCANO_MANAGEMENT_AES192 = 2,
+  CNK_LIBCANO_AUTH_EXTERNAL = 1,
+  CNK_LIBCANO_AUTH_MUTUAL = 2,
+};
 enum {
   CNK_LIBCANO_METADATA_HAS_ALGORITHM = 1,
   CNK_LIBCANO_METADATA_HAS_POLICY = 2,
@@ -110,6 +123,9 @@ uint32_t cnk_piv_write_object_in_context_new(const CNK_LIBCANO_CONTEXT *, const 
                                              CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_delete_certificate_in_context_new(const CNK_LIBCANO_CONTEXT *, uint32_t, const CNK_LIBCANO_OPTIONS *,
                                                    CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
+uint32_t cnk_piv_authenticate_management_in_context_new(const CNK_LIBCANO_CONTEXT *,
+                                                        const CNK_LIBCANO_MANAGEMENT *, const CNK_LIBCANO_OPTIONS *,
+                                                        CNK_LIBCANO_OPERATION **, CNK_LIBCANO_ERROR *);
 uint32_t cnk_piv_generate_key_in_context_new(const CNK_LIBCANO_CONTEXT *, const CNK_LIBCANO_KEY_PARAMETERS *,
                                              const CNK_LIBCANO_OPTIONS *, CNK_LIBCANO_OPERATION **,
                                              CNK_LIBCANO_ERROR *);
