@@ -21,7 +21,7 @@ passes the corresponding contract and hardware gates; do not add silent fallback
 | 0: profile/context | Immutable token profile with binding epoch; copied selected contexts; bounded executor, two-session transaction contract and guarded cache/profile refresh | Full reset/invalidation, close/finalize and concurrent transaction matrix |
 | 1: public reads | Typed metadata/public keys, certificates, session data, directory and ordinary/F9 name reads | Complete malformed/duplicate/gzip/buffer/cache matrix |
 | 2: signing | RSA, ECDSA, Ed25519 and ML-DSA use Rust operations; PIN-policy and cancellation hardware matrix passes | Remaining legacy/error-path acceptance matrix |
-| 3: other private operations | RSA decrypt, ECDH/X25519 and ML-KEM use Rust operations | Remaining Windows endian/KDF and concurrent result-publication matrix |
+| 3: other private operations | RSA decrypt, ECDH/X25519 and ML-KEM use Rust operations | Windows endian/KDF hardware acceptance; one-shot commit/reservation contract passes |
 | 4: management/writes | Management challenge-response, key generation/import, certificate/data/F5 writes and certificate deletion | Remaining PIN/PUK protection and write/failure matrix |
 | 5: remove duplicate C | Removed C APDU builders, credential/data/public-key parsers, 3DES, the legacy callback adapter and session algorithm maps | Complete acceptance matrix |
 

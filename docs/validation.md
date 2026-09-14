@@ -22,6 +22,9 @@ injected sign transport failure. The selected real-card script can repeat
 concurrent ECDSA/RNG with `--concurrent-id`. The same fixture counts card
 connections during RSA decrypt preflight across all three PIN policies and
 mechanisms; NULL/short buffers must preserve authentication without card I/O.
+ECDH/ML-KEM cases pause after card I/O but before session-secret publication:
+logout and another reservation must remain blocked, and failed publication must
+release the reservation without returning a handle.
 
 ## State Invariants
 

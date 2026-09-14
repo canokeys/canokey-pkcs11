@@ -37,7 +37,7 @@ enum { CONNECTED = 1, BEGUN, ENDED, DISCONNECTED };
 typedef struct {
   unsigned stage, applet, selects, verifies, crypto, random;
   CK_BBOOL verified;
-  CK_BYTE pending[512];
+  CK_BYTE pending[2048];
   size_t pendingLength, pendingOffset;
 } Card;
 static Card cards[256];
@@ -52,6 +52,18 @@ static atomic_uint keyPolicy = 2;
 static atomic_bool pauseVerify, verifyPaused, releaseVerify;
 static atomic_bool failProfile, churnProfile;
 static atomic_bool teardownDone;
+static atomic_uint agreementMode;
+static atomic_bool commitPaused, releaseCommit, failCommit;
+static CK_RV (*originalCommitLock)(void *);
+static const char p256PointHex[] = "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8"
+                                   "ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
+static void p256_point(CK_BYTE point[65]) {
+  for (unsigned i = 0; i < 65; i++) {
+    unsigned value;
+    CHECK(sscanf(p256PointHex + 2 * i, "%2x", &value) == 1);
+    point[i] = (CK_BYTE)value;
+  }
+}
 static const CK_BYTE pin[] = "123456";
 
 static void wait_for(atomic_bool *flag) {
@@ -185,6 +197,22 @@ static LONG transmit(SCARDHANDLE card, LPCSCARD_IO_REQUEST sendPci, LPCBYTE comm
         break;
       }
       CHECK(command[3] == 0x9c || command[3] == 0x9d);
+      if (command[3] == 0x9d && atomic_load(&agreementMode)) {
+        if (atomic_load(&agreementMode) == 1) {
+          const CK_BYTE header[] = {1, 1, 0x11, 2, 2, 2, 1, 3, 1, 1, 4, 67, 0x86, 65};
+          memcpy(output, header, sizeof(header));
+          n = sizeof(header);
+          p256_point(output + n);
+          n += 65;
+        } else {
+          const CK_BYTE header[] = {1, 1, 0xe3, 2, 2, 2, 1, 3, 1, 1, 4, 0x82, 4, 0xa4, 0x86, 0x82, 4, 0xa0};
+          memcpy(output, header, sizeof(header));
+          n = sizeof(header);
+          memset(output + n, 0x42, 1184);
+          n += 1184;
+        }
+        break;
+      }
       const CK_BYTE header[] = {1, 1, 7, 2, 2, 2, 1, 3, 1, 1, 4, 0x82, 1, 9, 0x81, 0x82, 1, 0};
       memcpy(output, header, sizeof(header));
       output[5] = (CK_BYTE)atomic_load(&keyPolicy);
@@ -218,14 +246,35 @@ static LONG transmit(SCARDHANDLE card, LPCSCARD_IO_REQUEST sendPci, LPCBYTE comm
         }
       }
       break;
-    case 0xc0:
+    case 0xc0: {
       CHECK(state->pendingLength > state->pendingOffset);
-      n = state->pendingLength - state->pendingOffset;
-      CHECK(n <= 256);
+      size_t remaining = state->pendingLength - state->pendingOffset;
+      n = remaining > 256 ? 256 : remaining;
       memcpy(output, state->pending + state->pendingOffset, n);
+      state->pendingOffset += n;
+      remaining -= n;
+      if (remaining) {
+        output[n++] = 0x61;
+        output[n++] = remaining >= 256 ? 0 : (CK_BYTE)remaining;
+        *length = (DWORD)n;
+        return SCARD_S_SUCCESS;
+      }
       state->pendingLength = state->pendingOffset = 0;
       break;
+    }
     case 0x87: {
+      if (command[3] == 0x9d && atomic_load(&agreementMode)) {
+        CHECK(state->selects == 1 && state->verified && state->verifies == 1);
+        CHECK(command[2] == (atomic_load(&agreementMode) == 1 ? 0x11 : 0xe3));
+        if (command[0] & 0x10)
+          break;
+        const CK_BYTE header[] = {0x7c, 34, 0x82, 32};
+        memcpy(output, header, sizeof(header));
+        n = sizeof(header);
+        memset(output + n, 0x5a, 32);
+        n += 32;
+        break;
+      }
       CHECK(state->selects == 1 && command[3] == 0x9c);
       CHECK(atomic_load(&keyPolicy) == 1 ? state->verifies == 0 : state->verified && state->verifies == 1);
       state->crypto++;
@@ -259,7 +308,7 @@ static LONG transmit(SCARDHANDLE card, LPCSCARD_IO_REQUEST sendPci, LPCBYTE comm
     state->pendingLength = n;
     state->pendingOffset = 256;
     output[256] = 0x61;
-    output[257] = (CK_BYTE)(n - 256);
+    output[257] = n - 256 >= 256 ? 0 : (CK_BYTE)(n - 256);
     *length = 258;
     return SCARD_S_SUCCESS;
   }
@@ -655,6 +704,97 @@ static void decrypt_preflight_contract(CK_SESSION_HANDLE session) {
   puts("Decrypt size/short-buffer preflight preserves authentication without card I/O");
 }
 
+static CK_RV pause_secret_commit(void *opaque) {
+  atomic_store(&commitPaused, true);
+  wait_for(&releaseCommit);
+  return atomic_load(&failCommit) ? CKR_CANT_LOCK : originalCommitLock(opaque);
+}
+typedef struct {
+  CK_SESSION_HANDLE session;
+  CK_OBJECT_HANDLE key;
+  CK_RV result;
+  unsigned mode;
+} AgreementWorker;
+static THREAD_RESULT agreement_worker(void *opaque) {
+  AgreementWorker *worker = opaque;
+  CK_BBOOL no = CK_FALSE, yes = CK_TRUE;
+  CK_ULONG length = 32;
+  CK_ATTRIBUTE attributes[] = {
+      {CKA_SENSITIVE, &no, sizeof(no)}, {CKA_EXTRACTABLE, &yes, sizeof(yes)}, {CKA_VALUE_LEN, &length, sizeof(length)}};
+  CK_OBJECT_HANDLE private = CNK_MakeObjectHandle(0, CKO_PRIVATE_KEY, 3);
+  if (worker->mode == 1) {
+    CK_BYTE point[65];
+    p256_point(point);
+    CK_ECDH1_DERIVE_PARAMS params = {CKD_NULL, 0, NULL, sizeof(point), point};
+    CK_MECHANISM mechanism = {CKM_ECDH1_DERIVE, &params, sizeof(params)};
+    worker->result = C_DeriveKey(worker->session, &mechanism, private, attributes, 3, &worker->key);
+  } else {
+    CK_BYTE ciphertext[1088];
+    memset(ciphertext, 0x42, sizeof(ciphertext));
+    CK_MECHANISM mechanism = {CKM_ML_KEM, NULL, 0};
+    worker->result = C_DecapsulateKey(worker->session, &mechanism, private, attributes, 3, ciphertext,
+                                      sizeof(ciphertext), &worker->key);
+  }
+  return THREAD_DONE;
+}
+static void agreement_commit_contract(CK_SESSION_HANDLE a, CK_SESSION_HANDLE b) {
+  CNK_PKCS11_SESSION *first = NULL, *second = NULL;
+  CHECK(cnk_session_find(a, &first) == CKR_OK && cnk_session_find(b, &second) == CKR_OK);
+  originalCommitLock = first->lock.lock;
+  for (unsigned mode = 1; mode <= 2; mode++) {
+    atomic_store(&agreementMode, mode);
+    cnk_piv_public_cache_invalidate(first);
+    for (unsigned failure = 0; failure < 2; failure++) {
+      atomic_store(&commitPaused, false);
+      atomic_store(&releaseCommit, false);
+      atomic_store(&failCommit, failure != 0);
+      first->lock.lock = pause_secret_commit;
+      AgreementWorker worker = {.session = a, .mode = mode};
+#ifdef _WIN32
+      HANDLE thread = CreateThread(NULL, 0, agreement_worker, &worker, 0, NULL);
+      CHECK(thread);
+#else
+      pthread_t thread;
+      CHECK(pthread_create(&thread, NULL, agreement_worker, &worker) == 0);
+#endif
+      wait_for(&commitPaused);
+      // Card I/O has ended. The token reservation must survive until the
+      // session-owned result is committed or its publication fails.
+      CHECK(atomic_load(&g_cnk_pcsc_operations) == 0 && !activeCard && worker.key == 0);
+      CHECK(C_Logout(b) == CKR_OPERATION_ACTIVE);
+      CHECK(cnk_token_begin_user_operation(second) == CKR_OPERATION_ACTIVE);
+      atomic_store(&releaseCommit, true);
+#ifdef _WIN32
+      CHECK(WaitForSingleObject(thread, 10000) == WAIT_OBJECT_0);
+      CloseHandle(thread);
+#else
+      CHECK(pthread_join(thread, NULL) == 0);
+#endif
+      first->lock.lock = originalCommitLock;
+      CHECK(worker.result == (failure ? CKR_CANT_LOCK : CKR_OK));
+      CHECK(!first->token->managementOperationPending);
+      if (failure)
+        CHECK(worker.key == 0);
+      else {
+        CK_BYTE secret[32];
+        CK_ATTRIBUTE value = {CKA_VALUE, secret, sizeof(secret)};
+        CHECK(C_GetAttributeValue(a, worker.key, &value, 1) == CKR_OK && value.ulValueLen == sizeof(secret));
+        for (unsigned i = 0; i < sizeof(secret); i++)
+          CHECK(secret[i] == 0x5a);
+        CHECK(C_GetAttributeValue(b, worker.key, &value, 1) == CKR_OBJECT_HANDLE_INVALID);
+        CHECK(C_DestroyObject(a, worker.key) == CKR_OK);
+      }
+      CHECK(C_Logout(b) == CKR_OK);
+      CHECK(C_Login(a, CKU_USER, (CK_UTF8CHAR_PTR)pin, 6) == CKR_OK);
+    }
+  }
+  atomic_store(&agreementMode, 0);
+  cnk_piv_public_cache_invalidate(first);
+  cnk_session_release_ref(&second);
+  cnk_session_release_ref(&first);
+  puts("ECDH/ML-KEM reservations cover result publication and failed commit cleanup");
+}
+
 int main(void) {
   CNK_PCSC_TEST_TRANSPORT transport = {establish, release_context, readers,       connect_card, disconnect_card, begin,
                                        end,       transmit,        status_change, cancel};
@@ -742,6 +882,7 @@ int main(void) {
   decrypt_preflight_contract(sessions[0]);
   cache_contract(sessions[0]);
   profile_contract(sessions[0], sessions[1]);
+  agreement_commit_contract(sessions[0], sessions[1]);
   teardown_contract(sessions[0], CK_FALSE);
   CK_SESSION_INFO survivor;
   CHECK(C_GetSessionInfo(sessions[1], &survivor) == CKR_OK && survivor.state == CKS_RW_USER_FUNCTIONS);
