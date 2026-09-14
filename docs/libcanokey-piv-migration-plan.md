@@ -143,6 +143,10 @@ ECDH fail-closed、Windows decrypt/derive tests 通过；旧 C decrypt/derive bu
 
 ## 阶段 4：management authentication 和 PIV writes
 
+当前进度：libcanokey 已提供 management-authorized selected-context 的 object
+write、certificate write/delete 工厂；PKCS#11 写路径仍保留现有 authorization/cache
+边界，尚未消费这些 mutation APIs。
+
 libcanokey 负责 External/Mutual management authentication、algorithm selection、
 ADMIN DATA/PRINTED parsing、certificate PUT DATA/delete、PIV data writes、key
 generation/import、batch progress 和 typed mutation result。
