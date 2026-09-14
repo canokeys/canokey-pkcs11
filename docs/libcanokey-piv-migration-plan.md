@@ -21,7 +21,7 @@ passes the corresponding contract and hardware gates; do not add silent fallback
 | 0: profile/context | Immutable token profile with binding epoch; copied selected contexts; bounded executor, two-session transaction contract and guarded cache/profile refresh | Full reset/invalidation, close/finalize and concurrent transaction matrix |
 | 1: public reads | Typed metadata/public keys, certificates, session data, directory and ordinary/F9 name reads | Complete malformed/duplicate/gzip/buffer/cache matrix |
 | 2: signing | RSA, ECDSA, Ed25519 and ML-DSA use Rust operations; PIN-policy and cancellation hardware matrix passes | Remaining legacy/error-path acceptance matrix |
-| 3: other private operations | RSA decrypt, ECDH/X25519 and ML-KEM use Rust operations | Windows endian/KDF hardware acceptance; one-shot commit/reservation contract passes |
+| 3: other private operations | RSA decrypt, ECDH/X25519 and ML-KEM use Rust operations | Windows RSA/P-521 hardware acceptance; P-256/P-384 DDI endian/KDF and one-shot commit contracts pass |
 | 4: management/writes | Management challenge-response, key generation/import, certificate/data/F5 writes and certificate deletion | Remaining PIN/PUK protection and write/failure matrix |
 | 5: remove duplicate C | Removed C APDU builders, credential/data/public-key parsers, 3DES, the legacy callback adapter and session algorithm maps | Complete acceptance matrix |
 
@@ -119,6 +119,9 @@ Reader: canokeys.org OpenPGP PIV OATH 0; serial 0; firmware
   mutation seam with the real Rust parser; real PUK mutation remains unverified.
 - Native x64 minidriver: two DDI lifetimes pass certificate read/write, PUBLIC
   write rejection, ADMIN authorization and USER signatures on 9A/9C/82.
+  Direct DDI ECDH on these P-256/P-384 keys matches Windows BCrypt raw-secret
+  byte order, size-query/short-buffer rules and agreement destruction. EC
+  key-exchange fields remain empty in the propagation view.
   Earlier propagation passed for these certificates, with signatures verified
   against their public keys; the latest DLL needs an unlocked-session rerun.
   Reset failure restores certificate contexts; locked-session preflight prevents
