@@ -26,6 +26,94 @@ pub extern "C" fn cnk_libcanokey_abi_version() -> u32 {
     canokey_c::cnk_abi_version()
 }
 
+/// Probe a PIV-capable device through the caller's synchronous transport.
+/// The transport transaction and connection remain owned by C; the returned
+/// profile is immutable and must be released with `cnk_profile_free`.
+///
+/// # Safety
+/// `out` and `response` must be writable for their declared ranges. The
+/// callback must be valid for the call, retain no pointers, and not unwind.
+/// The caller must keep the card transaction alive for the complete probe.
+#[no_mangle]
+pub unsafe extern "C" fn cnk_profile_probe(
+    transmit: Option<Transmit>,
+    context: *mut c_void,
+    response: *mut u8,
+    response_capacity: usize,
+    out: *mut *mut canokey_c::CnkProfile,
+) -> u32 {
+    if transmit.is_none() || response.is_null() || out.is_null() || response_capacity < 3 {
+        return ARGUMENT;
+    }
+    *out = ptr::null_mut();
+    let mut operation: *mut canokey_c::CnkOperation = ptr::null_mut();
+    let mut error = canokey_c::CnkError {
+        struct_size: std::mem::size_of::<canokey_c::CnkError>() as u32,
+        kind: 0,
+        phase: 0,
+        reference: 0,
+        presence_flags: 0,
+        status_word: 0,
+        retries_remaining: 0,
+        reserved: 0,
+    };
+    if canokey_c::cnk_probe_device_new(1, ptr::null(), &mut operation, &mut error) != 0 {
+        return FAILED;
+    }
+    let mut step = 0u32;
+    let mut exchange = vec![0u8; response_capacity];
+    loop {
+        let status = if step == 0 {
+            canokey_c::cnk_operation_start(operation, &mut step, &mut error)
+        } else {
+            let mut command_len = 0usize;
+            let command_status =
+                canokey_c::cnk_operation_command(operation, ptr::null_mut(), &mut command_len);
+            if command_status != 0 || command_len == 0 {
+                FAILED
+            } else {
+                let mut command = vec![0u8; command_len];
+                let mut actual = command_len;
+                if canokey_c::cnk_operation_command(operation, command.as_mut_ptr(), &mut actual)
+                    != 0
+                {
+                    FAILED
+                } else {
+                    let mut response_len = exchange.len();
+                    let callback = transmit.unwrap();
+                    let transport_status = callback(
+                        context,
+                        command.as_ptr(),
+                        actual,
+                        exchange.as_mut_ptr(),
+                        &mut response_len,
+                    );
+                    if transport_status != 0 {
+                        TRANSPORT
+                    } else {
+                        canokey_c::cnk_operation_advance(
+                            operation,
+                            exchange.as_ptr(),
+                            response_len,
+                            &mut step,
+                            &mut error,
+                        )
+                    }
+                }
+            }
+        };
+        if status != 0 {
+            canokey_c::cnk_operation_free(operation);
+            return status;
+        }
+        if step == 2 {
+            let status = canokey_c::cnk_operation_take_profile(operation, out);
+            canokey_c::cnk_operation_free(operation);
+            return if status == 0 { OK } else { FAILED };
+        }
+    }
+}
+
 /// Copied command descriptor; layout is shared with backend/protocol.h.
 #[repr(C)]
 pub struct Command {
