@@ -122,15 +122,19 @@ Reader: canokeys.org OpenPGP PIV OATH 0; serial 0; firmware
   Direct DDI ECDH on these P-256/P-384 keys matches Windows BCrypt raw-secret
   byte order, size-query/short-buffer rules and agreement destruction. EC
   key-exchange fields remain empty in the propagation view.
-  Earlier propagation passed for these certificates, with signatures verified
-  against their public keys; the latest DLL needs an unlocked-session rerun.
-  Reset failure restores certificate contexts; locked-session preflight prevents
-  certificate removal. Original and new DLLs both failed to propagate while locked.
+  The current DLL also passes unlocked-session CertPropSvc propagation: selected
+  user-store copies are removed, USB reinsert restores all three certificates
+  with unchanged provider/container/KeySpec, and silent KSP signatures verify
+  against their certificate public keys. Both service and KSP logs contain the
+  new external-call completion records. Reset failure restores certificate
+  contexts; locked-session preflight prevents certificate removal.
 - Current original 9D/9E RSA metadata/certificate associations, 85 X25519 material
   and 86 metadata have independent anomalies. Slot 83 is SM2 and outside the
   Windows view. These prevent claiming complete card/Windows acceptance.
-- Native ARM64 runtime and the complete PIN/reset/concurrency/write matrix remain
-  unverified. The minidriver must rebind logging before each C_Initialize.
+- Native ARM64 runtime, real PUK mutation and Windows RSA/P-521 provisioning
+  remain unverified and need suitable hardware/credentials. Remaining software
+  acceptance in the stage table can proceed independently of those prerequisites.
+  The minidriver must rebind logging before each C_Initialize.
 
 The test scripts write machine-readable reports with explicit selections and DLL
 hashes. Generated logs, key material and debugging chronology stay out of docs.
