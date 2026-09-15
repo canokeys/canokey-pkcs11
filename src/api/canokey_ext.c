@@ -31,7 +31,7 @@ static const CK_BYTE CNK_ADMIN_DATA_TAG[] = {0x5F, 0xFF, 0x00};
 static const CK_BYTE CNK_PRINTED_INFORMATION_TAG[] = {0x5F, 0xC1, 0x09};
 
 static CK_RV readAdminProtectionFlags(const CK_BYTE *data, CK_ULONG dataLen, uint32_t *flags) {
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
   uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_admin_data_flags, data, dataLen, flags, &error);
   // Invalid protection data must not be confused with an absent policy.
   return cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
@@ -48,7 +48,7 @@ static CK_RV checkPinManagedAdminData(const CK_BYTE *data, CK_ULONG dataLen) {
 
 static CK_RV parsePinProtectedManagementKey(const CK_BYTE *data, CK_ULONG dataLen,
                                             CK_BYTE managementKey[CNK_MANAGEMENT_KEY_LEN]) {
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
   size_t keyLen = CNK_MANAGEMENT_KEY_LEN;
   uint32_t status =
       CNK_EXTERNAL_CALL(cnk_piv_printed_management_key_copy, data, dataLen, managementKey, &keyLen, &error);

@@ -14,7 +14,7 @@ static CK_RV cnk_libcanokey_sign_status(uint32_t status) {
   return cnk_piv_operation_status(status, NULL, CKR_KEY_HANDLE_INVALID);
 }
 
-static CK_RV cnk_libcanokey_status_with_error(uint32_t status, const CNK_LIBCANO_ERROR *error) {
+static CK_RV cnk_libcanokey_status_with_error(uint32_t status, const cnk_error_v1 *error) {
   return cnk_piv_operation_status(status, error, CKR_KEY_HANDLE_INVALID);
 }
 
@@ -22,18 +22,18 @@ static uint32_t signing_input_kind(uint32_t algorithm) {
   // The PKCS#11 layer prepares an encoded RSA block, an EC digest or an
   // Ed/ML-DSA message. Wire-ID resolution belongs to the libcanokey profile.
   switch (algorithm) {
-  case CNK_LIBCANO_ALG_RSA_2048:
-  case CNK_LIBCANO_ALG_RSA_3072:
-  case CNK_LIBCANO_ALG_RSA_4096:
-    return CNK_LIBCANO_SIGN_RSA_BLOCK;
-  case CNK_LIBCANO_ALG_P256:
-  case CNK_LIBCANO_ALG_P384:
-  case CNK_LIBCANO_ALG_P521:
-  case CNK_LIBCANO_ALG_SECP256K1:
-    return CNK_LIBCANO_SIGN_DIGEST;
-  case CNK_LIBCANO_ALG_ED25519:
-  case CNK_LIBCANO_ALG_MLDSA65:
-    return CNK_LIBCANO_SIGN_MESSAGE;
+  case CNK_ALGORITHM_RSA2048:
+  case CNK_ALGORITHM_RSA3072:
+  case CNK_ALGORITHM_RSA4096:
+    return CNK_SIGN_RSA_BLOCK;
+  case CNK_ALGORITHM_P256:
+  case CNK_ALGORITHM_P384:
+  case CNK_ALGORITHM_P521:
+  case CNK_ALGORITHM_SECP256K1:
+    return CNK_SIGN_DIGEST;
+  case CNK_ALGORITHM_ED25519:
+  case CNK_ALGORITHM_MLDSA65:
+    return CNK_SIGN_MESSAGE;
   default:
     return 0;
   }
@@ -50,8 +50,8 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
                                         CK_BYTE_PTR input, CK_ULONG inputLen, const CK_BYTE *contextPin,
                                         CK_ULONG contextPinLen, CK_BYTE_PTR output, CK_ULONG_PTR outputLen,
                                         const char *operationName) {
-  CNK_LIBCANO_CONTEXT *context = NULL;
-  CNK_LIBCANO_OPERATION *operation = NULL;
+  cnk_piv_context_t *context = NULL;
+  cnk_operation_t *operation = NULL;
   CNK_ENSURE_NONNULL(session, output, outputLen, input);
   uint32_t algorithm = algorithmType;
   CNK_ENSURE_OK(cnk_piv_require_algorithm(session, algorithm));
@@ -62,10 +62,10 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
   if (rv != CKR_OK)
     return rv;
 
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
-  uint32_t status = CNK_LIBCANO_OK;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  uint32_t status = CNK_OK;
   uint32_t contextState =
-      pinPolicy == CNK_PIV_PIN_POLICY_NEVER ? CNK_LIBCANO_CONTEXT_SELECTED : CNK_LIBCANO_CONTEXT_PIN_VERIFIED;
+      pinPolicy == CNK_PIV_PIN_POLICY_NEVER ? CNK_PIV_CONTEXT_SELECTED : CNK_PIV_CONTEXT_PIN_VERIFIED;
 
   rv = cnk_piv_context_for_session(session, contextState, &context);
   if (rv != CKR_OK)
@@ -85,7 +85,7 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
                                &error);
     break;
   }
-  if (status != CNK_LIBCANO_OK) {
+  if (status != CNK_OK) {
     rv = cnk_libcanokey_status_with_error(status, &error);
     goto cleanup;
   }
@@ -95,7 +95,7 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
 
   size_t required = 0;
   status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, NULL, &required);
-  if (status != CNK_LIBCANO_OK) {
+  if (status != CNK_OK) {
     rv = cnk_libcanokey_status_with_error(status, &error);
     goto cleanup;
   }
@@ -125,7 +125,7 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
   uint32_t kind = signing_input_kind(algorithm);
   if (kind == 0)
     return CKR_FUNCTION_NOT_SUPPORTED;
-  CK_BBOOL streaming = algorithm == CNK_LIBCANO_ALG_MLDSA65;
+  CK_BBOOL streaming = algorithm == CNK_ALGORITHM_MLDSA65;
 
   SCARDHANDLE card = 0;
   CK_RV rv = cnk_connect_for_private_key_operation(slotId, session, session->signingContext.pinPolicy,
@@ -134,13 +134,12 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
   if (rv != CKR_OK)
     return rv;
 
-  CNK_LIBCANO_CONTEXT *context = NULL;
-  CNK_LIBCANO_OPERATION *operation = NULL;
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
-  uint32_t contextState = session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_NEVER
-                              ? CNK_LIBCANO_CONTEXT_SELECTED
-                              : CNK_LIBCANO_CONTEXT_PIN_VERIFIED;
-  uint32_t status = CNK_LIBCANO_OK;
+  cnk_piv_context_t *context = NULL;
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  uint32_t contextState = session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_NEVER ? CNK_PIV_CONTEXT_SELECTED
+                                                                                        : CNK_PIV_CONTEXT_PIN_VERIFIED;
+  uint32_t status = CNK_OK;
 
   rv = cnk_piv_context_for_session(session, contextState, &context);
   if (rv != CKR_OK)
@@ -151,7 +150,7 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
                                    data, dataLen, NULL, 0, NULL, &operation, &error)
                : CNK_EXTERNAL_CALL(cnk_piv_sign_in_context_new, context, session->signingContext.pivSlot, algorithm,
                                    kind, data, dataLen, NULL, &operation, &error);
-  if (status != CNK_LIBCANO_OK) {
+  if (status != CNK_OK) {
     rv = cnk_libcanokey_status_with_error(status, &error);
     goto cleanup;
   }
@@ -160,10 +159,10 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
     goto cleanup;
 
   size_t required = 0;
-  status = !streaming && kind == CNK_LIBCANO_SIGN_DIGEST
+  status = !streaming && kind == CNK_SIGN_DIGEST
                ? CNK_EXTERNAL_CALL(cnk_operation_signature_p1363, operation, NULL, &required)
                : CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, NULL, &required);
-  if (status != CNK_LIBCANO_OK) {
+  if (status != CNK_OK) {
     rv = cnk_libcanokey_status_with_error(status, &error);
     goto cleanup;
   }
@@ -173,7 +172,7 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
     rv = CKR_BUFFER_TOO_SMALL;
     goto cleanup;
   }
-  status = !streaming && kind == CNK_LIBCANO_SIGN_DIGEST
+  status = !streaming && kind == CNK_SIGN_DIGEST
                ? CNK_EXTERNAL_CALL(cnk_operation_signature_p1363, operation, signature, &required)
                : CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, signature, &required);
   rv = cnk_libcanokey_sign_status(status);
@@ -225,8 +224,8 @@ CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR 
 
 CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, uint32_t algorithmType, CK_BYTE pivSlot,
                                CK_BYTE pinPolicy, CK_BYTE touchPolicy) {
-  CNK_LIBCANO_CONTEXT *context = NULL;
-  CNK_LIBCANO_OPERATION *operation = NULL;
+  cnk_piv_context_t *context = NULL;
+  cnk_operation_t *operation = NULL;
   CNK_ENSURE_NONNULL(session);
   uint32_t algorithm = algorithmType;
   CNK_ENSURE_OK(cnk_piv_require_algorithm(session, algorithm));
@@ -236,19 +235,19 @@ CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, u
   rv = cnk_begin_key_write(slotID, session, pivSlot, &card);
   if (rv != CKR_OK)
     return rv;
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
-  CNK_LIBCANO_KEY_PARAMETERS params = {.struct_size = sizeof(params),
-                                       .slot = pivSlot,
-                                       .algorithm = algorithm,
-                                       .pin_policy = pinPolicy,
-                                       .touch_policy = touchPolicy};
-  uint32_t status = CNK_LIBCANO_OK;
-  rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context);
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  cnk_piv_key_parameters_v1 params = {.struct_size = sizeof(params),
+                                      .slot = pivSlot,
+                                      .algorithm = algorithm,
+                                      .pin_policy = pinPolicy,
+                                      .touch_policy = touchPolicy};
+  uint32_t status = CNK_OK;
+  rv = cnk_piv_context_for_session(session, CNK_PIV_CONTEXT_MANAGEMENT_AUTHORIZED, &context);
   if (rv != CKR_OK)
     goto cleanup;
 
   status = CNK_EXTERNAL_CALL(cnk_piv_generate_key_in_context_new, context, &params, NULL, &operation, &error);
-  if (status != CNK_LIBCANO_OK) {
+  if (status != CNK_OK) {
     rv = cnk_libcanokey_status_with_error(status, &error);
     goto cleanup;
   }
@@ -268,8 +267,8 @@ cleanup:
 }
 
 CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CNK_PIV_IMPORT *material) {
-  CNK_LIBCANO_CONTEXT *context = NULL;
-  CNK_LIBCANO_OPERATION *operation = NULL;
+  cnk_piv_context_t *context = NULL;
+  cnk_operation_t *operation = NULL;
   CNK_ENSURE_NONNULL(session, material);
   CNK_ENSURE_OK(cnk_piv_require_algorithm(session, material->parameters.algorithm));
   CK_BBOOL attempted = CK_FALSE;
@@ -277,15 +276,15 @@ CK_RV cnk_piv_import_key(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const C
   CK_RV rv = cnk_begin_key_write(slotID, session, (CK_BYTE)material->parameters.slot, &card);
   if (rv != CKR_OK)
     return rv;
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
-  uint32_t status = CNK_LIBCANO_OK;
-  rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context);
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  uint32_t status = CNK_OK;
+  rv = cnk_piv_context_for_session(session, CNK_PIV_CONTEXT_MANAGEMENT_AUTHORIZED, &context);
   if (rv != CKR_OK)
     goto import_cleanup;
 
   status = CNK_EXTERNAL_CALL(cnk_piv_import_key_in_context_new, context, &material->parameters, material->components,
                              material->count, NULL, &operation, &error);
-  if (status != CNK_LIBCANO_OK) {
+  if (status != CNK_OK) {
     rv = cnk_libcanokey_status_with_error(status, &error);
     goto import_cleanup;
   }

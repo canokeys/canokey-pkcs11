@@ -343,10 +343,6 @@ Additional probes that passed:
 - `RSA-PKCS` with `openssl pkeyutl -verifyrecover`.
 - `SHA256-RSA-PKCS-PSS --salt-len 32` with OpenSSL PSS verification.
 - `ECDSA-SHA256 --signature-format openssl` on ID 02 with OpenSSL verification.
-- `test_real.exe` built and ran against the current hardware after the
-  cross-platform loader/CMake changes. It covered RSA v1.5, RSA-PSS, RSA
-  multipart, ECDSA, ECDSA-SHA1, and ECDSA-SHA256 with TF-PSA-Crypto's
-  mbedtls-compatible verification APIs.
 
 Management challenge-response and 3DES/AES handling belong to libcanokey.
 The former C 3DES helper and C PIV protocol parsers have been removed.
@@ -416,15 +412,8 @@ PIV object IDs map to slots as:
 - Native Windows builds run the deterministic protocol/transaction contracts.
   The CMocka suite runs on Linux, including ASan/UBSan/leak checks; Windows
   CMocka configuration still requires a native compatible package.
-- `BUILD_REAL_TESTING=ON -DBUILD_UNIT_TESTING=OFF` builds `test_real.exe` on Windows without requiring `PkgConfig`/`cmocka`.
-- Destructive real-card write tests in `test_real.exe` are opt-in. Set
-  `CNK_RUN_DESTRUCTIVE_REAL_TESTS=1` to exercise `C_GenerateKeyPair` and
-  `C_CreateObject(CKO_PRIVATE_KEY)` against ID 06 / slot 83. These tests
-  intentionally separate SO-authenticated write sessions from USER-authenticated
-  signing sessions.
-- `test_pqc.exe` runs only its non-destructive checks unless
-  `CNK_RUN_DESTRUCTIVE_REAL_TESTS=1` is set. Every run requires
-  `CNK_PIV_SLOT_ID` and `CNK_PIV_SERIAL`; the destructive matrix verifies both,
-  then overwrites IDs 08/09 with Ed25519/X25519 vectors and IDs 23/24 with
-  ML-DSA-65/ML-KEM-768 vectors. Windows CI artifacts include this executable so
-  it can be run against the downloaded DLL without a local build.
+- `BUILD_REAL_TESTING=ON -DBUILD_UNIT_TESTING=OFF` builds `test_abi.exe`
+  without CMocka. Run it with a DLL path and explicit `CNK_PIV_PIN`,
+  `CNK_PIV_SLOT_ID`, and `CNK_PIV_SERIAL`. It never provisions card keys.
+- Use `test/real/hardware.py` for algorithm and write regressions and explicit
+  fixture preparation. Follow `docs/validation.md#real-card-entry-points`.

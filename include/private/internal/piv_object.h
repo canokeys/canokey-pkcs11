@@ -9,8 +9,8 @@
 // Do not copy this descriptor: its scalar view points inside it. Keep it alive
 // through cnk_piv_import_key(), then zeroize the complete descriptor on all exits.
 typedef struct {
-  CNK_LIBCANO_KEY_PARAMETERS parameters;
-  CNK_LIBCANO_BYTES components[5];
+  cnk_piv_key_parameters_v1 parameters;
+  cnk_bytes_t components[5];
   size_t count;
   CK_BYTE scalar[66];
 } CNK_PIV_IMPORT;

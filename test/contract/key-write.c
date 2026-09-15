@@ -15,6 +15,8 @@
     }                                                                                                                  \
   } while (0)
 
+#include "profile.h"
+
 static CNK_PKCS11_TOKEN_STATE token;
 static CNK_PKCS11_SESSION keySession;
 _Atomic CK_ULONG g_cnk_managed_binding_epoch;
@@ -39,41 +41,7 @@ CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *session) {
   abort();
 }
 static void make_profile(void) {
-  CNK_LIBCANO_OPERATION *op = NULL;
-  uint32_t step = 0;
-  CHECK(cnk_probe_device_new(1, NULL, &op, NULL) == CNK_LIBCANO_OK);
-  CHECK(cnk_operation_start(op, &step, NULL) == CNK_LIBCANO_OK);
-  const CK_BYTE ok[] = {0x90, 0}, unavailable[] = {0x6d, 0}, fw[] = {'3', '.', '1', '.', '0', 0x90, 0};
-  const CK_BYTE version[] = {6, 0, 0, 0x90, 0},
-                config[] = {1, 0xe0, 5, 0x16, 0xe1, 0x53, 0x15, 0x54, 0xe2, 0xe3, 0x90, 0};
-  unsigned exchanges = 0;
-  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
-    CK_BYTE command[300];
-    size_t length = sizeof(command);
-    CHECK(++exchanges <= 16);
-    CHECK(cnk_operation_command(op, command, &length) == CNK_LIBCANO_OK && length >= 4);
-    const CK_BYTE *response = unavailable;
-    size_t responseLen = sizeof(unavailable);
-    if (command[1] == 0xa4) {
-      response = ok;
-      responseLen = sizeof(ok);
-    } else if (command[1] == 0x31 && command[2] == 0) {
-      response = fw;
-      responseLen = sizeof(fw);
-    } else if (command[1] == 0xfd) {
-      response = version;
-      responseLen = sizeof(version);
-    } else if (command[1] == 0xee) {
-      response = config;
-      responseLen = sizeof(config);
-    }
-    CHECK(cnk_operation_advance(op, response, responseLen, &step, NULL) == CNK_LIBCANO_OK);
-  }
-  CHECK(step == CNK_LIBCANO_STEP_DONE);
-  void *profile = NULL;
-  CHECK(cnk_operation_take_profile(op, &profile) == CNK_LIBCANO_OK);
-  cnk_operation_free(op);
-  token.libcanokeyProfile = profile;
+  token.libcanokeyProfile = test_profile("3.1.0", 5);
   keySession.token = &token;
 }
 _Atomic CK_BBOOL g_cnk_is_managed_mode = CK_TRUE;

@@ -8,7 +8,7 @@ static const char *code_name(uint32_t value, const char *const *names, size_t co
   return value < count ? names[value] : "Unknown";
 }
 
-static void log_libcanokey_error(uint32_t status, const CNK_LIBCANO_ERROR *error) {
+static void log_libcanokey_error(uint32_t status, const cnk_error_v1 *error) {
   static const char *const statuses[] = {
       "OK", "InvalidArgument", "InvalidState", "BufferTooSmall", "ResultTypeMismatch", "ProtocolError", "Panic"};
   static const char *const kinds[] = {"None",
@@ -35,7 +35,7 @@ static void log_libcanokey_error(uint32_t status, const CNK_LIBCANO_ERROR *error
   static const char *const references[] = {
       "None",       "PIN",      "PUK", "ManagementKey", "AdminPIN", "OATHAccess", "OpenPGPPW1Sign", "OpenPGPPW1Other",
       "OpenPGPPW3", "ResetCode"};
-  if (status == CNK_LIBCANO_OK)
+  if (status == CNK_OK)
     return;
   if (error == NULL || error->kind == 0) {
     CNK_DEBUG("libcanokey ABI failure: %s (%u)", code_name(status, statuses, sizeof(statuses) / sizeof(statuses[0])),
@@ -55,27 +55,27 @@ static void log_libcanokey_error(uint32_t status, const CNK_LIBCANO_ERROR *error
             retries);
 }
 
-CK_RV cnk_piv_operation_status(uint32_t status, const CNK_LIBCANO_ERROR *error, CK_RV absent) {
+CK_RV cnk_piv_operation_status(uint32_t status, const cnk_error_v1 *error, CK_RV absent) {
   log_libcanokey_error(status, error);
-  if (status == CNK_LIBCANO_OK)
+  if (status == CNK_OK)
     return CKR_OK;
-  if (status == CNK_LIBCANO_BUFFER_TOO_SMALL)
+  if (status == CNK_BUFFER_TOO_SMALL)
     return CKR_BUFFER_TOO_SMALL;
-  if (status == CNK_LIBCANO_INVALID_ARGUMENT)
+  if (status == CNK_INVALID_ARGUMENT)
     return CKR_ARGUMENTS_BAD;
-  if (status == CNK_LIBCANO_PROTOCOL_ERROR && error != NULL) {
+  if (status == CNK_PROTOCOL_ERROR && error != NULL) {
     switch (error->kind) {
-    case CNK_LIBCANO_ERROR_NOT_FOUND:
+    case CNK_ERROR_NOT_FOUND:
       return absent;
-    case CNK_LIBCANO_ERROR_AUTHENTICATION_FAILED:
+    case CNK_ERROR_AUTHENTICATION_FAILED:
       return error->reference == 3 ? CKR_PIN_INCORRECT : CKR_USER_NOT_LOGGED_IN;
-    case CNK_LIBCANO_ERROR_SECURITY_STATUS:
+    case CNK_ERROR_SECURITY_STATUS:
       return CKR_USER_NOT_LOGGED_IN;
-    case CNK_LIBCANO_ERROR_PIN_BLOCKED:
+    case CNK_ERROR_PIN_BLOCKED:
       return CKR_PIN_LOCKED;
-    case CNK_LIBCANO_ERROR_UNSUPPORTED_FEATURE:
+    case CNK_ERROR_UNSUPPORTED_FEATURE:
       return CKR_FUNCTION_NOT_SUPPORTED;
-    case CNK_LIBCANO_ERROR_LIMIT_EXCEEDED:
+    case CNK_ERROR_LIMIT_EXCEEDED:
       return CKR_DATA_LEN_RANGE;
     default:
       break;
@@ -84,7 +84,7 @@ CK_RV cnk_piv_operation_status(uint32_t status, const CNK_LIBCANO_ERROR *error, 
   return CKR_DEVICE_ERROR;
 }
 
-CK_RV cnk_piv_context_for_session(CNK_PKCS11_SESSION *session, uint32_t state, CNK_LIBCANO_CONTEXT **context) {
+CK_RV cnk_piv_context_for_session(CNK_PKCS11_SESSION *session, uint32_t state, cnk_piv_context_t **context) {
   if (context == NULL)
     return CKR_ARGUMENTS_BAD;
   *context = NULL;
@@ -93,8 +93,8 @@ CK_RV cnk_piv_context_for_session(CNK_PKCS11_SESSION *session, uint32_t state, C
   CK_RV rv = cnk_mutex_lock(&session->token->lock);
   if (rv != CKR_OK)
     return rv;
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
-  uint32_t status = CNK_LIBCANO_INVALID_STATE;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  uint32_t status = CNK_INVALID_STATE;
   if (session->token->libcanokeyProfile != NULL &&
       session->token->libcanokeyProfileEpoch == atomic_load(&g_cnk_managed_binding_epoch))
     status = CNK_EXTERNAL_CALL(cnk_piv_context_new, session->token->libcanokeyProfile, state, context, &error);
@@ -115,22 +115,22 @@ CK_RV cnk_piv_require_algorithm(CNK_PKCS11_SESSION *session, uint32_t algorithm)
   CK_RV rv = CKR_DEVICE_ERROR;
   if (session->token->libcanokeyProfile != NULL &&
       session->token->libcanokeyProfileEpoch == atomic_load(&g_cnk_managed_binding_epoch)) {
-    CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+    cnk_error_v1 error = {.struct_size = sizeof(error)};
     uint32_t status =
         CNK_EXTERNAL_CALL(cnk_profile_piv_require_algorithm, session->token->libcanokeyProfile, algorithm, &error);
     rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
-    if (status == CNK_LIBCANO_INVALID_ARGUMENT || error.kind == CNK_LIBCANO_ERROR_UNSUPPORTED_FEATURE ||
-        error.kind == CNK_LIBCANO_ERROR_UNSUPPORTED_ALGORITHM)
+    if (status == CNK_INVALID_ARGUMENT || error.kind == CNK_ERROR_UNSUPPORTED_FEATURE ||
+        error.kind == CNK_ERROR_UNSUPPORTED_ALGORITHM)
       rv = CKR_MECHANISM_INVALID;
   }
   CK_RV unlockRv = cnk_mutex_unlock(&session->token->lock);
   return rv == CKR_OK ? unlockRv : rv;
 }
 
-CK_RV cnk_run_piv_operation(SCARDHANDLE card, CNK_LIBCANO_OPERATION *operation, CK_RV absent, CK_BBOOL *attempted) {
+CK_RV cnk_run_piv_operation(SCARDHANDLE card, cnk_operation_t *operation, CK_RV absent, CK_BBOOL *attempted) {
   CK_BYTE command[2048] = {0};
   CK_BYTE response[8192] = {0};
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
   uint32_t step = 0;
   CK_RV rv = CKR_DEVICE_ERROR;
   size_t exchanges = 0, totalResponse = 0;
@@ -143,7 +143,7 @@ CK_RV cnk_run_piv_operation(SCARDHANDLE card, CNK_LIBCANO_OPERATION *operation, 
   rv = cnk_piv_operation_status(CNK_EXTERNAL_CALL(cnk_operation_start, operation, &step, &error), &error, absent);
   if (rv != CKR_OK)
     goto cleanup;
-  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
+  while (step == CNK_STEP_EXCHANGE) {
     if (exchanges++ == 4096) {
       rv = CKR_DATA_LEN_RANGE;
       goto cleanup;
@@ -187,7 +187,7 @@ CK_RV cnk_run_piv_operation(SCARDHANDLE card, CNK_LIBCANO_OPERATION *operation, 
     if (rv != CKR_OK)
       goto cleanup;
   }
-  rv = step == CNK_LIBCANO_STEP_DONE ? CKR_OK : CKR_DEVICE_ERROR;
+  rv = step == CNK_STEP_DONE ? CKR_OK : CKR_DEVICE_ERROR;
 cleanup:
   mbedtls_platform_zeroize(command, sizeof(command));
   mbedtls_platform_zeroize(response, sizeof(response));
@@ -195,11 +195,11 @@ cleanup:
 }
 
 CK_RV cnk_piv_read_metadata_fields(CNK_PKCS11_SESSION *session, SCARDHANDLE card, CK_BYTE reference,
-                                   CNK_LIBCANO_METADATA *metadata, CK_RV absent) {
-  CNK_LIBCANO_CONTEXT *context = NULL;
-  CNK_LIBCANO_OPERATION *operation = NULL;
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
-  CK_RV rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_SELECTED, &context);
+                                   cnk_metadata_v1 *metadata, CK_RV absent) {
+  cnk_piv_context_t *context = NULL;
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  CK_RV rv = cnk_piv_context_for_session(session, CNK_PIV_CONTEXT_SELECTED, &context);
   if (rv != CKR_OK)
     return rv;
   uint32_t status =
@@ -219,22 +219,22 @@ CK_RV cnk_piv_read_metadata_fields(CNK_PKCS11_SESSION *session, SCARDHANDLE card
 
 // Copy all components before publishing the snapshot; no partial key escapes
 // an ABI failure. The result getters never advance or access the card.
-CK_RV cnk_copy_piv_public_key(const CNK_LIBCANO_OPERATION *operation, CNK_PIV_PUBLIC_KEY *output) {
+CK_RV cnk_copy_piv_public_key(const cnk_operation_t *operation, CNK_PIV_PUBLIC_KEY *output) {
   CNK_ENSURE_NONNULL(operation, output);
   CNK_PIV_PUBLIC_KEY key = {0};
-  if (CNK_EXTERNAL_CALL(cnk_operation_key_algorithm, operation, &key.algorithm) != CNK_LIBCANO_OK)
+  if (CNK_EXTERNAL_CALL(cnk_operation_key_algorithm, operation, &key.algorithm) != CNK_OK)
     return CKR_DEVICE_ERROR;
-  CK_BBOOL rsa = key.algorithm >= CNK_LIBCANO_ALG_RSA_1024 && key.algorithm <= CNK_LIBCANO_ALG_RSA_4096;
+  CK_BBOOL rsa = key.algorithm >= CNK_ALGORITHM_RSA1024 && key.algorithm <= CNK_ALGORITHM_RSA4096;
   size_t length = sizeof(key.value);
-  uint32_t field = rsa ? CNK_LIBCANO_PUBLIC_MODULUS : CNK_LIBCANO_PUBLIC_POINT_OR_RAW;
-  if (CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, field, key.value, &length) != CNK_LIBCANO_OK ||
-      length == 0 || length > sizeof(key.value))
+  uint32_t field = rsa ? CNK_PUBLIC_MODULUS : CNK_PUBLIC_POINT_OR_RAW;
+  if (CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, field, key.value, &length) != CNK_OK || length == 0 ||
+      length > sizeof(key.value))
     return CKR_DEVICE_ERROR;
   key.valueLen = (CK_ULONG)length;
   if (rsa) {
     length = sizeof(key.exponent);
-    if (CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, CNK_LIBCANO_PUBLIC_EXPONENT, key.exponent,
-                          &length) != CNK_LIBCANO_OK ||
+    if (CNK_EXTERNAL_CALL(cnk_operation_public_key_copy, operation, CNK_PUBLIC_EXPONENT, key.exponent, &length) !=
+            CNK_OK ||
         length == 0 || length > sizeof(key.exponent))
       return CKR_DEVICE_ERROR;
     key.exponentLen = (CK_ULONG)length;

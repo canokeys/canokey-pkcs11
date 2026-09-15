@@ -916,15 +916,15 @@ CNK_TEST_API void cnk_disconnect_card(SCARDHANDLE hCard) {
   cnk_pcsc_operation_end();
 }
 
-CK_RV cnk_probe_device_profile(CK_SLOT_ID slotID, uint32_t mode, void **profile) {
+CK_RV cnk_probe_device_profile(CK_SLOT_ID slotID, uint32_t mode, cnk_profile_t **profile) {
   CNK_ENSURE_NONNULL(profile);
   *profile = NULL;
   SCARDHANDLE card = 0;
   CK_RV rv = cnk_begin_card_transaction(slotID, &card);
   if (rv != CKR_OK)
     return rv;
-  CNK_LIBCANO_OPERATION *operation = NULL;
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
   uint32_t status = CNK_EXTERNAL_CALL(cnk_probe_device_new, mode, NULL, &operation, &error);
   rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
   if (rv == CKR_OK)
@@ -937,7 +937,7 @@ CK_RV cnk_probe_device_profile(CK_SLOT_ID slotID, uint32_t mode, void **profile)
   return rv;
 }
 
-CK_RV cnk_probe_libcanokey_profile(CK_SLOT_ID slotID, void **profile) {
+CK_RV cnk_probe_libcanokey_profile(CK_SLOT_ID slotID, cnk_profile_t **profile) {
   return cnk_probe_device_profile(slotID, 1, profile);
 }
 

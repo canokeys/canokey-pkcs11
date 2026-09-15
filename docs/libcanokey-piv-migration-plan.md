@@ -32,7 +32,7 @@ C retains PKCS#11 admission, host crypto, caches and Windows representations.
 | Windows integration | API ownership contracts, enrollment rollback and cache/name boundaries | Six certificates propagated with stable associations; CAPI/CNG crypto and 18 DDI generation/import cases |
 
 The C regression entry points are `test/contract/piv-operation.c`,
-`piv-management.c`, `piv-recovery.c`, `piv-transactions.c`, `key-write.c` and
+`piv-management.c`, `piv-transactions.c`, `key-write.c` and
 `container-name.c`. Libcanokey's PIV transcript/parser and C/C++ ABI suites verify
 the protocol side. [validation.md](validation.md) defines failure-injection,
 sanitizer and review requirements; [api-contracts.md](api-contracts.md) contains
@@ -75,13 +75,13 @@ normalization are handled once by the protocol owner.
 ## Reproducible hardware checks
 
 The development reader is `canokeys.org OpenPGP PIV OATH 0`, serial `0`, firmware
-`3.1.0-dev+gaa408988`, PIV `6.0.0`. Always re-enumerate before provisioning.
+`3.1.0-dev+gaa408988`, PIV `6.0.0`. Always re-enumerate before provisioning. Commands, dependencies and the explicit
+fixture schema are in [validation.md](validation.md#real-card-entry-points).
 
-- `scripts/hardware-crypto-test.py`: Debug and Release each pass 55 selected
-  groups, including all supported key variants, PIN policies, independent
+- `test/real/hardware.py test --suite all`: selected regression groups, including all supported key variants, PIN policies, independent
   OpenSSL verification, concurrent operations, certificate deletion preserving
   keys, RNG beyond 64 KiB, external replacement/reset and credential restoration.
-- `scripts/hardware-pin-managed-test.py`: explicit development fixture for
+- `test/real/hardware.py fixture`: explicit development fixture for
   PIN-managed finalization/login, blocked recovery and restoration. Check the
   authenticated retry-reset path first; always restore in the caller's `finally`.
   Its separate `clear-slot` mode deletes only an explicitly selected test key.
@@ -89,7 +89,7 @@ The development reader is `canokeys.org OpenPGP PIV OATH 0`, serial `0`, firmwar
   signature/key-exchange at 2048/3072/4096 bits and ECDSA P-256/P-384/P-521.
   Imported public keys match the software source. Original valid keys in 9A,
   9C and 82 are retained; 9D/9E/83 are explicit replaceable Windows fixtures.
-- `--self-signed-certificate-id` writes a certificate signed by the existing
+- `fixture certificate --id <hex-id>` writes a certificate signed by the existing
   card key and backs up previous DER. It needs `asn1crypto` only for this mode.
   The minidriver propagation test observes removal and recreation of all six
   selected user-store certificates, verifies provider/container/KeySpec stability,

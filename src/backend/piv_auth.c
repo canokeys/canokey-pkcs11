@@ -64,8 +64,8 @@ CK_RV cnk_connect_for_private_key_operation(CK_SLOT_ID slotId, CNK_PKCS11_SESSIO
 CK_RV cnk_select_piv_application(SCARDHANDLE card) {
   if (card == 0)
     return CKR_DEVICE_ERROR;
-  CNK_LIBCANO_OPERATION *operation = NULL;
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
   uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_select_application_new, NULL, &operation, &error);
   CK_RV rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
   if (rv == CKR_OK)
@@ -83,10 +83,10 @@ static CK_RV validate_piv_pin_len(CK_ULONG pinLen) {
 // Encoded credentials and command-specific status parsing belong to Rust.
 CK_RV cnk_piv_credential_on_card(CNK_PKCS11_SESSION *session, SCARDHANDLE card, uint32_t action, const CK_BYTE *old,
                                  CK_ULONG oldLen, const CK_BYTE *replacement, CK_ULONG newLen, CK_BYTE *tries) {
-  CNK_LIBCANO_CONTEXT *context = NULL;
-  CNK_LIBCANO_OPERATION *operation = NULL;
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
-  CK_RV rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_SELECTED, &context);
+  cnk_piv_context_t *context = NULL;
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  CK_RV rv = cnk_piv_context_for_session(session, CNK_PIV_CONTEXT_SELECTED, &context);
   if (rv != CKR_OK)
     return rv;
   uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_credential_in_context_new, context, action, old, oldLen, replacement,
@@ -100,11 +100,11 @@ CK_RV cnk_piv_credential_on_card(CNK_PKCS11_SESSION *session, SCARDHANDLE card, 
   if (tries != NULL && (error.presence_flags & 2))
     *tries = error.retries_remaining;
   if (rv != CKR_OK) {
-    if (action == CNK_LIBCANO_CREDENTIAL_LOGOUT)
+    if (action == CNK_PIV_CREDENTIAL_LOGOUT)
       rv = CKR_DEVICE_ERROR;
-    else if (error.kind == CNK_LIBCANO_ERROR_AUTHENTICATION_FAILED)
+    else if (error.kind == CNK_ERROR_AUTHENTICATION_FAILED)
       rv = CKR_PIN_INCORRECT;
-    else if (error.kind == CNK_LIBCANO_ERROR_INVALID_PIN ||
+    else if (error.kind == CNK_ERROR_INVALID_PIN ||
              ((error.presence_flags & 1) && ((error.status_word >> 8) == 0x67 || error.status_word == 0x6A80)))
       rv = CKR_PIN_LEN_RANGE;
   }
@@ -117,7 +117,7 @@ CK_RV cnk_piv_credential_on_card(CNK_PKCS11_SESSION *session, SCARDHANDLE card, 
 
 static CK_RV verify_piv_pin_selected(CNK_PKCS11_SESSION *session, SCARDHANDLE card, CK_UTF8CHAR_PTR pin,
                                      CK_ULONG pinLen, CK_BYTE_PTR tries) {
-  return cnk_piv_credential_on_card(session, card, CNK_LIBCANO_CREDENTIAL_VERIFY_PIN, pin, pinLen, NULL, 0, tries);
+  return cnk_piv_credential_on_card(session, card, CNK_PIV_CREDENTIAL_VERIFY_PIN, pin, pinLen, NULL, 0, tries);
 }
 
 CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pin,
@@ -162,7 +162,7 @@ CK_RV cnk_logout_piv_pin_with_session(CNK_PKCS11_SESSION *session) {
   CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
   SCARDHANDLE card = 0;
   CNK_ENSURE_OK(cnk_begin_piv_transaction(session->slotId, &card));
-  CK_RV rv = cnk_piv_credential_on_card(session, card, CNK_LIBCANO_CREDENTIAL_LOGOUT, NULL, 0, NULL, 0, NULL);
+  CK_RV rv = cnk_piv_credential_on_card(session, card, CNK_PIV_CREDENTIAL_LOGOUT, NULL, 0, NULL, 0, NULL);
   cnk_disconnect_card(card);
   return rv;
 }
@@ -178,10 +178,9 @@ CK_RV cnk_change_piv_secret_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
   CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
   SCARDHANDLE card = 0;
   CNK_ENSURE_OK(cnk_begin_piv_transaction(slotID, &card));
-  CK_RV rv = cnk_piv_credential_on_card(session, card,
-                                        reference == CNK_PIV_PIN_TYPE_PIN ? CNK_LIBCANO_CREDENTIAL_CHANGE_PIN
-                                                                          : CNK_LIBCANO_CREDENTIAL_CHANGE_PUK,
-                                        old, oldLen, replacement, newLen, tries);
+  CK_RV rv = cnk_piv_credential_on_card(
+      session, card, reference == CNK_PIV_PIN_TYPE_PIN ? CNK_PIV_CREDENTIAL_CHANGE_PIN : CNK_PIV_CREDENTIAL_CHANGE_PUK,
+      old, oldLen, replacement, newLen, tries);
   if (rv == CKR_OK && reference == CNK_PIV_PIN_TYPE_PIN)
     rv = cnk_token_update_cached_pin(session, old, oldLen, replacement, newLen);
   cnk_disconnect_card(card);
@@ -193,8 +192,7 @@ CK_RV cnk_unblock_piv_pin_on_card(CNK_PKCS11_SESSION *session, SCARDHANDLE card,
   CNK_ENSURE_NONNULL(session, puk, pin);
   CNK_ENSURE_OK(validate_piv_pin_len(pukLen));
   CNK_ENSURE_OK(validate_piv_pin_len(pinLen));
-  CK_RV rv =
-      cnk_piv_credential_on_card(session, card, CNK_LIBCANO_CREDENTIAL_UNBLOCK_PIN, puk, pukLen, pin, pinLen, tries);
+  CK_RV rv = cnk_piv_credential_on_card(session, card, CNK_PIV_CREDENTIAL_UNBLOCK_PIN, puk, pukLen, pin, pinLen, tries);
   if (rv == CKR_OK)
     rv = cnk_token_cache_pin(session, pin, pinLen);
   if (rv == CKR_OK) {
@@ -208,7 +206,7 @@ CK_RV cnk_unblock_piv_pin_on_card(CNK_PKCS11_SESSION *session, SCARDHANDLE card,
 }
 
 static CK_RV getManagementKeyAlgorithmOnCard(CNK_PKCS11_SESSION *session, SCARDHANDLE card, CK_BYTE *algorithm) {
-  CNK_LIBCANO_METADATA metadata = {.struct_size = sizeof(metadata)};
+  cnk_metadata_v1 metadata = {.struct_size = sizeof(metadata)};
   CK_RV rv =
       cnk_piv_read_metadata_fields(session, card, PIV_MANAGEMENT_KEY_SLOT, &metadata, CKR_FUNCTION_NOT_SUPPORTED);
   if (rv == CKR_FUNCTION_NOT_SUPPORTED) {
@@ -217,7 +215,7 @@ static CK_RV getManagementKeyAlgorithmOnCard(CNK_PKCS11_SESSION *session, SCARDH
   }
   if (rv != CKR_OK)
     return rv;
-  if (!(metadata.presence_flags & CNK_LIBCANO_METADATA_HAS_ALGORITHM))
+  if (!(metadata.presence_flags & CNK_METADATA_HAS_ALGORITHM))
     return CKR_DEVICE_ERROR;
   *algorithm = metadata.algorithm_id;
   return *algorithm == PIV_ALG_TDEA || *algorithm == PIV_ALG_AES_192 ? CKR_OK : CKR_MECHANISM_INVALID;
@@ -225,21 +223,21 @@ static CK_RV getManagementKeyAlgorithmOnCard(CNK_PKCS11_SESSION *session, SCARDH
 
 static CK_RV authenticateManagementKeyOnCard(CNK_PKCS11_SESSION *session, SCARDHANDLE card,
                                              const CK_BYTE key[PIV_MANAGEMENT_KEY_LEN]) {
-  CNK_LIBCANO_CONTEXT *context = NULL;
-  CNK_LIBCANO_OPERATION *operation = NULL;
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  cnk_piv_context_t *context = NULL;
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
   CK_BYTE algorithm = 0;
   CK_RV rv = getManagementKeyAlgorithmOnCard(session, card, &algorithm);
   if (rv != CKR_OK)
     return rv;
-  CNK_LIBCANO_MANAGEMENT management = {
+  cnk_piv_management_v1 management = {
       .struct_size = sizeof(management),
-      .algorithm = algorithm == PIV_ALG_AES_192 ? CNK_LIBCANO_MANAGEMENT_AES192 : CNK_LIBCANO_MANAGEMENT_TDES,
-      .mode = CNK_LIBCANO_AUTH_EXTERNAL,
+      .algorithm = algorithm == PIV_ALG_AES_192 ? CNK_MANAGEMENT_AES192 : CNK_MANAGEMENT_TDES,
+      .mode = CNK_AUTH_EXTERNAL,
       .key = key,
       .key_len = PIV_MANAGEMENT_KEY_LEN,
   };
-  rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_SELECTED, &context);
+  rv = cnk_piv_context_for_session(session, CNK_PIV_CONTEXT_SELECTED, &context);
   if (rv != CKR_OK)
     goto cleanup;
   uint32_t status =

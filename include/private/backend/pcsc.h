@@ -146,8 +146,8 @@ void cnk_load_managed_binding(SCARDCONTEXT *context, SCARDHANDLE *card);
 // PIV application functions
 CK_RV cnk_select_piv_application(SCARDHANDLE hCard);
 CK_RV cnk_begin_piv_transaction(CK_SLOT_ID slotID, SCARDHANDLE *phCard);
-CK_RV cnk_probe_device_profile(CK_SLOT_ID slotID, uint32_t mode, void **profile);
-CK_RV cnk_probe_libcanokey_profile(CK_SLOT_ID slotID, void **profile);
+CK_RV cnk_probe_device_profile(CK_SLOT_ID slotID, uint32_t mode, cnk_profile_t **profile);
+CK_RV cnk_probe_libcanokey_profile(CK_SLOT_ID slotID, cnk_profile_t **profile);
 CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey);
 CK_RV cnk_change_piv_secret_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pinReference,
                                          CK_UTF8CHAR_PTR pOldPin, CK_ULONG ulOldPinLen, CK_UTF8CHAR_PTR pNewPin,

@@ -198,13 +198,13 @@ static CK_KEY_TYPE algoType2KeyType(uint32_t algorithmType) {
   if (CNK_PivAlgorithmIsEc(algorithmType))
     return CKK_EC;
   switch (algorithmType) {
-  case CNK_LIBCANO_ALG_MLDSA65:
+  case CNK_ALGORITHM_MLDSA65:
     return CKK_ML_DSA;
-  case CNK_LIBCANO_ALG_MLKEM768:
+  case CNK_ALGORITHM_MLKEM768:
     return CKK_ML_KEM;
-  case CNK_LIBCANO_ALG_ED25519:
+  case CNK_ALGORITHM_ED25519:
     return CKK_EC_EDWARDS;
-  case CNK_LIBCANO_ALG_X25519:
+  case CNK_ALGORITHM_X25519:
     return CKK_EC_MONTGOMERY;
   default:
     return CKK_VENDOR_DEFINED;
@@ -795,21 +795,21 @@ CK_BYTE CNK_DefaultPinPolicyForPivObjectId(CK_BYTE objId) {
 }
 
 CK_BBOOL CNK_PivAlgorithmIsRsa(uint32_t algorithmType) {
-  return algorithmType == CNK_LIBCANO_ALG_RSA_2048 || algorithmType == CNK_LIBCANO_ALG_RSA_3072 ||
-         algorithmType == CNK_LIBCANO_ALG_RSA_4096;
+  return algorithmType == CNK_ALGORITHM_RSA2048 || algorithmType == CNK_ALGORITHM_RSA3072 ||
+         algorithmType == CNK_ALGORITHM_RSA4096;
 }
 CK_BBOOL CNK_PivAlgorithmIsEc(uint32_t algorithmType) {
-  return algorithmType >= CNK_LIBCANO_ALG_P256 && algorithmType <= CNK_LIBCANO_ALG_SM2;
+  return algorithmType >= CNK_ALGORITHM_P256 && algorithmType <= CNK_ALGORITHM_SM2;
 }
 CK_BBOOL CNK_PivPrivateKeyCanSign(uint32_t algorithmType) {
   return CNK_PivAlgorithmIsRsa(algorithmType) ||
-         (algorithmType >= CNK_LIBCANO_ALG_P256 && algorithmType <= CNK_LIBCANO_ALG_SECP256K1) ||
-         algorithmType == CNK_LIBCANO_ALG_ED25519 || algorithmType == CNK_LIBCANO_ALG_MLDSA65;
+         (algorithmType >= CNK_ALGORITHM_P256 && algorithmType <= CNK_ALGORITHM_SECP256K1) ||
+         algorithmType == CNK_ALGORITHM_ED25519 || algorithmType == CNK_ALGORITHM_MLDSA65;
 }
 CK_BBOOL CNK_PivPrivateKeyCanDecrypt(uint32_t algorithmType) { return CNK_PivAlgorithmIsRsa(algorithmType); }
 CK_BBOOL CNK_PivPrivateKeyCanDerive(uint32_t algorithmType) {
-  return (algorithmType >= CNK_LIBCANO_ALG_P256 && algorithmType <= CNK_LIBCANO_ALG_SECP256K1) ||
-         algorithmType == CNK_LIBCANO_ALG_X25519;
+  return (algorithmType >= CNK_ALGORITHM_P256 && algorithmType <= CNK_ALGORITHM_SECP256K1) ||
+         algorithmType == CNK_ALGORITHM_X25519;
 }
 
 CK_RV CNK_ObjectIdToCertificateTag(CK_BYTE objId, CK_BYTE *dataTag) {
@@ -1775,26 +1775,26 @@ static CK_RV setEcParamsAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithm
   size_t oidLen = 0;
   CK_BYTE encoded[16];
 
-  if (algorithmType == CNK_LIBCANO_ALG_ED25519) {
+  if (algorithmType == CNK_ALGORITHM_ED25519) {
     oid = "\x2B\x65\x70"; // id-Ed25519, 1.3.101.112
     oidLen = 3;
-  } else if (algorithmType == CNK_LIBCANO_ALG_X25519) {
+  } else if (algorithmType == CNK_ALGORITHM_X25519) {
     oid = "\x2B\x65\x6E"; // id-X25519, 1.3.101.110
     oidLen = 3;
   } else {
-    if (algorithmType == CNK_LIBCANO_ALG_P256) {
+    if (algorithmType == CNK_ALGORITHM_P256) {
       oid = "\x2A\x86\x48\xCE\x3D\x03\x01\x07";
       oidLen = 8;
-    } else if (algorithmType == CNK_LIBCANO_ALG_P384) {
+    } else if (algorithmType == CNK_ALGORITHM_P384) {
       oid = "\x2B\x81\x04\x00\x22";
       oidLen = 5;
-    } else if (algorithmType == CNK_LIBCANO_ALG_P521) {
+    } else if (algorithmType == CNK_ALGORITHM_P521) {
       oid = "\x2B\x81\x04\x00\x23";
       oidLen = 5;
-    } else if (algorithmType == CNK_LIBCANO_ALG_SECP256K1) {
+    } else if (algorithmType == CNK_ALGORITHM_SECP256K1) {
       oid = "\x2B\x81\x04\x00\x0A";
       oidLen = 5;
-    } else if (algorithmType == CNK_LIBCANO_ALG_SM2) {
+    } else if (algorithmType == CNK_ALGORITHM_SM2) {
       oid = "\x2A\x81\x1C\xCF\x55\x01\x82\x2D";
       oidLen = 8;
     } else {

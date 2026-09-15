@@ -116,19 +116,19 @@ CK_RV cnk_ec_params_to_piv_algorithm(const CK_BYTE *params, CK_ULONG paramsLen, 
   CNK_ENSURE_NONNULL(params, algorithmType);
 
   if (paramsLen == sizeof(p256) && memcmp(params, p256, sizeof(p256)) == 0)
-    *algorithmType = CNK_LIBCANO_ALG_P256;
+    *algorithmType = CNK_ALGORITHM_P256;
   else if (paramsLen == sizeof(p384) && memcmp(params, p384, sizeof(p384)) == 0)
-    *algorithmType = CNK_LIBCANO_ALG_P384;
+    *algorithmType = CNK_ALGORITHM_P384;
   else if (paramsLen == sizeof(p521) && memcmp(params, p521, sizeof(p521)) == 0)
-    *algorithmType = CNK_LIBCANO_ALG_P521;
+    *algorithmType = CNK_ALGORITHM_P521;
   else if (paramsLen == sizeof(secp256k1) && memcmp(params, secp256k1, sizeof(secp256k1)) == 0)
-    *algorithmType = CNK_LIBCANO_ALG_SECP256K1;
+    *algorithmType = CNK_ALGORITHM_SECP256K1;
   else if (paramsLen == sizeof(ed25519) && memcmp(params, ed25519, sizeof(ed25519)) == 0)
-    *algorithmType = CNK_LIBCANO_ALG_ED25519;
+    *algorithmType = CNK_ALGORITHM_ED25519;
   else if (paramsLen == sizeof(x25519) && memcmp(params, x25519, sizeof(x25519)) == 0)
-    *algorithmType = CNK_LIBCANO_ALG_X25519;
+    *algorithmType = CNK_ALGORITHM_X25519;
   else if (paramsLen == sizeof(sm2) && memcmp(params, sm2, sizeof(sm2)) == 0)
-    *algorithmType = CNK_LIBCANO_ALG_SM2;
+    *algorithmType = CNK_ALGORITHM_SM2;
   else
     return CKR_ATTRIBUTE_VALUE_INVALID;
   return CKR_OK;

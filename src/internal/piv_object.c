@@ -67,13 +67,13 @@ static CK_RV prepareRsaImport(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCou
   }
   switch (componentWidth) {
   case 128:
-    material->parameters.algorithm = CNK_LIBCANO_ALG_RSA_2048;
+    material->parameters.algorithm = CNK_ALGORITHM_RSA2048;
     break;
   case 192:
-    material->parameters.algorithm = CNK_LIBCANO_ALG_RSA_3072;
+    material->parameters.algorithm = CNK_ALGORITHM_RSA3072;
     break;
   case 256:
-    material->parameters.algorithm = CNK_LIBCANO_ALG_RSA_4096;
+    material->parameters.algorithm = CNK_ALGORITHM_RSA4096;
     break;
   default:
     return CKR_KEY_SIZE_RANGE;
@@ -81,7 +81,7 @@ static CK_RV prepareRsaImport(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCou
   for (size_t i = 0; i < 5; ++i) {
     if (components[i]->ulValueLen == 0 || components[i]->ulValueLen > componentWidth)
       return CKR_ATTRIBUTE_VALUE_INVALID;
-    material->components[i] = (CNK_LIBCANO_BYTES){components[i]->pValue, components[i]->ulValueLen};
+    material->components[i] = (cnk_bytes_t){components[i]->pValue, components[i]->ulValueLen};
   }
   // The Rust constructor copies and pads CRT components; C only checks the
   // PKCS#11 template's modulus/prime width convention.
@@ -123,30 +123,30 @@ CK_RV cnk_prepare_piv_import(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCoun
       memcpy(&parameterSet, params->pValue, sizeof(parameterSet));
       if (parameterSet != (keyType == CKK_ML_DSA ? CKP_ML_DSA_65 : CKP_ML_KEM_768))
         return CKR_ATTRIBUTE_VALUE_INVALID;
-      material->parameters.algorithm = keyType == CKK_ML_DSA ? CNK_LIBCANO_ALG_MLDSA65 : CNK_LIBCANO_ALG_MLKEM768;
+      material->parameters.algorithm = keyType == CKK_ML_DSA ? CNK_ALGORITHM_MLDSA65 : CNK_ALGORITHM_MLKEM768;
       width = keyType == CKK_ML_DSA ? 32 : 64;
     } else {
       CNK_ENSURE_OK(cnk_ec_params_to_piv_algorithm(params->pValue, params->ulValueLen, &canonical));
       material->parameters.algorithm = canonical;
       if (keyType == CKK_EC_EDWARDS || keyType == CKK_EC_MONTGOMERY) {
-        if (canonical != (keyType == CKK_EC_EDWARDS ? CNK_LIBCANO_ALG_ED25519 : CNK_LIBCANO_ALG_X25519))
+        if (canonical != (keyType == CKK_EC_EDWARDS ? CNK_ALGORITHM_ED25519 : CNK_ALGORITHM_X25519))
           return CKR_TEMPLATE_INCONSISTENT;
         width = 32;
       } else if (keyType == CKK_EC) {
         switch (canonical) {
-        case CNK_LIBCANO_ALG_P256:
+        case CNK_ALGORITHM_P256:
           width = 32;
           break;
-        case CNK_LIBCANO_ALG_P384:
+        case CNK_ALGORITHM_P384:
           width = 48;
           break;
-        case CNK_LIBCANO_ALG_P521:
+        case CNK_ALGORITHM_P521:
           width = 66;
           break;
-        case CNK_LIBCANO_ALG_SECP256K1:
+        case CNK_ALGORITHM_SECP256K1:
           width = 32;
           break;
-        case CNK_LIBCANO_ALG_SM2:
+        case CNK_ALGORITHM_SM2:
           width = 32;
           break;
         default:
@@ -163,9 +163,9 @@ CK_RV cnk_prepare_piv_import(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCoun
       // PKCS#11 unsigned scalars may omit leading zeros; libcanokey accepts a
       // fixed-width scalar. The caller clears this sole temporary secret copy.
       memcpy(material->scalar + width - value->ulValueLen, value->pValue, value->ulValueLen);
-      material->components[0] = (CNK_LIBCANO_BYTES){material->scalar, width};
+      material->components[0] = (cnk_bytes_t){material->scalar, width};
     } else {
-      material->components[0] = (CNK_LIBCANO_BYTES){value->pValue, value->ulValueLen};
+      material->components[0] = (cnk_bytes_t){value->pValue, value->ulValueLen};
     }
   }
   return CKR_OK;

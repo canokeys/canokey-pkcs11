@@ -310,11 +310,11 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
       CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad CKA_MODULUS_BITS");
     modulusBits = *(CK_ULONG *)bitsAttr->pValue;
     if (modulusBits == 2048)
-      algorithmType = CNK_LIBCANO_ALG_RSA_2048;
+      algorithmType = CNK_ALGORITHM_RSA2048;
     else if (modulusBits == 3072)
-      algorithmType = CNK_LIBCANO_ALG_RSA_3072;
+      algorithmType = CNK_ALGORITHM_RSA3072;
     else if (modulusBits == 4096)
-      algorithmType = CNK_LIBCANO_ALG_RSA_4096;
+      algorithmType = CNK_ALGORITHM_RSA4096;
     else
       CNK_RETURN(CKR_KEY_SIZE_RANGE, "unsupported RSA key size");
     break;
@@ -337,10 +337,10 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
     uint32_t namedAlgorithm;
     CNK_ENSURE_OK(
         cnk_ec_params_to_piv_algorithm((CK_BYTE_PTR)paramsAttr->pValue, paramsAttr->ulValueLen, &namedAlgorithm));
-    if (pMechanism->mechanism == CKM_EC_EDWARDS_KEY_PAIR_GEN && namedAlgorithm == CNK_LIBCANO_ALG_ED25519)
-      algorithmType = CNK_LIBCANO_ALG_ED25519;
-    else if (pMechanism->mechanism == CKM_EC_MONTGOMERY_KEY_PAIR_GEN && namedAlgorithm == CNK_LIBCANO_ALG_X25519)
-      algorithmType = CNK_LIBCANO_ALG_X25519;
+    if (pMechanism->mechanism == CKM_EC_EDWARDS_KEY_PAIR_GEN && namedAlgorithm == CNK_ALGORITHM_ED25519)
+      algorithmType = CNK_ALGORITHM_ED25519;
+    else if (pMechanism->mechanism == CKM_EC_MONTGOMERY_KEY_PAIR_GEN && namedAlgorithm == CNK_ALGORITHM_X25519)
+      algorithmType = CNK_ALGORITHM_X25519;
     else
       CNK_RETURN(CKR_TEMPLATE_INCONSISTENT, "curve does not match key-pair generation mechanism");
     break;
@@ -357,11 +357,11 @@ CK_RV C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
     if (pMechanism->mechanism == CKM_ML_DSA_KEY_PAIR_GEN) {
       if (parameterSet != CKP_ML_DSA_65)
         CNK_RETURN(CKR_KEY_SIZE_RANGE, "only ML-DSA-65 is supported");
-      algorithmType = CNK_LIBCANO_ALG_MLDSA65;
+      algorithmType = CNK_ALGORITHM_MLDSA65;
     } else {
       if (parameterSet != CKP_ML_KEM_768)
         CNK_RETURN(CKR_KEY_SIZE_RANGE, "only ML-KEM-768 is supported");
-      algorithmType = CNK_LIBCANO_ALG_MLKEM768;
+      algorithmType = CNK_ALGORITHM_MLKEM768;
     }
     break;
   }
@@ -449,16 +449,16 @@ CK_RV C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OB
   if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS)
     CNK_RETURN(CKR_USER_NOT_LOGGED_IN, "PIN-always ECDH requires context-specific authentication");
 
-  CK_BBOOL x25519 = algorithmType == CNK_LIBCANO_ALG_X25519;
+  CK_BBOOL x25519 = algorithmType == CNK_ALGORITHM_X25519;
   if (!CNK_PivPrivateKeyCanDerive(algorithmType) && !x25519)
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for ECDH derive");
 
   CK_ULONG expectedSecretLen = 0;
-  if (algorithmType == CNK_LIBCANO_ALG_P256 || algorithmType == CNK_LIBCANO_ALG_SECP256K1) {
+  if (algorithmType == CNK_ALGORITHM_P256 || algorithmType == CNK_ALGORITHM_SECP256K1) {
     expectedSecretLen = 32;
-  } else if (algorithmType == CNK_LIBCANO_ALG_P384) {
+  } else if (algorithmType == CNK_ALGORITHM_P384) {
     expectedSecretLen = 48;
-  } else if (algorithmType == CNK_LIBCANO_ALG_P521) {
+  } else if (algorithmType == CNK_ALGORITHM_P521) {
     expectedSecretLen = 66;
   } else {
     if (x25519)

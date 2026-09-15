@@ -272,14 +272,8 @@ The PKCS#11 3.2 interface currently supports:
 Only `CKP_ML_DSA_65` and `CKP_ML_KEM_768` are accepted. Encapsulation uses the
 same pinned `mlkem-native` implementation as CanoKey firmware.
 
-The downloadable `test_pqc.exe` requires explicit token identity. It runs
-non-destructive checks by default; enable the write matrix only when overwriting
-IDs 08, 09, 23, and 24 is intended:
-
-```powershell
-$env:CNK_PIV_PIN = '<PIN>'
-$env:CNK_PIV_SLOT_ID = '0'
-$env:CNK_PIV_SERIAL = '0'
-$env:CNK_RUN_DESTRUCTIVE_REAL_TESTS = '1'
-.\test_pqc.exe .\canokey-pkcs11.dll
-```
+The downloadable `test_abi.exe` checks the native 3.2 function table, session
+lifecycle and session-secret contracts without provisioning. Set `CNK_PIV_PIN`,
+`CNK_PIV_SLOT_ID` and `CNK_PIV_SERIAL`, then pass the DLL path. Algorithm and
+write coverage lives in the single Python [hardware entry point](test/real/hardware.py);
+see [validation.md](docs/validation.md#real-card-entry-points) for explicit fixtures.

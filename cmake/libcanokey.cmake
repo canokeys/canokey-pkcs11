@@ -2,6 +2,31 @@
 find_program(CNK_CARGO cargo HINTS "$ENV{USERPROFILE}/.cargo/bin" "$ENV{HOME}/.cargo/bin" REQUIRED)
 find_program(CNK_RUSTC rustc HINTS "$ENV{USERPROFILE}/.cargo/bin" "$ENV{HOME}/.cargo/bin" REQUIRED)
 
+# Use the ABI header from the exact Cargo dependency, never a hand-written copy.
+execute_process(COMMAND "${CNK_CARGO}" +stable metadata --locked --format-version 1
+                --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
+                OUTPUT_VARIABLE _cnk_metadata RESULT_VARIABLE _cnk_metadata_result)
+if(NOT _cnk_metadata_result EQUAL 0)
+  message(FATAL_ERROR "Could not locate the pinned libcanokey C ABI header")
+endif()
+string(JSON _cnk_packages LENGTH "${_cnk_metadata}" packages)
+math(EXPR _cnk_last_package "${_cnk_packages} - 1")
+set(_cnk_header_found FALSE)
+foreach(_cnk_index RANGE ${_cnk_last_package})
+  string(JSON _cnk_package GET "${_cnk_metadata}" packages ${_cnk_index} name)
+  if(_cnk_package STREQUAL "canokey-c")
+    string(JSON _cnk_manifest GET "${_cnk_metadata}" packages ${_cnk_index} manifest_path)
+    get_filename_component(_cnk_package_dir "${_cnk_manifest}" DIRECTORY)
+    set(_cnk_header_found TRUE)
+    configure_file("${_cnk_package_dir}/include/canokey.h" "${CMAKE_CURRENT_BINARY_DIR}/include/libcanokey/canokey.h" COPYONLY)
+  endif()
+endforeach()
+if(NOT _cnk_header_found)
+  message(FATAL_ERROR "Pinned canokey-c package is missing")
+endif()
+include_directories("${CMAKE_CURRENT_BINARY_DIR}/include")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS Cargo.toml Cargo.lock)
+
 if(NOT CNK_RUST_TARGET)
   if(WIN32)
     if(CMAKE_C_COMPILER_TARGET)

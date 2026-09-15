@@ -7,3 +7,5 @@ build-*
 cmake-build-debug
 /target/
 !/scripts/build-windows.ps1
+
+__pycache__/

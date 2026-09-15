@@ -19,6 +19,8 @@
     }                                                                                                                  \
   } while (0)
 
+#include "profile.h"
+
 static CNK_PKCS11_SESSION session;
 static CNK_PKCS11_TOKEN_STATE token;
 _Atomic CK_ULONG g_cnk_managed_binding_epoch;
@@ -44,42 +46,9 @@ CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *s) {
 }
 
 static void create_profile(CK_BYTE minor) {
-  CNK_LIBCANO_OPERATION *probe = NULL;
-  uint32_t step = 0;
-  CHECK(cnk_probe_device_new(1, NULL, &probe, NULL) == CNK_LIBCANO_OK);
-  CHECK(cnk_operation_start(probe, &step, NULL) == CNK_LIBCANO_OK);
-  const CK_BYTE ok[] = {0x90, 0}, absent[] = {0x6d, 0};
-  const CK_BYTE fw[] = {'3', '.', (CK_BYTE)('0' + minor), '.', '0', 0x90, 0};
-  const CK_BYTE version[] = {6, 0, 0, 0x90, 0};
-  const CK_BYTE config[] = {1, 0xe0, 5, 0x16, 0xe1, 0x53, 0x15, 0x54, 0xe2, 0xe3, 0x90, 0};
-  unsigned exchanges = 0;
-  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
-    CK_BYTE command[300];
-    size_t length = sizeof(command);
-    CHECK(++exchanges <= 16);
-    CHECK(cnk_operation_command(probe, command, &length) == CNK_LIBCANO_OK && length >= 4);
-    const CK_BYTE *response = absent;
-    size_t responseLen = sizeof(absent);
-    if (command[1] == 0xa4) {
-      response = ok;
-      responseLen = sizeof(ok);
-    } else if (command[1] == 0x31 && command[2] == 0) {
-      response = fw;
-      responseLen = sizeof(fw);
-    } else if (command[1] == 0xfd) {
-      response = version;
-      responseLen = sizeof(version);
-    } else if (command[1] == 0xee) {
-      response = config;
-      responseLen = sizeof(config);
-    }
-    CHECK(cnk_operation_advance(probe, response, responseLen, &step, NULL) == CNK_LIBCANO_OK);
-  }
-  CHECK(step == CNK_LIBCANO_STEP_DONE);
-  void *profile = NULL;
-  CHECK(cnk_operation_take_profile(probe, &profile) == CNK_LIBCANO_OK);
-  cnk_operation_free(probe);
-  token.libcanokeyProfile = profile;
+  char firmware[] = "3.0.0";
+  firmware[2] += minor;
+  token.libcanokeyProfile = test_profile(firmware, 5);
   session.token = &token;
 }
 

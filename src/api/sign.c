@@ -152,11 +152,11 @@ static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m,
 }
 
 static CK_ULONG getEcSignatureLength(uint32_t algorithmType) {
-  if (algorithmType == CNK_LIBCANO_ALG_P256 || (algorithmType == CNK_LIBCANO_ALG_SECP256K1))
+  if (algorithmType == CNK_ALGORITHM_P256 || (algorithmType == CNK_ALGORITHM_SECP256K1))
     return 64;
-  if (algorithmType == CNK_LIBCANO_ALG_P384)
+  if (algorithmType == CNK_ALGORITHM_P384)
     return 96;
-  if (algorithmType == CNK_LIBCANO_ALG_P521)
+  if (algorithmType == CNK_ALGORITHM_P521)
     return 132;
   return 0;
 }
@@ -171,7 +171,7 @@ static CK_RV validateEcMech(CNK_PKCS11_SESSION *session, uint32_t algorithmType)
 }
 
 static CK_RV validateEdDsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *mechanism, uint32_t algorithmType) {
-  if (algorithmType != CNK_LIBCANO_ALG_ED25519)
+  if (algorithmType != CNK_ALGORITHM_ED25519)
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not Ed25519");
   if (mechanism->pParameter == NULL && mechanism->ulParameterLen == 0) {
     session->signingContext.cbSignature = 64;
@@ -370,7 +370,7 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for signing");
 
   if (pMechanism->mechanism == CKM_ML_DSA) {
-    if (algorithmType != CNK_LIBCANO_ALG_MLDSA65)
+    if (algorithmType != CNK_ALGORITHM_MLDSA65)
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not ML-DSA-65");
     if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "ML-DSA context is not supported by PIV");
@@ -677,16 +677,16 @@ static CK_RV verifyEcSignature(CNK_PKCS11_SESSION *session, const CK_BYTE *data,
   mbedtls_ecp_group_id groupId;
   CK_ULONG coordinateLen;
   uint32_t algorithmType = session->verifyingContext.algorithmType;
-  if (algorithmType == CNK_LIBCANO_ALG_P256) {
+  if (algorithmType == CNK_ALGORITHM_P256) {
     groupId = MBEDTLS_ECP_DP_SECP256R1;
     coordinateLen = 32;
-  } else if (algorithmType == CNK_LIBCANO_ALG_P384) {
+  } else if (algorithmType == CNK_ALGORITHM_P384) {
     groupId = MBEDTLS_ECP_DP_SECP384R1;
     coordinateLen = 48;
-  } else if (algorithmType == CNK_LIBCANO_ALG_P521) {
+  } else if (algorithmType == CNK_ALGORITHM_P521) {
     groupId = MBEDTLS_ECP_DP_SECP521R1;
     coordinateLen = 66;
-  } else if (algorithmType == CNK_LIBCANO_ALG_SECP256K1) {
+  } else if (algorithmType == CNK_ALGORITHM_SECP256K1) {
     groupId = MBEDTLS_ECP_DP_SECP256K1;
     coordinateLen = 32;
   } else {
@@ -759,7 +759,7 @@ CK_RV C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_O
   CNK_PIV_PUBLIC_KEY publicKey;
   CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivSlot, &algorithmType, &publicKey, NULL, NULL));
   if (pMechanism->mechanism == CKM_ML_DSA) {
-    if (algorithmType != CNK_LIBCANO_ALG_MLDSA65)
+    if (algorithmType != CNK_ALGORITHM_MLDSA65)
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "verify key is not ML-DSA-65");
     if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "ML-DSA context is not supported");

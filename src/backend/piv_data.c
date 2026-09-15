@@ -12,9 +12,9 @@
 #define CNK_PIV_MAX_DATA_OBJECT_SIZE 8192
 #define PIV_PADDED_PIN_LEN 8
 
-static CK_RV map_libcanokey_object_error(const CNK_LIBCANO_OPERATION *operation, uint32_t status) {
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
-  if (status == CNK_LIBCANO_PROTOCOL_ERROR && operation != NULL)
+static CK_RV map_libcanokey_object_error(const cnk_operation_t *operation, uint32_t status) {
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  if (status == CNK_PROTOCOL_ERROR && operation != NULL)
     CNK_EXTERNAL_CALL(cnk_operation_error, operation, &error);
   return cnk_piv_operation_status(status, &error, CKR_DATA_INVALID);
 }
@@ -25,11 +25,11 @@ static CK_RV read_piv_data_selected(SCARDHANDLE card, CNK_PKCS11_SESSION *sessio
   CNK_ENSURE_NONNULL(session, tag);
   if (tag_len == 0 || tag_len > 4 || (fetch_data && data_len == NULL))
     return CKR_ARGUMENTS_BAD;
-  CNK_LIBCANO_CONTEXT *context = NULL;
-  CNK_LIBCANO_OPERATION *operation = NULL;
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
-  CK_RV rv = cnk_piv_context_for_session(
-      session, pinVerified ? CNK_LIBCANO_CONTEXT_PIN_VERIFIED : CNK_LIBCANO_CONTEXT_SELECTED, &context);
+  cnk_piv_context_t *context = NULL;
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  CK_RV rv = cnk_piv_context_for_session(session, pinVerified ? CNK_PIV_CONTEXT_PIN_VERIFIED : CNK_PIV_CONTEXT_SELECTED,
+                                         &context);
   if (rv != CKR_OK)
     goto cleanup;
   uint32_t status =
@@ -42,7 +42,7 @@ static CK_RV read_piv_data_selected(SCARDHANDLE card, CNK_PKCS11_SESSION *sessio
     goto cleanup;
   size_t required = 0;
   status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, NULL, &required);
-  if (status != CNK_LIBCANO_OK) {
+  if (status != CNK_OK) {
     rv = map_libcanokey_object_error(operation, status);
     goto cleanup;
   }
@@ -61,7 +61,7 @@ static CK_RV read_piv_data_selected(SCARDHANDLE card, CNK_PKCS11_SESSION *sessio
     goto cleanup;
   }
   status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, data, &required);
-  rv = status == CNK_LIBCANO_OK ? CKR_OK : map_libcanokey_object_error(operation, status);
+  rv = status == CNK_OK ? CKR_OK : map_libcanokey_object_error(operation, status);
 
 cleanup:
   if (operation != NULL)
@@ -109,16 +109,16 @@ CK_RV cnk_get_piv_data_by_tag_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION
 static CK_RV cnk_put_piv_data_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag,
                                          CK_ULONG tag_len, CK_BYTE_PTR data, CK_ULONG data_len) {
   CNK_ENSURE_NONNULL(session);
-  CNK_LIBCANO_CONTEXT *context = NULL;
-  CNK_LIBCANO_OPERATION *operation = NULL;
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  cnk_piv_context_t *context = NULL;
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
   CK_BBOOL attempted = CK_FALSE;
   SCARDHANDLE card = 0;
   // Authentication resolves the profile before opening the PIV transaction.
   CK_RV rv = cnk_authenticate_admin_for_write(slotID, session, &card);
   if (rv != CKR_OK)
     return rv;
-  rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context);
+  rv = cnk_piv_context_for_session(session, CNK_PIV_CONTEXT_MANAGEMENT_AUTHORIZED, &context);
   if (rv != CKR_OK)
     goto cleanup;
   uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_write_object_container_in_context_new, context, tag, tag_len, data,
@@ -142,16 +142,16 @@ cleanup:
 static CK_RV mutate_certificate(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pivSlot,
                                 const CK_BYTE *certificate, CK_ULONG certificateLen) {
   CNK_ENSURE_NONNULL(session);
-  CNK_LIBCANO_CONTEXT *context = NULL;
-  CNK_LIBCANO_OPERATION *operation = NULL;
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  cnk_piv_context_t *context = NULL;
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
   CK_BBOOL attempted = CK_FALSE;
   SCARDHANDLE card = 0;
   // Authentication resolves the profile before opening the PIV transaction.
   CK_RV rv = cnk_authenticate_admin_for_write(slotID, session, &card);
   if (rv != CKR_OK)
     return rv;
-  rv = cnk_piv_context_for_session(session, CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED, &context);
+  rv = cnk_piv_context_for_session(session, CNK_PIV_CONTEXT_MANAGEMENT_AUTHORIZED, &context);
   if (rv != CKR_OK)
     goto cleanup;
   uint32_t status = certificate != NULL ? CNK_EXTERNAL_CALL(cnk_piv_write_certificate_in_context_new, context, pivSlot,
@@ -201,12 +201,12 @@ CK_RV cnk_delete_piv_certificate_libcanokey(CK_SLOT_ID slotID, CNK_PKCS11_SESSIO
 
 CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *major, CK_BYTE *minor, char *model, size_t modelLen) {
   CNK_ENSURE_NONNULL(major, minor);
-  void *profile = NULL;
+  cnk_profile_t *profile = NULL;
   CNK_ENSURE_OK(cnk_probe_device_profile(slotID, 0, &profile));
   uint32_t version[3] = {0};
   uint32_t status = CNK_EXTERNAL_CALL(cnk_profile_firmware_version, profile, version);
   CK_RV rv = CKR_OK;
-  if (status != CNK_LIBCANO_OK && status != CNK_LIBCANO_RESULT_TYPE_MISMATCH)
+  if (status != CNK_OK && status != CNK_RESULT_TYPE_MISMATCH)
     rv = CKR_DEVICE_ERROR;
   if (rv == CKR_OK) {
     // Preserve the PKCS#11 version presentation; Rust owns text parsing.
@@ -216,10 +216,10 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *major, CK_BYTE *minor, char *m
       CK_BYTE name[256];
       size_t length = sizeof(name);
       status = CNK_EXTERNAL_CALL(cnk_profile_model_copy, profile, name, &length);
-      if (status == CNK_LIBCANO_RESULT_TYPE_MISMATCH) {
+      if (status == CNK_RESULT_TYPE_MISMATCH) {
         memcpy(name, "CanoKey", 7);
         length = 7;
-      } else if (status != CNK_LIBCANO_OK) {
+      } else if (status != CNK_OK) {
         rv = CKR_DEVICE_ERROR;
       }
       if (rv == CKR_OK) {
@@ -236,12 +236,12 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *major, CK_BYTE *minor, char *m
 
 CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial) {
   CNK_ENSURE_NONNULL(serial);
-  void *profile = NULL;
+  cnk_profile_t *profile = NULL;
   CNK_ENSURE_OK(cnk_probe_device_profile(slotID, 0, &profile));
   uint32_t value = 0;
   uint32_t status = CNK_EXTERNAL_CALL(cnk_profile_serial_u32, profile, &value);
-  if (status == CNK_LIBCANO_OK)
+  if (status == CNK_OK)
     *serial = value;
   CNK_EXTERNAL_VOID(cnk_profile_free, profile);
-  return status == CNK_LIBCANO_OK ? CKR_OK : CKR_DEVICE_ERROR;
+  return status == CNK_OK ? CKR_OK : CKR_DEVICE_ERROR;
 }

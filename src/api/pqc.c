@@ -150,7 +150,7 @@ CK_RV C_EncapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
   CNK_ENSURE_OK(CNK_ValidateObject(publicKey, session, CKO_PUBLIC_KEY, &objectId));
   CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objectId, &pivSlot));
   CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivSlot, &algorithmType, NULL, NULL, NULL));
-  if (algorithmType != CNK_LIBCANO_ALG_MLKEM768)
+  if (algorithmType != CNK_ALGORITHM_MLKEM768)
     return CKR_KEY_TYPE_INCONSISTENT;
   CNK_PKCS11_SECRET_KEY_OBJECT prototype;
   CK_RV rv = buildSharedSecretPrototype(session, attributes, attributeCount, &prototype);
@@ -228,7 +228,7 @@ CK_RV C_DecapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR mechanism, C
   uint32_t algorithmType;
   CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objectId);
   CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivSlot, &algorithmType, NULL, &pinPolicy, NULL));
-  if (algorithmType != CNK_LIBCANO_ALG_MLKEM768)
+  if (algorithmType != CNK_ALGORITHM_MLKEM768)
     return CKR_KEY_TYPE_INCONSISTENT;
   // C_DecapsulateKey has no context-specific PIN parameter. Do not satisfy a
   // PIN-always policy with the token-wide USER PIN cache.

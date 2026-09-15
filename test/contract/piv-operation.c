@@ -15,19 +15,19 @@
     }                                                                                                                  \
   } while (0)
 
-struct CNK_LIBCANO_OPERATION {
+struct CnkOperation {
   unsigned unused;
 };
-struct CNK_LIBCANO_CONTEXT {
+struct CnkPivContext {
   unsigned unused;
 };
-static struct CNK_LIBCANO_OPERATION op;
-static struct CNK_LIBCANO_CONTEXT ctx;
+static struct CnkOperation op;
+static struct CnkPivContext ctx;
 static CNK_PKCS11_TOKEN_STATE token;
 static CNK_PKCS11_SESSION session;
 static unsigned cards, operations, contexts, sends, invalidations, locked, pinCopies;
 static unsigned failAt, phase, endless, responseSize = 2, badCommand;
-static uint32_t errorKind, profileStatus, publicAlgorithmStatus, finalStep = CNK_LIBCANO_STEP_DONE;
+static uint32_t errorKind, profileStatus, publicAlgorithmStatus, finalStep = CNK_STEP_DONE;
 static CK_RV lockError, unlockError;
 static uint32_t publicFieldFailure;
 _Atomic CK_ULONG g_cnk_managed_binding_epoch;
@@ -103,16 +103,17 @@ CK_RV cnk_verify_piv_pin_with_session_ex(CK_SLOT_ID slot, CNK_PKCS11_SESSION *s,
   (void)card;
   abort();
 }
-static uint32_t status(CNK_LIBCANO_ERROR *error) {
+static uint32_t status(cnk_error_v1 *error) {
   if (++phase != failAt)
-    return CNK_LIBCANO_OK;
+    return CNK_OK;
   if (error) {
     error->kind = errorKind;
     error->reference = 3;
   }
-  return CNK_LIBCANO_PROTOCOL_ERROR;
+  return CNK_PROTOCOL_ERROR;
 }
-uint32_t cnk_piv_context_new(const void *profile, uint32_t state, CNK_LIBCANO_CONTEXT **out, CNK_LIBCANO_ERROR *error) {
+uint32_t cnk_piv_context_new(const cnk_profile_t *profile, uint32_t state, cnk_piv_context_t **out,
+                             cnk_error_v1 *error) {
   CHECK(profile && locked == 1 && state);
   uint32_t rv = status(error);
   if (!rv) {
@@ -121,11 +122,11 @@ uint32_t cnk_piv_context_new(const void *profile, uint32_t state, CNK_LIBCANO_CO
   }
   return rv;
 }
-void cnk_piv_context_free(CNK_LIBCANO_CONTEXT *context) {
+void cnk_piv_context_free(cnk_piv_context_t *context) {
   CHECK(context == &ctx && contexts == 1);
   contexts--;
 }
-static uint32_t construct(const CNK_LIBCANO_CONTEXT *context, CNK_LIBCANO_OPERATION **out, CNK_LIBCANO_ERROR *error) {
+static uint32_t construct(const cnk_piv_context_t *context, cnk_operation_t **out, cnk_error_v1 *error) {
   CHECK(context == &ctx && cards == 1 && !operations && !locked);
   uint32_t rv = status(error);
   if (!rv) {
@@ -134,48 +135,49 @@ static uint32_t construct(const CNK_LIBCANO_CONTEXT *context, CNK_LIBCANO_OPERAT
   }
   return rv;
 }
-CK_RV cnk_probe_device_profile(CK_SLOT_ID slot, uint32_t mode, void **profile) {
+CK_RV cnk_probe_device_profile(CK_SLOT_ID slot, uint32_t mode, cnk_profile_t **profile) {
   (void)slot;
   (void)mode;
   (void)profile;
   abort();
 }
-uint32_t cnk_profile_firmware_version(const void *profile, uint32_t *version) {
+uint32_t cnk_profile_firmware_version(const cnk_profile_t *profile, uint32_t *version) {
   (void)profile;
   (void)version;
   abort();
 }
-uint32_t cnk_profile_model_copy(const void *profile, uint8_t *output, size_t *length) {
+uint32_t cnk_profile_model_copy(const cnk_profile_t *profile, uint8_t *output, size_t *length) {
   (void)profile;
   (void)output;
   (void)length;
   abort();
 }
-uint32_t cnk_profile_serial_u32(const void *profile, uint32_t *serial) {
+uint32_t cnk_profile_serial_u32(const cnk_profile_t *profile, uint32_t *serial) {
   (void)profile;
   (void)serial;
   abort();
 }
-void cnk_profile_free(CNK_LIBCANO_PROFILE *profile) {
+void cnk_profile_free(cnk_profile_t *profile) {
   (void)profile;
   abort();
 }
-uint32_t cnk_profile_piv_require_algorithm(const void *profile, uint32_t algorithm, CNK_LIBCANO_ERROR *error) {
-  CHECK(profile == (void *)1 && (algorithm == CNK_LIBCANO_ALG_RSA_2048 || algorithm == CNK_LIBCANO_ALG_P256) &&
+uint32_t cnk_profile_piv_require_algorithm(const cnk_profile_t *profile, uint32_t algorithm, cnk_error_v1 *error) {
+  CHECK(profile == (void *)1 && (algorithm == CNK_ALGORITHM_RSA2048 || algorithm == CNK_ALGORITHM_P256) &&
         locked == 1 && !cards);
   if (error)
     error->kind = errorKind;
   return profileStatus;
 }
-uint32_t cnk_operation_key_algorithm(const CNK_LIBCANO_OPERATION *operation, uint32_t *algorithm) {
+uint32_t cnk_operation_key_algorithm(const cnk_operation_t *operation, uint32_t *algorithm) {
   CHECK(operation == &op && operations == 1);
   if (publicAlgorithmStatus)
     return publicAlgorithmStatus;
-  *algorithm = CNK_LIBCANO_ALG_RSA_2048;
-  return CNK_LIBCANO_OK;
+  *algorithm = CNK_ALGORITHM_RSA2048;
+  return CNK_OK;
 }
-uint32_t cnk_piv_get_metadata_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint32_t ref, const CNK_LIBCANO_OPTIONS *o,
-                                             CNK_LIBCANO_OPERATION **out, CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_piv_get_metadata_in_context_new(const cnk_piv_context_t *c, uint32_t ref,
+                                             const cnk_operation_options_v1 *o, cnk_operation_t **out,
+                                             cnk_error_v1 *e) {
   (void)c;
   (void)ref;
   (void)o;
@@ -183,29 +185,29 @@ uint32_t cnk_piv_get_metadata_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint3
   (void)e;
   abort();
 }
-uint32_t cnk_operation_metadata(const CNK_LIBCANO_OPERATION *o, CNK_LIBCANO_METADATA *metadata) {
+uint32_t cnk_operation_metadata(const cnk_operation_t *o, cnk_metadata_v1 *metadata) {
   (void)o;
   (void)metadata;
   abort();
 }
-uint32_t cnk_piv_generate_key_in_context_new(const CNK_LIBCANO_CONTEXT *c, const CNK_LIBCANO_KEY_PARAMETERS *p,
-                                             const CNK_LIBCANO_OPTIONS *o, CNK_LIBCANO_OPERATION **out,
-                                             CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_piv_generate_key_in_context_new(const cnk_piv_context_t *c, const cnk_piv_key_parameters_v1 *p,
+                                             const cnk_operation_options_v1 *o, cnk_operation_t **out,
+                                             cnk_error_v1 *e) {
   (void)p;
   (void)o;
   return construct(c, out, e);
 }
-uint32_t cnk_piv_import_key_in_context_new(const CNK_LIBCANO_CONTEXT *c, const CNK_LIBCANO_KEY_PARAMETERS *p,
-                                           const CNK_LIBCANO_BYTES *b, size_t n, const CNK_LIBCANO_OPTIONS *o,
-                                           CNK_LIBCANO_OPERATION **out, CNK_LIBCANO_ERROR *e) {
-  CHECK(p->slot == 0x9c && p->algorithm == CNK_LIBCANO_ALG_P256 && p->pin_policy == 1);
+uint32_t cnk_piv_import_key_in_context_new(const cnk_piv_context_t *c, const cnk_piv_key_parameters_v1 *p,
+                                           const cnk_bytes_t *b, size_t n, const cnk_operation_options_v1 *o,
+                                           cnk_operation_t **out, cnk_error_v1 *e) {
+  CHECK(p->slot == 0x9c && p->algorithm == CNK_ALGORITHM_P256 && p->pin_policy == 1);
   CHECK(n == 1 && b[0].len == 32 && b[0].data[31] == 1);
   (void)o;
   return construct(c, out, e);
 }
-uint32_t cnk_piv_write_object_container_in_context_new(const CNK_LIBCANO_CONTEXT *c, const uint8_t *tag, size_t tn,
-                                                       const uint8_t *d, size_t n, const CNK_LIBCANO_OPTIONS *o,
-                                                       CNK_LIBCANO_OPERATION **out, CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_piv_write_object_container_in_context_new(const cnk_piv_context_t *c, const uint8_t *tag, size_t tn,
+                                                       const uint8_t *d, size_t n, const cnk_operation_options_v1 *o,
+                                                       cnk_operation_t **out, cnk_error_v1 *e) {
   (void)tag;
   (void)tn;
   (void)d;
@@ -213,56 +215,56 @@ uint32_t cnk_piv_write_object_container_in_context_new(const CNK_LIBCANO_CONTEXT
   (void)o;
   return construct(c, out, e);
 }
-uint32_t cnk_piv_write_certificate_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint32_t slot, const uint8_t *der,
-                                                  size_t len, const CNK_LIBCANO_OPTIONS *o, CNK_LIBCANO_OPERATION **out,
-                                                  CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_piv_write_certificate_in_context_new(const cnk_piv_context_t *c, uint32_t slot, const uint8_t *der,
+                                                  size_t len, const cnk_operation_options_v1 *o, cnk_operation_t **out,
+                                                  cnk_error_v1 *e) {
   CHECK(slot == 0x9c && len == 3 && der[0] == 0x30 && der[1] == 1 && der[2] == 0);
   (void)o;
   return construct(c, out, e);
 }
-uint32_t cnk_piv_delete_certificate_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint32_t slot,
-                                                   const CNK_LIBCANO_OPTIONS *o, CNK_LIBCANO_OPERATION **out,
-                                                   CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_piv_delete_certificate_in_context_new(const cnk_piv_context_t *c, uint32_t slot,
+                                                   const cnk_operation_options_v1 *o, cnk_operation_t **out,
+                                                   cnk_error_v1 *e) {
   (void)slot;
   (void)o;
   return construct(c, out, e);
 }
-uint32_t cnk_piv_set_container_name_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint32_t slot, const uint8_t *name,
-                                                   size_t len, const CNK_LIBCANO_OPTIONS *o,
-                                                   CNK_LIBCANO_OPERATION **out, CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_piv_set_container_name_in_context_new(const cnk_piv_context_t *c, uint32_t slot, const uint8_t *name,
+                                                   size_t len, const cnk_operation_options_v1 *o, cnk_operation_t **out,
+                                                   cnk_error_v1 *e) {
   (void)slot;
   (void)name;
   (void)len;
   (void)o;
   return construct(c, out, e);
 }
-uint32_t cnk_piv_container_name_validate(const uint8_t *name, size_t len, CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_piv_container_name_validate(const uint8_t *name, size_t len, cnk_error_v1 *e) {
   (void)name;
   (void)len;
   (void)e;
-  return CNK_LIBCANO_OK;
+  return CNK_OK;
 }
-uint32_t cnk_piv_read_container_name_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint32_t slot,
-                                                    const CNK_LIBCANO_OPTIONS *o, CNK_LIBCANO_OPERATION **out,
-                                                    CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_piv_read_container_name_in_context_new(const cnk_piv_context_t *c, uint32_t slot,
+                                                    const cnk_operation_options_v1 *o, cnk_operation_t **out,
+                                                    cnk_error_v1 *e) {
   (void)slot;
   (void)o;
   return construct(c, out, e);
 }
-uint32_t cnk_piv_read_object_container_in_context_new(const CNK_LIBCANO_CONTEXT *c, const uint8_t *tag, size_t n,
-                                                      const CNK_LIBCANO_OPTIONS *o, CNK_LIBCANO_OPERATION **out,
-                                                      CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_piv_read_object_container_in_context_new(const cnk_piv_context_t *c, const uint8_t *tag, size_t n,
+                                                      const cnk_operation_options_v1 *o, cnk_operation_t **out,
+                                                      cnk_error_v1 *e) {
   (void)tag;
   (void)n;
   (void)o;
   return construct(c, out, e);
 }
-uint32_t cnk_operation_start(CNK_LIBCANO_OPERATION *o, uint32_t *step, CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_operation_start(cnk_operation_t *o, uint32_t *step, cnk_error_v1 *e) {
   CHECK(o == &op);
-  *step = CNK_LIBCANO_STEP_EXCHANGE;
+  *step = CNK_STEP_EXCHANGE;
   return status(e);
 }
-uint32_t cnk_operation_command(const CNK_LIBCANO_OPERATION *o, uint8_t *data, size_t *len) {
+uint32_t cnk_operation_command(const cnk_operation_t *o, uint8_t *data, size_t *len) {
   CHECK(o == &op);
   uint32_t rv = status(NULL);
   if (rv)
@@ -272,7 +274,7 @@ uint32_t cnk_operation_command(const CNK_LIBCANO_OPERATION *o, uint8_t *data, si
     memset(data, 0xAA, 5);
   }
   *len = badCommand ? (badCommand == 1 ? 0 : 2049) : 5;
-  return CNK_LIBCANO_OK;
+  return CNK_OK;
 }
 LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *command, CK_ULONG len, CK_BYTE *out, DWORD *outLen) {
   CHECK(card == 1 && cards == 1 && !locked && len == 5 && command[0] == 0xAA);
@@ -285,22 +287,21 @@ LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *command, CK_ULONG len,
   *outLen = responseSize;
   return SCARD_S_SUCCESS;
 }
-uint32_t cnk_operation_advance(CNK_LIBCANO_OPERATION *o, const uint8_t *r, size_t n, uint32_t *step,
-                               CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_operation_advance(cnk_operation_t *o, const uint8_t *r, size_t n, uint32_t *step, cnk_error_v1 *e) {
   CHECK(o == &op && r[0] == 0x90 && n >= 2 && n <= 8192);
-  *step = endless ? CNK_LIBCANO_STEP_EXCHANGE : finalStep;
+  *step = endless ? CNK_STEP_EXCHANGE : finalStep;
   return status(e);
 }
-void cnk_operation_free(CNK_LIBCANO_OPERATION *o) {
+void cnk_operation_free(cnk_operation_t *o) {
   CHECK(o == &op && operations == 1);
   operations--;
 }
-uint32_t cnk_operation_error(const CNK_LIBCANO_OPERATION *o, CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_operation_error(const cnk_operation_t *o, cnk_error_v1 *e) {
   (void)o;
   (void)e;
-  return CNK_LIBCANO_INVALID_STATE;
+  return CNK_INVALID_STATE;
 }
-uint32_t cnk_operation_result_copy_bytes(const CNK_LIBCANO_OPERATION *o, uint8_t *out, size_t *len) {
+uint32_t cnk_operation_result_copy_bytes(const cnk_operation_t *o, uint8_t *out, size_t *len) {
   CHECK(o == &op);
   uint32_t rv = status(NULL);
   if (rv)
@@ -311,19 +312,19 @@ uint32_t cnk_operation_result_copy_bytes(const CNK_LIBCANO_OPERATION *o, uint8_t
     out[1] = 0;
   }
   *len = 2;
-  return CNK_LIBCANO_OK;
+  return CNK_OK;
 }
-uint32_t cnk_operation_public_key_copy(const CNK_LIBCANO_OPERATION *o, uint32_t field, uint8_t *out, size_t *len) {
+uint32_t cnk_operation_public_key_copy(const cnk_operation_t *o, uint32_t field, uint8_t *out, size_t *len) {
   CHECK(o == &op);
   if (field == publicFieldFailure)
-    return CNK_LIBCANO_RESULT_TYPE_MISMATCH;
-  size_t n = field == CNK_LIBCANO_PUBLIC_MODULUS ? 256 : 3;
+    return CNK_RESULT_TYPE_MISMATCH;
+  size_t n = field == CNK_PUBLIC_MODULUS ? 256 : 3;
   if (out) {
     CHECK(*len >= n);
-    memset(out, field == CNK_LIBCANO_PUBLIC_MODULUS ? 0xDD : 1, n);
+    memset(out, field == CNK_PUBLIC_MODULUS ? 0xDD : 1, n);
   }
   *len = n;
-  return CNK_LIBCANO_OK;
+  return CNK_OK;
 }
 
 /* Unused routes abort rather than silently granting authorization. */
@@ -339,8 +340,8 @@ CK_RV cnk_connect_for_private_key_operation(CK_SLOT_ID slot, CNK_PKCS11_SESSION 
   abort();
 }
 #define PRIVATE_STUB(name)                                                                                             \
-  uint32_t name(const CNK_LIBCANO_CONTEXT *c, uint32_t slot, uint32_t algorithm, const uint8_t *data, size_t n,        \
-                const CNK_LIBCANO_OPTIONS *options, CNK_LIBCANO_OPERATION **out, CNK_LIBCANO_ERROR *e) {               \
+  uint32_t name(const cnk_piv_context_t *c, uint32_t slot, uint32_t algorithm, const uint8_t *data, size_t n,          \
+                const cnk_operation_options_v1 *options, cnk_operation_t **out, cnk_error_v1 *e) {                     \
     (void)c;                                                                                                           \
     (void)slot;                                                                                                        \
     (void)algorithm;                                                                                                   \
@@ -353,9 +354,9 @@ CK_RV cnk_connect_for_private_key_operation(CK_SLOT_ID slot, CNK_PKCS11_SESSION 
   }
 PRIVATE_STUB(cnk_piv_decrypt_in_context_new)
 PRIVATE_STUB(cnk_piv_derive_in_context_new)
-uint32_t cnk_piv_decapsulate_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint32_t slot, const uint8_t *data, size_t n,
-                                            const CNK_LIBCANO_OPTIONS *options, CNK_LIBCANO_OPERATION **out,
-                                            CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_piv_decapsulate_in_context_new(const cnk_piv_context_t *c, uint32_t slot, const uint8_t *data, size_t n,
+                                            const cnk_operation_options_v1 *options, cnk_operation_t **out,
+                                            cnk_error_v1 *e) {
   (void)c;
   (void)slot;
   (void)data;
@@ -365,9 +366,9 @@ uint32_t cnk_piv_decapsulate_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint32
   (void)e;
   abort();
 }
-uint32_t cnk_piv_sign_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint32_t slot, uint32_t algorithm, uint32_t kind,
-                                     const uint8_t *data, size_t n, const CNK_LIBCANO_OPTIONS *options,
-                                     CNK_LIBCANO_OPERATION **out, CNK_LIBCANO_ERROR *e) {
+uint32_t cnk_piv_sign_in_context_new(const cnk_piv_context_t *c, uint32_t slot, uint32_t algorithm, uint32_t kind,
+                                     const uint8_t *data, size_t n, const cnk_operation_options_v1 *options,
+                                     cnk_operation_t **out, cnk_error_v1 *e) {
   (void)c;
   (void)slot;
   (void)algorithm;
@@ -379,10 +380,10 @@ uint32_t cnk_piv_sign_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint32_t slot
   (void)e;
   abort();
 }
-uint32_t cnk_piv_sign_streaming_in_context_new(const CNK_LIBCANO_CONTEXT *c, uint32_t slot, uint32_t mode,
+uint32_t cnk_piv_sign_streaming_in_context_new(const cnk_piv_context_t *c, uint32_t slot, uint32_t mode,
                                                const uint8_t *data, size_t n, const uint8_t *context, size_t cn,
-                                               const CNK_LIBCANO_OPTIONS *options, CNK_LIBCANO_OPERATION **out,
-                                               CNK_LIBCANO_ERROR *e) {
+                                               const cnk_operation_options_v1 *options, cnk_operation_t **out,
+                                               cnk_error_v1 *e) {
   (void)c;
   (void)slot;
   (void)mode;
@@ -395,7 +396,7 @@ uint32_t cnk_piv_sign_streaming_in_context_new(const CNK_LIBCANO_CONTEXT *c, uin
   (void)e;
   abort();
 }
-uint32_t cnk_operation_signature_p1363(const CNK_LIBCANO_OPERATION *o, uint8_t *out, size_t *n) {
+uint32_t cnk_operation_signature_p1363(const cnk_operation_t *o, uint8_t *out, size_t *n) {
   (void)o;
   (void)out;
   (void)n;
@@ -443,7 +444,7 @@ static void reset(void) {
   lockError = unlockError = 0;
   profileStatus = publicAlgorithmStatus = pinCopies = 0;
   responseSize = 2;
-  finalStep = CNK_LIBCANO_STEP_DONE;
+  finalStep = CNK_STEP_DONE;
   session.token = &token;
   token.libcanokeyProfile = (void *)1;
   token.libcanokeyProfileEpoch = atomic_load(&g_cnk_managed_binding_epoch);
@@ -457,11 +458,11 @@ static CK_RV call(unsigned kind, CK_BYTE *out, CK_ULONG *len) {
   case 1:
     return cnk_delete_piv_certificate_libcanokey(0, &session, 0x9c);
   case 2:
-    return cnk_piv_generate_keypair(0, &session, CNK_LIBCANO_ALG_RSA_2048, 0x9c, 1, 1);
+    return cnk_piv_generate_keypair(0, &session, CNK_ALGORITHM_RSA2048, 0x9c, 1, 1);
   case 3: {
     CK_BYTE scalar[32] = {0};
     scalar[31] = 1;
-    CNK_PIV_IMPORT material = {.parameters = {sizeof(CNK_LIBCANO_KEY_PARAMETERS), 0x9c, CNK_LIBCANO_ALG_P256, 1, 1},
+    CNK_PIV_IMPORT material = {.parameters = {sizeof(cnk_piv_key_parameters_v1), 0x9c, CNK_ALGORITHM_P256, 1, 1},
                                .components = {{scalar, sizeof(scalar)}},
                                .count = 1};
     return cnk_piv_import_key(0, &session, &material);
@@ -516,16 +517,16 @@ int main(void) {
   unlockError = CKR_CANT_LOCK;
   CHECK(call(2, output, &len) == CKR_CANT_LOCK && !sends && !invalidations);
   reset();
-  profileStatus = CNK_LIBCANO_INVALID_ARGUMENT;
+  profileStatus = CNK_INVALID_ARGUMENT;
   len = sizeof(output);
   CHECK(call(2, output, &len) == CKR_MECHANISM_INVALID && !sends && !invalidations);
   reset();
   // Unsupported and unknown firmware evidence must fail before authentication.
-  profileStatus = CNK_LIBCANO_PROTOCOL_ERROR;
-  errorKind = CNK_LIBCANO_ERROR_UNSUPPORTED_FEATURE;
+  profileStatus = CNK_PROTOCOL_ERROR;
+  errorKind = CNK_ERROR_UNSUPPORTED_FEATURE;
   CHECK(call(2, output, &len) == CKR_MECHANISM_INVALID && !sends && !invalidations);
   reset();
-  profileStatus = CNK_LIBCANO_PROTOCOL_ERROR;
+  profileStatus = CNK_PROTOCOL_ERROR;
   errorKind = 14; // CapabilityUnknown has no guessed algorithm fallback.
   CHECK(call(2, output, &len) == CKR_DEVICE_ERROR && !sends && !invalidations);
   reset();
@@ -536,7 +537,7 @@ int main(void) {
   for (unsigned failure = 0; failure < 3; failure++) {
     publicKey = original;
     operations = 1;
-    publicAlgorithmStatus = failure == 0 ? CNK_LIBCANO_RESULT_TYPE_MISMATCH : 0;
+    publicAlgorithmStatus = failure == 0 ? CNK_RESULT_TYPE_MISMATCH : 0;
     publicFieldFailure = failure;
     CHECK(cnk_copy_piv_public_key(&op, &publicKey) == CKR_DEVICE_ERROR);
     CHECK(!memcmp(&publicKey, &original, sizeof(original)) && !sends);
@@ -546,7 +547,7 @@ int main(void) {
   publicFieldFailure = 0;
   operations = 1;
   CHECK(cnk_copy_piv_public_key(&op, &publicKey) == CKR_OK);
-  CHECK(publicKey.algorithm == CNK_LIBCANO_ALG_RSA_2048 && publicKey.valueLen == 256 && publicKey.exponentLen == 3);
+  CHECK(publicKey.algorithm == CNK_ALGORITHM_RSA2048 && publicKey.valueLen == 256 && publicKey.exponentLen == 3);
   cnk_operation_free(&op);
   reset();
   for (unsigned n = 0; n < 2; n++) {
@@ -629,19 +630,19 @@ int main(void) {
   CHECK(!strstr(transcript, "cnk_operation_start completed"));
   CHECK(strstr(transcript, "cnk_piv_context_free completed"));
   reset();
-  CNK_LIBCANO_ERROR e = {.struct_size = sizeof(e), .kind = CNK_LIBCANO_ERROR_NOT_FOUND};
-  CHECK(cnk_piv_operation_status(CNK_LIBCANO_OK, &e, CKR_DATA_INVALID) == CKR_OK);
-  CHECK(cnk_piv_operation_status(CNK_LIBCANO_PANIC, &e, CKR_DATA_INVALID) == CKR_DEVICE_ERROR);
-  CHECK(cnk_piv_operation_status(CNK_LIBCANO_PROTOCOL_ERROR, &e, CKR_DATA_INVALID) == CKR_DATA_INVALID);
-  CHECK(cnk_piv_operation_status(CNK_LIBCANO_PROTOCOL_ERROR, &e, CKR_KEY_HANDLE_INVALID) == CKR_KEY_HANDLE_INVALID);
-  e.kind = CNK_LIBCANO_ERROR_SECURITY_STATUS;
-  CHECK(cnk_piv_operation_status(CNK_LIBCANO_PROTOCOL_ERROR, &e, CKR_DATA_INVALID) == CKR_USER_NOT_LOGGED_IN);
+  cnk_error_v1 e = {.struct_size = sizeof(e), .kind = CNK_ERROR_NOT_FOUND};
+  CHECK(cnk_piv_operation_status(CNK_OK, &e, CKR_DATA_INVALID) == CKR_OK);
+  CHECK(cnk_piv_operation_status(CNK_PANIC, &e, CKR_DATA_INVALID) == CKR_DEVICE_ERROR);
+  CHECK(cnk_piv_operation_status(CNK_PROTOCOL_ERROR, &e, CKR_DATA_INVALID) == CKR_DATA_INVALID);
+  CHECK(cnk_piv_operation_status(CNK_PROTOCOL_ERROR, &e, CKR_KEY_HANDLE_INVALID) == CKR_KEY_HANDLE_INVALID);
+  e.kind = CNK_ERROR_SECURITY_STATUS;
+  CHECK(cnk_piv_operation_status(CNK_PROTOCOL_ERROR, &e, CKR_DATA_INVALID) == CKR_USER_NOT_LOGGED_IN);
   atomic_store(&g_cnk_log_level, CNK_LOG_LEVEL_DEBUG);
   e.kind = 3;
   e.phase = 4;
   e.reference = 0;
   e.presence_flags = 0;
-  CHECK(cnk_piv_operation_status(CNK_LIBCANO_PROTOCOL_ERROR, &e, CKR_DATA_INVALID) == CKR_DEVICE_ERROR);
+  CHECK(cnk_piv_operation_status(CNK_PROTOCOL_ERROR, &e, CKR_DATA_INVALID) == CKR_DEVICE_ERROR);
   CHECK(strstr(lastLog, "InvalidResponse") && strstr(lastLog, "Parsing"));
   CHECK(strstr(lastLog, "SW=absent") && strstr(lastLog, "retries=absent"));
   e.kind = 6;
@@ -650,15 +651,15 @@ int main(void) {
   e.presence_flags = 3;
   e.status_word = 0x63C2;
   e.retries_remaining = 2;
-  CHECK(cnk_piv_operation_status(CNK_LIBCANO_PROTOCOL_ERROR, &e, CKR_DATA_INVALID) == CKR_USER_NOT_LOGGED_IN);
+  CHECK(cnk_piv_operation_status(CNK_PROTOCOL_ERROR, &e, CKR_DATA_INVALID) == CKR_USER_NOT_LOGGED_IN);
   CHECK(strstr(lastLog, "AuthenticationFailed") && strstr(lastLog, "reference=PIN"));
   CHECK(strstr(lastLog, "SW=63C2") && strstr(lastLog, "retries=2"));
   e.kind = 1;
   e.phase = 0;
   e.presence_flags = 0;
-  CHECK(cnk_piv_operation_status(CNK_LIBCANO_INVALID_ARGUMENT, &e, CKR_DATA_INVALID) == CKR_ARGUMENTS_BAD);
+  CHECK(cnk_piv_operation_status(CNK_INVALID_ARGUMENT, &e, CKR_DATA_INVALID) == CKR_ARGUMENTS_BAD);
   CHECK(strstr(lastLog, "InvalidArgument") && strstr(lastLog, "Construction"));
-  CHECK(cnk_piv_operation_status(CNK_LIBCANO_PANIC, NULL, CKR_DATA_INVALID) == CKR_DEVICE_ERROR);
+  CHECK(cnk_piv_operation_status(CNK_PANIC, NULL, CKR_DATA_INVALID) == CKR_DEVICE_ERROR);
   CHECK(strstr(lastLog, "Panic"));
   puts("PIV operation failure and ownership contracts passed");
   return 0;

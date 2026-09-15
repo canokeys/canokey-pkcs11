@@ -1,16 +1,11 @@
-"""Windows real-card PKCS#11 checks using cryptography for independent verification.
+"""Real-card regressions with independent software verification.
 
-Requires cryptography with ML-DSA/ML-KEM support, CNK_PIV_PIN, and explicit
-slot/serial/key selections. SM2 provisioning also requires an OpenSSL CLI.
-Certificate testing is opt-in and requires CNK_PIV_MANAGEMENT_KEY. It refuses
-an existing certificate, deletes its test certificate, and checks key retention.
-Explicit --replace-import-* / --replace-generate-* options overwrite a selected
-certificate-free test slot and verify its public key and private operations.
-Opaque PKCS#11 structures use Windows packing; template storage stays alive
-through each borrowed C call. Credentials and shared secrets are never printed.
+Credentials come from CNK_PIV_* environment variables. Writes require an explicit
+fixture declaring replaceable object IDs; provisioning is a separate subcommand.
 """
 
 from concurrent.futures import ThreadPoolExecutor
+import traceback
 import threading
 import subprocess
 import tempfile
@@ -30,365 +25,11 @@ from pathlib import Path
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding, utils, x25519, ed25519, mldsa, mlkem
 
-U = C.c_ulong
-B = C.c_ubyte
-P = C.c_void_p
+from pkcs11 import C, U, B, P, Attr, Mech, ECDH, OAEP, PSS, SessionInfo, TokenInfo, Token, attrs, check
+from pkcs11 import RSA_BITS, PQC_KINDS, EC_CURVES, KEY_KINDS, POLICY_KINDS
 
 
-class Attr(C.Structure):
-    _pack_ = 1
-    _fields_ = [("type", U), ("value", P), ("len", U)]
-
-
-class Mech(C.Structure):
-    _pack_ = 1
-    _fields_ = [("type", U), ("param", P), ("len", U)]
-
-
-class ECDH(C.Structure):
-    _pack_ = 1
-    _fields_ = [("kdf", U), ("shared_len", U), ("shared", P), ("public_len", U), ("public", P)]
-
-
-class OAEP(C.Structure):
-    _pack_ = 1
-    _fields_ = [("hash", U), ("mgf", U), ("source", U), ("len_ptr", P), ("len", U)]
-
-
-class PSS(C.Structure):
-    _pack_ = 1
-    _fields_ = [("hash", U), ("mgf", U), ("salt", U)]
-
-
-RSA_BITS = {"rsa": 2048, "rsa3072": 3072, "rsa4096": 4096}
-PQC_KINDS = {
-    "mldsa65": (0x4A, 0x1C, mldsa.MLDSA65PrivateKey),
-    "mlkem768": (0x49, 0x0F, mlkem.MLKEM768PrivateKey),
-}
-EC_CURVES = {
-    "p256": ("06082a8648ce3d030107", ec.SECP256R1),
-    "p384": ("06052b81040022", ec.SECP384R1),
-    "k256": ("06052b8104000a", ec.SECP256K1),
-    "p521": ("06052b81040023", ec.SECP521R1),
-}
-KEY_KINDS = [*PQC_KINDS, *RSA_BITS, *EC_CURVES, "x25519", "ed25519"]
-POLICY_KINDS = KEY_KINDS
-
-parser = argparse.ArgumentParser(
-    description="Verify explicitly selected keys through a Windows PKCS11 DLL and independent software crypto."
-)
-parser.add_argument("--module", type=Path, required=True)
-parser.add_argument("--slot", type=lambda x: int(x, 0), required=True)
-parser.add_argument("--serial", required=True)
-for option in ["ecdsa-id", "eddsa-id", "derive-id", "rsa-id"]:
-    parser.add_argument("--" + option, type=lambda x: int(x, 16), action="append", default=[])
-for option in ["mldsa-id", "mlkem-id", "certificate-id"]:
-    parser.add_argument("--" + option, type=lambda x: int(x, 16))
-for operation in ["import", "generate"]:
-    for kind in KEY_KINDS:
-        parser.add_argument(
-            "--replace-" + operation + "-" + kind + "-id",
-            type=lambda x: int(x, 16),
-            help="Overwrite this certificate-free test slot using " + operation + " for " + kind,
-        )
-parser.add_argument(
-    "--name-slot",
-    type=lambda x: int(x, 16),
-    action="append",
-    default=[],
-    help="Read/write/restore the name of this physical PIV slot; no key or certificate is changed",
-)
-parser.add_argument(
-    "--pin-managed-unconfigured",
-    action="store_true",
-    help="Verify unconfigured PIN-managed login is rejected and its USER login is rolled back",
-)
-parser.add_argument(
-    "--pin-roundtrip-id",
-    type=lambda x: int(x, 16),
-    help="Temporarily change PIN to CNK_PIV_TEST_PIN, verify this EC key, then restore PIN",
-)
-parser.add_argument(
-    "--puk-roundtrip-id",
-    type=lambda x: int(x, 16),
-    help="Change/restore the confirmed PUK, reset PIN with it, and verify this EC key",
-)
-parser.add_argument(
-    "--concurrent-id",
-    type=lambda x: int(x, 16),
-    help="Sign with this EC key while another session reads token RNG",
-)
-parser.add_argument("--public-key-id", type=lambda x: int(x, 16), action="append", default=[])
-parser.add_argument(
-    "--self-signed-certificate-id",
-    type=lambda x: int(x, 16),
-    action="append",
-    default=[],
-    help="Replace this explicit certificate using its existing card key; save the previous DER",
-)
-parser.add_argument("--certificate-backup-dir", type=Path)
-parser.add_argument(
-    "--external-write-id",
-    type=lambda x: int(x, 16),
-    help="Replace this certificate-free test slot from a child process and verify reset invalidation",
-)
-parser.add_argument(
-    "--reset-script", type=Path, help="Explicit PowerShell USB-reset helper for the external-write test"
-)
-for kind in POLICY_KINDS:
-    parser.add_argument(
-        "--policy-" + kind + "-id",
-        type=lambda x: int(x, 16),
-        help="Replace this certificate-free test slot to exercise all PIN policies",
-    )
-parser.add_argument(
-    "--sm2-provision-id",
-    type=lambda x: int(x, 16),
-    help="Replace a certificate-free EC test slot to validate SM2 generation/import; leave a P-521 fixture",
-)
-parser.add_argument("--openssl", type=Path, help="OpenSSL CLI for independent SM2 validation")
-parser.add_argument(
-    "--printed-roundtrip",
-    action="store_true",
-    help="Write/read/restore an empty PIV PRINTED object; refuses existing contents",
-)
-parser.add_argument("--report", type=Path)
-args = parser.parse_args()
-if args.self_signed_certificate_id and (
-    not args.certificate_backup_dir or "CNK_PIV_MANAGEMENT_KEY" not in os.environ
-):
-    parser.error("Certificate provisioning requires --certificate-backup-dir and CNK_PIV_MANAGEMENT_KEY")
-if (args.external_write_id is None) != (args.reset_script is None):
-    parser.error("--external-write-id and --reset-script must be used together")
-if args.external_write_id is not None:
-    if "CNK_PIV_MANAGEMENT_KEY" not in os.environ:
-        parser.error("CNK_PIV_MANAGEMENT_KEY is required for the external writer")
-    os.environ["CNK_PIV_METADATA_CACHE"] = "1"
-if os.name != "nt":
-    parser.error("This ctypes layout targets native Windows only")
-if "CNK_PIV_PIN" not in os.environ:
-    parser.error("CNK_PIV_PIN is required")
-policies = [(kind, getattr(args, "policy_" + kind + "_id")) for kind in POLICY_KINDS]
-imports = [(kind, getattr(args, "replace_import_" + kind + "_id")) for kind in KEY_KINDS]
-generations = [(kind, getattr(args, "replace_generate_" + kind + "_id")) for kind in KEY_KINDS]
-if (
-    args.certificate_id is not None
-    or args.name_slot
-    or args.printed_roundtrip
-    or args.sm2_provision_id is not None
-    or any(id is not None for _, id in imports + generations + policies)
-) and "CNK_PIV_MANAGEMENT_KEY" not in os.environ:
-    parser.error("Card write tests require CNK_PIV_MANAGEMENT_KEY")
-if args.pin_roundtrip_id is not None and "CNK_PIV_TEST_PIN" not in os.environ:
-    parser.error("PIN roundtrip requires CNK_PIV_TEST_PIN")
-if args.puk_roundtrip_id is not None and any(
-    name not in os.environ for name in ("CNK_PIV_PUK", "CNK_PIV_TEST_PUK", "CNK_PIV_TEST_PIN")
-):
-    parser.error("PUK roundtrip requires CNK_PIV_PUK, CNK_PIV_TEST_PUK and CNK_PIV_TEST_PIN")
-if (args.mldsa_id is None) != (args.mlkem_id is None):
-    parser.error("Specify both --mldsa-id and --mlkem-id")
-args.module = args.module.resolve()
-os.environ["CNK_UNSAFE_LOG_APDU"] = "0"
-lib = C.CDLL(str(args.module))
-
-
-class Version(C.Structure):
-    _pack_ = 1
-    _fields_ = [("major", B), ("minor", B)]
-
-
-class SessionInfo(C.Structure):
-    _pack_ = 1
-    _fields_ = [("slot", U), ("state", U), ("flags", U), ("device_error", U)]
-
-
-class TokenInfo(C.Structure):
-    _pack_ = 1
-    _fields_ = (
-        [("label", B * 32), ("manufacturer", B * 32), ("model", B * 16), ("serial", B * 16), ("flags", U)]
-        + [
-            (n, U)
-            for n in [
-                "max_sessions",
-                "sessions",
-                "max_rw_sessions",
-                "rw_sessions",
-                "max_pin",
-                "min_pin",
-                "total_public",
-                "free_public",
-                "total_private",
-                "free_private",
-            ]
-        ]
-        + [("hardware", Version), ("firmware", Version), ("utc", B * 16)]
-    )
-
-
-for name, types in {
-    "C_GetTokenInfo": [U, C.POINTER(TokenInfo)],
-    "C_GetSessionInfo": [U, C.POINTER(SessionInfo)],
-    "C_GetSlotList": [B, C.POINTER(U), C.POINTER(U)],
-    "C_WaitForSlotEvent": [U, C.POINTER(U), P],
-    "C_CreateObject": [U, C.POINTER(Attr), U, C.POINTER(U)],
-    "C_Initialize": [P],
-    "C_Finalize": [P],
-    "C_OpenSession": [U, U, P, P, C.POINTER(U)],
-    "C_CloseSession": [U],
-    "C_SessionCancel": [U, U],
-    "C_CNK_LoginPinManaged": [U, P, U],
-    "C_Login": [U, U, P, U],
-    "C_Logout": [U],
-    "C_SetPIN": [U, P, U, P, U],
-    "C_CNK_SetPIN": [U, B, P, U, P, U, P],
-    "C_CNK_UnblockPIN": [U, P, U, P, U, P],
-    "C_GetAttributeValue": [U, U, C.POINTER(Attr), U],
-    "C_FindObjectsInit": [U, C.POINTER(Attr), U],
-    "C_FindObjects": [U, C.POINTER(U), U, C.POINTER(U)],
-    "C_FindObjectsFinal": [U],
-    "C_VerifyInit": [U, C.POINTER(Mech), U],
-    "C_Verify": [U, P, U, P, U],
-    "C_EncapsulateKey": [U, C.POINTER(Mech), U, C.POINTER(Attr), U, P, C.POINTER(U), C.POINTER(U)],
-    "C_DecapsulateKey": [U, C.POINTER(Mech), U, C.POINTER(Attr), U, P, U, C.POINTER(U)],
-    "C_SignInit": [U, C.POINTER(Mech), U],
-    "C_Sign": [U, P, U, P, C.POINTER(U)],
-    "C_SignUpdate": [U, P, U],
-    "C_SignFinal": [U, P, C.POINTER(U)],
-    "C_EncryptInit": [U, C.POINTER(Mech), U],
-    "C_Encrypt": [U, P, U, P, C.POINTER(U)],
-    "C_DecryptInit": [U, C.POINTER(Mech), U],
-    "C_Decrypt": [U, P, U, P, C.POINTER(U)],
-    "C_DeriveKey": [U, C.POINTER(Mech), U, C.POINTER(Attr), U, C.POINTER(U)],
-    "C_DestroyObject": [U, U],
-    "C_GenerateKeyPair": [
-        U,
-        C.POINTER(Mech),
-        C.POINTER(Attr),
-        U,
-        C.POINTER(Attr),
-        U,
-        C.POINTER(U),
-        C.POINTER(U),
-    ],
-    "C_GenerateRandom": [U, P, U],
-    "C_CNK_GetContainerName": [U, B, P, C.POINTER(U)],
-    "C_CNK_SetContainerName": [U, B, P, U],
-}.items():
-    f = getattr(lib, name)
-    f.argtypes = types
-    f.restype = U
-
-
-def check(rv):
-    if rv:
-        raise RuntimeError(f"PKCS11 error 0x{rv:x}")
-
-
-def attrs(values):
-    storage = [C.create_string_buffer(v) if isinstance(v, bytes) else U(v) for _, v in values]
-    return (
-        (Attr * len(values))(
-            *[
-                Attr(t, C.cast(C.pointer(v), P), len(raw) if isinstance(raw, bytes) else C.sizeof(U))
-                for (t, raw), v in zip(values, storage)
-            ]
-        ),
-        storage,
-    )
-
-
-s = U()
-
-
-def attr(key, t):
-    a = Attr(t, None, 0)
-    check(lib.C_GetAttributeValue(s, key, C.byref(a), 1))
-    if a.len > 8192:
-        raise RuntimeError("Attribute exceeds hardware-test buffer limit")
-    b = C.create_string_buffer(a.len)
-    a.value = C.cast(b, P)
-    check(lib.C_GetAttributeValue(s, key, C.byref(a), 1))
-    return b.raw[: a.len]
-
-
-def find(cls, id):
-    a, keep = attrs([(0, cls), (258, bytes([id]))])
-    check(lib.C_FindObjectsInit(s, a, len(a)))
-    try:
-        result = (U * 4)()
-        n = U()
-        check(lib.C_FindObjects(s, result, 4, C.byref(n)))
-        return list(result[: n.value])
-    finally:
-        check(lib.C_FindObjectsFinal(s))
-
-
-def key_for(cls, id):
-    keys = find(cls, id)
-    if len(keys) != 1:
-        raise RuntimeError(f"Expected exactly one class {cls} key with ID {id:02x}; found {len(keys)}")
-    return keys[0]
-
-
-def public(id):
-    key = key_for(2, id)
-    kind = int.from_bytes(attr(key, 256), "little")
-    if kind == 0:
-        return rsa.RSAPublicNumbers(
-            int.from_bytes(attr(key, 290), "big"), int.from_bytes(attr(key, 288), "big")
-        ).public_key()
-    if kind == 3:
-        params = attr(key, 384)
-        curve = {
-            bytes.fromhex("06082a8648ce3d030107"): ec.SECP256R1,
-            bytes.fromhex("06052b81040022"): ec.SECP384R1,
-            bytes.fromhex("06052b81040023"): ec.SECP521R1,
-            bytes.fromhex("06052b8104000a"): ec.SECP256K1,
-        }[params]()
-        point = attr(key, 385)
-        start = 2 if point[1] < 128 else 2 + (point[1] & 127)
-        return ec.EllipticCurvePublicKey.from_encoded_point(curve, point[start:])
-    if kind == 64:
-        return ed25519.Ed25519PublicKey.from_public_bytes(attr(key, 385))
-    if kind == 65:
-        return x25519.X25519PublicKey.from_public_bytes(attr(key, 385))
-    if kind == 0x4A:
-        return mldsa.MLDSA65PublicKey.from_public_bytes(attr(key, 17))
-    if kind == 0x49:
-        return mlkem.MLKEM768PublicKey.from_public_bytes(attr(key, 17))
-    raise RuntimeError(f"unsupported kind {kind}")
-
-
-def login(role, key):
-    check(lib.C_Login(s, role, key, len(key)))
-
-
-def sign(id, mechanism, data):
-    key = key_for(3, id)
-    check(lib.C_SignInit(s, C.byref(mechanism), key))
-    n = U()
-    check(lib.C_Sign(s, data, len(data), None, C.byref(n)))
-    out = C.create_string_buffer(n.value)
-    short = U(1)
-    if not lib.C_Sign(s, data, len(data), out, C.byref(short)) == 336:
-        raise AssertionError("Hardware check failed")
-    if not short.value == n.value:
-        raise AssertionError("Hardware check failed")
-    check(lib.C_Sign(s, data, len(data), out, C.byref(n)))
-    return out.raw[: n.value]
-
-
-def verify(id, mechanism, data, signature):
-    key = key_for(2, id)
-    check(lib.C_VerifyInit(s, C.byref(mechanism), key))
-    check(lib.C_Verify(s, data, len(data), signature, len(signature)))
-    corrupted = bytes([signature[0] ^ 1]) + signature[1:]
-    check(lib.C_VerifyInit(s, C.byref(mechanism), key))
-    if lib.C_Verify(s, data, len(data), corrupted, len(corrupted)) != 0xC0:
-        raise AssertionError("Host verification accepted a corrupted signature")
-
-
-def derive(id, private_secret=True, expected_error=None):
+def derive(id, private_secret=True, expected_error=None, full=False):
     pub = public(id)
     if isinstance(pub, x25519.X25519PublicKey):
         peer = x25519.X25519PrivateKey.generate()
@@ -427,8 +68,37 @@ def derive(id, private_secret=True, expected_error=None):
         raise AssertionError("Hardware and software shared secrets differ")
     print(f"PASS ECDH/X25519 id={id:02x} {len(actual)} bytes", flush=True)
 
+    if full:
+        from cryptography.hazmat.primitives.kdf.x963kdf import X963KDF
 
-def rsa_checks(id):
+        shared = b"canokey-pkcs11"
+        info = C.create_string_buffer(shared)
+        params.kdf, params.shared_len, params.shared = 6, len(shared), C.cast(info, P)
+        template, keep = attrs([(0, 4), (256, 16), (353, 32), (259, b"\0"), (354, b"\1")])
+        check(lib.C_DeriveKey(s, C.byref(m), key_for(3, id), template, len(template), C.byref(h)))
+        try:
+            if attr(h, 17) != X963KDF(hashes.SHA256(), 32, shared).derive(expected):
+                raise AssertionError("ECDH X9.63 KDF differs from independent software")
+        finally:
+            check(lib.C_DestroyObject(s, h))
+
+
+def multipart_sign(id, mechanism, message):
+    check(lib.C_SignInit(s, C.byref(mechanism), key_for(3, id)))
+    try:
+        middle = len(message) // 2
+        for part in (message[:middle], message[middle:]):
+            check(lib.C_SignUpdate(s, part, len(part)))
+        length = U()
+        check(lib.C_SignFinal(s, None, C.byref(length)))
+        output = C.create_string_buffer(length.value)
+        check(lib.C_SignFinal(s, output, C.byref(length)))
+        return output.raw[: length.value]
+    finally:
+        check(lib.C_SessionCancel(s, 0x800))
+
+
+def rsa_checks(id, full=False):
     pub = public(id)
     if not pub.public_numbers().n & 1:
         raise AssertionError("pre-existing RSA modulus is even")
@@ -458,6 +128,62 @@ def rsa_checks(id):
     if out.raw[: n.value] != expected:
         raise AssertionError("Host RSA encryption differs from independent modular exponentiation")
     print("PASS RSA host encrypt and host verify/corrupted-signature rejection", flush=True)
+    if full:
+        count = U()
+        check(lib.C_GetMechanismList(args.slot, None, C.byref(count)))
+        supported = (U * count.value)()
+        check(lib.C_GetMechanismList(args.slot, supported, C.byref(count)))
+        families = [
+            (hashes.SHA1, 0x220, 1, 6, 14),
+            (hashes.SHA224, 0x255, 5, 0x46, 0x47),
+            (hashes.SHA256, 0x250, 2, 0x40, 0x43),
+            (hashes.SHA384, 0x260, 3, 0x41, 0x44),
+            (hashes.SHA512, 0x270, 4, 0x42, 0x45),
+            (hashes.SHA3_224, 0x2B5, 6, 0x66, 0x67),
+            (hashes.SHA3_256, 0x2B0, 7, 0x60, 0x63),
+            (hashes.SHA3_384, 0x2C0, 8, 0x61, 0x64),
+            (hashes.SHA3_512, 0x2D0, 9, 0x62, 0x65),
+        ]
+        for hash_type, hash_id, mgf, v15, pss_id in families:
+            algorithm = hash_type()
+            params = PSS(hash_id, mgf, algorithm.digest_size)
+            for pss, mechanism in ((False, v15), (True, pss_id)):
+                if mechanism not in supported:
+                    continue
+                mech = Mech(
+                    mechanism, C.cast(C.pointer(params), P) if pss else None, C.sizeof(params) if pss else 0
+                )
+                pad = (
+                    padding.PSS(padding.MGF1(algorithm), algorithm.digest_size) if pss else padding.PKCS1v15()
+                )
+                for multipart in (False, True):
+                    signature = multipart_sign(id, mech, msg) if multipart else sign(id, mech, msg)
+                    pub.verify(signature, msg, pad, algorithm)
+                    verify(id, mech, msg, signature)
+        for mechanism in (1, 3):
+            signature = sign(
+                id, Mech(mechanism, None, 0), msg if mechanism == 1 else msg.rjust(pub.key_size // 8, b"\0")
+            )
+            encoded = pow(int.from_bytes(signature, "big"), numbers.e, numbers.n).to_bytes(
+                pub.key_size // 8, "big"
+            )
+            expected = (
+                b"\0\1" + b"\xff" * (len(encoded) - len(msg) - 3) + b"\0" + msg
+                if mechanism == 1
+                else msg.rjust(len(encoded), b"\0")
+            )
+            if encoded != expected:
+                raise AssertionError("Raw RSA/PKCS1 encoding differs from independent result")
+        digest = hashlib.sha256(msg).digest()
+        params = PSS(0x250, 2, len(digest))
+        signature = sign(id, Mech(13, C.cast(C.pointer(params), P), C.sizeof(params)), digest)
+        pub.verify(
+            signature,
+            digest,
+            padding.PSS(padding.MGF1(hashes.SHA256()), len(digest)),
+            utils.Prehashed(hashes.SHA256()),
+        )
+        print("PASS advertised RSA hash families, multipart signing and raw mechanisms", flush=True)
     for oaep in [False, True]:
         pad = (
             padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
@@ -554,79 +280,7 @@ def mlkem_checks(id, private_key=None, expected_error=None):
     print("PASS ML-KEM-768 independent OpenSSL and PKCS11/card shared secrets", flush=True)
 
 
-def pqc_checks():
-    mldsa_checks(args.mldsa_id)
-    mlkem_checks(args.mlkem_id)
-
-
-def provision_certificate(id):
-    from asn1crypto import x509 as asn1_x509
-    from cryptography import x509
-    from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
-    from datetime import timedelta
-
-    rv = lib.C_Logout(s)
-    if rv not in (0, 0x101):
-        check(rv)
-    pub = public(id)
-    if not isinstance(pub, (rsa.RSAPublicKey, ec.EllipticCurvePublicKey)):
-        raise RuntimeError("Windows certificates require RSA or NIST EC keys")
-    directory = args.certificate_backup_dir
-    directory.mkdir(parents=True, exist_ok=True)
-    existing = find(1, id)
-    backup = directory / f"original-id-{id:02x}.der"
-    if existing and not backup.exists():
-        backup.write_bytes(attr(existing[0], 17))
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"CanoKey Windows development ID {id:02x}")])
-    now = datetime.now(timezone.utc)
-    is_rsa = isinstance(pub, rsa.RSAPublicKey)
-    placeholder = (
-        rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        if is_rsa
-        else ec.generate_private_key(pub.curve)
-    )
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(name)
-        .issuer_name(name)
-        .public_key(pub)
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - timedelta(minutes=5))
-        .not_valid_after(now + timedelta(days=365))
-        .add_extension(x509.BasicConstraints(ca=False, path_length=None), True)
-        .add_extension(x509.KeyUsage(True, False, is_rsa, False, False, False, False, False, False), True)
-        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]), False)
-        .sign(placeholder, hashes.SHA256())
-    )
-    login(1, os.environ["CNK_PIV_PIN"].encode())
-    if is_rsa:
-        signature = sign(id, Mech(0x40, None, 0), cert.tbs_certificate_bytes)
-    else:
-        raw = sign(id, Mech(0x1041, None, 0), hashlib.sha256(cert.tbs_certificate_bytes).digest())
-        width = len(raw) // 2
-        signature = utils.encode_dss_signature(
-            int.from_bytes(raw[:width], "big"), int.from_bytes(raw[width:], "big")
-        )
-    encoded = asn1_x509.Certificate.load(cert.public_bytes(serialization.Encoding.DER))
-    encoded["signature_value"] = signature
-    der = encoded.dump()
-    signed = x509.load_der_x509_certificate(der)
-    signed.verify_directly_issued_by(signed)
-    check(lib.C_Logout(s))
-    login(0, bytes.fromhex(os.environ["CNK_PIV_MANAGEMENT_KEY"]))
-    template, keep = attrs([(0, 1), (128, 0), (258, bytes([id])), (1, b"\1"), (17, der)])
-    handle = U()
-    check(lib.C_CreateObject(s, template, len(template), C.byref(handle)))
-    if attr(handle, 17) != der:
-        raise RuntimeError("Certificate readback differs from the signed DER")
-    (directory / f"certificate-id-{id:02x}.der").write_bytes(der)
-    thumbprint = signed.fingerprint(hashes.SHA1()).hex().upper()
-    check(lib.C_Logout(s))
-    print(f"PASS certificate ID {id:02x} signed by its card key; thumbprint={thumbprint}", flush=True)
-
-
-def certificate_checks():
-    id = args.certificate_id
+def certificate_checks(id):
     from cryptography import x509
     from cryptography.x509.oid import NameOID
     from datetime import datetime, timedelta, timezone
@@ -675,7 +329,7 @@ def certificate_checks():
     check(lib.C_Logout(s))
 
 
-def ecdsa_checks(id):
+def ecdsa_checks(id, full=False):
     pub = public(id)
     for algorithm in [hashes.SHA256(), hashes.SHA512()]:
         digest = hashes.Hash(algorithm)
@@ -691,6 +345,17 @@ def ecdsa_checks(id):
         pub.verify(encoded, data, ec.ECDSA(utils.Prehashed(algorithm)))
         verify(id, Mech(4161, None, 0), data, sig)
         print(f"PASS ECDSA ID {id:02x}, {pub.key_size} bits, {algorithm.name}", flush=True)
+
+    if full:
+        message = b"CanoKey combined ECDSA mechanism"
+        width = (pub.key_size + 7) // 8
+        for mechanism, algorithm in ((0x1042, hashes.SHA1()), (0x1044, hashes.SHA256())):
+            for operation in (sign, multipart_sign):
+                signature = operation(id, Mech(mechanism, None, 0), message)
+                encoded = utils.encode_dss_signature(
+                    int.from_bytes(signature[:width], "big"), int.from_bytes(signature[width:], "big")
+                )
+                pub.verify(encoded, message, ec.ECDSA(algorithm))
 
 
 def eddsa_checks(id):
@@ -784,12 +449,16 @@ def external_reset_check(id):
                 str(args.slot),
                 "--serial",
                 args.serial,
-                "--replace-generate-rsa-id",
-                f"{id:02x}",
-                "--public-key-id",
-                f"{id:02x}",
+                "--fixture",
+                str(args.fixture),
                 "--report",
                 str(report_path),
+                "fixture",
+                "generate",
+                "--id",
+                f"{id:02x}",
+                "--kind",
+                "rsa",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -858,9 +527,6 @@ def random_check():
     print("PASS RNG lengths 0/1/256/257/1024/65539 and adapter chunk boundary", flush=True)
 
 
-results = []
-
-
 def run_case(name, operation):
     try:
         details = operation()
@@ -869,6 +535,7 @@ def run_case(name, operation):
             row["details"] = details
         results.append(row)
     except Exception as error:
+        traceback.print_exc()
         detail = f"{type(error).__name__}: {error}"
         results.append({"name": name, "status": "fail", "detail": detail})
         print(f"FAIL {name}: {detail}", flush=True)
@@ -1518,90 +1185,184 @@ def printed_roundtrip():
     print("PASS generic CKO_DATA read/write/restore and PUBLIC/USER write rejection", flush=True)
 
 
+def object_id(value):
+    number = int(value, 16)
+    if not 1 <= number <= 24:
+        raise argparse.ArgumentTypeError("PIV object ID must be 01..18 (hex)")
+    return number
+
+
 def main():
-    initialized = False
-    opened = False
+    global args, lib, s, results, attr, find, key_for, public, login, sign, verify
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--module", type=Path, required=True)
+    parser.add_argument("--slot", type=lambda value: int(value, 0), required=True)
+    parser.add_argument("--serial", required=True)
+    parser.add_argument(
+        "--fixture", type=Path, help="JSON keys, replaceable IDs, credential key and name slots"
+    )
+    parser.add_argument(
+        "--libcanokey", type=Path, help="Optional Rust C ABI DLL for explicit fixture operations"
+    )
+    parser.add_argument("--reader", help="Explicit PC/SC reader for fixture operations")
+    parser.add_argument("--report", type=Path)
+    commands = parser.add_subparsers(dest="command", required=True)
+    tests = commands.add_parser("test", help="Run regression suites without implicit card provisioning")
+    tests.add_argument(
+        "--suite", choices=("crypto", "write", "policy", "credentials", "management", "all"), default="crypto"
+    )
+    tests.add_argument("--keys", type=lambda text: [object_id(v) for v in text.split(",")])
+    tests.add_argument(
+        "--reset-script", type=Path, help="Explicit USB-reset helper for external-write regression"
+    )
+    tests.add_argument("--openssl", type=Path, help="Optional OpenSSL CLI for SM2 verification")
+    fixture = commands.add_parser(
+        "fixture", help="Explicit destructive preparation, separate from regressions"
+    )
+    fixture.add_argument(
+        "action",
+        choices=(
+            "generate",
+            "certificate",
+            "prepare",
+            "restore",
+            "check-reset",
+            "clear-slot",
+            "malformed-policy",
+        ),
+    )
+    fixture.add_argument("--id", type=object_id)
+    fixture.add_argument("--kind", choices=KEY_KINDS)
+    fixture.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    args.module = args.module.resolve()
+    config = json.loads(args.fixture.read_text()) if args.fixture else {}
+    replaceable = {kind: object_id(value) for kind, value in config.get("replaceable", {}).items()}
+    keys = getattr(args, "keys", None) or [object_id(value) for value in config.get("keys", [])]
+    if "CNK_PIV_PIN" not in os.environ:
+        parser.error("CNK_PIV_PIN is required")
+    if args.command == "test":
+        suites = (
+            {"crypto", "write", "policy", "credentials", "management"}
+            if args.suite == "all"
+            else {args.suite}
+        )
+        if "crypto" in suites and not keys:
+            parser.error("Crypto requires --keys or fixture keys")
+        if suites & {"write", "policy", "management"} and "CNK_PIV_MANAGEMENT_KEY" not in os.environ:
+            parser.error("Write suites require CNK_PIV_MANAGEMENT_KEY")
+        if suites & {"write", "policy"} and not all(
+            k in replaceable for k in ("rsa", "ec", "x25519", "ed25519")
+        ):
+            parser.error("Write/policy suites require four explicit replaceable fixture IDs")
+        if "credentials" in suites and any(
+            k not in os.environ for k in ("CNK_PIV_TEST_PIN", "CNK_PIV_PUK", "CNK_PIV_TEST_PUK")
+        ):
+            parser.error("Credential suite requires confirmed original/temporary PIN and PUK variables")
+        if suites & {"credentials", "management"} and "credential_key" not in config:
+            parser.error("Credential/management suites require fixture credential_key")
+        if args.reset_script:
+            if "rsa" not in replaceable:
+                parser.error("External reset requires the replaceable RSA fixture")
+            os.environ["CNK_PIV_METADATA_CACHE"] = "1"
+    else:
+        if "CNK_PIV_MANAGEMENT_KEY" not in os.environ:
+            parser.error("Fixture mutations require CNK_PIV_MANAGEMENT_KEY")
+        if args.action in ("generate", "certificate", "clear-slot") and args.id is None:
+            parser.error("This fixture action requires --id")
+        if args.action == "generate" and args.kind is None:
+            parser.error("Generation requires --kind")
+        if args.action in ("generate", "certificate", "clear-slot") and args.id not in replaceable.values():
+            parser.error("The fixture must explicitly declare this replaceable ID")
+    results = []
     fingerprints = {}
-    try:
-        check(lib.C_Initialize(None))
-        initialized = True
-        count = U()
-        check(lib.C_GetSlotList(1, None, C.byref(count)))
-        slots = (U * count.value)()
-        check(lib.C_GetSlotList(1, slots, C.byref(count)))
-        if args.slot not in slots:
-            raise RuntimeError("Requested slot is absent")
-        info = TokenInfo()
-        check(lib.C_GetTokenInfo(args.slot, C.byref(info)))
-        actual_serial = bytes(info.serial).rstrip(b" \x00").decode("ascii")
-        if actual_serial != args.serial:
-            raise RuntimeError(f"Token serial mismatch: {actual_serial}")
-        check(lib.C_OpenSession(args.slot, 6, None, None, C.byref(s)))
-        opened = True
-        if args.pin_roundtrip_id is not None:
-            run_case("PIN change/cache/restore", lambda: pin_roundtrip(args.pin_roundtrip_id))
-        if args.puk_roundtrip_id is not None:
-            run_case(
-                "PUK change/restore and PUBLIC PIN recovery", lambda: puk_roundtrip(args.puk_roundtrip_id)
-            )
-        if args.pin_managed_unconfigured:
-            run_case("unconfigured PIN-managed login rollback", unconfigured_management_check)
-        if args.name_slot:
-            run_case("F5 name read/write/restore", lambda: names_checks(args.name_slot))
-        if args.printed_roundtrip:
-            run_case("empty PRINTED data read/write/restore", printed_roundtrip)
-        for kind, id in policies:
-            if id is not None:
+    with Token(args.module, args.slot, args.serial) as token:
+        lib, s = token.lib, token.session
+        attr, find, key_for, public, login, sign, verify = [
+            getattr(token, n) for n in ("attr", "find", "key_for", "public", "login", "sign", "verify")
+        ]
+        if args.command == "fixture":
+            if args.action == "generate":
+                generate_checks(args.id, args.kind)
+                fingerprints[f"{args.id:02x}"] = public_fingerprint(args.id)
+            else:
+                from fixtures import run
+
+                run(token, args)
+            results.append({"name": f"fixture {args.action}", "status": "pass"})
+        else:
+            credential_key = object_id(config["credential_key"]) if "credential_key" in config else None
+            if "credentials" in suites:
+                run_case("PIN change/cache/restore", lambda: pin_roundtrip(credential_key))
+                run_case("PUK change/restore and PUBLIC PIN recovery", lambda: puk_roundtrip(credential_key))
+            if "management" in suites:
+                run_case("unconfigured PIN-managed login rollback", unconfigured_management_check)
+                names = [int(value, 16) for value in config.get("name_slots", [])]
+                if names:
+                    run_case("F5 name read/write/restore", lambda: names_checks(names))
+                run_case("empty PRINTED data read/write/restore", printed_roundtrip)
+
+            def write_id(kind):
+                return replaceable[
+                    "rsa" if kind in RSA_BITS or kind in PQC_KINDS else "ec" if kind in EC_CURVES else kind
+                ]
+
+            if "policy" in suites:
+                for kind in POLICY_KINDS:
+                    run_case(
+                        f"{kind} PIN-policy matrix", lambda kind=kind: policy_matrix(write_id(kind), kind)
+                    )
+            if "write" in suites:
+                run_case("SM2 provisioning", lambda: sm2_provisioning(replaceable["ec"]))
+                for operation in (generate_checks, import_checks):
+                    for kind in KEY_KINDS:
+                        run_case(
+                            f"{kind} {operation.__name__}", lambda kind=kind: operation(write_id(kind), kind)
+                        )
+                run_case("certificate write/read/delete", lambda: certificate_checks(replaceable["rsa"]))
+            logout_if_logged_in()
+            login(1, os.environ["CNK_PIV_PIN"].encode())
+            if "crypto" in suites:
+                for id in keys:
+                    pub = public(id)
+                    checks = (
+                        [rsa_checks]
+                        if isinstance(pub, rsa.RSAPublicKey)
+                        else (
+                            [ecdsa_checks, derive]
+                            if isinstance(pub, ec.EllipticCurvePublicKey)
+                            else (
+                                [derive]
+                                if isinstance(pub, x25519.X25519PublicKey)
+                                else (
+                                    [eddsa_checks]
+                                    if isinstance(pub, ed25519.Ed25519PublicKey)
+                                    else (
+                                        [mldsa_checks]
+                                        if isinstance(pub, mldsa.MLDSA65PublicKey)
+                                        else [mlkem_checks]
+                                    )
+                                )
+                            )
+                        )
+                    )
+                    for operation in checks:
+                        run_case(
+                            f"{operation.__name__} ID {id:02x}",
+                            lambda id=id, operation=operation: (
+                                operation(id, full=True)
+                                if operation in (rsa_checks, ecdsa_checks, derive)
+                                else operation(id)
+                            ),
+                        )
+                if credential_key:
+                    run_case("two-session concurrent ECDSA/RNG", lambda: concurrency_check(credential_key))
+            run_case("hardware RNG length/chunk matrix", random_check)
+            if args.reset_script:
                 run_case(
-                    f"{kind} PIN-policy matrix ID {id:02x}", lambda id=id, kind=kind: policy_matrix(id, kind)
+                    "external write/reset/cache refresh", lambda: external_reset_check(replaceable["rsa"])
                 )
-        if args.sm2_provision_id is not None:
-            run_case(
-                f"SM2 provisioning ID {args.sm2_provision_id:02x}",
-                lambda: sm2_provisioning(args.sm2_provision_id),
-            )
-        for kind, id in generations:
-            if id is not None:
-                run_case(
-                    f"{kind} key generation ID {id:02x}", lambda id=id, kind=kind: generate_checks(id, kind)
-                )
-        for kind, id in imports:
-            if id is not None:
-                run_case(
-                    f"{kind} private-key import ID {id:02x}", lambda id=id, kind=kind: import_checks(id, kind)
-                )
-        if args.certificate_id is not None:
-            run_case("certificate write/read/delete", certificate_checks)
-            rv = lib.C_Logout(s)
-            if rv not in (0, 257):
-                check(rv)
-        for id in args.self_signed_certificate_id:
-            run_case(f"card-signed Windows certificate ID {id:02x}", lambda id=id: provision_certificate(id))
-        login(1, os.environ["CNK_PIV_PIN"].encode())
-        for id in args.ecdsa_id:
-            run_case(f"ECDSA ID {id:02x}", lambda id=id: ecdsa_checks(id))
-        for id in args.eddsa_id:
-            run_case(f"Ed25519 ID {id:02x}", lambda id=id: eddsa_checks(id))
-        for id in args.derive_id:
-            run_case(f"agreement ID {id:02x}", lambda id=id: derive(id))
-        for id in args.rsa_id:
-            run_case(f"RSA ID {id:02x}", lambda id=id: rsa_checks(id))
-        if args.mldsa_id is not None:
-            run_case("ML-DSA and ML-KEM", pqc_checks)
-        if args.concurrent_id is not None:
-            run_case("two-session concurrent ECDSA/RNG", lambda: concurrency_check(args.concurrent_id))
-        run_case("hardware RNG length/chunk matrix", random_check)
-        if args.external_write_id is not None:
-            run_case(
-                "external write/reset/cache refresh", lambda: external_reset_check(args.external_write_id)
-            )
-        fingerprints = {f"{id:02x}": public_fingerprint(id) for id in args.public_key_id}
-    finally:
-        if opened:
-            lib.C_Logout(s)
-            check(lib.C_CloseSession(s))
-        if initialized:
-            check(lib.C_Finalize(None))
+            fingerprints = {f"{id:02x}": public_fingerprint(id) for id in keys}
     report = {
         "time_utc": datetime.now(timezone.utc).isoformat(),
         "module": str(args.module),
@@ -1613,9 +1374,9 @@ def main():
     }
     if args.report:
         args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    failed = sum((row["status"] == "fail" for row in results))
-    print(f"{len(results) - failed}/{len(results)} requested hardware check groups passed", flush=True)
-    return 1 if failed else 0
+    failed = sum(row["status"] == "fail" for row in results)
+    print(f"{len(results)-failed}/{len(results)} requested hardware groups passed")
+    return int(bool(failed))
 
 
 if __name__ == "__main__":

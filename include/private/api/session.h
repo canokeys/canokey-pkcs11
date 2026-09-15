@@ -54,7 +54,7 @@ typedef struct {
   CNK_PIV_PUBLIC_CACHE_ENTRY slots[CNK_PIV_PUBLIC_CACHE_SLOT_COUNT];
 } CNK_PIV_PUBLIC_CACHE;
 
-typedef struct CNK_LIBCANO_PROFILE CNK_LIBCANO_PROFILE;
+typedef struct CnkProfile cnk_profile_t;
 
 // Login credentials are shared by every session for one slot, as required by
 // PKCS#11. The lock protects state and both sensitive caches.
@@ -77,7 +77,7 @@ typedef struct CNK_PKCS11_TOKEN_STATE {
   // Advances even when a failed application mutex prevents clearing storage.
   _Atomic uint64_t publicCacheGeneration;
   CNK_PIV_PUBLIC_CACHE pivPublicCache;
-  CNK_LIBCANO_PROFILE *libcanokeyProfile;
+  cnk_profile_t *libcanokeyProfile;
   CK_ULONG libcanokeyProfileEpoch;
   uint64_t libcanokeyProfileRefreshedAtMs;
   CNK_PKCS11_MUTEX lock;

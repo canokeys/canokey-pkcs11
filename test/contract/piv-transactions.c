@@ -245,6 +245,20 @@ static LONG transmit(SCARDHANDLE card, LPCSCARD_IO_REQUEST sendPci, LPCBYTE comm
           output[1] = 0;
         if (recoveryMode == 3)
           output[3] = 99;
+        if (recoveryMode == 5)
+          output[6] = 3;
+        if (recoveryMode == 6) {
+          const CK_BYTE missing[] = {0x53, 4, 0x80, 2, 0x82, 0};
+          memcpy(output, missing, sizeof(missing));
+          n = sizeof(missing);
+        }
+        if (recoveryMode == 7) {
+          const CK_BYTE duplicate[] = {0x53, 8, 0x80, 6, 0x81, 1, 0, 0x81, 1, 3};
+          memcpy(output, duplicate, sizeof(duplicate));
+          n = sizeof(duplicate);
+        }
+        if (recoveryMode == 8)
+          return SCARD_E_NOT_TRANSACTED;
         break;
       }
       // Framing fixture only; certificate trust/ASN.1 inspection is not involved.
@@ -555,7 +569,7 @@ static void profile_contract(CK_SESSION_HANDLE a, CK_SESSION_HANDLE b) {
   CNK_PKCS11_SESSION *first = NULL, *second = NULL;
   CHECK(cnk_session_find(a, &first) == CKR_OK && cnk_session_find(b, &second) == CKR_OK);
   CHECK(cnk_ensure_libcanokey_profile(first) == CKR_OK);
-  CNK_LIBCANO_PROFILE *previous = first->token->libcanokeyProfile;
+  cnk_profile_t *previous = first->token->libcanokeyProfile;
   first->token->libcanokeyProfileRefreshedAtMs = 0;
   atomic_store(&failProfile, true);
   for (unsigned retry = 0; retry < 2; retry++) {
@@ -834,15 +848,15 @@ static void agreement_commit_contract(CK_SESSION_HANDLE a, CK_SESSION_HANDLE b) 
 
 static void recovery_contract(CK_SESSION_HANDLE session) {
   const CK_BYTE puk[] = "fixture8";
-  for (recoveryMode = 1; recoveryMode <= 4; recoveryMode++) {
+  for (recoveryMode = 1; recoveryMode <= 8; recoveryMode++) {
     for (unsigned failure = 0; failure < 2; failure++) {
       unsigned before = atomic_load(&connects);
       rejectRecovery = failure != 0;
       CK_BYTE tries = 99;
-      CK_RV expected = recoveryMode == 2   ? CKR_ACTION_PROHIBITED
-                       : recoveryMode == 3 ? CKR_DEVICE_ERROR
-                       : rejectRecovery    ? CKR_PIN_INCORRECT
-                                           : CKR_OK;
+      CK_RV expected = (recoveryMode == 2 || recoveryMode == 5)   ? CKR_ACTION_PROHIBITED
+                       : (recoveryMode == 3 || recoveryMode >= 6) ? CKR_DEVICE_ERROR
+                       : rejectRecovery                           ? CKR_PIN_INCORRECT
+                                                                  : CKR_OK;
       CHECK(C_CNK_UnblockPIN(session, (CK_UTF8CHAR_PTR)puk, 8, (CK_UTF8CHAR_PTR)pin, 6, &tries) == expected);
       CHECK(atomic_load(&connects) == before + 1 && !activeCard);
       Card *card = &cards[before + 1];
@@ -857,6 +871,22 @@ static void recovery_contract(CK_SESSION_HANDLE session) {
   CHECK(C_SetPIN(session, (CK_UTF8CHAR_PTR)pin, 6, (CK_UTF8CHAR_PTR)pin, 6) == CKR_OK);
   CNK_PKCS11_SESSION *ref = NULL;
   CHECK(cnk_session_find(session, &ref) == CKR_OK);
+  unsigned preflight = atomic_load(&connects);
+  CHECK(C_CNK_UnblockPIN(session, (CK_UTF8CHAR_PTR)puk, 8, (CK_UTF8CHAR_PTR)pin, 0, NULL) == CKR_PIN_LEN_RANGE);
+  CK_FLAGS flags = ref->flags;
+  ref->flags &= ~CKF_RW_SESSION;
+  CHECK(C_CNK_UnblockPIN(session, (CK_UTF8CHAR_PTR)puk, 8, (CK_UTF8CHAR_PTR)pin, 6, NULL) == CKR_SESSION_READ_ONLY);
+  ref->flags = flags;
+  CHECK(cnk_token_begin_card_operation(ref) == CKR_OK);
+  CHECK(C_CNK_UnblockPIN(session, (CK_UTF8CHAR_PTR)puk, 8, (CK_UTF8CHAR_PTR)pin, 6, NULL) == CKR_OPERATION_ACTIVE);
+  cnk_token_end_management_operation(ref);
+  CHECK(atomic_load(&connects) == preflight);
+  ref->token->libcanokeyProfileRefreshedAtMs = 0;
+  atomic_store(&failProfile, true);
+  CHECK(C_CNK_UnblockPIN(session, (CK_UTF8CHAR_PTR)puk, 8, (CK_UTF8CHAR_PTR)pin, 6, NULL) == CKR_DEVICE_ERROR);
+  atomic_store(&failProfile, false);
+  CHECK(!activeCard && !ref->token->managementOperationPending);
+  CHECK(cnk_ensure_libcanokey_profile(ref) == CKR_OK);
   CHECK(ref->token->loginState == TOKEN_LOGIN_PUBLIC && !ref->token->cbPin && !ref->token->managementOperationPending);
   // Preserve the explicit SO rejection and the exclusion of concurrent logout.
   ref->token->loginState = TOKEN_LOGIN_SO;

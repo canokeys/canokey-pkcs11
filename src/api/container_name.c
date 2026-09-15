@@ -8,7 +8,7 @@ static CK_BBOOL valid_slot(CK_BYTE slot) {
   return slot == 0x9A || slot == 0x9C || slot == 0x9D || slot == 0x9E || (slot >= 0x82 && slot <= 0x95) || slot == 0xF9;
 }
 
-static CK_RV name_error(const CNK_LIBCANO_ERROR *error, CK_RV fallback, CK_BBOOL write) {
+static CK_RV name_error(const cnk_error_v1 *error, CK_RV fallback, CK_BBOOL write) {
   // The extension's legacy fallback is a version decision. An unexpected F5
   // status on supported firmware must remain a device error, even if the
   // general PIV status category calls it unsupported or absent.
@@ -28,8 +28,8 @@ static CK_RV name_error(const CNK_LIBCANO_ERROR *error, CK_RV fallback, CK_BBOOL
       return CKR_DEVICE_ERROR;
     }
   }
-  if (!write && error->phase == CNK_LIBCANO_PHASE_PARSING &&
-      (error->kind == CNK_LIBCANO_ERROR_INVALID_RESPONSE || error->kind == CNK_LIBCANO_ERROR_PROTOCOL_VIOLATION))
+  if (!write && error->phase == CNK_PHASE_PARSING &&
+      (error->kind == CNK_ERROR_INVALID_RESPONSE || error->kind == CNK_ERROR_PROTOCOL_VIOLATION))
     return CKR_DATA_INVALID;
   return fallback == CKR_FUNCTION_NOT_SUPPORTED ? CKR_DEVICE_ERROR : fallback;
 }
@@ -42,9 +42,9 @@ static CK_RV container_name_operation(CNK_PKCS11_SESSION *session, CK_BYTE slot,
                    : cnk_begin_piv_transaction(session->slotId, &card);
   if (rv != CKR_OK)
     return rv;
-  CNK_LIBCANO_CONTEXT *context = NULL;
-  CNK_LIBCANO_OPERATION *operation = NULL;
-  CNK_LIBCANO_ERROR error = {.struct_size = sizeof(error)};
+  cnk_piv_context_t *context = NULL;
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
   CK_BBOOL supported = CK_FALSE;
   rv = cnk_piv_v6_supported_on_card(card, &supported);
   if (rv != CKR_OK)
@@ -53,8 +53,8 @@ static CK_RV container_name_operation(CNK_PKCS11_SESSION *session, CK_BYTE slot,
     rv = CKR_FUNCTION_NOT_SUPPORTED;
     goto cleanup;
   }
-  rv = cnk_piv_context_for_session(
-      session, write ? CNK_LIBCANO_CONTEXT_MANAGEMENT_AUTHORIZED : CNK_LIBCANO_CONTEXT_SELECTED, &context);
+  rv = cnk_piv_context_for_session(session, write ? CNK_PIV_CONTEXT_MANAGEMENT_AUTHORIZED : CNK_PIV_CONTEXT_SELECTED,
+                                   &context);
   if (rv != CKR_OK)
     goto cleanup;
   uint32_t status =
@@ -68,7 +68,7 @@ static CK_RV container_name_operation(CNK_PKCS11_SESSION *session, CK_BYTE slot,
     cnk_piv_public_cache_invalidate(session);
   rv = cnk_run_piv_operation(card, operation, CKR_KEY_HANDLE_INVALID, NULL);
   if (rv != CKR_OK) {
-    if (CNK_EXTERNAL_CALL(cnk_operation_error, operation, &error) == CNK_LIBCANO_OK)
+    if (CNK_EXTERNAL_CALL(cnk_operation_error, operation, &error) == CNK_OK)
       rv = name_error(&error, rv, write);
     goto cleanup;
   }
@@ -76,7 +76,7 @@ static CK_RV container_name_operation(CNK_PKCS11_SESSION *session, CK_BYTE slot,
     goto cleanup;
   size_t required = 0;
   rv = CKR_DEVICE_ERROR;
-  if (CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, NULL, &required) != CNK_LIBCANO_OK)
+  if (CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, NULL, &required) != CNK_OK)
     goto cleanup;
   CK_ULONG capacity = *outputLen;
   *outputLen = (CK_ULONG)required;
@@ -88,7 +88,7 @@ static CK_RV container_name_operation(CNK_PKCS11_SESSION *session, CK_BYTE slot,
     rv = CKR_BUFFER_TOO_SMALL;
     goto cleanup;
   }
-  if (CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, output, &required) == CNK_LIBCANO_OK)
+  if (CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, output, &required) == CNK_OK)
     rv = CKR_OK;
 cleanup:
   if (operation)
@@ -113,7 +113,7 @@ CK_RV C_CNK_SetContainerName(CK_SESSION_HANDLE hSession, CK_BYTE pivSlot, CK_BYT
   CNK_ENSURE_INITIALIZED();
   if (!valid_slot(pivSlot) || (nameLen && !name))
     return CKR_ARGUMENTS_BAD;
-  if (CNK_EXTERNAL_CALL(cnk_piv_container_name_validate, name, nameLen, NULL) != CNK_LIBCANO_OK)
+  if (CNK_EXTERNAL_CALL(cnk_piv_container_name_validate, name, nameLen, NULL) != CNK_OK)
     return CKR_DATA_INVALID;
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));

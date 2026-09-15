@@ -14,6 +14,8 @@
       exit(1);                                                                                                         \
     }                                                                                                                  \
   } while (0)
+
+#include "profile.h"
 static CNK_PKCS11_TOKEN_STATE token;
 static CNK_PKCS11_SESSION session;
 static unsigned cards, sends, locked, failAt, malformedAt, deniedAt, invalidations;
@@ -106,32 +108,7 @@ static size_t unhex(const char *s, CK_BYTE *out) {
   }
   return n;
 }
-static uint32_t probe(void *unused, const uint8_t *command, size_t n, uint8_t *out, size_t *len) {
-  (void)unused;
-  CHECK(!cards && n >= 4 && *len >= 32);
-  size_t size = 0;
-  if (command[1] == 0x31 && command[2] == 0) {
-    size = strlen(firmware);
-    memcpy(out, firmware, size);
-  } else if (command[1] == 0xfd) {
-    out[0] = 6;
-    out[1] = out[2] = 0;
-    size = 3;
-  } else if (command[1] == 0xee && generateWire) {
-    const CK_BYTE config[] = {1, 0xe0, generateWire, 0x16, 0xe1, 0x53, 0x15, 0x54, 0xe2, 0xe3};
-    memcpy(out, config, sizeof(config));
-    size = sizeof(config);
-  } else if (command[1] != 0xa4) {
-    out[0] = 0x6d;
-    out[1] = 0;
-    *len = 2;
-    return 0;
-  }
-  out[size++] = 0x90;
-  out[size++] = 0;
-  *len = size;
-  return 0;
-}
+
 LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *command, CK_ULONG n, CK_BYTE *out, DWORD *len) {
   CHECK(card == 1 && cards == 1 && !locked && *len >= 32);
   sends++;
@@ -226,27 +203,39 @@ LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *command, CK_ULONG n, C
   }
   return SCARD_S_SUCCESS;
 }
-static void make_profile(CNK_LIBCANO_PROFILE **profile) {
-  CNK_LIBCANO_OPERATION *operation = NULL;
+static void make_profile(cnk_profile_t **profile) {
+  CHECK(!cards);
+  *profile = test_profile(firmware, generateWire);
+}
+
+static void protocol_contract(void) {
+  cnk_operation_t *op = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
   uint32_t step = 0;
-  CHECK(cnk_probe_device_new(1, NULL, &operation, NULL) == CNK_LIBCANO_OK);
-  CHECK(cnk_operation_start(operation, &step, NULL) == CNK_LIBCANO_OK);
-  for (unsigned count = 0; step == CNK_LIBCANO_STEP_EXCHANGE; count++) {
-    CHECK(count < 20);
-    CK_BYTE command[2048], response[8192];
-    size_t commandLen = sizeof(command), responseLen = sizeof(response);
-    CHECK(cnk_operation_command(operation, command, &commandLen) == CNK_LIBCANO_OK);
-    CHECK(probe(NULL, command, commandLen, response, &responseLen) == 0);
-    CHECK(cnk_operation_advance(operation, response, responseLen, &step, NULL) == CNK_LIBCANO_OK);
-  }
-  CHECK(step == CNK_LIBCANO_STEP_DONE);
-  void *result = NULL;
-  CHECK(cnk_operation_take_profile(operation, &result) == CNK_LIBCANO_OK);
-  *profile = result;
-  cnk_operation_free(operation);
+  CHECK(cnk_piv_read_version_selected_new(NULL, &op, &error) == CNK_OK);
+  CHECK(cnk_operation_start(op, &step, &error) == CNK_OK && step == CNK_STEP_EXCHANGE);
+  const CK_BYTE first[] = {0, 0xfd, 0, 0, 0}, next[] = {0, 0xc0, 0, 0, 2};
+  CK_BYTE command[8];
+  size_t size = sizeof(command);
+  CHECK(cnk_operation_command(op, command, &size) == CNK_OK && size == 5 && !memcmp(command, first, 5));
+  const CK_BYTE partial[] = {6, 0x61, 2};
+  CHECK(cnk_operation_advance(op, partial, sizeof(partial), &step, &error) == CNK_OK);
+  size = sizeof(command);
+  CHECK(cnk_operation_command(op, command, &size) == CNK_OK && size == 5 && !memcmp(command, next, 5));
+  const CK_BYTE final[] = {0, 0, 0x90, 0};
+  CHECK(cnk_operation_advance(op, final, sizeof(final), &step, &error) == CNK_OK && step == CNK_STEP_DONE);
+  size = 0;
+  CHECK(cnk_operation_result_copy_bytes(op, NULL, &size) == CNK_OK && size == 3);
+  CK_BYTE result[4] = {0xcc, 0xcc, 0xcc, 0xcc};
+  size = 2;
+  CHECK(cnk_operation_result_copy_bytes(op, result, &size) == CNK_BUFFER_TOO_SMALL && size == 3 && result[0] == 0xcc);
+  CHECK(cnk_operation_result_copy_bytes(op, result, &size) == CNK_OK && !memcmp(result, "\6\0\0", 3) &&
+        result[3] == 0xcc);
+  cnk_operation_free(op);
 }
 
 int main(void) {
+  protocol_contract();
   session.token = &token;
   const char *versions[] = {"3.0.3", "3.1.0", "1.3"};
   for (unsigned v = 0; v < 3; v++) {
@@ -308,7 +297,7 @@ int main(void) {
   make_profile(&token.libcanokeyProfile);
   sends = failAt = malformedAt = deniedAt = 0;
   lockError = credentialError = CKR_OK;
-  CK_RV generateRv = cnk_piv_generate_keypair(0, &session, CNK_LIBCANO_ALG_RSA_3072, 0x9c, 1, 1);
+  CK_RV generateRv = cnk_piv_generate_keypair(0, &session, CNK_ALGORITHM_RSA3072, 0x9c, 1, 1);
   if (generateRv != CKR_OK)
     fprintf(stderr, "Generation failed: rv=%lx sends=%u\n", generateRv, sends);
   CHECK(generateRv == CKR_OK);

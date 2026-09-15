@@ -64,7 +64,7 @@ static void test_rsa_import_retains_order_and_omitted_leading_zero(void **state)
   };
   CNK_PIV_IMPORT material = {0};
   assert_int_equal(cnk_prepare_piv_import(attributes, 5, 1, CKK_RSA, &material), CKR_OK);
-  assert_int_equal(material.parameters.algorithm, CNK_LIBCANO_ALG_RSA_2048);
+  assert_int_equal(material.parameters.algorithm, CNK_ALGORITHM_RSA2048);
   assert_int_equal(material.count, 5);
   for (size_t i = 0; i < 5; ++i) {
     assert_ptr_equal(material.components[i].data, attributes[i].pValue);
@@ -84,7 +84,7 @@ static void test_ec_import_pads_omitted_leading_zero(void **state) {
   };
   CNK_PIV_IMPORT material = {0};
   assert_int_equal(cnk_prepare_piv_import(attributes, 2, 1, CKK_EC, &material), CKR_OK);
-  assert_int_equal(material.parameters.algorithm, CNK_LIBCANO_ALG_P256);
+  assert_int_equal(material.parameters.algorithm, CNK_ALGORITHM_P256);
   assert_int_equal(material.count, 1);
   assert_ptr_equal(material.components[0].data, material.scalar);
   assert_int_equal(material.components[0].len, 32);
@@ -101,12 +101,12 @@ static void test_import_uses_semantic_algorithm(void **state) {
   CK_ATTRIBUTE attributes[] = {{CKA_SEED, seed, sizeof(seed)},
                                {CKA_PARAMETER_SET, &parameterSet, sizeof(parameterSet)}};
   assert_int_equal(cnk_prepare_piv_import(attributes, 2, 1, CKK_ML_DSA, &material), CKR_OK);
-  assert_int_equal(material.parameters.algorithm, CNK_LIBCANO_ALG_MLDSA65);
+  assert_int_equal(material.parameters.algorithm, CNK_ALGORITHM_MLDSA65);
   assert_memory_equal(material.components[0].data, seed, sizeof(seed));
   static CK_BYTE x25519[] = {0x06, 0x03, 0x2B, 0x65, 0x6E};
   CK_ATTRIBUTE montgomery[] = {{CKA_VALUE, seed, sizeof(seed)}, {CKA_EC_PARAMS, x25519, sizeof(x25519)}};
   assert_int_equal(cnk_prepare_piv_import(montgomery, 2, 1, CKK_EC_MONTGOMERY, &material), CKR_OK);
-  assert_int_equal(material.parameters.algorithm, CNK_LIBCANO_ALG_X25519);
+  assert_int_equal(material.parameters.algorithm, CNK_ALGORITHM_X25519);
   assert_memory_equal(material.components[0].data, seed, sizeof(seed));
   assert_int_equal(cnk_prepare_piv_import(montgomery, 2, 1, CKK_EC_EDWARDS, &material), CKR_TEMPLATE_INCONSISTENT);
   montgomery[0].ulValueLen--;

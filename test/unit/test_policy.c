@@ -129,25 +129,25 @@ static void test_reject_invalid_touch_policy(void **state) {
 static void test_key_capabilities_by_algorithm(void **state) {
   (void)state;
 
-  assert_true(CNK_PivPrivateKeyCanSign(CNK_LIBCANO_ALG_RSA_2048));
-  assert_true(CNK_PivPrivateKeyCanDecrypt(CNK_LIBCANO_ALG_RSA_2048));
-  assert_false(CNK_PivPrivateKeyCanDerive(CNK_LIBCANO_ALG_RSA_2048));
+  assert_true(CNK_PivPrivateKeyCanSign(CNK_ALGORITHM_RSA2048));
+  assert_true(CNK_PivPrivateKeyCanDecrypt(CNK_ALGORITHM_RSA2048));
+  assert_false(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_RSA2048));
 
-  assert_true(CNK_PivPrivateKeyCanSign(CNK_LIBCANO_ALG_P256));
-  assert_false(CNK_PivPrivateKeyCanDecrypt(CNK_LIBCANO_ALG_P256));
-  assert_true(CNK_PivPrivateKeyCanDerive(CNK_LIBCANO_ALG_P256));
+  assert_true(CNK_PivPrivateKeyCanSign(CNK_ALGORITHM_P256));
+  assert_false(CNK_PivPrivateKeyCanDecrypt(CNK_ALGORITHM_P256));
+  assert_true(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_P256));
 
-  assert_true(CNK_PivPrivateKeyCanSign(CNK_LIBCANO_ALG_P521));
-  assert_false(CNK_PivPrivateKeyCanDecrypt(CNK_LIBCANO_ALG_P521));
-  assert_true(CNK_PivPrivateKeyCanDerive(CNK_LIBCANO_ALG_P521));
+  assert_true(CNK_PivPrivateKeyCanSign(CNK_ALGORITHM_P521));
+  assert_false(CNK_PivPrivateKeyCanDecrypt(CNK_ALGORITHM_P521));
+  assert_true(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_P521));
 }
 
 static void test_semantic_key_capabilities(void **state) {
   (void)state;
-  assert_true(CNK_PivAlgorithmIsRsa(CNK_LIBCANO_ALG_RSA_3072));
-  assert_true(CNK_PivAlgorithmIsRsa(CNK_LIBCANO_ALG_RSA_4096));
-  assert_true(CNK_PivPrivateKeyCanDerive(CNK_LIBCANO_ALG_X25519));
-  assert_false(CNK_PivPrivateKeyCanSign(CNK_LIBCANO_ALG_SM2));
+  assert_true(CNK_PivAlgorithmIsRsa(CNK_ALGORITHM_RSA3072));
+  assert_true(CNK_PivAlgorithmIsRsa(CNK_ALGORITHM_RSA4096));
+  assert_true(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_X25519));
+  assert_false(CNK_PivPrivateKeyCanSign(CNK_ALGORITHM_SM2));
   assert_false(CNK_PivAlgorithmIsRsa(0xD1));
 }
 
@@ -157,7 +157,7 @@ static void test_p521_named_curve_parameters(void **state) {
   uint32_t algorithmType = 0;
 
   assert_int_equal(cnk_ec_params_to_piv_algorithm(p521, sizeof(p521), &algorithmType), CKR_OK);
-  assert_int_equal(algorithmType, CNK_LIBCANO_ALG_P521);
+  assert_int_equal(algorithmType, CNK_ALGORITHM_P521);
 }
 
 static void test_25519_named_curve_parameters(void **state) {
@@ -167,9 +167,9 @@ static void test_25519_named_curve_parameters(void **state) {
   uint32_t algorithmType = 0;
 
   assert_int_equal(cnk_ec_params_to_piv_algorithm(ed25519, sizeof(ed25519), &algorithmType), CKR_OK);
-  assert_int_equal(algorithmType, CNK_LIBCANO_ALG_ED25519);
+  assert_int_equal(algorithmType, CNK_ALGORITHM_ED25519);
   assert_int_equal(cnk_ec_params_to_piv_algorithm(x25519, sizeof(x25519), &algorithmType), CKR_OK);
-  assert_int_equal(algorithmType, CNK_LIBCANO_ALG_X25519);
+  assert_int_equal(algorithmType, CNK_ALGORITHM_X25519);
 }
 
 int main(void) {
