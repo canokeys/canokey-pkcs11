@@ -288,7 +288,7 @@ static void test_logout_cannot_race_protected_management_login(void **state) {
   internal->token->pin[0] = '1';
   internal->token->cbPin = 1;
   cnk_mutex_unlock(&internal->token->lock);
-  assert_int_equal(cnk_token_begin_protected_management_login(internal), CKR_OK);
+  assert_int_equal(cnk_token_begin_protected_management_login(internal, CK_FALSE), CKR_OK);
   assert_int_equal(C_Logout(session), CKR_OPERATION_ACTIVE);
   CK_BYTE managementKey[24] = {0};
   assert_int_equal(
@@ -332,6 +332,54 @@ static void test_logout_revokes_context_specific_authorization(void **state) {
   cnk_mutex_unlock(&internal->lock);
   cnk_session_release_ref(&internal);
   assert_int_equal(C_CloseSession(session), CKR_OK);
+}
+
+static CK_RV rejectMutationLock(void *mutex) {
+  (void)mutex;
+  return CKR_CANT_LOCK;
+}
+static void test_credential_mutation_revocation_recovers_failed_callbacks(void **state) {
+  (void)state;
+  for (unsigned failure = 0; failure < 3; failure++) {
+    CK_SESSION_HANDLE handle;
+    assert_int_equal(C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &handle), CKR_OK);
+    CNK_PKCS11_SESSION *session = NULL;
+    assert_int_equal(cnk_session_find(handle, &session), CKR_OK);
+    session->token->loginState = TOKEN_LOGIN_USER;
+    session->token->pin[0] = '1';
+    session->token->cbPin = 1;
+    memset(session->token->managementKey, 0x42, 24);
+    session->token->cbManagementKey = 24;
+    session->signingContext.hKey = 1;
+    session->signingContext.contextPin[0] = '1';
+    session->signingContext.contextPinLen = 1;
+    assert_int_equal(cnk_token_begin_management_operation(session), CKR_OK);
+    CK_RV (*lock)(void *) = failure == 1 ? session->lock.lock : session->token->lock.lock;
+    if (failure == 1)
+      session->lock.lock = rejectMutationLock;
+    if (failure == 2)
+      session->token->lock.lock = rejectMutationLock;
+    assert_int_equal(cnk_token_forget_credentials(session), failure ? CKR_CANT_LOCK : CKR_OK);
+    if (failure == 1)
+      session->lock.lock = lock;
+    if (failure == 2)
+      session->token->lock.lock = lock;
+    assert_int_equal(session->token->loginState, TOKEN_LOGIN_PUBLIC);
+    assert_int_equal(session->token->logoutPending, failure != 0);
+    cnk_token_end_management_operation(session);
+    assert_false(session->token->managementOperationPending);
+    if (failure)
+      assert_int_equal(C_Logout(handle), CKR_OK);
+    assert_int_equal(session->token->cbPin, 0);
+    assert_int_equal(session->token->cbManagementKey, 0);
+    CK_BYTE zero[24] = {0};
+    assert_memory_equal(session->token->managementKey, zero, sizeof(zero));
+    assert_int_equal(session->signingContext.hKey, 0);
+    assert_int_equal(session->signingContext.contextPinLen, 0);
+    assert_false(session->token->logoutPending);
+    cnk_session_release_ref(&session);
+    assert_int_equal(C_CloseSession(handle), CKR_OK);
+  }
 }
 
 static void test_context_login_rejects_two_pin_always_operations(void **state) {
@@ -538,6 +586,7 @@ int main(void) {
       cmocka_unit_test_setup_teardown(test_logout_cannot_race_protected_management_login, setup, teardown),
       cmocka_unit_test_setup_teardown(test_logout_revokes_context_specific_authorization, setup, teardown),
       cmocka_unit_test_setup_teardown(test_context_login_rejects_two_pin_always_operations, setup, teardown),
+      cmocka_unit_test_setup_teardown(test_credential_mutation_revocation_recovers_failed_callbacks, setup, teardown),
       cmocka_unit_test_setup_teardown(test_encapsulation_query_validates_session, setup, teardown),
       cmocka_unit_test_setup_teardown(test_invalid_finalize_does_not_consume_reference, setup, teardown),
       cmocka_unit_test_setup_teardown(test_managed_slot_list_is_canonical, setup, teardown),

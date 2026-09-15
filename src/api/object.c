@@ -43,7 +43,6 @@
 typedef struct {
   CK_BYTE objId;
   CK_BYTE pivTag;
-  CK_BYTE certTag;
 } PivSlotMapping;
 
 typedef struct {
@@ -59,30 +58,11 @@ typedef struct {
 } PivDataObjectMapping;
 
 static const PivSlotMapping PIV_SLOT_MAPPING[] = {
-    {PIV_SLOT_9A, 0x9A, PIV_OBJECT_TAG_CERT_9A},
-    {PIV_SLOT_9C, 0x9C, PIV_OBJECT_TAG_CERT_9C},
-    {PIV_SLOT_9D, 0x9D, PIV_OBJECT_TAG_CERT_9D},
-    {PIV_SLOT_9E, 0x9E, PIV_OBJECT_TAG_CERT_9E},
-    {PIV_SLOT_82, 0x82, PIV_OBJECT_TAG_CERT_82},
-    {PIV_SLOT_83, 0x83, PIV_OBJECT_TAG_CERT_83},
-    {7, 0x84, 0x0F},
-    {8, 0x85, 0x10},
-    {9, 0x86, 0x11},
-    {10, 0x87, 0x12},
-    {11, 0x88, 0x13},
-    {12, 0x89, 0x14},
-    {13, 0x8A, 0x15},
-    {14, 0x8B, 0x16},
-    {15, 0x8C, 0x17},
-    {16, 0x8D, 0x18},
-    {17, 0x8E, 0x19},
-    {18, 0x8F, 0x1A},
-    {19, 0x90, 0x1B},
-    {20, 0x91, 0x1C},
-    {21, 0x92, 0x1D},
-    {22, 0x93, 0x1E},
-    {23, 0x94, 0x1F},
-    {24, 0x95, 0x20},
+    {PIV_SLOT_9A, 0x9A}, {PIV_SLOT_9C, 0x9C}, {PIV_SLOT_9D, 0x9D}, {PIV_SLOT_9E, 0x9E}, {PIV_SLOT_82, 0x82},
+    {PIV_SLOT_83, 0x83}, {7, 0x84},           {8, 0x85},           {9, 0x86},           {10, 0x87},
+    {11, 0x88},          {12, 0x89},          {13, 0x8A},          {14, 0x8B},          {15, 0x8C},
+    {16, 0x8D},          {17, 0x8E},          {18, 0x8F},          {19, 0x90},          {20, 0x91},
+    {21, 0x92},          {22, 0x93},          {23, 0x94},          {24, 0x95},
 };
 
 // Size of the PIV slot mapping array
@@ -232,7 +212,7 @@ static CK_RV handleDataAttribute(CK_ATTRIBUTE_PTR attribute, const PivDataObject
  * @param publicKey Owned, validated public components
  * @return CK_RV CKR_OK on success, error code otherwise
  */
-static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithmType,
+static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithmType, CK_BYTE objId,
                                       const CNK_PIV_PUBLIC_KEY *publicKey);
 
 /**
@@ -243,7 +223,8 @@ static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algor
  * @param pinPolicy The stored PIV PIN policy
  * @return CK_RV CKR_OK on success, error code otherwise
  */
-static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithmType, CK_BYTE pinPolicy);
+static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithmType, CK_BYTE pinPolicy,
+                                       CK_BYTE objId);
 
 /**
  * @brief Handle session secret-key attributes
@@ -540,7 +521,7 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
       return CKR_OK;
     }
 
-    rv = CNK_ObjectIdToCertificateTag(objectId, &certTag);
+    rv = C_CNK_ObjIdToPivTag(objectId, &certTag);
     if (rv == CKR_OBJECT_HANDLE_INVALID) {
       return CKR_OK;
     }
@@ -548,7 +529,7 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
       return rv;
     }
 
-    rv = cnk_get_piv_data_cached(session, certTag, NULL, NULL, CK_FALSE);
+    rv = cnk_get_piv_certificate_cached(session, certTag, NULL, NULL, CK_FALSE);
     if (rv == CKR_OK) {
       *exists = CK_TRUE;
       return CKR_OK;
@@ -804,30 +785,14 @@ CK_BBOOL CNK_PivAlgorithmIsEc(uint32_t algorithmType) {
 CK_BBOOL CNK_PivPrivateKeyCanSign(uint32_t algorithmType) {
   return CNK_PivAlgorithmIsRsa(algorithmType) ||
          (algorithmType >= CNK_ALGORITHM_P256 && algorithmType <= CNK_ALGORITHM_SECP256K1) ||
-         algorithmType == CNK_ALGORITHM_ED25519 || algorithmType == CNK_ALGORITHM_MLDSA65;
+         algorithmType == CNK_ALGORITHM_ED25519 || algorithmType == CNK_ALGORITHM_MLDSA65 ||
+         algorithmType == CNK_ALGORITHM_SM2;
 }
 CK_BBOOL CNK_PivPrivateKeyCanDecrypt(uint32_t algorithmType) { return CNK_PivAlgorithmIsRsa(algorithmType); }
-CK_BBOOL CNK_PivPrivateKeyCanDerive(uint32_t algorithmType) {
+CK_BBOOL CNK_PivPrivateKeyCanDerive(uint32_t algorithmType, CK_BYTE objId) {
   return (algorithmType >= CNK_ALGORITHM_P256 && algorithmType <= CNK_ALGORITHM_SECP256K1) ||
-         algorithmType == CNK_ALGORITHM_X25519;
-}
-
-CK_RV CNK_ObjectIdToCertificateTag(CK_BYTE objId, CK_BYTE *dataTag) {
-  if (!dataTag) {
-    CNK_ERROR("dataTag cannot be NULL");
-    return CKR_ARGUMENTS_BAD;
-  }
-
-  for (size_t i = 0; i < PIV_SLOT_MAPPING_SIZE; i++) {
-    if (PIV_SLOT_MAPPING[i].objId == objId) {
-      *dataTag = PIV_SLOT_MAPPING[i].certTag;
-      CNK_DEBUG("Mapped object ID 0x%02X to PIV certificate tag 0x%02X", objId, *dataTag);
-      return CKR_OK;
-    }
-  }
-
-  CNK_ERROR("Invalid object ID: 0x%02X", objId);
-  return CKR_OBJECT_HANDLE_INVALID;
+         algorithmType == CNK_ALGORITHM_X25519 ||
+         (algorithmType == CNK_ALGORITHM_SM2 && (objId == 3 || (objId >= 5 && objId <= 24)));
 }
 
 /**
@@ -1283,8 +1248,8 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   }
 
   case CKO_CERTIFICATE:
-    CNK_ENSURE_OK(CNK_ObjectIdToCertificateTag(objId, &bPivSlot));
-    CNK_ENSURE_OK(cnk_get_piv_data_cached(session, bPivSlot, data, &cbData, CK_TRUE));
+    CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &bPivSlot));
+    CNK_ENSURE_OK(cnk_get_piv_certificate_cached(session, bPivSlot, data, &cbData, CK_TRUE));
     if (cbData == 0) {
       CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "No data found for PIV slot");
     }
@@ -1397,7 +1362,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       } else if (pTemplate[i].type == CKA_CNK_PIV_TOUCH_POLICY) {
         rv = setSingleAttributeValue(&pTemplate[i], &bTouchPolicy, sizeof(bTouchPolicy));
       } else {
-        rv = handlePublicKeyAttribute(&pTemplate[i], bAlgorithmType, &abPublicKey);
+        rv = handlePublicKeyAttribute(&pTemplate[i], bAlgorithmType, objId, &abPublicKey);
       }
       break;
 
@@ -1407,7 +1372,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       } else if (pTemplate[i].type == CKA_CNK_PIV_TOUCH_POLICY) {
         rv = setSingleAttributeValue(&pTemplate[i], &bTouchPolicy, sizeof(bTouchPolicy));
       } else {
-        rv = handlePrivateKeyAttribute(&pTemplate[i], bAlgorithmType, bPinPolicy);
+        rv = handlePrivateKeyAttribute(&pTemplate[i], bAlgorithmType, bPinPolicy, objId);
       }
       break;
 
@@ -1811,7 +1776,7 @@ static CK_RV setEcParamsAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithm
 }
 
 // Handle public key specific attributes
-static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithm_type,
+static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithm_type, CK_BYTE objId,
                                       const CNK_PIV_PUBLIC_KEY *publicKey) {
   CNK_LOG_FUNC(" attribute = 0x%x, algorithm_type = 0x%x", attribute->type, algorithm_type);
 
@@ -1833,7 +1798,8 @@ static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algor
   case CKA_VERIFY: {
     // Ed25519 currently has card-side signing only; do not advertise host
     // verification for its public key even though the private key can sign.
-    CK_BBOOL value = keyType != CKK_EC_EDWARDS && CNK_PivPrivateKeyCanSign(algorithm_type);
+    CK_BBOOL value =
+        keyType != CKK_EC_EDWARDS && algorithm_type != CNK_ALGORITHM_SM2 && CNK_PivPrivateKeyCanSign(algorithm_type);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -1863,7 +1829,7 @@ static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algor
   }
 
   case CKA_DERIVE: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type);
+    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type, objId);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -2032,6 +1998,20 @@ static CK_RV handleSecretKeyAttribute(CK_ATTRIBUTE_PTR attribute, const CNK_PKCS
 }
 
 static CK_RV handleSessionSecretAttribute(CK_ATTRIBUTE_PTR attribute, const CNK_PKCS11_SECRET_KEY_OBJECT *secret) {
+  if (attribute->type == CKA_CNK_SM2_EPHEMERAL_PUBLIC) {
+    if (secret->keyGenMechanism != CKM_CNK_SM2_DERIVE) {
+      attribute->ulValueLen = CK_UNAVAILABLE_INFORMATION;
+      return CKR_ATTRIBUTE_TYPE_INVALID;
+    }
+    CK_ULONG capacity = attribute->ulValueLen;
+    attribute->ulValueLen = sizeof(secret->sm2Ephemeral);
+    if (attribute->pValue == NULL)
+      return CKR_OK;
+    if (capacity < sizeof(secret->sm2Ephemeral))
+      return CKR_BUFFER_TOO_SMALL;
+    memcpy(attribute->pValue, secret->sm2Ephemeral, sizeof(secret->sm2Ephemeral));
+    return CKR_OK;
+  }
   switch (attribute->type) {
   case CKA_TOKEN:
     return setSingleAttributeValue(attribute, &secret->token, sizeof(secret->token));
@@ -2082,7 +2062,8 @@ static CK_BBOOL matchSessionSecretTemplate(const CNK_PKCS11_SECRET_KEY_OBJECT *s
 }
 
 // Handle private key specific attributes
-static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithm_type, CK_BYTE pinPolicy) {
+static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithm_type, CK_BYTE pinPolicy,
+                                       CK_BYTE objId) {
   CNK_LOG_FUNC(" attribute = %d, algorithm_type = %d", attribute->type, algorithm_type);
 
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
@@ -2186,7 +2167,7 @@ static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algo
   }
 
   case CKA_DERIVE: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type);
+    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type, objId);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -2202,4 +2183,128 @@ static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algo
   }
 
   return rv;
+}
+
+CK_RV CNK_BuildSharedSecretPrototype(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount,
+                                     CK_MECHANISM_TYPE mechanism, CK_ULONG defaultLen, CK_ULONG maxLen,
+                                     CNK_PKCS11_SECRET_KEY_OBJECT *prototype) {
+  // Agreement and KEM share template semantics before card I/O or publication.
+  CNK_ENSURE_NONNULL(session, prototype);
+  CK_OBJECT_CLASS objectClass = CKO_SECRET_KEY;
+  CK_KEY_TYPE keyType = CKK_GENERIC_SECRET;
+  CK_ULONG valueLen = defaultLen;
+  CK_BBOOL token = CK_FALSE;
+  CK_BBOOL privateObject = CK_TRUE;
+  CK_BBOOL sensitive = CK_FALSE;
+  CK_BBOOL extractable = CK_TRUE;
+  CK_BBOOL encrypt = CK_FALSE, decrypt = CK_FALSE, sign = CK_FALSE, verify = CK_FALSE;
+  CK_BBOOL wrap = CK_FALSE, unwrap = CK_FALSE, derive = CK_FALSE;
+  const CK_BYTE *label = NULL;
+  CK_ULONG labelLen = 0;
+
+  for (CK_ULONG i = 0; i < attributeCount; i++) {
+    CK_ATTRIBUTE_PTR attribute = &attributes[i];
+    switch (attribute->type) {
+    case CKA_CLASS:
+      if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(objectClass))
+        return CKR_ATTRIBUTE_VALUE_INVALID;
+      objectClass = *(CK_OBJECT_CLASS *)attribute->pValue;
+      break;
+    case CKA_KEY_TYPE:
+      if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(keyType))
+        return CKR_ATTRIBUTE_VALUE_INVALID;
+      keyType = *(CK_KEY_TYPE *)attribute->pValue;
+      break;
+    case CKA_VALUE_LEN:
+      if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(valueLen))
+        return CKR_ATTRIBUTE_VALUE_INVALID;
+      valueLen = *(CK_ULONG *)attribute->pValue;
+      break;
+    case CKA_TOKEN:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &token));
+      break;
+    case CKA_PRIVATE:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &privateObject));
+      break;
+    case CKA_SENSITIVE:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &sensitive));
+      break;
+    case CKA_EXTRACTABLE:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &extractable));
+      break;
+    case CKA_ENCRYPT:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &encrypt));
+      break;
+    case CKA_DECRYPT:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &decrypt));
+      break;
+    case CKA_SIGN:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &sign));
+      break;
+    case CKA_VERIFY:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &verify));
+      break;
+    case CKA_WRAP:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &wrap));
+      break;
+    case CKA_UNWRAP:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &unwrap));
+      break;
+    case CKA_DERIVE:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &derive));
+      break;
+    case CKA_LABEL:
+      if (attribute->pValue == NULL && attribute->ulValueLen != 0)
+        return CKR_ATTRIBUTE_VALUE_INVALID;
+      label = attribute->pValue;
+      labelLen = attribute->ulValueLen;
+      break;
+    default:
+      return CKR_ATTRIBUTE_TYPE_INVALID;
+    }
+  }
+
+  if (objectClass != CKO_SECRET_KEY || (keyType != CKK_GENERIC_SECRET && keyType != CKK_AES) || token)
+    return CKR_TEMPLATE_INCONSISTENT;
+  if (valueLen == 0 || valueLen > maxLen || (mechanism == CKM_ML_KEM && valueLen != defaultLen) ||
+      (keyType == CKK_AES && valueLen != 16 && valueLen != 24 && valueLen != 32))
+    return CKR_KEY_SIZE_RANGE;
+  if (labelLen > sizeof(session->secretKeys[0].label))
+    return CKR_ATTRIBUTE_VALUE_INVALID;
+  if (privateObject) {
+    CK_BBOOL pinCached = CK_FALSE;
+    CNK_ENSURE_OK(cnk_token_pin_is_cached(session, &pinCached));
+    if (!pinCached)
+      return CKR_USER_NOT_LOGGED_IN;
+  }
+
+  memset(prototype, 0, sizeof(*prototype));
+  prototype->keyType = keyType;
+  prototype->valueLen = valueLen;
+  prototype->extractable = extractable;
+  prototype->sensitive = sensitive;
+  prototype->private = privateObject;
+  prototype->encrypt = encrypt;
+  prototype->decrypt = decrypt;
+  prototype->sign = sign;
+  prototype->verify = verify;
+  prototype->wrap = wrap;
+  prototype->unwrap = unwrap;
+  prototype->derive = derive;
+  prototype->local = CK_TRUE;
+  prototype->modifiable = CK_TRUE;
+  prototype->copyable = CK_TRUE;
+  prototype->destroyable = CK_TRUE;
+  prototype->keyGenMechanism = mechanism;
+  if (label != NULL && labelLen > 0) {
+    prototype->labelLen = labelLen;
+    memcpy(prototype->label, label, labelLen);
+  } else {
+    const char *defaultLabel = mechanism == CKM_ML_KEM           ? "ML-KEM Shared Secret"
+                               : mechanism == CKM_CNK_SM2_DERIVE ? "PIV SM2 Shared Secret"
+                                                                 : "PIV ECDH Shared Secret";
+    prototype->labelLen = (CK_ULONG)strlen(defaultLabel);
+    memcpy(prototype->label, defaultLabel, prototype->labelLen);
+  }
+  return CKR_OK;
 }

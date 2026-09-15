@@ -36,9 +36,14 @@ is wiped on every exit, and the Rust operation owns/wipes its copies. There is n
 C import TLV encode/reparse or certificate framing. Management-protection data
 is decoded by Rust: stored flags remain claims,
 malformed data cannot become unconfigured success, and PRINTED yields a validated,
-zeroizing 24-byte key copy. The C caller still owns authentication/cache commit.
+zeroizing 24-byte key copy. One Rust operation also validates live PUK state,
+verifies the recovered key and optionally finalizes PUK blocking. C owns logical
+USER/SO transitions, reservations and protected-cache commit.
 Backend preflight consults the Rust profile before authentication. C uses semantic
-algorithms throughout; configured wire IDs remain inside Rust.
+algorithms throughout; configured wire IDs remain inside Rust. Mechanism list/info
+share a profile capability projection, including message limits. The duplicate
+algorithm-configuration cache is removed; reader events invalidate the profile by
+generation. Certificate adapters take PIV slots directly without tag roundtrips.
 F5 similarly delegates its command and UTF-16 validation to Rust; [container-names.md](container-names.md)
 defines the consumer's precise fallback and error mapping.
 
@@ -133,9 +138,16 @@ one initialized lifetime; removal includes the last reader.
 The card performs private-key operations, key generation/import, PIV object writes
 and supported token RNG. The host performs hash/padding/KDF, RSA/ECDSA/ML-DSA verify,
 RSA public encryption, ML-KEM encapsulation and session AES/generic-secret creation.
-Mixed mechanisms do not advertise CKF_HW for their host operations. SM2 keys
-can be generated/imported and inspected; PKCS#11 signing/derivation with SM2
-remain unsupported and are not advertised.
+Mixed mechanisms do not advertise CKF_HW for their host operations. SM2 uses explicit
+vendor RAW/SM3 signing and DERIVE mechanisms; it never aliases ECDSA/ECDH or claims
+host Verify. The card performs its SM3/identity hashing and agreement KDF. Agreement
+publishes a session secret with its public ephemeral point under the same reservation.
+
+Physical key move/delete uses one vendor function with an FF deletion target;
+certificates are independent. Attestation returns DER without a trust decision.
+Management-key rotation can maintain PIN-managed PRINTED, with explicit partial-write
+recovery; retry-limit setting resets credentials and refuses PIN-managed policy.
+Both credential mutations revoke host credentials/private contexts on attempted I/O.
 
 ## Build and diagnostics
 
@@ -160,3 +172,9 @@ Run the gates in [validation.md](validation.md) and the migration plan. Hardware
 scripts use explicit card/slot selections and generated reports. Legacy broad real
 executables can overwrite provisioned slots when destructive flags are enabled;
 they do not replace independent crypto verification or Windows propagation checks.
+
+Agreement and KEM session-secret templates share one C prototype builder. It owns
+PKCS#11 defaults, attributes, visibility and length checks; card-side SM2 KDF and
+host-side ECDH KDF feed the same allocator. A shared private-operation admission
+counter allows queued sign/decrypt calls while excluding concurrent key/credential
+mutations. Exclusive token reservations remain responsible for one-shot result commit.

@@ -25,7 +25,23 @@ from pathlib import Path
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding, utils, x25519, ed25519, mldsa, mlkem
 
-from pkcs11 import C, U, B, P, Attr, Mech, ECDH, OAEP, PSS, SessionInfo, TokenInfo, Token, attrs, check
+from pkcs11 import (
+    C,
+    U,
+    B,
+    P,
+    Attr,
+    Mech,
+    ECDH,
+    SM2Agreement,
+    OAEP,
+    PSS,
+    SessionInfo,
+    TokenInfo,
+    Token,
+    attrs,
+    check,
+)
 from pkcs11 import RSA_BITS, PQC_KINDS, EC_CURVES, KEY_KINDS, POLICY_KINDS
 
 
@@ -1028,6 +1044,90 @@ def policy_matrix(id, kind):
         import_checks(id, "rsa" if kind in PQC_KINDS else kind)
 
 
+def sm2_agreement(id, card_point):
+    if not args.gmssl:
+        raise RuntimeError(
+            "Pass --gmssl with a GmSSL shared library for independent SM2 agreement verification"
+        )
+    gm = C.CDLL(str(args.gmssl.resolve()))
+    # GmSSL's public SM2_KEY contains a Jacobian point (X/Y/Z) and scalar,
+    # each coordinate/scalar being four uint64_t limbs. No crypto is implemented here.
+    Key = C.c_uint64 * 16
+    for name, signature in {
+        "sm2_key_generate": [P],
+        "sm2_z256_point_to_uncompressed_octets": [P, P],
+        "sm2_z256_point_from_bytes": [P, P],
+        "sm2_key_exchange": [C.c_int, P, P, C.c_size_t, P, P, C.c_size_t, P, P, P, C.c_size_t, P],
+    }.items():
+        getattr(gm, name).argtypes, getattr(gm, name).restype = signature, C.c_int
+    peer_static, peer_ephemeral, card_key = Key(), Key(), Key()
+    try:
+        if gm.sm2_key_generate(peer_static) != 1 or gm.sm2_key_generate(peer_ephemeral) != 1:
+            raise RuntimeError("GmSSL key generation failed")
+        static_point, ephemeral_point = C.create_string_buffer(65), C.create_string_buffer(65)
+        if (
+            gm.sm2_z256_point_to_uncompressed_octets(peer_static, static_point) != 1
+            or gm.sm2_z256_point_to_uncompressed_octets(peer_ephemeral, ephemeral_point) != 1
+            or gm.sm2_z256_point_from_bytes(card_key, card_point[1:]) != 1
+        ):
+            raise RuntimeError("GmSSL point conversion failed")
+        for role in (1, 2):
+            for length in (16, 32, 128):
+                for uid, peer_id in ((b"", b""), (b"card", b"software")):
+                    own, remote = C.create_string_buffer(uid), C.create_string_buffer(peer_id)
+                    params = SM2Agreement(
+                        role,
+                        C.cast(static_point, P),
+                        65,
+                        C.cast(ephemeral_point, P),
+                        65,
+                        C.cast(own, P) if uid else None,
+                        len(uid),
+                        C.cast(remote, P) if peer_id else None,
+                        len(peer_id),
+                    )
+                    mechanism = Mech(0xC34E4B03, C.cast(C.pointer(params), P), C.sizeof(params))
+                    template, keep = attrs([(0x161, length), (0x103, b"\0"), (0x162, b"\1")])
+                    handle = U()
+                    check(
+                        lib.C_DeriveKey(
+                            s, C.byref(mechanism), key_for(3, id), template, len(template), C.byref(handle)
+                        )
+                    )
+                    try:
+                        actual, card_ephemeral = attr(handle, 0x11), attr(handle, 0xC34E4B03)
+                        reference = C.create_string_buffer(length)
+                        own_id, remote_id = uid or b"1234567812345678", peer_id or b"1234567812345678"
+                        if (
+                            gm.sm2_key_exchange(
+                                int(role == 2),
+                                peer_static,
+                                remote_id,
+                                len(remote_id),
+                                card_key,
+                                own_id,
+                                len(own_id),
+                                peer_ephemeral,
+                                card_ephemeral,
+                                None,
+                                length,
+                                reference,
+                            )
+                            != 1
+                            or reference.raw != actual
+                        ):
+                            raise AssertionError("SM2 hardware/GmSSL agreement differs")
+                    finally:
+                        check(lib.C_DestroyObject(s, handle))
+    finally:
+        for key in (peer_static, peer_ephemeral, card_key):
+            C.memset(key, 0, C.sizeof(key))
+    print(
+        "PASS SM2 initiator/responder, default/custom IDs and 16/32/128-byte agreements against GmSSL",
+        flush=True,
+    )
+
+
 def sm2_provisioning(id):
     if not 1 <= id <= 24 or find(1, id):
         raise RuntimeError("SM2 provisioning requires an explicit certificate-free test slot")
@@ -1106,23 +1206,142 @@ def sm2_provisioning(id):
             raise AssertionError("Imported SM2 point differs from independent scalar multiplication")
         login(1, os.environ["CNK_PIV_PIN"].encode())
         private = key_for(3, id)
-        if attr(private, 0x108) != b"\0" or attr(private, 0x10C) != b"\0":
-            raise AssertionError("SM2 advertised unsupported PKCS11 private operations")
+        assert attr(key_for(2, id), 0x10A) == b"\0"  # No host SM2 Verify.
+        empty_id = C.create_string_buffer(1)
+        invalid = Mech(0xC34E4B02, C.cast(empty_id, P), 0)
+        assert lib.C_SignInit(s, C.byref(invalid), private) == 0x71
+        if attr(private, 0x108) != b"\1" or attr(private, 0x10C) != b"\1":
+            raise AssertionError("SM2 private capabilities are missing")
         mechanism = Mech(0x1041, None, 0)
-        if lib.C_SignInit(s, C.byref(mechanism), private) != 0x68:
-            raise AssertionError("SM2 signing returned an unexpected status")
+        if lib.C_SignInit(s, C.byref(mechanism), private) != 0x63:
+            raise AssertionError("SM2 must not alias ECDSA")
         peer = C.create_string_buffer(expected)
         parameters = ECDH(1, 0, None, len(expected), C.cast(peer, P))
         mechanism = Mech(4176, C.cast(C.pointer(parameters), P), C.sizeof(parameters))
         secret = U()
-        if lib.C_DeriveKey(s, C.byref(mechanism), private, None, 0, C.byref(secret)) != 0x68 or secret.value:
-            raise AssertionError("SM2 derive escaped its unsupported-operation boundary")
+        if lib.C_DeriveKey(s, C.byref(mechanism), private, None, 0, C.byref(secret)) != 0x63 or secret.value:
+            raise AssertionError("SM2 must not alias ECDH")
+        with tempfile.TemporaryDirectory(prefix="cnk-sm2-") as directory:
+            directory = Path(directory)
+            public_file = directory / "public.pem"
+            public_file.write_bytes(openssl("pkey", "-pubout", data=private_pem))
+            for uid in (None, b"CanoKey test identity"):
+                uid_buffer = C.create_string_buffer(uid) if uid else None
+                mechanism = Mech(0xC34E4B02, C.cast(uid_buffer, P) if uid_buffer else None, len(uid or b""))
+                for message in (b"", b"SM2 full message", b"m" * 1025):
+                    signature = sign(id, mechanism, message)
+                    if len(signature) != 64:
+                        raise AssertionError("SM2 signature must be P1363 r||s")
+                    sigfile = directory / "signature.der"
+                    sigfile.write_bytes(
+                        utils.encode_dss_signature(
+                            int.from_bytes(signature[:32], "big"), int.from_bytes(signature[32:], "big")
+                        )
+                    )
+                    message_file = directory / "message.bin"
+                    message_file.write_bytes(message)
+                    openssl(
+                        "pkeyutl",
+                        "-verify",
+                        "-pubin",
+                        "-inkey",
+                        str(public_file),
+                        "-rawin",
+                        "-digest",
+                        "sm3",
+                        "-pkeyopt",
+                        "distid:" + (uid or b"1234567812345678").decode(),
+                        "-in",
+                        str(message_file),
+                        "-sigfile",
+                        str(sigfile),
+                    )
+            digest = hashlib.sha256(b"SM2 raw digest input").digest()
+            signature = sign(id, Mech(0xC34E4B01, None, 0), digest)
+            sigfile.write_bytes(
+                utils.encode_dss_signature(
+                    int.from_bytes(signature[:32], "big"), int.from_bytes(signature[32:], "big")
+                )
+            )
+            message_file.write_bytes(digest)
+            openssl(
+                "pkeyutl",
+                "-verify",
+                "-pubin",
+                "-inkey",
+                str(public_file),
+                "-in",
+                str(message_file),
+                "-sigfile",
+                str(sigfile),
+            )
+        sm2_agreement(id, point())
     finally:
         logout_if_logged_in()
         import_checks(id, "p521")
     print(
         "PASS SM2 generation/public-point validation, scalar import and PKCS11 operation bounds", flush=True
     )
+
+
+def key_lifecycle(source, target):
+    from cryptography import x509
+
+    if source == target or find(1, source) or find(1, target):
+        raise RuntimeError("Key lifecycle tests require two distinct certificate-free replaceable slots")
+    slot = lambda id: [0x9A, 0x9C, 0x9D, 0x9E][id - 1] if id <= 4 else 0x82 + id - 5
+    key = bytes.fromhex(os.environ["CNK_PIV_MANAGEMENT_KEY"])
+    try:
+        logout_if_logged_in()
+        for role in (None, 1):
+            if role:
+                login(role, os.environ["CNK_PIV_PIN"].encode())
+            if lib.C_CNK_MoveKey(s, slot(source), slot(target)) != 0x101:
+                raise AssertionError("Unprivileged key move was permitted")
+            logout_if_logged_in()
+        generate_checks(source, "p256")
+        original = public(source)
+        output, length = C.create_string_buffer(8192), U(8192)
+        attest_rv = lib.C_CNK_Attest(s, slot(source), output, C.byref(length))
+        if attest_rv == 0:
+            certificate = x509.load_der_x509_certificate(output.raw[: length.value])
+            if certificate.public_key().public_numbers() != original.public_numbers():
+                raise AssertionError("Attestation contains the wrong public key")
+        elif attest_rv != 0x60:
+            check(attest_rv, "attestation")
+        else:
+            print(
+                "UNAVAILABLE attestation: key-handle error for generated key; check installed attestation signer",
+                flush=True,
+            )
+        import_checks(source, "p256", policy=1)
+        original = public(source)
+        login(0, key)
+        check(lib.C_CNK_MoveKey(s, slot(target), 0xFF))
+        mechanism = Mech(0x1041, None, 0)
+        check(lib.C_SignInit(s, C.byref(mechanism), key_for(3, source)))
+        check(lib.C_CNK_MoveKey(s, slot(source), slot(target)))
+        length = U()
+        assert lib.C_Sign(s, b"x" * 32, 32, None, C.byref(length)) == 0x91
+        logout_if_logged_in()
+        if find(2, source) or public(target).public_numbers() != original.public_numbers():
+            raise AssertionError("Move did not atomically relocate the public/private key pair")
+        login(1, os.environ["CNK_PIV_PIN"].encode())
+        ecdsa_checks(target)
+        logout_if_logged_in()
+        login(0, key)
+        check(lib.C_CNK_MoveKey(s, slot(target), 0xFF))
+        logout_if_logged_in()
+        if find(2, target):
+            raise AssertionError("Deleted key remains visible")
+    finally:
+        logout_if_logged_in()
+        import_checks(source, "p521")
+        import_checks(target, "rsa")
+    print("PASS key move/delete, access checks and restoration", flush=True)
+    return {
+        "attestation": "public-key match" if attest_rv == 0 else "unavailable: no usable attestation signer"
+    }
 
 
 def printed_roundtrip():
@@ -1216,6 +1435,9 @@ def main():
         "--reset-script", type=Path, help="Explicit USB-reset helper for external-write regression"
     )
     tests.add_argument("--openssl", type=Path, help="Optional OpenSSL CLI for SM2 verification")
+    tests.add_argument(
+        "--gmssl", type=Path, help="GmSSL shared library for independent SM2 agreement verification"
+    )
     fixture = commands.add_parser(
         "fixture", help="Explicit destructive preparation, separate from regressions"
     )
@@ -1255,6 +1477,8 @@ def main():
             k in replaceable for k in ("rsa", "ec", "x25519", "ed25519")
         ):
             parser.error("Write/policy suites require four explicit replaceable fixture IDs")
+        if "write" in suites and (not args.gmssl or not args.gmssl.is_file()):
+            parser.error("SM2 write/crypto acceptance requires --gmssl with an existing GmSSL shared library")
         if "credentials" in suites and any(
             k not in os.environ for k in ("CNK_PIV_TEST_PIN", "CNK_PIV_PUK", "CNK_PIV_TEST_PUK")
         ):
@@ -1313,7 +1537,11 @@ def main():
                         f"{kind} PIN-policy matrix", lambda kind=kind: policy_matrix(write_id(kind), kind)
                     )
             if "write" in suites:
-                run_case("SM2 provisioning", lambda: sm2_provisioning(replaceable["ec"]))
+                run_case("SM2 provisioning/sign/agreement", lambda: sm2_provisioning(replaceable["ec"]))
+                run_case(
+                    "attestation and key move/delete",
+                    lambda: key_lifecycle(replaceable["ec"], replaceable["rsa"]),
+                )
                 for operation in (generate_checks, import_checks):
                     for kind in KEY_KINDS:
                         run_case(

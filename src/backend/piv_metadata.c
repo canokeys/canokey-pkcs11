@@ -8,7 +8,6 @@
 #include "internal/util.h"
 
 #include <mbedtls/platform_util.h>
-#include <psa/crypto.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -19,8 +18,10 @@ CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *session) {
   CNK_ENSURE_NONNULL(session, session->token);
   for (unsigned attempt = 0; attempt < 3; attempt++) {
     CK_ULONG epoch = atomic_load(&g_cnk_managed_binding_epoch);
+    uint64_t generation = atomic_load(&session->token->profileGeneration);
     CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
-    CK_BBOOL fresh = session->token->libcanokeyProfile != NULL && session->token->libcanokeyProfileEpoch == epoch &&
+    CK_BBOOL fresh = session->token->loadedProfileGeneration == generation &&
+                     session->token->libcanokeyProfile != NULL && session->token->libcanokeyProfileEpoch == epoch &&
                      cnk_public_cache_fresh(session->token->libcanokeyProfileRefreshedAtMs, cnk_public_cache_now_ms());
     CNK_ENSURE_OK(cnk_mutex_unlock(&session->token->lock));
     if (fresh)
@@ -40,12 +41,15 @@ CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *session) {
     }
     cnk_profile_t *retired = NULL;
     CK_ULONG currentEpoch = atomic_load(&g_cnk_managed_binding_epoch);
-    if (currentEpoch == epoch &&
-        (session->token->libcanokeyProfile == NULL || session->token->libcanokeyProfileEpoch != epoch ||
+    CK_BBOOL current = currentEpoch == epoch && generation == atomic_load(&session->token->profileGeneration);
+    if (current &&
+        (session->token->loadedProfileGeneration != generation || session->token->libcanokeyProfile == NULL ||
+         session->token->libcanokeyProfileEpoch != epoch ||
          !cnk_public_cache_fresh(session->token->libcanokeyProfileRefreshedAtMs, cnk_public_cache_now_ms()))) {
       retired = session->token->libcanokeyProfile;
       session->token->libcanokeyProfile = candidate;
       session->token->libcanokeyProfileEpoch = epoch;
+      session->token->loadedProfileGeneration = generation;
       session->token->libcanokeyProfileRefreshedAtMs = cnk_public_cache_now_ms();
       candidate = NULL;
     }
@@ -54,7 +58,7 @@ CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *session) {
       CNK_EXTERNAL_VOID(cnk_profile_free, retired);
     if (candidate != NULL)
       CNK_EXTERNAL_VOID(cnk_profile_free, candidate);
-    if (rv != CKR_OK || currentEpoch == epoch)
+    if (rv != CKR_OK || current)
       return rv;
   }
   return CKR_OPERATION_ACTIVE;
@@ -103,11 +107,6 @@ static CK_RV cnk_get_certificate_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE
                                             CK_ULONG_PTR dataLen, CK_BBOOL fetchData) {
   CNK_ENSURE_NONNULL(session, session->token);
   CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
-  CK_BYTE slot = pivTag == 0x05 ? 0x9a : pivTag == 0x0a ? 0x9c : pivTag == 0x0b ? 0x9d : pivTag == 0x01 ? 0x9e : 0;
-  if (slot == 0 && pivTag >= 0x0d && pivTag <= 0x20)
-    slot = (CK_BYTE)(0x82 + pivTag - 0x0d);
-  if (slot == 0)
-    return CKR_ARGUMENTS_BAD;
   if (!fetchData)
     dataLen = NULL;
   else if (dataLen == NULL)
@@ -117,7 +116,7 @@ static CK_RV cnk_get_certificate_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE
   cnk_operation_t *operation = NULL;
   cnk_error_v1 error = {.struct_size = sizeof(error)};
   CK_RV rv;
-  rv = CNK_PIV_CREATE(session, cnk_piv_read_certificate_new, &operation, &error, slot);
+  rv = CNK_PIV_CREATE(session, cnk_piv_read_certificate_new, &operation, &error, pivTag);
   if (rv != CKR_OK)
     goto cleanup;
   rv = cnk_run_piv_operation(card, operation, CKR_DATA_INVALID, NULL);
@@ -158,20 +157,6 @@ cleanup:
 #endif
 
 #define CNK_PIV_PUBLIC_CACHE_TTL_MS 60000
-#define CNK_PIV_EXTENSION_CACHE_SLOTS 64
-
-typedef struct {
-  CK_BBOOL valid;
-  CK_SLOT_ID slotId;
-  uint64_t refreshedAtMs;
-  CK_ULONG bindingEpoch;
-  uint64_t generation;
-  CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
-} CNK_PIV_EXTENSION_CACHE_ENTRY;
-
-static CNK_PIV_EXTENSION_CACHE_ENTRY g_piv_extension_cache[CNK_PIV_EXTENSION_CACHE_SLOTS];
-static _Atomic uint64_t g_piv_extension_generation;
-
 static uint64_t cnk_public_cache_now_ms(void) {
 #if defined(_WIN32)
   return (uint64_t)GetTickCount64();
@@ -189,30 +174,16 @@ static CK_BBOOL cnk_public_cache_fresh(uint64_t refreshedAtMs, uint64_t nowMs) {
 
 static CK_LONG cnk_public_cache_index(CK_BYTE pivTag) {
   switch (pivTag) {
-  case 0x9A:
-  case 0x05:
+  case 0x9a:
     return 0;
-  case 0x9C:
-  case 0x0A:
+  case 0x9c:
     return 1;
-  case 0x9D:
-  case 0x0B:
+  case 0x9d:
     return 2;
-  case 0x9E:
-  case 0x01:
+  case 0x9e:
     return 3;
-  case 0x82:
-  case 0x0D:
-    return 4;
-  case 0x83:
-  case 0x0E:
-    return 5;
   default:
-    if (pivTag >= 0x84 && pivTag <= 0x95)
-      return 4 + (CK_LONG)(pivTag - 0x82);
-    if (pivTag >= 0x0F && pivTag <= 0x20)
-      return 6 + (CK_LONG)(pivTag - 0x0F);
-    return -1;
+    return pivTag >= 0x82 && pivTag <= 0x95 ? 4 + (CK_LONG)(pivTag - 0x82) : -1;
   }
 }
 
@@ -227,23 +198,6 @@ static CK_RV cnk_copy_cached_metadata(const CNK_PIV_PUBLIC_CACHE_ENTRY *entry, u
   if (publicKey != NULL)
     *publicKey = entry->publicKey;
   return CKR_OK;
-}
-
-static CK_RV readPivVersionOnCard(SCARDHANDLE card, CK_BYTE version[3]) {
-  cnk_operation_t *operation = NULL;
-  cnk_error_v1 error = {.struct_size = sizeof(error)};
-  uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_read_version_selected_new, NULL, &operation, &error);
-  CK_RV rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
-  if (rv == CKR_OK)
-    rv = cnk_run_piv_operation(card, operation, CKR_DEVICE_ERROR, NULL);
-  if (rv == CKR_OK) {
-    size_t length = 3;
-    status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, version, &length);
-    rv = status == CNK_OK && length == 3 ? CKR_OK : CKR_DEVICE_ERROR;
-  }
-  if (operation)
-    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
-  return rv;
 }
 
 static CK_RV connectPiv(CK_SLOT_ID slotId, SCARDHANDLE *card) { return cnk_begin_piv_transaction(slotId, card); }
@@ -271,75 +225,6 @@ CK_RV cnk_get_piv_pin_retries(CNK_PKCS11_SESSION *session, CK_BYTE pinReference,
   if (rv != CKR_OK)
     return rv;
   rv = readPivPinRetriesOnCard(session, card, pinReference, pinTries);
-  cnk_disconnect_card(card);
-  return rv;
-}
-
-CK_RV cnk_block_piv_puk(CNK_PKCS11_SESSION *session) {
-  CNK_ENSURE_NONNULL(session);
-  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
-  SCARDHANDLE card = 0;
-  CK_RV rv = connectPiv(session->slotId, &card);
-  if (rv != CKR_OK)
-    return rv;
-
-  CK_BYTE knownPuk[8] = {0};
-  CK_BBOOL pukKnown = CK_FALSE;
-  CK_BYTE replacementPuk[8];
-  CK_BYTE randomPuk[8];
-  if (psa_generate_random(randomPuk, sizeof(randomPuk)) != PSA_SUCCESS) {
-    rv = CKR_RANDOM_NO_RNG;
-    goto cleanup;
-  }
-  for (CK_ULONG i = 0; i < sizeof(replacementPuk); i++)
-    replacementPuk[i] = (CK_BYTE)('0' + randomPuk[i] % 10);
-  mbedtls_platform_zeroize(randomPuk, sizeof(randomPuk));
-  CK_BYTE pinTries = 0;
-  rv = readPivPinRetriesOnCard(session, card, CNK_PIV_PIN_TYPE_PUK, &pinTries);
-  if (rv != CKR_OK || pinTries == 0)
-    goto cleanup;
-
-  // Firmware validates and decrements the PUK only through CHANGE REFERENCE
-  // DATA. If a guess accidentally succeeds, remember the replacement value
-  // and make every subsequent old-PUK field provably different from it.
-  for (CK_ULONG attempt = 0; attempt < 32 && pinTries > 0; attempt++) {
-    CK_BYTE oldPuk[8];
-    if (pukKnown) {
-      memcpy(oldPuk, knownPuk, sizeof(oldPuk));
-      oldPuk[0] = oldPuk[0] == '9' ? '0' : (CK_BYTE)(oldPuk[0] + 1);
-    } else {
-      CK_ULONG value = attempt;
-      for (CK_LONG i = (CK_LONG)sizeof(oldPuk) - 1; i >= 0; i--) {
-        oldPuk[i] = (CK_BYTE)('0' + value % 10);
-        value /= 10;
-      }
-    }
-    rv = cnk_piv_credential_on_card(session, card, CNK_PIV_CREDENTIAL_CHANGE_PUK, oldPuk, sizeof(oldPuk),
-                                    replacementPuk, sizeof(replacementPuk), &pinTries);
-    mbedtls_platform_zeroize(oldPuk, sizeof(oldPuk));
-    if (rv == CKR_PIN_LOCKED) {
-      pinTries = 0;
-      break;
-    }
-    if (rv == CKR_PIN_INCORRECT)
-      continue;
-    if (rv != CKR_OK)
-      goto cleanup;
-    memcpy(knownPuk, replacementPuk, sizeof(knownPuk));
-    pukKnown = CK_TRUE;
-    // A successful change resets retries. Continue immediately with a known
-    // wrong old value; the resulting retry status supplies the new count.
-    pinTries = 0xFF;
-  }
-
-  rv = readPivPinRetriesOnCard(session, card, CNK_PIV_PIN_TYPE_PUK, &pinTries);
-  if (rv == CKR_OK && pinTries != 0)
-    rv = CKR_DEVICE_ERROR;
-
-cleanup:
-  mbedtls_platform_zeroize(knownPuk, sizeof(knownPuk));
-  mbedtls_platform_zeroize(replacementPuk, sizeof(replacementPuk));
-  mbedtls_platform_zeroize(randomPuk, sizeof(randomPuk));
   cnk_disconnect_card(card);
   return rv;
 }
@@ -510,8 +395,8 @@ CK_RV cnk_get_piv_metadata_directory_cached(CNK_PKCS11_SESSION *session, CNK_PIV
   return CKR_OK;
 }
 
-CK_RV cnk_get_piv_data_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR data, CK_ULONG_PTR data_len,
-                              CK_BBOOL fetch_data) {
+CK_RV cnk_get_piv_certificate_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR data,
+                                     CK_ULONG_PTR data_len, CK_BBOOL fetch_data) {
   CNK_ENSURE_NONNULL(session, session->token);
   if (g_cnk_is_managed_mode || !atomic_load(&g_cnk_piv_metadata_cache_enabled)) {
     CNK_DEBUG("hardware certificate read (%s): PIV slot 0x%02X",
@@ -604,95 +489,35 @@ void cnk_piv_public_cache_invalidate(CNK_PKCS11_SESSION *session) {
   CNK_DEBUG("invalidated public PIV snapshot cache");
 }
 
-CK_RV cnk_get_piv_algorithm_extension(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config) {
-  CNK_ENSURE_NONNULL(config);
-  SCARDHANDLE card = 0;
-  CNK_ENSURE_OK(connectPiv(slotID, &card));
-  cnk_operation_t *operation = NULL;
-  cnk_error_v1 error = {.struct_size = sizeof(error)};
-  uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_read_configuration_selected_new, NULL, &operation, &error);
-  CK_RV rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
+CK_RV cnk_session_piv_capabilities(CNK_PKCS11_SESSION *session, cnk_piv_capabilities_v1 *capabilities) {
+  CNK_ENSURE_NONNULL(capabilities);
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  const cnk_profile_t *profile = NULL;
+  CNK_ENSURE_OK(cnk_piv_profile_begin(session, &profile));
+  cnk_piv_capabilities_v1 value = {.struct_size = sizeof(value)};
+  uint32_t status = CNK_EXTERNAL_CALL(cnk_profile_piv_capabilities, profile, &value);
+  CK_RV rv = cnk_mutex_unlock(&session->token->lock);
   if (rv == CKR_OK)
-    rv = cnk_run_piv_operation(card, operation, CKR_DEVICE_ERROR, NULL);
-  if (rv == CKR_OK) {
-    size_t length = sizeof(*config);
-    status = CNK_EXTERNAL_CALL(cnk_operation_piv_configuration_copy, operation, (CK_BYTE *)config, &length);
-    rv = status == CNK_OK && length == sizeof(*config) ? CKR_OK : CKR_DEVICE_ERROR;
-  }
-  if (operation)
-    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
-  cnk_disconnect_card(card);
+    rv = cnk_piv_operation_status(status, NULL, CKR_DEVICE_ERROR);
+  if (rv == CKR_OK)
+    *capabilities = value;
   return rv;
 }
 
-CK_RV cnk_get_piv_algorithm_extension_cached(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config) {
-  CNK_ENSURE_NONNULL(config);
-  // Managed callers share a host-owned card handle and may observe external
-  // key changes between callbacks; never reuse a standalone snapshot there.
-  if (atomic_load(&g_cnk_is_managed_mode))
-    return cnk_get_piv_algorithm_extension(slotID, config);
-  CK_ULONG index = (CK_ULONG)slotID % CNK_PIV_EXTENSION_CACHE_SLOTS;
-  uint64_t nowMs = cnk_public_cache_now_ms();
-  CK_ULONG bindingEpoch = atomic_load(&g_cnk_managed_binding_epoch);
-  CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
-  CNK_PIV_EXTENSION_CACHE_ENTRY *entry = &g_piv_extension_cache[index];
-  uint64_t generation = atomic_load(&g_piv_extension_generation);
-  if (entry->valid && entry->generation == generation && entry->slotId == slotID &&
-      entry->bindingEpoch == bindingEpoch && cnk_public_cache_fresh(entry->refreshedAtMs, nowMs)) {
-    *config = entry->config;
-    CNK_ENSURE_OK(cnk_mutex_unlock(&g_cnk_readers_mutex));
-    return CKR_OK;
-  }
-  CNK_ENSURE_OK(cnk_mutex_unlock(&g_cnk_readers_mutex));
-
-  CK_RV rv = cnk_get_piv_algorithm_extension(slotID, config);
-  if (rv != CKR_OK)
-    return rv;
-  CNK_ENSURE_OK(cnk_mutex_lock(&g_cnk_readers_mutex));
-  if (generation == atomic_load(&g_piv_extension_generation) &&
-      bindingEpoch == atomic_load(&g_cnk_managed_binding_epoch)) {
-    entry->slotId = slotID;
-    entry->bindingEpoch = bindingEpoch;
-    entry->generation = generation;
-    entry->config = *config;
-    entry->refreshedAtMs = nowMs;
-    entry->valid = CK_TRUE;
-  }
-  CNK_ENSURE_OK(cnk_mutex_unlock(&g_cnk_readers_mutex));
-  return CKR_OK;
-}
-
-void cnk_piv_algorithm_extension_cache_invalidate(void) {
-  atomic_fetch_add(&g_piv_extension_generation, 1);
-  if (cnk_mutex_lock(&g_cnk_readers_mutex) != CKR_OK)
-    return;
-  memset(g_piv_extension_cache, 0, sizeof(g_piv_extension_cache));
-  cnk_mutex_unlock(&g_cnk_readers_mutex);
-}
-
-CK_RV cnk_piv_v6_supported_on_card(SCARDHANDLE card, CK_BBOOL *supported) {
-  CNK_ENSURE_NONNULL(supported);
-  CK_BYTE version[3];
-  CK_RV rv = readPivVersionOnCard(card, version);
-  if (rv == CKR_FUNCTION_NOT_SUPPORTED) {
-    *supported = CK_FALSE;
-    return CKR_OK;
-  }
-  if (rv != CKR_OK)
-    return rv;
-  *supported = version[0] >= 6 ? CK_TRUE : CK_FALSE;
-  return CKR_OK;
+CK_RV cnk_get_piv_capabilities(CK_SLOT_ID slotID, cnk_piv_capabilities_v1 *capabilities) {
+  CNK_PKCS11_SESSION view = {.slotId = slotID};
+  CNK_ENSURE_OK(cnk_token_for_slot(slotID, &view.token));
+  return cnk_session_piv_capabilities(&view, capabilities);
 }
 
 CK_RV cnk_piv_random_supported(CK_SLOT_ID slotID, CK_BBOOL *supported) {
   CNK_ENSURE_NONNULL(supported);
-  SCARDHANDLE card = 0;
-  CK_RV rv = connectPiv(slotID, &card);
-  if (rv != CKR_OK)
-    return rv;
-  rv = cnk_piv_v6_supported_on_card(card, supported);
-  cnk_disconnect_card(card);
-  return rv;
+  cnk_piv_capabilities_v1 capabilities;
+  CNK_ENSURE_OK(cnk_get_piv_capabilities(slotID, &capabilities));
+  if (capabilities.unknown_features & CNK_PIV_FEATURE_RANDOM)
+    return CKR_DEVICE_ERROR;
+  *supported = !!(capabilities.features & CNK_PIV_FEATURE_RANDOM);
+  return CKR_OK;
 }
 
 CK_RV cnk_piv_generate_random(CK_SLOT_ID slotID, CK_BYTE_PTR output, CK_ULONG outputLen) {

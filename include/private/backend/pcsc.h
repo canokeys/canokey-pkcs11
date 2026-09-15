@@ -88,27 +88,6 @@ CK_DEFINE_FUNCTION(CK_RV, cnk_pcsc_set_test_transport)(const CNK_PCSC_TEST_TRANS
 #define PIV_SLOT_83 6
 #define PIV_SLOT_COUNT 24
 
-typedef struct {
-  CK_BYTE enabled;
-  CK_BYTE ed25519;
-  CK_BYTE rsa3072;
-  CK_BYTE rsa4096;
-  CK_BYTE x25519;
-  CK_BYTE secp256k1;
-  CK_BYTE secp521r1;
-  CK_BYTE sm2;
-  CK_BYTE mldsa65;
-  CK_BYTE mlkem768;
-} CNK_PIV_ALGORITHM_EXTENSION_CONFIG;
-
-// PIV object tags mapped by GET DATA / PUT DATA.
-#define PIV_OBJECT_TAG_CERT_9A 0x05
-#define PIV_OBJECT_TAG_CERT_9C 0x0A
-#define PIV_OBJECT_TAG_CERT_9D 0x0B
-#define PIV_OBJECT_TAG_CERT_9E 0x01
-#define PIV_OBJECT_TAG_CERT_82 0x0D
-#define PIV_OBJECT_TAG_CERT_83 0x0E
-
 // Helper functions for memory allocation
 static __attribute__((unused)) void *ck_malloc(size_t size) { return g_cnk_malloc_func(size); }
 static __attribute__((unused)) void *ck_calloc(size_t num, size_t size) {
@@ -143,6 +122,8 @@ CK_BBOOL cnk_pcsc_operations_active(void);
 void cnk_store_managed_binding(SCARDCONTEXT context, SCARDHANDLE card);
 void cnk_load_managed_binding(SCARDCONTEXT *context, SCARDHANDLE *card);
 
+CK_RV cnk_get_piv_capabilities(CK_SLOT_ID slotID, cnk_piv_capabilities_v1 *capabilities);
+
 // PIV application functions
 CK_RV cnk_select_piv_application(SCARDHANDLE hCard);
 CK_RV cnk_begin_piv_transaction(CK_SLOT_ID slotID, SCARDHANDLE *phCard);
@@ -157,7 +138,6 @@ CK_RV cnk_unblock_piv_pin_on_card(CNK_PKCS11_SESSION *session, SCARDHANDLE card,
                                   CK_ULONG ulPukLen, CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewPinLen,
                                   CK_BYTE_PTR pPinTries);
 CK_RV cnk_get_piv_pin_retries(CNK_PKCS11_SESSION *session, CK_BYTE pinReference, CK_BYTE_PTR pPinTries);
-CK_RV cnk_block_piv_puk(CNK_PKCS11_SESSION *session);
 
 // Function to verify PIN with session
 CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,
@@ -226,8 +206,8 @@ CK_RV cnk_begin_key_write(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYT
 // bypass this cache because the minidriver owns its own refresh policy.
 CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, uint32_t *pbAlgorithmType,
                               CNK_PIV_PUBLIC_KEY *publicKey, CK_BYTE_PTR pbPinPolicy, CK_BYTE_PTR pbTouchPolicy);
-CK_RV cnk_get_piv_data_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR data, CK_ULONG_PTR data_len,
-                              CK_BBOOL fetch_data);
+CK_RV cnk_get_piv_certificate_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, CK_BYTE_PTR data,
+                                     CK_ULONG_PTR data_len, CK_BBOOL fetch_data);
 
 // Read the PIV metadata directory using the Rust profile. Unsupported features
 // return CKR_FUNCTION_NOT_SUPPORTED for per-slot fallback. Malformed or
@@ -236,16 +216,12 @@ CK_RV cnk_get_piv_metadata_directory_cached(CNK_PKCS11_SESSION *session, CNK_PIV
                                             CK_ULONG_PTR entryCount);
 void cnk_piv_public_cache_invalidate(CNK_PKCS11_SESSION *session);
 
-CK_RV cnk_get_piv_algorithm_extension(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config);
-CK_RV cnk_get_piv_algorithm_extension_cached(CK_SLOT_ID slotID, CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config);
-void cnk_piv_algorithm_extension_cache_invalidate(void);
-
 // Firmware 6.0+ exposes an unauthenticated PIV GET CHALLENGE command backed by
 // the token RNG. Older firmware reports supported = CK_FALSE.
 CK_RV cnk_piv_random_supported(CK_SLOT_ID slotID, CK_BBOOL *supported);
 // Shared version gate for RNG and F5 names. Card must already be selected;
 // reads PIV GET VERSION (00 FD), without reconnecting or resetting authentication.
-CK_RV cnk_piv_v6_supported_on_card(SCARDHANDLE card, CK_BBOOL *supported);
+CK_RV cnk_session_piv_capabilities(CNK_PKCS11_SESSION *session, cnk_piv_capabilities_v1 *capabilities);
 CK_RV cnk_piv_generate_random(CK_SLOT_ID slotID, CK_BYTE_PTR output, CK_ULONG outputLen);
 
 // Generate a PIV asymmetric key pair.
@@ -271,5 +247,8 @@ CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, uint32_t alg
 CK_RV cnk_piv_mlkem_decapsulate(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, uint32_t algorithmType,
                                 CK_BYTE pivSlot, CK_BYTE pinPolicy, CK_BYTE_PTR pCiphertext, CK_ULONG cbCiphertext,
                                 CK_BYTE_PTR pSharedSecret, CK_ULONG_PTR pcbSharedSecret);
+
+CK_RV cnk_piv_sm2_agree(CNK_PKCS11_SESSION *session, CK_BYTE slot, CK_BYTE pinPolicy,
+                        const CK_CNK_SM2_DERIVE_PARAMS *params, CK_BYTE *key, CK_ULONG keyLen, CK_BYTE ephemeral[65]);
 
 #endif /* CNK_BACKEND_PCSC_H */

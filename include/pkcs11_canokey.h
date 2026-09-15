@@ -58,6 +58,31 @@ typedef struct {
   CK_BYTE touchPolicy;
 } CNK_PIV_METADATA_DIRECTORY_ENTRY;
 
+// Vendor mechanisms have explicit SM2 semantics; they are not ECDSA/ECDH aliases.
+#define CKM_CNK_SM2_RAW (CKM_VENDOR_DEFINED | 0x434E4B01UL)
+#define CKM_CNK_SM2_SM3 (CKM_VENDOR_DEFINED | 0x434E4B02UL)
+#define CKM_CNK_SM2_DERIVE (CKM_VENDOR_DEFINED | 0x434E4B03UL)
+// Public 65-byte SEC1 ephemeral point attached to an SM2-derived session key.
+#define CKA_CNK_SM2_EPHEMERAL_PUBLIC (CKA_VENDOR_DEFINED | 0x434E4B03UL)
+
+#if defined(_WIN32) || defined(CRYPTOKI_FORCE_WIN32)
+#pragma pack(push, cnk_sm2, 1)
+#endif
+typedef struct CK_CNK_SM2_DERIVE_PARAMS {
+  CK_ULONG role; // 1 initiator, 2 responder; peer material is pre-exchanged
+  CK_BYTE_PTR pPeerStatic;
+  CK_ULONG ulPeerStaticLen;
+  CK_BYTE_PTR pPeerEphemeral;
+  CK_ULONG ulPeerEphemeralLen;
+  CK_BYTE_PTR pUserId; // NULL/0 selects the PIV default identity
+  CK_ULONG ulUserIdLen;
+  CK_BYTE_PTR pPeerId;
+  CK_ULONG ulPeerIdLen;
+} CK_CNK_SM2_DERIVE_PARAMS;
+#if defined(_WIN32) || defined(CRYPTOKI_FORCE_WIN32)
+#pragma pack(pop, cnk_sm2)
+#endif
+
 // PIV secret reference values for C_CNK_SetPIN().
 #define CNK_PIV_PIN_TYPE_PIN 0x80
 #define CNK_PIV_PIN_TYPE_PUK 0x81
@@ -145,5 +170,33 @@ CK_DEFINE_FUNCTION(CK_RV, C_CNK_GetContainerName)(CK_SESSION_HANDLE hSession, CK
 // A failed transport can follow a committed write: read back, never regenerate a key.
 CK_DEFINE_FUNCTION(CK_RV, C_CNK_SetContainerName)(CK_SESSION_HANDLE hSession, CK_BYTE pivSlot, CK_BYTE_PTR name,
                                                   CK_ULONG nameLen);
+
+// Physical key lifecycle uses PIV references, not PKCS#11 object handles.
+// Move requires an empty destination; target 0xFF deletes the source key/name.
+// Both public/private views move or disappear; certificates remain in their slots.
+// Requires RW + SO/protected management. Attempted writes revoke pending
+// find/sign/decrypt operations. No automatic retry after uncertain I/O.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_MoveKey)(CK_SESSION_HANDLE hSession, CK_BYTE source, CK_BYTE target);
+
+// Read a fresh attestation DER for a generated key. No trust decision is made.
+// NULL output queries length; short output is untouched and reports required length.
+// Each call performs a new card request, including a query or buffer retry.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_Attest)(CK_SESSION_HANDLE hSession, CK_BYTE pivSlot, CK_BYTE_PTR certificate,
+                                        CK_ULONG_PTR certificateLen);
+
+// Rotate the 24-byte management key with its current algorithm (1 TDES, 2 AES192).
+// touch is 0 never or 1 always (AES192 only). Requires RW + management auth.
+// In PIN-managed mode also requires USER login; updates PRINTED after key rotation.
+// Writes are not atomic: after uncertain failure recover using the supplied new
+// key and repair PRINTED. Any attempt clears local credentials/private operations.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_SetManagementKey)(CK_SESSION_HANDLE hSession, CK_ULONG algorithm, CK_BYTE_PTR key,
+                                                  CK_ULONG keyLen, CK_BBOOL touch);
+
+// Set retry limits (1..15) AND reset PIN/PUK to firmware defaults. Requires RW,
+// management authorization and the explicitly supplied current PIN. Protected
+// mode prohibits this operation because it would re-enable PUK recovery.
+// Any attempted reset clears all cached credentials and private operations.
+CK_DEFINE_FUNCTION(CK_RV, C_CNK_SetPinRetries)(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pin, CK_ULONG pinLen,
+                                               CK_BYTE pinRetries, CK_BYTE pukRetries);
 
 #endif /* PKCS11_CANOKEY_H */

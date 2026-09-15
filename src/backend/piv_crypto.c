@@ -30,6 +30,7 @@ static uint32_t signing_input_kind(uint32_t algorithm) {
   case CNK_ALGORITHM_P384:
   case CNK_ALGORITHM_P521:
   case CNK_ALGORITHM_SECP256K1:
+  case CNK_ALGORITHM_SM2:
     return CNK_SIGN_DIGEST;
   case CNK_ALGORITHM_ED25519:
   case CNK_ALGORITHM_MLDSA65:
@@ -105,13 +106,16 @@ cleanup:
 
 static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *session, CK_BYTE_PTR data, CK_ULONG dataLen,
                                      CK_BYTE_PTR signature, CK_ULONG_PTR signatureLen) {
-  CNK_ENSURE_NONNULL(session, signature, signatureLen, data);
+  CNK_ENSURE_NONNULL(session, signature, signatureLen);
+  if (data == NULL && dataLen > 0)
+    return CKR_ARGUMENTS_BAD;
   uint32_t algorithm = session->signingContext.algorithmType;
   CNK_ENSURE_OK(cnk_piv_require_algorithm(session, algorithm));
   uint32_t kind = signing_input_kind(algorithm);
   if (kind == 0)
     return CKR_FUNCTION_NOT_SUPPORTED;
-  CK_BBOOL streaming = algorithm == CNK_ALGORITHM_MLDSA65;
+  CK_BBOOL sm2Message = session->signingContext.mechanism.mechanism == CKM_CNK_SM2_SM3;
+  CK_BBOOL streaming = algorithm == CNK_ALGORITHM_MLDSA65 || sm2Message;
 
   SCARDHANDLE card = 0;
   CK_RV rv = cnk_connect_for_private_key_operation(slotId, session, session->signingContext.pinPolicy,
@@ -125,7 +129,9 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
   uint32_t status = CNK_OK;
 
   rv = streaming ? CNK_PIV_CREATE(session, cnk_piv_sign_streaming_new, &operation, &error,
-                                  session->signingContext.pivSlot, 1, data, dataLen, NULL, 0, NULL)
+                                  session->signingContext.pivSlot, sm2Message ? 3 : 1, data, dataLen,
+                                  sm2Message ? session->signingContext.mechanism.pParameter : NULL,
+                                  sm2Message ? session->signingContext.mechanism.ulParameterLen : 0, NULL)
                  : CNK_PIV_CREATE(session, cnk_piv_sign_new, &operation, &error, session->signingContext.pivSlot,
                                   algorithm, kind, data, dataLen, NULL);
   if (rv != CKR_OK)
@@ -162,11 +168,14 @@ cleanup:
 
 CK_RV cnk_piv_decrypt(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pEncryptedData,
                       CK_ULONG cbEncryptedData, CK_BYTE_PTR pRawData, CK_ULONG_PTR pcbRawData) {
-  return cnk_piv_private_libcanokey(slotId, pSession, pSession->decryptingContext.algorithmType,
-                                    pSession->decryptingContext.pivSlot, pSession->decryptingContext.pinPolicy,
-                                    CNK_PRIVATE_DECRYPT, pEncryptedData, cbEncryptedData,
-                                    pSession->decryptingContext.contextPin, pSession->decryptingContext.contextPinLen,
-                                    pRawData, pcbRawData, "decrypt");
+  CNK_ENSURE_OK(cnk_token_private_operation(pSession, CK_TRUE));
+  CK_RV rv = cnk_piv_private_libcanokey(slotId, pSession, pSession->decryptingContext.algorithmType,
+                                        pSession->decryptingContext.pivSlot, pSession->decryptingContext.pinPolicy,
+                                        CNK_PRIVATE_DECRYPT, pEncryptedData, cbEncryptedData,
+                                        pSession->decryptingContext.contextPin,
+                                        pSession->decryptingContext.contextPinLen, pRawData, pcbRawData, "decrypt");
+  cnk_token_private_operation(pSession, CK_FALSE);
+  return rv;
 }
 
 CK_RV cnk_piv_ecdh(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, uint32_t algorithmType, CK_BYTE pivSlot,
@@ -193,7 +202,10 @@ CK_RV cnk_piv_mlkem_decapsulate(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession,
 // Sign data using typed libcanokey PIV operations, including streaming ML-DSA.
 CK_RV cnk_piv_sign(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pData, CK_ULONG cbDataLen,
                    CK_BYTE_PTR pSignature, CK_ULONG_PTR pcbSignature) {
-  return cnk_piv_sign_libcanokey(slotId, pSession, pData, cbDataLen, pSignature, pcbSignature);
+  CNK_ENSURE_OK(cnk_token_private_operation(pSession, CK_TRUE));
+  CK_RV rv = cnk_piv_sign_libcanokey(slotId, pSession, pData, cbDataLen, pSignature, pcbSignature);
+  cnk_token_private_operation(pSession, CK_FALSE);
+  return rv;
 }
 
 CK_RV cnk_piv_generate_keypair(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, uint32_t algorithmType, CK_BYTE pivSlot,
@@ -256,5 +268,40 @@ import_cleanup:
   if (operation)
     CNK_EXTERNAL_VOID(cnk_operation_free, operation);
   cnk_disconnect_card(card);
+  return rv;
+}
+
+CK_RV cnk_piv_sm2_agree(CNK_PKCS11_SESSION *session, CK_BYTE slot, CK_BYTE pinPolicy,
+                        const CK_CNK_SM2_DERIVE_PARAMS *params, CK_BYTE *key, CK_ULONG keyLen, CK_BYTE ephemeral[65]) {
+  if (pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS)
+    return CKR_USER_NOT_LOGGED_IN;
+  CNK_ENSURE_OK(cnk_piv_require_algorithm(session, CNK_ALGORITHM_SM2));
+  cnk_sm2_input_v1 input = {.struct_size = sizeof(input),
+                            .role = params->role,
+                            .key_len = keyLen,
+                            .peer_static = {params->pPeerStatic, params->ulPeerStaticLen},
+                            .peer_ephemeral = {params->pPeerEphemeral, params->ulPeerEphemeralLen},
+                            .user_id = {params->pUserId, params->ulUserIdLen},
+                            .peer_id = {params->pPeerId, params->ulPeerIdLen}};
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  // Validate/copy all peer inputs before authentication or ephemeral generation.
+  CK_RV rv = CNK_PIV_CREATE(session, cnk_piv_agree_sm2_new, &operation, &error, slot, &input, NULL);
+  if (rv != CKR_OK)
+    return rv == CKR_ARGUMENTS_BAD ? CKR_MECHANISM_PARAM_INVALID : rv;
+  SCARDHANDLE card = 0;
+  rv = cnk_connect_for_private_key_operation(session->slotId, session, pinPolicy, NULL, 0, &card, "SM2 agreement");
+  if (rv == CKR_OK)
+    rv = cnk_run_piv_operation(card, operation, CKR_KEY_HANDLE_INVALID, NULL);
+  if (rv == CKR_OK) {
+    size_t length = keyLen, pointLen = 65;
+    uint32_t status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, key, &length);
+    if (status == CNK_OK)
+      status = CNK_EXTERNAL_CALL(cnk_operation_sm2_ephemeral_copy, operation, ephemeral, &pointLen);
+    rv = status == CNK_OK && length == keyLen && pointLen == 65 ? CKR_OK : CKR_DEVICE_ERROR;
+  }
+  CNK_EXTERNAL_VOID(cnk_operation_free, operation);
+  if (card)
+    cnk_disconnect_card(card);
   return rv;
 }

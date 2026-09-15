@@ -23,6 +23,21 @@ class ECDH(C.Structure):
     _fields_ = [("kdf", U), ("shared_len", U), ("shared", P), ("public_len", U), ("public", P)]
 
 
+class SM2Agreement(C.Structure):
+    _pack_ = 1 if os.name == "nt" else 0
+    _fields_ = [
+        ("role", U),
+        ("peer_static", P),
+        ("peer_static_len", U),
+        ("peer_ephemeral", P),
+        ("peer_ephemeral_len", U),
+        ("user_id", P),
+        ("user_id_len", U),
+        ("peer_id", P),
+        ("peer_id_len", U),
+    ]
+
+
 class OAEP(C.Structure):
     _pack_ = 1 if os.name == "nt" else 0
     _fields_ = [("hash", U), ("mgf", U), ("source", U), ("len_ptr", P), ("len", U)]
@@ -82,6 +97,10 @@ POLICY_KINDS = KEY_KINDS
 
 
 SIGNATURES = {
+    "C_CNK_Attest": [U, B, P, C.POINTER(U)],
+    "C_CNK_MoveKey": [U, B, B],
+    "C_CNK_SetManagementKey": [U, U, P, U, B],
+    "C_CNK_SetPinRetries": [U, P, U, B, B],
     "C_GetMechanismList": [U, P, C.POINTER(U)],
     "C_GetTokenInfo": [U, C.POINTER(TokenInfo)],
     "C_GetSessionInfo": [U, C.POINTER(SessionInfo)],

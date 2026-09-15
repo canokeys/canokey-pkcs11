@@ -67,6 +67,7 @@ typedef struct CNK_PKCS11_TOKEN_STATE {
   CK_ULONG cbManagementKey;
   _Atomic CK_BBOOL managementLoginPending;
   _Atomic CK_BBOOL managementOperationPending;
+  _Atomic CK_ULONG activePrivateOperations;
   _Atomic CK_SESSION_HANDLE managementOperationOwner;
   _Atomic CK_BBOOL managementOperationAllowsLogin;
   _Atomic CK_BBOOL logoutRecoveryPending;
@@ -80,6 +81,8 @@ typedef struct CNK_PKCS11_TOKEN_STATE {
   cnk_profile_t *libcanokeyProfile;
   CK_ULONG libcanokeyProfileEpoch;
   uint64_t libcanokeyProfileRefreshedAtMs;
+  _Atomic uint64_t profileGeneration;
+  uint64_t loadedProfileGeneration;
   CNK_PKCS11_MUTEX lock;
   struct CNK_PKCS11_TOKEN_STATE *next;
 } CNK_PKCS11_TOKEN_STATE;
@@ -101,6 +104,8 @@ typedef struct {
   CK_BYTE id;
   CK_KEY_TYPE keyType;
   CK_BYTE value[128];
+  // Public protocol output, retained with SM2-derived session secrets only.
+  CK_BYTE sm2Ephemeral[65];
   CK_ULONG valueLen;
   CK_BBOOL extractable;
   CK_BBOOL sensitive;
@@ -147,6 +152,7 @@ typedef struct {
   CK_BYTE_PTR message;
   CK_ULONG messageLen;
   CK_ULONG messageCapacity;
+  CK_ULONG messageLimit;
   CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
   CK_BBOOL contextAuthenticated;
   CK_BYTE contextPin[8];
@@ -252,15 +258,19 @@ CK_RV cnk_token_update_cached_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR o
                                   CK_UTF8CHAR_PTR newPin, CK_ULONG newPinLen);
 CK_RV cnk_token_management_key_is_cached(CNK_PKCS11_SESSION *session, CK_BBOOL *cached);
 CK_RV cnk_token_copy_management_key(CNK_PKCS11_SESSION *session, CK_BYTE key[24]);
-CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session);
+CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session, CK_BBOOL refresh);
 CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session, CK_BYTE_PTR key, CK_ULONG keyLen,
                                                     CK_RV verificationRv);
 CK_RV cnk_token_begin_management_operation(CNK_PKCS11_SESSION *session);
+CK_RV cnk_token_private_operation(CNK_PKCS11_SESSION *session, CK_BBOOL begin);
 CK_RV cnk_token_begin_user_operation(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_begin_pin_change(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_begin_card_operation(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_allow_owner_login(CNK_PKCS11_SESSION *session, CK_BBOOL allow);
 void cnk_token_end_management_operation(CNK_PKCS11_SESSION *session);
+CK_RV cnk_token_forget_credentials(CNK_PKCS11_SESSION *session);
+/* The active API admission pins token lifetime until this borrowed view is unused. */
+CK_RV cnk_token_for_slot(CK_SLOT_ID slotId, CNK_PKCS11_TOKEN_STATE **token);
 CK_RV cnk_token_get_session_counts(CK_SLOT_ID slotId, CK_ULONG_PTR openSessions, CK_ULONG_PTR readOnlySessions);
 // Card replacement events invalidate public snapshots associated with a slot.
 CK_RV cnk_token_invalidate_public_cache(CK_SLOT_ID slotId);

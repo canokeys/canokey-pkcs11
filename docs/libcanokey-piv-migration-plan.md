@@ -104,3 +104,19 @@ limits and default management key are restored. Reports retain selections, DLL
 hashes, certificate backups and results; generated keys/logging chronology stay
 out of the repository. Older physical firmware and native ARM64 interoperability
 are not inferred from these current-card results.
+
+## Additional consumer adaptation
+
+Mechanism advertisement and signing buffers now consume the same Rust profile
+capabilities/limits as operation construction. Certificate reads pass PIV slots
+without C certificate-tag conversion. PIN-managed login/finalization is one Rust
+card operation with C token reservations and cache commit. Vendor SM2 sign/agreement,
+attestation, physical key move/delete, management rotation and explicit credential
+retry reset are wired to libcanokey. Standard C_InitToken/C_InitPIN remain unsupported:
+neither accepts the credentials/state needed to represent these destructive PIV flows.
+
+The hardware acceptance reports live outside the repository. SM2's 128-byte agreement
+exposed a definite-BER length variant; both roles now have a transcript regression.
+Attestation success additionally requires a provisioned signer and must not be claimed
+from capability advertisement alone. Keep original Windows keys/certificates intact
+and restore all declared scratch slots and credential/protection settings after tests.

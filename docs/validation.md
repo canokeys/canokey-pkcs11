@@ -77,7 +77,7 @@ races, every token lock/unlock in their public-cache misses, profile expiry and
 refresh racing VERIFY, and close/finalize draining an in-flight card call.
 `test --suite policy` exercises explicit replaceable slots under every PIN
 policy; the script leaves PIN-once fixtures. PQC verification uses independent
-cryptography/OpenSSL implementations; SM2 provisioning uses an OpenSSL CLI.
+cryptography/OpenSSL implementations; SM2 signing/provisioning uses OpenSSL; agreement uses an independently built GmSSL shared library (`--gmssl`).
 A replaceable RSA fixture with an explicit `--reset-script`
 checks a real external replacement and USB reinsert against a still-live cache. External mutations are expected to become visible after the 60-second
 TTL; no credential, card handle, selected applet, or authentication state may
@@ -208,7 +208,9 @@ native algorithm/provisioning programs. The single Python entry point is
 `test/real/hardware.py`; `pkcs11.py` owns binding/session cleanup and `fixtures.py`
 owns explicit card preparation. Install `cryptography>=50` for the independent
 OpenSSL-backed RSA/EC/Ed25519/X25519/ML-DSA/ML-KEM oracle. Only certificate
-provisioning additionally requires `asn1crypto`; SM2 requires an OpenSSL CLI.
+provisioning additionally requires `asn1crypto`; SM2 requires an OpenSSL CLI and a GmSSL shared library exposing `sm2_key_exchange`
+(`--gmssl`). Build GmSSL with `CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON` on Windows;
+this is an independent test oracle, never a production or CMake dependency.
 
 All commands require `--module`, `--slot` and `--serial`. Credentials come from
 `CNK_PIV_PIN` and, for writes, `CNK_PIV_MANAGEMENT_KEY`. Credential tests also
@@ -237,7 +239,7 @@ python test/real/hardware.py --module <dll> --slot 0 --serial <serial> --fixture
 `crypto` covers raw/combined/multipart RSA hash families and ECDSA, independent
 signature checks, RSA decrypt, raw ECDH and X9.63 SHA256 KDF, Ed25519 and PQC.
 `policy` covers every supported private-key family under never/once/always PIN
-policies. `write` covers generation/import, SM2 and certificate roundtrips;
+policies. `write` covers generation/import, SM2 sign/agreement, physical key move/delete and certificate roundtrips; attestation requires an installed signer and reports its absence explicitly;
 `credentials` covers PIN/PUK mutation and restoration; `management` covers names,
 PRINTED and unconfigured protected login. `all` combines these suites.
 

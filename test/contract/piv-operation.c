@@ -421,9 +421,10 @@ void cnk_token_end_management_operation(CNK_PKCS11_SESSION *s) {
   (void)s;
   abort();
 }
-CK_RV cnk_piv_v6_supported_on_card(SCARDHANDLE card, CK_BBOOL *supported) {
-  CHECK(card != 0);
-  *supported = CK_TRUE;
+CK_RV cnk_session_piv_capabilities(CNK_PKCS11_SESSION *session, cnk_piv_capabilities_v1 *capabilities) {
+  CHECK(session != NULL && cards == 0);
+  memset(capabilities, 0, sizeof(*capabilities));
+  capabilities->features = CNK_PIV_FEATURE_RANDOM | CNK_PIV_FEATURE_NAMES;
   return CKR_OK;
 }
 
@@ -650,4 +651,28 @@ int main(void) {
   CHECK(strstr(lastLog, "Panic"));
   puts("PIV operation failure and ownership contracts passed");
   return 0;
+}
+
+uint32_t cnk_piv_agree_sm2_new(const cnk_profile_t *c, uint32_t slot, const cnk_sm2_input_v1 *input,
+                               const cnk_piv_access_v1 *auth, const cnk_operation_options_v1 *opts,
+                               cnk_operation_t **out, cnk_error_v1 *e) {
+  CHECK(slot == 0x9c && input->key_len == 32 && auth == NULL && opts->flags == CNK_PIV_USE_EXISTING);
+  return construct(c, out, e);
+}
+uint32_t cnk_operation_sm2_ephemeral_copy(const cnk_operation_t *o, uint8_t *out, size_t *len) {
+  (void)o;
+  (void)out;
+  (void)len;
+  abort();
+}
+
+CK_RV cnk_token_private_operation(CNK_PKCS11_SESSION *s, CK_BBOOL begin) {
+  CHECK(s == &session);
+  if (begin)
+    atomic_fetch_add(&s->token->activePrivateOperations, 1);
+  else {
+    CHECK(atomic_load(&s->token->activePrivateOperations) > 0);
+    atomic_fetch_sub(&s->token->activePrivateOperations, 1);
+  }
+  return CKR_OK;
 }

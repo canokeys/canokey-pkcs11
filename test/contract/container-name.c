@@ -60,9 +60,16 @@ static LONG transportRv;
 static CK_BBOOL isWrite;
 static CK_BBOOL v6Supported = CK_TRUE;
 static CK_RV versionRv;
-CK_RV cnk_piv_v6_supported_on_card(SCARDHANDLE card, CK_BBOOL *supported) {
-  CHECK(card == 123 && connections == 1);
-  *supported = v6Supported;
+CK_RV cnk_session_piv_capabilities(CNK_PKCS11_SESSION *s, cnk_piv_capabilities_v1 *caps) {
+  CHECK(s == &session && connections == 0);
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(s));
+  memset(caps, 0, sizeof(*caps));
+  caps->struct_size = sizeof(*caps);
+  CHECK(cnk_profile_piv_capabilities(token.libcanokeyProfile, caps) == CNK_OK);
+  if (v6Supported)
+    caps->features |= CNK_PIV_FEATURE_RANDOM;
+  else
+    caps->features &= ~CNK_PIV_FEATURE_RANDOM;
   return versionRv;
 }
 

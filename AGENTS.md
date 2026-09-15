@@ -235,8 +235,8 @@ Write-path notes:
   `CKK_EC_EDWARDS`/`CKK_EC_MONTGOMERY` with RFC 8410 OIDs. Ed25519 currently
   advertises pure `CKM_EDDSA` signing only; do not claim host verification
   until the bundled crypto provider supplies a compatible primitive. PKCS#11
-  3.2 has no SM2 mechanism, so expose the SM2 object identity without mapping
-  it to `CKM_ECDSA`.
+  3.2 has no standard SM2 mechanism; use the explicit CanoKey SM2 vendor
+  mechanisms and never map it to `CKM_ECDSA` or `CKM_ECDH1_DERIVE`.
 - PIV extension algorithm IDs are card configuration, not compile-time
   constants. Cache every field from `CNK_PIV_ALGORITHM_EXTENSION_CONFIG` and
   use the configured value for discovery, key generation/import, capability

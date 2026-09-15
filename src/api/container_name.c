@@ -36,7 +36,16 @@ static CK_RV name_error(const cnk_error_v1 *error, CK_RV fallback, CK_BBOOL writ
 
 static CK_RV container_name_operation(CNK_PKCS11_SESSION *session, CK_BYTE slot, CK_BBOOL write, const CK_BYTE *name,
                                       CK_ULONG nameLen, CK_BYTE *output, CK_ULONG *outputLen) {
-  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  cnk_piv_capabilities_v1 capabilities;
+  CNK_ENSURE_OK(cnk_session_piv_capabilities(session, &capabilities));
+  // The Windows-facing name fallback historically requires PIV version 6,
+  // the same compatibility gate as RNG, in addition to firmware F5 support.
+  if (capabilities.unknown_features & (CNK_PIV_FEATURE_RANDOM | CNK_PIV_FEATURE_NAMES))
+    return CKR_DEVICE_ERROR;
+  if (!(capabilities.features & CNK_PIV_FEATURE_RANDOM))
+    return CKR_FUNCTION_NOT_SUPPORTED;
+  if (!(capabilities.features & CNK_PIV_FEATURE_NAMES))
+    return CKR_DEVICE_ERROR;
   SCARDHANDLE card = 0;
   CK_RV rv = write ? cnk_authenticate_admin_for_write(session->slotId, session, &card)
                    : cnk_begin_piv_transaction(session->slotId, &card);
@@ -44,14 +53,6 @@ static CK_RV container_name_operation(CNK_PKCS11_SESSION *session, CK_BYTE slot,
     return rv;
   cnk_operation_t *operation = NULL;
   cnk_error_v1 error = {.struct_size = sizeof(error)};
-  CK_BBOOL supported = CK_FALSE;
-  rv = cnk_piv_v6_supported_on_card(card, &supported);
-  if (rv != CKR_OK)
-    goto cleanup;
-  if (!supported) {
-    rv = CKR_FUNCTION_NOT_SUPPORTED;
-    goto cleanup;
-  }
   rv = write ? CNK_PIV_CREATE(session, cnk_piv_set_container_name_new, &operation, &error, slot, name, nameLen, NULL)
              : CNK_PIV_CREATE(session, cnk_piv_read_container_name_new, &operation, &error, slot, NULL);
   rv = name_error(&error, rv, write);

@@ -48,6 +48,7 @@ static atomic_bool signPaused, releaseSign, readerWaiting, failSign;
 static SCARDHANDLE signCard;
 static atomic_bool pauseCacheRead, cacheReadPaused, releaseCacheRead;
 static atomic_uint revision;
+static const char *firmwareVersion = "3.1.0";
 static atomic_uint keyPolicy = 2;
 static atomic_bool pauseVerify, verifyPaused, releaseVerify;
 static atomic_bool failProfile, churnProfile;
@@ -168,8 +169,8 @@ static LONG transmit(SCARDHANDLE card, LPCSCARD_IO_REQUEST sendPci, LPCBYTE comm
     if (command[1] == 0x31 && command[2] == 0) {
       if (atomic_load(&failProfile))
         return SCARD_E_COMM_DATA_LOST;
-      memcpy(output, "3.1.0", 5);
-      n = 5;
+      n = strlen(firmwareVersion);
+      memcpy(output, firmwareVersion, n);
     } else {
       output[0] = 0x6d;
       output[1] = 0;
@@ -406,7 +407,7 @@ static void read_cache(CacheWorker *worker) {
   } else if (worker->kind == 1) {
     CK_BYTE certificate[32];
     CK_ULONG length = sizeof(certificate);
-    worker->result = cnk_get_piv_data_cached(worker->session, 0x0a, certificate, &length, CK_TRUE);
+    worker->result = cnk_get_piv_certificate_cached(worker->session, 0x9c, certificate, &length, CK_TRUE);
     if (worker->result == CKR_OK) {
       CHECK(length == 5);
       worker->value = certificate[4];
@@ -420,10 +421,10 @@ static void read_cache(CacheWorker *worker) {
       worker->value = directory[0].origin;
     }
   } else {
-    CNK_PIV_ALGORITHM_EXTENSION_CONFIG config;
-    worker->result = cnk_get_piv_algorithm_extension_cached(0, &config);
+    cnk_piv_capabilities_v1 capabilities;
+    worker->result = cnk_session_piv_capabilities(worker->session, &capabilities);
     if (worker->result == CKR_OK)
-      worker->value = config.enabled;
+      worker->value = !!(capabilities.algorithms & (1u << CNK_ALGORITHM_ED25519));
   }
 }
 static THREAD_RESULT cache_worker(void *opaque) {
@@ -432,7 +433,7 @@ static THREAD_RESULT cache_worker(void *opaque) {
 }
 static void invalidate_cache(CacheWorker *worker) {
   if (worker->kind >= 3)
-    cnk_piv_algorithm_extension_cache_invalidate();
+    CHECK(cnk_token_invalidate_public_cache(0) == CKR_OK);
   else
     cnk_piv_public_cache_invalidate(worker->session);
 }
@@ -487,7 +488,7 @@ static void cache_contract(CK_SESSION_HANDLE handle) {
 #else
     CHECK(pthread_join(thread, NULL) == 0);
 #endif
-    CHECK(worker.result == CKR_OK && worker.value == (kind >= 3 ? 0 : 0xa0));
+    CHECK(worker.result == CKR_OK && worker.value == (kind >= 3 ? 1 : 0xa0));
     read_cache(&worker);
     CHECK(worker.result == CKR_OK && worker.value == (kind >= 3 ? 1 : 0xb1));
     unsigned before = atomic_load(&connects);
@@ -544,9 +545,9 @@ static void cache_contract(CK_SESSION_HANDLE handle) {
       if (kind == 1) {
         CK_BYTE output = 0xcc;
         CK_ULONG length = 1;
-        CHECK(cnk_get_piv_data_cached(session, 0x0a, &output, &length, CK_TRUE) == CKR_BUFFER_TOO_SMALL);
+        CHECK(cnk_get_piv_certificate_cached(session, 0x9c, &output, &length, CK_TRUE) == CKR_BUFFER_TOO_SMALL);
         CHECK(length == 5 && output == 0xcc);
-        CHECK(cnk_get_piv_data_cached(session, 0x0a, NULL, NULL, CK_FALSE) == CKR_OK);
+        CHECK(cnk_get_piv_certificate_cached(session, 0x9c, NULL, NULL, CK_FALSE) == CKR_OK);
       } else if (kind == 2) {
         CNK_PIV_METADATA_DIRECTORY_ENTRY output;
         memset(&output, 0xcc, sizeof(output));
@@ -565,6 +566,35 @@ static THREAD_RESULT profile_worker(void *opaque) {
   worker->result = cnk_ensure_libcanokey_profile(worker->session);
   return THREAD_DONE;
 }
+static void capabilities_contract(void) {
+  unsigned previousRevision = atomic_load(&revision);
+  const char *versions[] = {"3.0.0", "3.0.1", "3.1.0-dev"};
+  for (unsigned version = 0; version < 3; version++) {
+    firmwareVersion = versions[version];
+    for (unsigned enabled = 0; enabled < 2; enabled++) {
+      atomic_store(&revision, enabled);
+      CHECK(cnk_token_invalidate_public_cache(0) == CKR_OK);
+      CK_MECHANISM_TYPE mechanisms[80];
+      CK_ULONG count = 80;
+      CHECK(C_GetMechanismList(0, mechanisms, &count) == CKR_OK);
+      CK_BBOOL eddsa = CK_FALSE;
+      for (CK_ULONG i = 0; i < count; i++) {
+        CK_MECHANISM_INFO info;
+        CHECK(C_GetMechanismInfo(0, mechanisms[i], &info) == CKR_OK);
+        if (mechanisms[i] == CKM_EDDSA)
+          eddsa = CK_TRUE;
+      }
+      CHECK(eddsa == (version != 0 && enabled != 0));
+      CK_MECHANISM_INFO info;
+      CHECK(C_GetMechanismInfo(0, CKM_EDDSA, &info) == (eddsa ? CKR_OK : CKR_MECHANISM_INVALID));
+    }
+  }
+  firmwareVersion = "3.1.0";
+  atomic_store(&revision, previousRevision);
+  CHECK(cnk_token_invalidate_public_cache(0) == CKR_OK);
+  puts("Mechanism list/info share firmware and observed-configuration capability gates");
+}
+
 static void profile_contract(CK_SESSION_HANDLE a, CK_SESSION_HANDLE b) {
   CNK_PKCS11_SESSION *first = NULL, *second = NULL;
   CHECK(cnk_session_find(a, &first) == CKR_OK && cnk_session_find(b, &second) == CKR_OK);
@@ -962,6 +992,18 @@ int main(void) {
 #endif
     wait_for(&readerWaiting);
     CHECK(activeCard == signCard && cards[signCard].stage == BEGUN);
+    CHECK(cnk_session_find(sessions[1], &second) == CKR_OK);
+    CHECK(cnk_mutex_lock(&second->token->lock) == CKR_OK);
+    second->token->cbManagementKey = sizeof(second->token->managementKey);
+    CHECK(cnk_mutex_unlock(&second->token->lock) == CKR_OK);
+    // An authenticated writer cannot overtake a paused sign operation.
+    CHECK(C_CNK_MoveKey(sessions[1], 0x9c, 0x9d) == CKR_OPERATION_ACTIVE);
+    CHECK(C_CNK_SetManagementKey(sessions[1], 2, second->token->managementKey, 24, CK_FALSE) == CKR_OPERATION_ACTIVE);
+    CHECK(C_CNK_SetPinRetries(sessions[1], (CK_UTF8CHAR_PTR)pin, 6, 3, 3) == CKR_OPERATION_ACTIVE);
+    CHECK(cnk_mutex_lock(&second->token->lock) == CKR_OK);
+    second->token->cbManagementKey = 0;
+    CHECK(cnk_mutex_unlock(&second->token->lock) == CKR_OK);
+    cnk_session_release_ref(&second);
     atomic_store(&releaseSign, true);
 #ifdef _WIN32
     CHECK(WaitForSingleObject(threadA, 10000) == WAIT_OBJECT_0 && WaitForSingleObject(threadB, 10000) == WAIT_OBJECT_0);
@@ -989,6 +1031,7 @@ int main(void) {
   }
   decrypt_preflight_contract(sessions[0]);
   cache_contract(sessions[0]);
+  capabilities_contract();
   profile_contract(sessions[0], sessions[1]);
   agreement_commit_contract(sessions[0], sessions[1]);
   recovery_contract(sessions[0]);

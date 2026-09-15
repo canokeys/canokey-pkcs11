@@ -211,22 +211,28 @@ static CK_RV initDigestingContext(CNK_PKCS11_DIGESTING_CONTEXT *context, CK_MECH
   CNK_RET_OK;
 }
 
+static CK_BBOOL buffersSigningMessage(CK_MECHANISM_TYPE mechanism) {
+  return mechanism == CKM_EDDSA || mechanism == CKM_ML_DSA || mechanism == CKM_CNK_SM2_SM3;
+}
+
 static CK_RV appendSigningMessage(CNK_PKCS11_SESSION *session, const CK_BYTE *part, CK_ULONG partLen) {
   if (partLen == 0)
     return CKR_OK;
   CNK_ENSURE_NONNULL(part);
-  CK_ULONG messageLimit = session->signingContext.mechanism.mechanism == CKM_EDDSA ? 512 : 65520;
+  CK_ULONG messageLimit = session->signingContext.messageLimit;
   if (partLen > messageLimit - session->signingContext.messageLen)
     CNK_RETURN(CKR_DATA_LEN_RANGE, "signing message exceeds firmware limit");
 
   CK_ULONG required = session->signingContext.messageLen + partLen;
   if (required > session->signingContext.messageCapacity) {
     CK_ULONG capacity = session->signingContext.messageCapacity == 0 ? 1024 : session->signingContext.messageCapacity;
+    if (capacity > messageLimit)
+      capacity = messageLimit;
     while (capacity < required)
-      capacity = capacity > 32760 ? 65520 : capacity * 2;
+      capacity = capacity > messageLimit / 2 ? messageLimit : capacity * 2;
     CK_BYTE_PTR replacement = ck_malloc(capacity);
     if (replacement == NULL)
-      CNK_RETURN(CKR_HOST_MEMORY, "failed to grow ML-DSA message buffer");
+      CNK_RETURN(CKR_HOST_MEMORY, "failed to grow signing message buffer");
     if (session->signingContext.messageLen > 0)
       memcpy(replacement, session->signingContext.message, session->signingContext.messageLen);
     if (session->signingContext.message != NULL) {
@@ -261,8 +267,12 @@ static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData
   CK_BYTE_PTR pbSignRawData = NULL_PTR;
   CK_ULONG cbSignRawData = 0;
 
-  if (pSession->signingContext.mechanism.mechanism == CKM_ML_DSA ||
-      pSession->signingContext.mechanism.mechanism == CKM_EDDSA) {
+  if (buffersSigningMessage(pSession->signingContext.mechanism.mechanism) ||
+      pSession->signingContext.mechanism.mechanism == CKM_CNK_SM2_RAW) {
+    if ((buffersSigningMessage(pSession->signingContext.mechanism.mechanism) &&
+         cbInputData > pSession->signingContext.messageLimit) ||
+        (pSession->signingContext.mechanism.mechanism == CKM_CNK_SM2_RAW && cbInputData != 32))
+      return CKR_DATA_LEN_RANGE;
     rv = cnk_piv_sign(pSession->slotId, pSession, pInputData, cbInputData, pSignature, pulSignatureLen);
     if (rv != CKR_BUFFER_TOO_SMALL) {
       pSession->signingContext.contextAuthenticated = CK_FALSE;
@@ -369,7 +379,22 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   if (!CNK_PivPrivateKeyCanSign(algorithmType))
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for signing");
 
-  if (pMechanism->mechanism == CKM_ML_DSA) {
+  cnk_piv_capabilities_v1 capabilities;
+  CNK_ENSURE_OK(cnk_session_piv_capabilities(session, &capabilities));
+  if (pMechanism->mechanism == CKM_CNK_SM2_RAW || pMechanism->mechanism == CKM_CNK_SM2_SM3) {
+    if (algorithmType != CNK_ALGORITHM_SM2)
+      return CKR_KEY_TYPE_INCONSISTENT;
+    if (pMechanism->mechanism == CKM_CNK_SM2_RAW) {
+      if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
+        return CKR_MECHANISM_PARAM_INVALID;
+    } else {
+      if (!(capabilities.features & CNK_PIV_FEATURE_SM2_STREAMING))
+        return CKR_MECHANISM_INVALID;
+      if (pMechanism->ulParameterLen > 32 || ((pMechanism->ulParameterLen == 0) != (pMechanism->pParameter == NULL)))
+        return CKR_MECHANISM_PARAM_INVALID;
+    }
+    session->signingContext.cbSignature = 64;
+  } else if (pMechanism->mechanism == CKM_ML_DSA) {
     if (algorithmType != CNK_ALGORITHM_MLDSA65)
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not ML-DSA-65");
     if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
@@ -387,6 +412,11 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
 
   if (pMechanism->ulParameterLen > 0)
     CNK_ENSURE_NONNULL(pMechanism->pParameter);
+
+  session->signingContext.messageLimit =
+      pMechanism->mechanism == CKM_EDDSA ? capabilities.max_ed25519_message : capabilities.max_streaming_message;
+  if (pMechanism->mechanism == CKM_CNK_SM2_SM3)
+    session->signingContext.messageLimit -= pMechanism->ulParameterLen;
 
   // Store active key and mechanism in the session
   session->signingContext.hKey = hKey;
@@ -428,11 +458,9 @@ static CK_RV signUpdate(CNK_PKCS11_SESSION *session, CK_BYTE_PTR part, CK_ULONG 
   if (session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS && !session->signingContext.contextAuthenticated)
     return CKR_USER_NOT_LOGGED_IN;
   if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism) &&
-      session->signingContext.mechanism.mechanism != CKM_ML_DSA &&
-      session->signingContext.mechanism.mechanism != CKM_EDDSA)
+      !buffersSigningMessage(session->signingContext.mechanism.mechanism))
     return CKR_ARGUMENTS_BAD;
-  if (session->signingContext.mechanism.mechanism == CKM_ML_DSA ||
-      session->signingContext.mechanism.mechanism == CKM_EDDSA)
+  if (buffersSigningMessage(session->signingContext.mechanism.mechanism))
     return appendSigningMessage(session, part, partLen);
   if (session->signingContext.digestingContext.mechanismType == 0)
     return CKR_OPERATION_NOT_INITIALIZED;
@@ -447,11 +475,9 @@ static CK_RV signFinal(CNK_PKCS11_SESSION *session, CK_BYTE_PTR signature, CK_UL
   if (session->signingContext.hKey == 0)
     return CKR_OPERATION_NOT_INITIALIZED;
   if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism) &&
-      session->signingContext.mechanism.mechanism != CKM_ML_DSA &&
-      session->signingContext.mechanism.mechanism != CKM_EDDSA)
+      !buffersSigningMessage(session->signingContext.mechanism.mechanism))
     return CKR_ARGUMENTS_BAD;
-  if (session->signingContext.mechanism.mechanism == CKM_ML_DSA ||
-      session->signingContext.mechanism.mechanism == CKM_EDDSA) {
+  if (buffersSigningMessage(session->signingContext.mechanism.mechanism)) {
     if (signature == NULL) {
       *signatureLen = session->signingContext.cbSignature;
       return CKR_OK;

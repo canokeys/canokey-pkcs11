@@ -60,6 +60,12 @@ standard because it also captures this module's internal safety invariants.
 6. Reader and slot-event locks protect only reader snapshots and event queues.
    A reader name used outside the lock must be copied first.
 
+Sign/decrypt admission increments a shared token counter before constructing or
+queuing private card work. Concurrent private calls still serialize through PC/SC.
+Management/one-shot reservations reject a nonzero counter; private admission rejects
+an existing exclusive reservation. Balanced release is atomic even after callback
+failure, so a writer cannot move/delete/replace a key underneath admitted crypto.
+
 ### Reader Transaction Critical Section
 
 1. Every card-backed API must keep `SCardBeginTransaction` through SELECT PIV,
@@ -224,8 +230,8 @@ backend boundary.
 | `C_GetSlotList` | `SLOT-READ` | Caller owns list. Standalone reader snapshot is protected; managed mode exposes canonical slot 0 only. | NULL is count query; too-small reports count; `tokenPresent` filtering must not expose invalid slots. |
 | `C_GetSlotInfo` | `SLOT-READ` | Borrows output; firmware/name read is guarded as one PC/SC operation. | Returns a complete snapshot; failure leaves no retained state. |
 | `C_GetTokenInfo` | `SLOT-READ` | Session counters are read without reader/session lock inversion; card fields are independent snapshots. | Reports coherent open/RW counts and RNG/version flags with blank-padded fixed strings; card-query failure does not mutate login/session state. |
-| `C_GetMechanismList` | `SLOT-READ` | Algorithm-extension data is call-local; caller owns returned list. | NULL/too-small follow two-stage rules. Independently configured algorithms are advertised independently. |
-| `C_GetMechanismInfo` | `SLOT-READ` | Reads call-local firmware algorithm configuration. | Returns info only for actually enabled mechanisms; no capability overclaim or state mutation. |
+| `C_GetMechanismList` | `SLOT-READ` | Uses the token immutable Rust profile with binding/TTL/event generation; caller owns returned list. | NULL/too-small follow two-stage rules. Hardware flags and key sizes require both firmware support and observed configuration; host flags remain separate. |
+| `C_GetMechanismInfo` | `SLOT-READ` | Uses the same Rust capability projection and descriptor as C_GetMechanismList. | Returns info only for actually enabled mechanisms; no capability overclaim or state mutation. |
 | `C_InitToken` | `UNSUPPORTED` | No card mutation or retained caller PIN/label. | Requires an initialized module, then returns not implemented and leaves the token unchanged. |
 | `C_InitPIN` | `UNSUPPORTED` | No PIN retention or card mutation. | Requires an initialized module, then returns not implemented; PIN initialization is outside this module's supported PIV flow. |
 | `C_SetPIN` | `TOKEN-AUTH` | Forwards borrowed old/new PINs to the PIN form of `C_CNK_SetPIN`; no caller pointer survives. | PUBLIC and USER may change the user PIN with its current value; SO is rejected. Holds the PIN-change reservation through card change and matching cached-PIN update. PUBLIC remains PUBLIC with no cached PIN. Failure does not publish a new local PIN. |
@@ -249,8 +255,8 @@ backend boundary.
 | `C_SessionCancel` | `OP(kind)` | Holds session reference/lock and cancels only requested FIND/ENCRYPT/DECRYPT/DIGEST/SIGN/VERIFY contexts. | Unsupported flags fail without cancellation. Requested contexts are zeroized atomically; unrelated operation types survive. |
 | `C_CNK_Login` | `TOKEN-AUTH` | USER/SO PIN is borrowed for card verification; successful USER/SO material is copied into token-owned cache. Context-specific PIN is copied only into one unambiguous PIN-always operation. | Failed verification clears pending transition. Context login never changes token-wide login type and is consumed/zeroized by one operation or cancellation. |
 | `C_CNK_LoginProtectedManagementKey` | `TOKEN-AUTH` | Borrowed management key is verified under a protected-login reservation and copied only after USER generation/state revalidation. | Logout cannot race commit. Any verification/state failure leaves management cache empty. |
-| `C_CNK_LoginPinManaged` | `TOKEN-AUTH` | Temporary ADMIN/PRINTED objects and recovered key are module-owned stack buffers and always zeroized. | A USER login established by this call is rolled back on composite failure; a pre-existing USER login is preserved. |
-| `C_CNK_FinalizePinManaged` | `CARD-WRITE` | Destructive PUK blocking holds token reservation across authentication, mutation, and confirmation. | Failure releases reservation then rolls back only login established by this call. Success guarantees PUK retry count is zero and PIN-managed auth is usable. |
+| `C_CNK_LoginPinManaged` | `TOKEN-AUTH` | Rust owns ADMIN/PRINTED, live PUK checks and management verification in one selected transaction. C reserves login through protected-cache commit and wipes the temporary key. | A USER login established by this call is rolled back on composite failure; a pre-existing USER login is preserved, but failed refresh revokes its old protected management cache. |
+| `C_CNK_FinalizePinManaged` | `CARD-WRITE` | One Rust operation authenticates before explicitly blocking PUK and confirms zero retries. C owns a token reservation through USER/protected-cache publication; entropy and temporary keys are wiped. | Failure releases reservation then rolls back only login established by this call. Success guarantees PUK retry count is zero and PIN-managed auth is usable. |
 | `C_CNK_SetPIN` | `TOKEN-AUTH` | Borrowed PIN/PUK buffers exist only through the reserved card operation; tries output is caller-owned. | Card mutation and matching cache update commit as one logical transition. PIN changes admit PUBLIC/USER and retain the prior login state; the supplied old PIN authenticates the change. PUK changes use the explicit reference and card reservation. Other login/logout/write transitions cannot pass either operation. |
 | `C_CNK_UnblockPIN` | `TOKEN-AUTH` | Borrowed PUK/new PIN exist through the reserved call; success copies the new PIN into the token USER cache. | One selected PC/SC transaction covers the public ADMIN DATA read, protection check, PUK mutation and credential commit. No cached PIN is submitted. Malformed protection data aborts before mutation; a stored-key protection bit forbids recovery even without a blocked-PUK claim. Invalid lengths fail before card I/O. Card errors preserve old local credentials and report retries; every exit releases the transaction and reservation. |
 
@@ -330,7 +336,7 @@ errors and unexpected F5 errors on supported versions do not select fallback.
 | `C_GenerateKeyPair` | `CARD-WRITE` | Templates borrowed; generated public-key buffer call-local. Management reservation spans the managed empty-slot check and irreversible generation in one authenticated transaction. | Managed generation requires fresh explicit absence; occupied keys return CKR_ACTION_PROHIBITED, unknown state blocks the write. Standalone replacement is unchanged. Success publishes deterministic PIV handles after card commit; failure publishes neither handle. |
 | `C_WrapKey` | `UNSUPPORTED` | Does not read secret value or alter operation state. | Returns `CKR_FUNCTION_NOT_SUPPORTED`. |
 | `C_UnwrapKey` | `UNSUPPORTED` | Does not retain wrapped data/template or create an object. | Returns `CKR_FUNCTION_NOT_SUPPORTED`. |
-| `C_DeriveKey` | `ONE-SHOT` | Peer/KDF/template borrowed; raw/KDF secrets and prototype are zeroized. Reservation spans card ECDH through session-secret commit. | PIN-always fails closed. Success publishes one session-secret handle; any failure publishes none and logout cannot pass mid-call. |
+| `C_DeriveKey` | `ONE-SHOT` | Peer/KDF/template borrowed; raw/KDF secrets and prototype are zeroized. Reservation spans card ECDH or vendor SM2 through session-secret commit. SM2 owns a 65-byte public ephemeral point on the returned key; CKD_NULL/ECDH never aliases SM2. | PIN-always fails closed. Success publishes one session-secret handle; any failure publishes none and logout cannot pass mid-call. |
 | `C_EncapsulateKey` | `OBJECT` | Public key/template borrowed; host ML-KEM secrets/prototype are zeroized; final secret copied under session lock. | NULL/too-small ciphertext is non-consuming and publishes invalid/no key. Real success publishes ciphertext and one key together. |
 | `C_DecapsulateKey` | `ONE-SHOT` | Ciphertext/template borrowed; raw secret/prototype zeroized. Reservation spans card ML-KEM through session-secret commit. | PIN-always fails closed. Success publishes one key; failure publishes none and logout cannot pass mid-call. |
 
@@ -372,6 +378,26 @@ stub must remain state-neutral even when another classic operation is active.
 | `C_AsyncJoin` | `UNSUPPORTED` | Retains no function name/data. | Returns unsupported; never blocks waiting for an async operation. |
 | `C_WrapKeyAuthenticated` | `UNSUPPORTED` | Retains no mechanism/key/AAD and reads no key material. | Returns unsupported; writes no wrapped output and changes no state. |
 | `C_UnwrapKeyAuthenticated` | `UNSUPPORTED` | Retains no wrapped data/template/AAD. | Returns unsupported; creates no object and changes no state. |
+
+## Explicit PIV provisioning extensions
+
+| API | Profile | Lifetime and concurrency | Progress and exit guarantee |
+| --- | --- | --- | --- |
+| `C_CNK_Attest` | `SESSION` | Borrows a PIV reference and output buffer; profile factory owns inputs. One transaction covers attestation and result copy. | Each query/retry reads a fresh DER; short output remains untouched and reports required length. Missing key/signer and firmware errors propagate; no trust assertion. |
+| `C_CNK_MoveKey` | `CARD-WRITE` | Uses physical PIV source/target, not independent PKCS#11 key handles. Reservation spans authenticated move/delete and cache invalidation. | Target must be empty; FF deletes. Public/private key views and name move/disappear together, certificates stay. Attempted writes revoke pending find/sign/decrypt contexts; failed revocation clears credentials and retains recovery barriers. Uncertain writes invalidate caches and never replay. |
+| `C_CNK_SetManagementKey` | `CARD-WRITE` | Copies the replacement into Rust; optional cached USER PIN and management authorization remain in one transaction. Rust maintains protected PRINTED. | Rotation and PRINTED writes are not atomic. Any attempted operation revokes credentials/private contexts; failure may require recovery with the supplied new key and PRINTED repair. Callback failure retains a fail-closed logout recovery barrier. |
+| `C_CNK_SetPinRetries` | `CARD-WRITE` | Borrows the explicit current PIN, verifies it after management authentication, checks public policy, then resets retries in the same transaction. | Limits 1..15 also reset PIN/PUK to defaults; PIN-managed policy prohibits reset. Any attempted reset revokes credentials/private contexts, including uncertain failure. No automatic replay or card rollback. |
+
+SM2 mechanisms are vendor-defined in `pkcs11_canokey.h`. RAW accepts exactly a
+32-byte digest and no parameters; SM3 accepts a full message and an optional raw
+1..32-byte identity (NULL/0 selects the firmware default). Both return 64-byte
+P1363 signatures and advertise signing only. SM3 supports multipart buffering
+within the Rust-provided message/identity limit. DERIVE borrows packed mechanism
+parameters on Windows, requires pre-exchanged static/ephemeral peer points and
+supports only PIV 9D/retired slots. CKA_VALUE_LEN selects 1..128 bytes (default 32);
+CKA_CNK_SM2_EPHEMERAL_PUBLIC exposes its 65-byte SEC1 public output. It remains a
+session-secret attribute through copy and is never writable. PIN-always derive
+fails closed; callers own peer authentication and key confirmation.
 
 ## Review Checklist Per Entry Point
 

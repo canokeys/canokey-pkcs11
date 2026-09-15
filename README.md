@@ -214,15 +214,24 @@ non-destroyable, and read-only.
 
 Firmware algorithm extensions are also exposed through their standard
 PKCS#11 key types and named-curve encodings. All extension algorithm IDs are
-read from the card at session creation, so deployments that customize the
+read into the immutable card profile before operations, so deployments that customize the
 firmware mapping remain discoverable and usable. P-521 supports key generation,
 private-key import, ECDSA sign/verify, and ECDH. Ed25519 supports
 `CKM_EC_EDWARDS_KEY_PAIR_GEN`, private-key import, and pure `CKM_EDDSA`
 signing without a context. X25519 supports
 `CKM_EC_MONTGOMERY_KEY_PAIR_GEN`, private-key import, and
 `CKM_ECDH1_DERIVE`; both PKCS#11 and the CanoKey PIV extension use RFC 7748
-little-endian wire values. SM2 keys expose their correct curve OID but no signing or
-derivation mechanism, because PKCS#11 3.2 defines no SM2 mechanism.
+little-endian wire values. SM2 has explicit vendor mechanisms `CKM_CNK_SM2_RAW`,
+`CKM_CNK_SM2_SM3` and `CKM_CNK_SM2_DERIVE`; they never alias ECDSA or ECDH.
+See [API contracts](docs/api-contracts.md) for identity, message and peer parameters.
+SM2 agreement also exposes the public ephemeral point on the returned session key.
+
+`C_CNK_MoveKey` moves a key/name to an empty PIV slot or deletes it with target FF,
+leaving certificates untouched. `C_CNK_Attest` reads a generated key's attestation
+DER when a signer is installed. `C_CNK_SetManagementKey` rotates the management key
+and maintains protected PRINTED; `C_CNK_SetPinRetries` explicitly resets PIN/PUK to
+firmware defaults and cannot be used in PIN-managed mode. Both credential mutations
+clear local credentials on attempted I/O; rotation's two durable writes are not atomic.
 
 `CKM_EDDSA` currently advertises card-side signing only. The bundled host
 crypto provider has no compatible pure-Ed25519 verification primitive, so the

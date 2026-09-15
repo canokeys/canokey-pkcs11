@@ -131,23 +131,25 @@ static void test_key_capabilities_by_algorithm(void **state) {
 
   assert_true(CNK_PivPrivateKeyCanSign(CNK_ALGORITHM_RSA2048));
   assert_true(CNK_PivPrivateKeyCanDecrypt(CNK_ALGORITHM_RSA2048));
-  assert_false(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_RSA2048));
+  assert_false(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_RSA2048, 1));
 
   assert_true(CNK_PivPrivateKeyCanSign(CNK_ALGORITHM_P256));
   assert_false(CNK_PivPrivateKeyCanDecrypt(CNK_ALGORITHM_P256));
-  assert_true(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_P256));
+  assert_true(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_P256, 1));
 
   assert_true(CNK_PivPrivateKeyCanSign(CNK_ALGORITHM_P521));
   assert_false(CNK_PivPrivateKeyCanDecrypt(CNK_ALGORITHM_P521));
-  assert_true(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_P521));
+  assert_true(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_P521, 1));
 }
 
 static void test_semantic_key_capabilities(void **state) {
   (void)state;
   assert_true(CNK_PivAlgorithmIsRsa(CNK_ALGORITHM_RSA3072));
   assert_true(CNK_PivAlgorithmIsRsa(CNK_ALGORITHM_RSA4096));
-  assert_true(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_X25519));
-  assert_false(CNK_PivPrivateKeyCanSign(CNK_ALGORITHM_SM2));
+  assert_true(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_X25519, 1));
+  assert_true(CNK_PivPrivateKeyCanSign(CNK_ALGORITHM_SM2));
+  for (CK_BYTE id = 1; id <= 24; id++)
+    assert_int_equal(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_SM2, id), id == 3 || id >= 5);
   assert_false(CNK_PivAlgorithmIsRsa(0xD1));
 }
 

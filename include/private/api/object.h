@@ -66,7 +66,7 @@ CK_BBOOL CNK_PivPrivateKeyCanSign(uint32_t algorithm_type);
 
 CK_BBOOL CNK_PivPrivateKeyCanDecrypt(uint32_t algorithm_type);
 
-CK_BBOOL CNK_PivPrivateKeyCanDerive(uint32_t algorithm_type);
+CK_BBOOL CNK_PivPrivateKeyCanDerive(uint32_t algorithm_type, CK_BYTE objId);
 
 /**
  * Maps a PIV object ID to its PIV certificate data-object tag.
@@ -74,6 +74,9 @@ CK_BBOOL CNK_PivPrivateKeyCanDerive(uint32_t algorithm_type);
  * @param obj_id Internal object ID
  * @param data_tag PIV 0x5FC1xx data-object tag
  */
-CK_RV CNK_ObjectIdToCertificateTag(CK_BYTE obj_id, CK_BYTE *data_tag);
+
+CK_RV CNK_BuildSharedSecretPrototype(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount,
+                                     CK_MECHANISM_TYPE mechanism, CK_ULONG defaultLen, CK_ULONG maxLen,
+                                     CNK_PKCS11_SECRET_KEY_OBJECT *prototype);
 
 #endif // CNK_API_OBJECT_H

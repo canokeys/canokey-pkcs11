@@ -361,3 +361,14 @@ int main(void) {
   puts("PIV management, configured algorithm and transaction contracts passed");
   return 0;
 }
+
+CK_RV cnk_token_private_operation(CNK_PKCS11_SESSION *s, CK_BBOOL begin) {
+  CHECK(s == &session);
+  if (begin)
+    atomic_fetch_add(&s->token->activePrivateOperations, 1);
+  else {
+    CHECK(atomic_load(&s->token->activePrivateOperations) > 0);
+    atomic_fetch_sub(&s->token->activePrivateOperations, 1);
+  }
+  return CKR_OK;
+}

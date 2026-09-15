@@ -247,6 +247,8 @@ CK_RV C_WaitForSlotEvent(CK_FLAGS flags, CK_SLOT_ID_PTR pSlot, CK_VOID_PTR pRese
   return rv;
 }
 
+static CK_RV describe_mechanism(CK_MECHANISM_TYPE, const cnk_piv_capabilities_v1 *, CK_MECHANISM_INFO_PTR);
+
 CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList, CK_ULONG_PTR pulCount) {
   CNK_LOG_FUNC(": slotID: %lu", slotID);
 
@@ -303,29 +305,29 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
       CKM_AES_KEY_GEN,
   };
 
-  CK_MECHANISM_TYPE supportedMechanisms[sizeof(baseMechanisms) / sizeof(baseMechanisms[0]) + 7];
-  CK_ULONG numMechanisms = sizeof(baseMechanisms) / sizeof(baseMechanisms[0]);
-  memcpy(supportedMechanisms, baseMechanisms, sizeof(baseMechanisms));
-
-  CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig = {0};
-  CK_RV configurationRv = cnk_get_piv_algorithm_extension_cached(slotID, &algorithmConfig);
-  if (configurationRv != CKR_OK && configurationRv != CKR_FUNCTION_NOT_SUPPORTED &&
-      configurationRv != CKR_USER_NOT_LOGGED_IN)
-    return configurationRv;
-  CK_BBOOL extensionsSupported = configurationRv == CKR_OK && algorithmConfig.enabled;
-  if (extensionsSupported && algorithmConfig.ed25519 != 0) {
-    supportedMechanisms[numMechanisms++] = CKM_EC_EDWARDS_KEY_PAIR_GEN;
-    supportedMechanisms[numMechanisms++] = CKM_EDDSA;
-  }
-  if (extensionsSupported && algorithmConfig.x25519 != 0)
-    supportedMechanisms[numMechanisms++] = CKM_EC_MONTGOMERY_KEY_PAIR_GEN;
-  if (extensionsSupported && algorithmConfig.mldsa65 != 0) {
-    supportedMechanisms[numMechanisms++] = CKM_ML_DSA_KEY_PAIR_GEN;
-    supportedMechanisms[numMechanisms++] = CKM_ML_DSA;
-  }
-  if (extensionsSupported && algorithmConfig.mlkem768 != 0) {
-    supportedMechanisms[numMechanisms++] = CKM_ML_KEM_KEY_PAIR_GEN;
-    supportedMechanisms[numMechanisms++] = CKM_ML_KEM;
+  static const CK_MECHANISM_TYPE extended[] = {CKM_EC_EDWARDS_KEY_PAIR_GEN,
+                                               CKM_EDDSA,
+                                               CKM_EC_MONTGOMERY_KEY_PAIR_GEN,
+                                               CKM_ML_DSA_KEY_PAIR_GEN,
+                                               CKM_ML_DSA,
+                                               CKM_ML_KEM_KEY_PAIR_GEN,
+                                               CKM_ML_KEM,
+                                               CKM_CNK_SM2_RAW,
+                                               CKM_CNK_SM2_SM3,
+                                               CKM_CNK_SM2_DERIVE};
+  CK_MECHANISM_TYPE
+  supportedMechanisms[sizeof(baseMechanisms) / sizeof(baseMechanisms[0]) + sizeof(extended) / sizeof(extended[0])];
+  CK_ULONG numMechanisms = 0;
+  cnk_piv_capabilities_v1 caps;
+  CNK_ENSURE_OK(cnk_get_piv_capabilities(slotID, &caps));
+  for (size_t group = 0; group < 2; group++) {
+    const CK_MECHANISM_TYPE *items = group ? extended : baseMechanisms;
+    size_t count = group ? sizeof(extended) / sizeof(extended[0]) : sizeof(baseMechanisms) / sizeof(baseMechanisms[0]);
+    for (size_t i = 0; i < count; i++) {
+      CK_MECHANISM_INFO info;
+      if (describe_mechanism(items[i], &caps, &info) == CKR_OK)
+        supportedMechanisms[numMechanisms++] = items[i];
+    }
   }
 
   // If pMechanismList is NULL, just return the number of mechanisms
@@ -348,121 +350,72 @@ CK_RV C_GetMechanismList(CK_SLOT_ID slotID, CK_MECHANISM_TYPE_PTR pMechanismList
   CNK_RET_OK;
 }
 
-static CK_ULONG piv_rsa_max_bits(const CNK_PIV_ALGORITHM_EXTENSION_CONFIG *config, CK_BBOOL enabled) {
-  CK_ULONG maxBits = 2048;
-  if (enabled) {
-    if (config->rsa3072 != 0)
-      maxBits = 3072;
-    if (config->rsa4096 != 0)
-      maxBits = 4096;
-  }
-  return maxBits;
+static CK_BBOOL has_algorithm(const cnk_piv_capabilities_v1 *caps, uint32_t algorithm) {
+  return (caps->algorithms & (1u << algorithm)) != 0;
+}
+static CK_ULONG piv_rsa_max_bits(const cnk_piv_capabilities_v1 *caps) {
+  if (has_algorithm(caps, CNK_ALGORITHM_RSA4096))
+    return 4096;
+  if (has_algorithm(caps, CNK_ALGORITHM_RSA3072))
+    return 3072;
+  return has_algorithm(caps, CNK_ALGORITHM_RSA2048) ? 2048 : 0;
 }
 
-static CK_BBOOL mechanism_uses_algorithm_extension(CK_MECHANISM_TYPE type) {
+static CK_RV describe_mechanism(CK_MECHANISM_TYPE type, const cnk_piv_capabilities_v1 *caps,
+                                CK_MECHANISM_INFO_PTR pInfo) {
+  memset(pInfo, 0, sizeof(*pInfo));
+  CK_ULONG rsaBits = piv_rsa_max_bits(caps);
+  CK_BBOOL ec = has_algorithm(caps, CNK_ALGORITHM_P256) || has_algorithm(caps, CNK_ALGORITHM_P384) ||
+                has_algorithm(caps, CNK_ALGORITHM_P521) || has_algorithm(caps, CNK_ALGORITHM_SECP256K1);
+  CK_ULONG ecBits = has_algorithm(caps, CNK_ALGORITHM_P521) ? 521 : has_algorithm(caps, CNK_ALGORITHM_P384) ? 384 : 256;
+  CK_ULONG gate = 0;
   switch (type) {
-  case CKM_RSA_PKCS_KEY_PAIR_GEN:
-  case CKM_RSA_X_509:
-  case CKM_RSA_PKCS:
-  case CKM_RSA_PKCS_OAEP:
-  case CKM_RSA_PKCS_PSS:
-  case CKM_SHA1_RSA_PKCS:
-  case CKM_SHA1_RSA_PKCS_PSS:
-  case CKM_SHA224_RSA_PKCS:
-  case CKM_SHA224_RSA_PKCS_PSS:
-  case CKM_SHA256_RSA_PKCS:
-  case CKM_SHA256_RSA_PKCS_PSS:
-  case CKM_SHA384_RSA_PKCS:
-  case CKM_SHA384_RSA_PKCS_PSS:
-  case CKM_SHA512_RSA_PKCS:
-  case CKM_SHA512_RSA_PKCS_PSS:
-  case CKM_SHA3_224_RSA_PKCS:
-  case CKM_SHA3_224_RSA_PKCS_PSS:
-  case CKM_SHA3_256_RSA_PKCS:
-  case CKM_SHA3_256_RSA_PKCS_PSS:
-  case CKM_SHA3_384_RSA_PKCS:
-  case CKM_SHA3_384_RSA_PKCS_PSS:
-  case CKM_SHA3_512_RSA_PKCS:
-  case CKM_SHA3_512_RSA_PKCS_PSS:
-  case CKM_ECDSA_KEY_PAIR_GEN:
-  case CKM_ECDSA:
-  case CKM_ECDSA_SHA1:
-  case CKM_ECDSA_SHA224:
-  case CKM_ECDSA_SHA256:
-  case CKM_ECDSA_SHA384:
-  case CKM_ECDSA_SHA512:
-  case CKM_ECDSA_SHA3_224:
-  case CKM_ECDSA_SHA3_256:
-  case CKM_ECDSA_SHA3_384:
-  case CKM_ECDSA_SHA3_512:
-  case CKM_ECDH1_DERIVE:
   case CKM_EC_EDWARDS_KEY_PAIR_GEN:
   case CKM_EDDSA:
+    gate = CNK_ALGORITHM_ED25519;
+    break;
   case CKM_EC_MONTGOMERY_KEY_PAIR_GEN:
+    gate = CNK_ALGORITHM_X25519;
+    break;
   case CKM_ML_DSA_KEY_PAIR_GEN:
   case CKM_ML_DSA:
+    gate = CNK_ALGORITHM_MLDSA65;
+    break;
   case CKM_ML_KEM_KEY_PAIR_GEN:
   case CKM_ML_KEM:
-    return CK_TRUE;
-  default:
-    return CK_FALSE;
+    gate = CNK_ALGORITHM_MLKEM768;
+    break;
+  case CKM_CNK_SM2_RAW:
+  case CKM_CNK_SM2_SM3:
+  case CKM_CNK_SM2_DERIVE:
+    gate = CNK_ALGORITHM_SM2;
+    break;
   }
-}
-
-CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM_INFO_PTR pInfo) {
-  CNK_LOG_FUNC(": slotID: %lu, type: %lu, pInfo: %p", slotID, type, pInfo);
-
-  // Validate common parameters
-  PKCS11_VALIDATE(pInfo, slotID);
-
-  // Clear the mechanism info structure
-  memset(pInfo, 0, sizeof(CK_MECHANISM_INFO));
-
-  CNK_PIV_ALGORITHM_EXTENSION_CONFIG config = {0};
-  CK_BBOOL extensionEnabled = CK_FALSE;
-  if (mechanism_uses_algorithm_extension(type)) {
-    CK_RV configurationRv = cnk_get_piv_algorithm_extension_cached(slotID, &config);
-    if (configurationRv != CKR_OK && configurationRv != CKR_FUNCTION_NOT_SUPPORTED &&
-        configurationRv != CKR_USER_NOT_LOGGED_IN)
-      return configurationRv;
-    extensionEnabled = configurationRv == CKR_OK && config.enabled;
-  }
-
-  if (type == CKM_ML_DSA_KEY_PAIR_GEN || type == CKM_ML_DSA || type == CKM_ML_KEM_KEY_PAIR_GEN || type == CKM_ML_KEM) {
-    if (!extensionEnabled ||
-        ((type == CKM_ML_DSA_KEY_PAIR_GEN || type == CKM_ML_DSA) ? config.mldsa65 == 0 : config.mlkem768 == 0))
-      return CKR_MECHANISM_INVALID;
-  }
-  if (type == CKM_EC_EDWARDS_KEY_PAIR_GEN || type == CKM_EDDSA || type == CKM_EC_MONTGOMERY_KEY_PAIR_GEN) {
-    if (!extensionEnabled)
-      return CKR_MECHANISM_INVALID;
-    if ((type == CKM_EC_EDWARDS_KEY_PAIR_GEN || type == CKM_EDDSA) && config.ed25519 == 0)
-      return CKR_MECHANISM_INVALID;
-    if (type == CKM_EC_MONTGOMERY_KEY_PAIR_GEN && config.x25519 == 0)
-      return CKR_MECHANISM_INVALID;
-  }
-
+  if (gate && !has_algorithm(caps, (uint32_t)gate))
+    return CKR_MECHANISM_INVALID;
   // Set mechanism info based on type
   switch (type) {
   case CKM_RSA_PKCS_KEY_PAIR_GEN:
+    if (!rsaBits)
+      return CKR_MECHANISM_INVALID;
     pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR;
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = piv_rsa_max_bits(&config, extensionEnabled);
+    pInfo->ulMaxKeySize = rsaBits ? rsaBits : 4096;
     break;
 
   case CKM_RSA_X_509:
   case CKM_RSA_PKCS:
     // Sign/decrypt use the card, while verify/encrypt use the host. CKF_HW
     // would incorrectly claim every advertised operation is hardware-backed.
-    pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT | CKF_SIGN | CKF_VERIFY;
+    pInfo->flags = CKF_ENCRYPT | CKF_VERIFY | (rsaBits ? CKF_DECRYPT | CKF_SIGN : 0);
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = piv_rsa_max_bits(&config, extensionEnabled);
+    pInfo->ulMaxKeySize = rsaBits ? rsaBits : 4096;
     break;
 
   case CKM_RSA_PKCS_OAEP:
-    pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT;
+    pInfo->flags = CKF_ENCRYPT | (rsaBits ? CKF_DECRYPT : 0);
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = piv_rsa_max_bits(&config, extensionEnabled);
+    pInfo->ulMaxKeySize = rsaBits ? rsaBits : 4096;
     break;
 
   case CKM_RSA_PKCS_PSS:
@@ -484,17 +437,17 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   case CKM_SHA3_256_RSA_PKCS_PSS:
   case CKM_SHA3_384_RSA_PKCS_PSS:
   case CKM_SHA3_512_RSA_PKCS_PSS:
-    pInfo->flags = CKF_SIGN | CKF_VERIFY;
+    pInfo->flags = CKF_VERIFY | (rsaBits ? CKF_SIGN : 0);
     pInfo->ulMinKeySize = 2048;
-    pInfo->ulMaxKeySize = piv_rsa_max_bits(&config, extensionEnabled);
+    pInfo->ulMaxKeySize = rsaBits ? rsaBits : 4096;
     break;
 
   case CKM_ECDSA_KEY_PAIR_GEN:
+    if (!ec && !has_algorithm(caps, CNK_ALGORITHM_SM2))
+      return CKR_MECHANISM_INVALID;
     pInfo->flags = CKF_HW | CKF_GENERATE_KEY_PAIR | CKF_EC_F_P | CKF_EC_NAMEDCURVE;
     pInfo->ulMinKeySize = 256;
-    pInfo->ulMaxKeySize = 384;
-    if (extensionEnabled && config.secp521r1 != 0)
-      pInfo->ulMaxKeySize = 521;
+    pInfo->ulMaxKeySize = ecBits;
     break;
 
   case CKM_EC_EDWARDS_KEY_PAIR_GEN:
@@ -527,19 +480,32 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   case CKM_ECDSA_SHA3_256:
   case CKM_ECDSA_SHA3_384:
   case CKM_ECDSA_SHA3_512:
-    pInfo->flags = CKF_SIGN | CKF_VERIFY | CKF_EC_F_P | CKF_EC_NAMEDCURVE;
+    pInfo->flags = CKF_VERIFY | CKF_EC_F_P | CKF_EC_NAMEDCURVE | (ec ? CKF_SIGN : 0);
     pInfo->ulMinKeySize = 256;
-    pInfo->ulMaxKeySize = 384;
-    if (extensionEnabled && config.secp521r1 != 0)
-      pInfo->ulMaxKeySize = 521;
+    pInfo->ulMaxKeySize = ecBits;
     break;
 
   case CKM_ECDH1_DERIVE:
+    if (!ec && !has_algorithm(caps, CNK_ALGORITHM_X25519))
+      return CKR_MECHANISM_INVALID;
     pInfo->flags = CKF_HW | CKF_DERIVE | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_UNCOMPRESS;
-    pInfo->ulMinKeySize = extensionEnabled && config.x25519 != 0 ? 255 : 256;
-    pInfo->ulMaxKeySize = 384;
-    if (extensionEnabled && config.secp521r1 != 0)
-      pInfo->ulMaxKeySize = 521;
+    pInfo->ulMinKeySize = has_algorithm(caps, CNK_ALGORITHM_X25519) ? 255 : 256;
+    pInfo->ulMaxKeySize = ecBits;
+    break;
+
+  case CKM_CNK_SM2_SM3:
+    if (!(caps->features & CNK_PIV_FEATURE_SM2_STREAMING))
+      return CKR_MECHANISM_INVALID;
+    /* fall through */
+  case CKM_CNK_SM2_RAW:
+    pInfo->flags = CKF_HW | CKF_SIGN | CKF_EC_F_P | CKF_EC_NAMEDCURVE;
+    pInfo->ulMinKeySize = pInfo->ulMaxKeySize = 256;
+    break;
+  case CKM_CNK_SM2_DERIVE:
+    if (!(caps->features & CNK_PIV_FEATURE_SM2_AGREEMENT))
+      return CKR_MECHANISM_INVALID;
+    pInfo->flags = CKF_HW | CKF_DERIVE | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_UNCOMPRESS;
+    pInfo->ulMinKeySize = pInfo->ulMaxKeySize = 256;
     break;
 
   case CKM_GENERIC_SECRET_KEY_GEN:
@@ -597,6 +563,12 @@ CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM
   CNK_DEBUG("C_GetMechanismInfo: Mechanism %lu, flags = 0x%lx, min key size = %lu, max key size = %lu", type,
             pInfo->flags, pInfo->ulMinKeySize, pInfo->ulMaxKeySize);
   CNK_RET_OK;
+}
+CK_RV C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_MECHANISM_INFO_PTR pInfo) {
+  PKCS11_VALIDATE(pInfo, slotID);
+  cnk_piv_capabilities_v1 caps;
+  CNK_ENSURE_OK(cnk_get_piv_capabilities(slotID, &caps));
+  return describe_mechanism(type, &caps, pInfo);
 }
 
 CK_RV C_InitToken(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_UTF8CHAR_PTR pLabel) {
