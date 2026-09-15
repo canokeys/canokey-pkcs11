@@ -172,6 +172,10 @@ int main(void) {
   policy = duplicate;
   policyLen = sizeof(duplicate);
   run(CKR_DEVICE_ERROR, 0);
+  const CK_BYTE missingFlags[] = {0x53, 4, 0x80, 2, 0x82, 0};
+  policy = missingFlags;
+  policyLen = sizeof(missingFlags);
+  run(CKR_DEVICE_ERROR, 0);
   readStatus = CKR_DEVICE_ERROR;
   run(CKR_DEVICE_ERROR, 0);
   readStatus = CKR_OK;

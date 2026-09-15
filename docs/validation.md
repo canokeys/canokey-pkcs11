@@ -32,6 +32,9 @@ and concurrent-logout rejection. The hardware `--puk-roundtrip-id` check changes
 and restores the confirmed PUK, resets the PIN, changes it back from PUBLIC, and
 verifies fresh-login signatures. Credentials come from explicit environment
 variables; restoration is part of the test.
+The PIN-managed fixture's `malformed-policy` mode writes salt/date-only ADMIN
+DATA, verifies a device error with unchanged PUK retries, and restores the empty
+policy. Nonempty ADMIN DATA must include flags; empty 53/80 remains unconfigured.
 
 ## State Invariants
 

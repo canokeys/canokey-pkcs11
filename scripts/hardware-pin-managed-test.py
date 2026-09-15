@@ -289,7 +289,9 @@ class Token:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("prepare", "restore", "check-reset", "clear-slot"))
+    parser.add_argument(
+        "mode", choices=("prepare", "restore", "check-reset", "clear-slot", "malformed-policy")
+    )
     parser.add_argument("--slot", type=lambda value: int(value, 16), choices=(0x9D, 0x9E, 0x83))
     parser.add_argument("--module", type=Path, required=True)
     parser.add_argument("--libcanokey", type=Path, required=True)
@@ -333,6 +335,34 @@ def main():
                         raise RuntimeError(f"Protected recovery was not prohibited: {status:x}")
                     if card.metadata(0x81).remaining != 0:
                         raise RuntimeError("PUK was not blocked")
+                elif args.mode == "malformed-policy":
+                    token.login(1, b"123456")
+                    if token.data(admin) != b"\x53\0":
+                        raise RuntimeError("Malformed-policy test requires empty ADMIN DATA")
+                    before = card.metadata(0x81).remaining
+                    try:
+                        for fields in (
+                            bytes.fromhex("8200"),
+                            bytes.fromhex("8300"),
+                            bytes.fromhex("82008300"),
+                        ):
+                            card.write_admin(bytes([0x80, len(fields)]) + fields)
+                            tries = B(0xDD)
+                            status = token.lib.C_CNK_UnblockPIN(
+                                token.session, b"12345678", 8, b"123456", 6, C.byref(tries)
+                            )
+                            if (
+                                status != 0x30
+                                or tries.value != 0xDD
+                                or card.metadata(0x81).remaining != before
+                            ):
+                                raise RuntimeError(
+                                    "Malformed policy did not fail closed before credential mutation"
+                                )
+                    finally:
+                        card.write_admin(b"")
+                    if token.data(admin) != b"\x53\0":
+                        raise RuntimeError("Original ADMIN DATA was not restored")
                 else:
                     token.login(0, key)
                     card.write_admin(b"")
