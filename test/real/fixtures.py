@@ -246,7 +246,7 @@ def certificate(token, id, directory):
     if is_rsa:
         signature = token.sign(id, Mech(0x40, None, 0), cert.tbs_certificate_bytes)
     else:
-        raw = token.sign(id, Mech(0x1041, None, 0), hashtoken.lib.sha256(cert.tbs_certificate_bytes).digest())
+        raw = token.sign(id, Mech(0x1041, None, 0), hashlib.sha256(cert.tbs_certificate_bytes).digest())
         width = len(raw) // 2
         signature = utils.encode_dss_signature(
             int.from_bytes(raw[:width], "big"), int.from_bytes(raw[width:], "big")
