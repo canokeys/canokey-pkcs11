@@ -21,3 +21,10 @@ panic = "unwind"
 [profile.dev]
 opt-level = 1
 panic = "unwind"
+
+# Keep the unified selection/authentication glue compact; host crypto stays optimized.
+[profile.release.package.canokey-piv]
+opt-level = "s"
+
+[profile.release.package.canokey-c]
+opt-level = "s"
