@@ -19,6 +19,26 @@ It uses PCSCLite on Linux, PCSC Framework on macOS, and native PC/SC APIs (`wins
 It could be built with CMake on Linux / Windows / macOS using `clang` (Linux / macOS) or `clang-cl` (Windows).
 GCC should be supported, but is not tested.
 
+This experimental branch also requires CMake 3.20+ and the latest stable Rust
+via rustup. Cargo builds the private protocol adapter as a static library;
+`Cargo.toml` pins libcanokey by Git revision and `Cargo.lock` pins its transitive
+dependencies. There is no libcanokey submodule or Rust DLL. Existing C crypto
+and synchronization submodules are still needed. See
+[the migration status and acceptance plan](docs/libcanokey-piv-migration-plan.md) for the remaining PIV work.
+
+```text
+rustup toolchain install stable --profile minimal --component rustfmt,clippy
+rustup target add --toolchain stable i686-pc-windows-msvc x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+```
+
+The second command is only needed for Windows cross builds. On Windows,
+`scripts/build-windows.ps1 -Arch x64 -Config Release` initializes Visual Studio
+and selects matching C and Rust targets (`x86` and `arm64` are also supported).
+It only builds files. For direct CMake cross builds, set `CNK_RUST_TARGET` to
+the matching installed Rust target. Windows MSVC builds retain the normal
+dynamic C runtime; the Rust code and Rust standard library are linked statically.
+This branch targets Windows 10 / Server 2016 and newer, not Windows 7/8.1.
+
 1. Install Dependencies:
 
 ```bash
@@ -29,7 +49,7 @@ brew install cmake cmocka ninja-build # macOS only
 2. Configure and build:
 
 ```bash
-CC=clang CXX=clang cmake -B build -DCMAKE_BUILD_TYPE=Debug -G Ninja -DENABLE_TESTING=ON . # Linux / macOS
+CC=clang CXX=clang cmake -B build -DCMAKE_BUILD_TYPE=Debug -G Ninja -DBUILD_TESTING=ON . # Linux / macOS
 cmake -B build -DCMAKE_BUILD_TYPE=Debug -G Ninja -DCMAKE_C_COMPILER=clang-cl # Windows developer prompt
 cmake --build build -v
 ```
@@ -194,15 +214,24 @@ non-destroyable, and read-only.
 
 Firmware algorithm extensions are also exposed through their standard
 PKCS#11 key types and named-curve encodings. All extension algorithm IDs are
-read from the card at session creation, so deployments that customize the
+read into the immutable card profile before operations, so deployments that customize the
 firmware mapping remain discoverable and usable. P-521 supports key generation,
 private-key import, ECDSA sign/verify, and ECDH. Ed25519 supports
 `CKM_EC_EDWARDS_KEY_PAIR_GEN`, private-key import, and pure `CKM_EDDSA`
 signing without a context. X25519 supports
 `CKM_EC_MONTGOMERY_KEY_PAIR_GEN`, private-key import, and
 `CKM_ECDH1_DERIVE`; both PKCS#11 and the CanoKey PIV extension use RFC 7748
-little-endian wire values. SM2 keys expose their correct curve OID but no signing or
-derivation mechanism, because PKCS#11 3.2 defines no SM2 mechanism.
+little-endian wire values. SM2 has explicit vendor mechanisms `CKM_CNK_SM2_RAW`,
+`CKM_CNK_SM2_SM3` and `CKM_CNK_SM2_DERIVE`; they never alias ECDSA or ECDH.
+See [API contracts](docs/api-contracts.md) for identity, message and peer parameters.
+SM2 agreement also exposes the public ephemeral point on the returned session key.
+
+`C_CNK_MoveKey` moves a key/name to an empty PIV slot or deletes it with target FF,
+leaving certificates untouched. `C_CNK_Attest` reads a generated key's attestation
+DER when a signer is installed. `C_CNK_SetManagementKey` rotates the management key
+and maintains protected PRINTED; `C_CNK_SetPinRetries` explicitly resets PIN/PUK to
+firmware defaults and cannot be used in PIN-managed mode. Both credential mutations
+clear local credentials on attempted I/O; rotation's two durable writes are not atomic.
 
 `CKM_EDDSA` currently advertises card-side signing only. The bundled host
 crypto provider has no compatible pure-Ed25519 verification primitive, so the
@@ -252,14 +281,8 @@ The PKCS#11 3.2 interface currently supports:
 Only `CKP_ML_DSA_65` and `CKP_ML_KEM_768` are accepted. Encapsulation uses the
 same pinned `mlkem-native` implementation as CanoKey firmware.
 
-The downloadable `test_pqc.exe` requires explicit token identity. It runs
-non-destructive checks by default; enable the write matrix only when overwriting
-IDs 08, 09, 23, and 24 is intended:
-
-```powershell
-$env:CNK_PIV_PIN = '<PIN>'
-$env:CNK_PIV_SLOT_ID = '0'
-$env:CNK_PIV_SERIAL = '0'
-$env:CNK_RUN_DESTRUCTIVE_REAL_TESTS = '1'
-.\test_pqc.exe .\canokey-pkcs11.dll
-```
+The downloadable `test_abi.exe` checks the native 3.2 function table, session
+lifecycle and session-secret contracts without provisioning. Set `CNK_PIV_PIN`,
+`CNK_PIV_SLOT_ID` and `CNK_PIV_SERIAL`, then pass the DLL path. Algorithm and
+write coverage lives in the single Python [hardware entry point](test/real/hardware.py);
+see [validation.md](docs/validation.md#real-card-entry-points) for explicit fixtures.

@@ -1,5 +1,6 @@
 #include "api/session.h"
 #include "backend/pcsc.h"
+#include "backend/piv_operation.h"
 #include "internal/lifecycle.h"
 #include "internal/logging.h"
 #include "internal/macros.h"
@@ -10,6 +11,7 @@
 #include <mbedtls/platform.h>
 #include <mbedtls/platform_util.h>
 #include <nsync_malloc.h>
+#include <psa/crypto.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,119 +23,16 @@
 #endif
 
 #define CNK_ADMIN_DATA_MAX_LEN 128
-#define CNK_PIN_PROTECTED_DATA_MAX_LEN 64
-#define CNK_MANAGEMENT_KEY_LEN 24
 #define CNK_ADMIN_PUK_BLOCKED_BIT 0x01
 #define CNK_ADMIN_PIN_PROTECTED_BIT 0x02
 
 static const CK_BYTE CNK_ADMIN_DATA_TAG[] = {0x5F, 0xFF, 0x00};
-static const CK_BYTE CNK_PRINTED_INFORMATION_TAG[] = {0x5F, 0xC1, 0x09};
 
-// Parse one bounded BER-TLV element and advance the caller-owned cursor. These
-// PIN-management objects are security decisions, so trailing or duplicate
-// fields are rejected by their higher-level parsers rather than ignored.
-static CK_RV readTlv(const CK_BYTE *data, CK_ULONG dataLen, CK_ULONG_PTR offset, CK_BYTE expectedTag,
-                     const CK_BYTE **value, CK_ULONG_PTR valueLen) {
-  CNK_ENSURE_NONNULL(data, offset, value, valueLen);
-  if (*offset >= dataLen || data[*offset] != expectedTag)
-    return CKR_DATA_INVALID;
-
-  CK_ULONG cursor = *offset + 1;
-  CK_LONG fail = 0;
-  CK_ULONG lengthSize = 0;
-  CK_ULONG length = tlvGetLengthSafe(data + cursor, dataLen - cursor, &fail, &lengthSize);
-  if (fail)
-    return CKR_DATA_INVALID;
-  cursor += lengthSize;
-  if (length > dataLen - cursor)
-    return CKR_DATA_INVALID;
-
-  *value = data + cursor;
-  *valueLen = length;
-  *offset = cursor + length;
-  return CKR_OK;
-}
-
-static CK_RV checkPinManagedAdminData(const CK_BYTE *data, CK_ULONG dataLen) {
-  // Yubico ADMIN DATA: 53 { 80 { 81 bit-field, [82 salt], [83 date] } }.
-  // Bit 0x02 is the explicit opt-in to reading a key from PRINTED.
-  CK_ULONG offset = 0;
-  const CK_BYTE *outer;
-  CK_ULONG outerLen;
-  if (readTlv(data, dataLen, &offset, 0x53, &outer, &outerLen) != CKR_OK || offset != dataLen)
-    return CKR_DATA_INVALID;
-
-  offset = 0;
-  const CK_BYTE *admin;
-  CK_ULONG adminLen;
-  if (readTlv(outer, outerLen, &offset, 0x80, &admin, &adminLen) != CKR_OK || offset != outerLen)
-    return CKR_DATA_INVALID;
-
-  CK_BBOOL sawBitField = CK_FALSE;
-  CK_BBOOL sawSalt = CK_FALSE;
-  CK_BBOOL sawDate = CK_FALSE;
-  CK_BBOOL pukBlocked = CK_FALSE;
-  CK_BBOOL pinProtected = CK_FALSE;
-  offset = 0;
-  while (offset < adminLen) {
-    CK_BYTE tag = admin[offset];
-    const CK_BYTE *value;
-    CK_ULONG valueLen;
-    if (readTlv(admin, adminLen, &offset, tag, &value, &valueLen) != CKR_OK)
-      return CKR_DATA_INVALID;
-    switch (tag) {
-    case 0x81:
-      if (sawBitField || valueLen != 1)
-        return CKR_DATA_INVALID;
-      sawBitField = CK_TRUE;
-      pukBlocked = (value[0] & CNK_ADMIN_PUK_BLOCKED_BIT) != 0;
-      pinProtected = (value[0] & CNK_ADMIN_PIN_PROTECTED_BIT) != 0;
-      break;
-    case 0x82:
-      if (sawSalt || (valueLen != 0 && valueLen != 16))
-        return CKR_DATA_INVALID;
-      sawSalt = CK_TRUE;
-      break;
-    case 0x83:
-      if (sawDate || valueLen > 8)
-        return CKR_DATA_INVALID;
-      sawDate = CK_TRUE;
-      break;
-    default:
-      return CKR_DATA_INVALID;
-    }
-  }
-
-  // A PUK holder could otherwise reset the user PIN and recover the protected
-  // management key. PIN-managed login is valid only for the PUK-blocked mode.
-  return sawBitField && pukBlocked && pinProtected ? CKR_OK : CKR_DATA_INVALID;
-}
-
-static CK_RV parsePinProtectedManagementKey(const CK_BYTE *data, CK_ULONG dataLen,
-                                            CK_BYTE managementKey[CNK_MANAGEMENT_KEY_LEN]) {
-  // PIN-protected PRINTED: 53 { 88 { 89 <24-byte management key> } }.
-  // Require exact nesting so unrelated PRINTED data cannot be used as a key.
-  CK_ULONG offset = 0;
-  const CK_BYTE *outer;
-  CK_ULONG outerLen;
-  if (readTlv(data, dataLen, &offset, 0x53, &outer, &outerLen) != CKR_OK || offset != dataLen)
-    return CKR_DATA_INVALID;
-
-  offset = 0;
-  const CK_BYTE *container;
-  CK_ULONG containerLen;
-  if (readTlv(outer, outerLen, &offset, 0x88, &container, &containerLen) != CKR_OK || offset != outerLen)
-    return CKR_DATA_INVALID;
-
-  offset = 0;
-  const CK_BYTE *key;
-  CK_ULONG keyLen;
-  if (readTlv(container, containerLen, &offset, 0x89, &key, &keyLen) != CKR_OK || offset != containerLen ||
-      keyLen != CNK_MANAGEMENT_KEY_LEN)
-    return CKR_DATA_INVALID;
-
-  memcpy(managementKey, key, keyLen);
-  return CKR_OK;
+static CK_RV readAdminProtectionFlags(const CK_BYTE *data, CK_ULONG dataLen, uint32_t *flags) {
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_admin_data_flags, data, dataLen, flags, &error);
+  // Invalid protection data must not be confused with an absent policy.
+  return cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
 }
 
 // Function pointers for memory allocation (global)
@@ -301,129 +200,78 @@ CK_RV C_CNK_GetPivMetadataDirectory(CK_SESSION_HANDLE hSession, CNK_PIV_METADATA
   return cnk_get_piv_metadata_directory_cached(session, entries, entryCount);
 }
 
-static CK_RV loginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,
-                             CK_BBOOL requireBlockedPuk, CK_BBOOL *establishedUserLoginOut) {
-  // Keep USER login active while GET DATA reads PRINTED. The management-key
-  // cache is separate, allowing managed callers to retain normal USER state.
-  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
-  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-
-  CK_RV rv = C_CNK_Login(hSession, CKU_USER, pPin, ulPinLen, NULL);
-  if (rv != CKR_OK && rv != CKR_USER_ALREADY_LOGGED_IN)
-    return rv;
-  CK_BBOOL establishedUserLogin = rv == CKR_OK;
-  if (establishedUserLoginOut != NULL)
-    *establishedUserLoginOut = establishedUserLogin;
-
-  CK_BYTE adminData[CNK_ADMIN_DATA_MAX_LEN];
-  CK_BYTE protectedData[CNK_PIN_PROTECTED_DATA_MAX_LEN];
-  CK_BYTE managementKey[CNK_MANAGEMENT_KEY_LEN];
-  CK_ULONG dataLen = sizeof(adminData);
-
-  rv = cnk_get_piv_data_by_tag_with_session(session->slotId, session, CNK_ADMIN_DATA_TAG, sizeof(CNK_ADMIN_DATA_TAG),
-                                            adminData, &dataLen, CK_TRUE);
-  if (rv == CKR_OK)
-    rv = checkPinManagedAdminData(adminData, dataLen);
-  if (rv == CKR_OK && requireBlockedPuk) {
-    CK_BYTE pukTries = 0;
-    rv = cnk_get_piv_pin_retries(session->slotId, CNK_PIV_PIN_TYPE_PUK, &pukTries);
-    if (rv == CKR_OK && pukTries != 0)
-      rv = CKR_ACTION_PROHIBITED;
-  }
-
-  if (rv == CKR_OK) {
-    CK_BBOOL managementKeyCached = CK_FALSE;
-    rv = cnk_token_management_key_is_cached(session, &managementKeyCached);
-    if (rv == CKR_OK && managementKeyCached)
-      goto cleanup;
-  }
-
-  if (rv == CKR_OK) {
-    dataLen = sizeof(protectedData);
-    rv = cnk_get_piv_data_by_tag_with_session(session->slotId, session, CNK_PRINTED_INFORMATION_TAG,
-                                              sizeof(CNK_PRINTED_INFORMATION_TAG), protectedData, &dataLen, CK_TRUE);
-  }
-  if (rv == CKR_OK)
-    rv = parsePinProtectedManagementKey(protectedData, dataLen, managementKey);
-  if (rv == CKR_OK)
-    rv = C_CNK_LoginProtectedManagementKey(hSession, managementKey, sizeof(managementKey));
-  if (rv == CKR_USER_ALREADY_LOGGED_IN)
-    rv = CKR_OK;
-
-cleanup:
-  // None of the ADMIN/PRINTED payload or recovered key escapes this boundary.
-  mbedtls_platform_zeroize(managementKey, sizeof(managementKey));
-  mbedtls_platform_zeroize(protectedData, sizeof(protectedData));
-  mbedtls_platform_zeroize(adminData, sizeof(adminData));
-  // Rollback belongs to the caller because finalize may hold a token
-  // reservation that C_Logout must not attempt to cross.
-  return rv;
-}
-
-CK_RV C_CNK_LoginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
-  CNK_LOG_FUNC(": hSession: %lu, pPin: %p, ulPinLen: %lu", hSession, pPin, ulPinLen);
+static CK_RV loginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen, CK_BBOOL finalize) {
   CNK_ENSURE_INITIALIZED();
   CNK_ENSURE_NONNULL(pPin);
-  CK_BBOOL establishedUserLogin = CK_FALSE;
-  CK_RV rv = loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE, &establishedUserLogin);
-  if (rv != CKR_OK && establishedUserLogin) {
-    CK_RV logoutRv = C_Logout(hSession);
-    if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
-      CNK_WARN("Failed to roll back USER login after PIN-managed failure: 0x%lx", logoutRv);
-  }
-  return rv;
-}
-
-CK_RV C_CNK_FinalizePinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
-  CNK_LOG_FUNC(": hSession: %lu, pPin: %p, ulPinLen: %lu", hSession, pPin, ulPinLen);
-  CNK_ENSURE_INITIALIZED();
-  CNK_ENSURE_NONNULL(pPin);
-
+  if (ulPinLen < 1 || ulPinLen > 8)
+    return CKR_PIN_LEN_RANGE;
   CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
-  if (!(session->flags & CKF_RW_SESSION))
-    CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
-
-  // Reserve before publishing USER or management-key credentials. The owner
-  // session is allowed to complete this composite login; other sessions and
-  // Logout observe the reservation and are blocked until final confirmation.
-  CK_BBOOL establishedUserLogin = CK_FALSE;
-  CK_RV rv = cnk_token_begin_card_operation(session);
+  if (finalize && !(session->flags & CKF_RW_SESSION))
+    return CKR_SESSION_READ_ONLY;
+  CNK_ENSURE_OK(cnk_token_begin_card_operation(session));
+  CK_BBOOL establishedUserLogin = CK_FALSE, pending = CK_FALSE;
+  CK_BYTE entropy[8] = {0}, key[24] = {0};
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  SCARDHANDLE card = 0;
+  CK_RV rv = cnk_token_allow_owner_login(session, CK_TRUE);
   if (rv != CKR_OK)
-    return rv;
-  rv = cnk_token_allow_owner_login(session, CK_TRUE);
-  if (rv != CKR_OK) {
-    cnk_token_end_management_operation(session);
-    return rv;
+    goto cleanup;
+  rv = C_CNK_Login(hSession, CKU_USER, pPin, ulPinLen, NULL);
+  establishedUserLogin = rv == CKR_OK;
+  if (rv != CKR_OK && rv != CKR_USER_ALREADY_LOGGED_IN)
+    goto cleanup;
+  rv = cnk_token_begin_protected_management_login(session, CK_TRUE);
+  if (rv != CKR_OK)
+    goto cleanup;
+  pending = CK_TRUE;
+  if (finalize && psa_generate_random(entropy, sizeof(entropy)) != PSA_SUCCESS) {
+    rv = CKR_RANDOM_NO_RNG;
+    goto cleanup;
   }
-  rv = loginPinManaged(hSession, pPin, ulPinLen, CK_FALSE, &establishedUserLogin);
+  rv = cnk_ensure_libcanokey_profile(session);
+  if (rv != CKR_OK)
+    goto cleanup;
+  rv = CNK_PIV_CREATE(session, cnk_piv_pin_managed_new, &operation, &error, finalize ? entropy : NULL,
+                      finalize ? sizeof(entropy) : 0, NULL);
+  if (rv != CKR_OK)
+    goto cleanup;
+  rv = cnk_connect_for_private_key_operation(session->slotId, session, CNK_PIV_PIN_POLICY_ONCE, NULL, 0, &card,
+                                             "PIN-managed login");
+  if (rv == CKR_OK)
+    rv = cnk_run_piv_operation(card, operation, CKR_DATA_INVALID, NULL);
   if (rv != CKR_OK) {
-    cnk_token_end_management_operation(session);
-    if (establishedUserLogin) {
-      CK_RV logoutRv = C_Logout(hSession);
-      if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
-        CNK_WARN("Failed to roll back PIN-managed authorization after login failure: 0x%lx", logoutRv);
-    }
-    return rv;
+    if (CNK_EXTERNAL_CALL(cnk_operation_error, operation, &error) == CNK_OK && error.kind == CNK_ERROR_CONDITIONS)
+      rv = CKR_ACTION_PROHIBITED;
+    goto cleanup;
   }
-  rv = cnk_block_piv_puk(session->slotId);
-  if (rv != CKR_OK) {
-    cnk_token_end_management_operation(session);
-    if (establishedUserLogin) {
-      CK_RV logoutRv = C_Logout(hSession);
-      if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
-        CNK_WARN("Failed to roll back PIN-managed authorization after PUK block failure: 0x%lx", logoutRv);
-    }
-    return rv;
-  }
-  rv = loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE, NULL);
+  size_t keyLen = sizeof(key);
+  if (CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, key, &keyLen) != CNK_OK || keyLen != sizeof(key))
+    rv = CKR_DEVICE_ERROR;
+cleanup:
+  if (pending)
+    rv = cnk_token_complete_protected_management_login(session, key, sizeof(key), rv);
+  if (operation)
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
+  if (card)
+    cnk_disconnect_card(card);
+  mbedtls_platform_zeroize(entropy, sizeof(entropy));
+  mbedtls_platform_zeroize(key, sizeof(key));
   cnk_token_end_management_operation(session);
   if (rv != CKR_OK && establishedUserLogin) {
     CK_RV logoutRv = C_Logout(hSession);
     if (logoutRv != CKR_OK && logoutRv != CKR_USER_NOT_LOGGED_IN)
-      CNK_WARN("Failed to roll back PIN-managed authorization after final confirmation failure: 0x%lx", logoutRv);
+      CNK_WARN("PIN-managed USER rollback failed: 0x%lx", logoutRv);
   }
   return rv;
+}
+
+CK_RV C_CNK_LoginPinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+  return loginPinManaged(hSession, pPin, ulPinLen, CK_FALSE);
+}
+CK_RV C_CNK_FinalizePinManaged(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+  return loginPinManaged(hSession, pPin, ulPinLen, CK_TRUE);
 }
 
 CK_RV C_CNK_SetPIN(CK_SESSION_HANDLE hSession, CK_BYTE pinType, CK_UTF8CHAR_PTR pOldPin, CK_ULONG ulOldLen,
@@ -440,8 +288,8 @@ CK_RV C_CNK_SetPIN(CK_SESSION_HANDLE hSession, CK_BYTE pinType, CK_UTF8CHAR_PTR 
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
 
-  CK_RV beginRv = pinType == CNK_PIV_PIN_TYPE_PIN ? cnk_token_begin_user_operation(session)
-                                                  : cnk_token_begin_card_operation(session);
+  CK_RV beginRv =
+      pinType == CNK_PIV_PIN_TYPE_PIN ? cnk_token_begin_pin_change(session) : cnk_token_begin_card_operation(session);
   if (beginRv != CKR_OK)
     return beginRv;
   CK_RV rv = cnk_change_piv_secret_with_session(session->slotId, session, pinType, pOldPin, ulOldLen, pNewPin, ulNewLen,
@@ -462,31 +310,233 @@ CK_RV C_CNK_UnblockPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULON
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
+  if (ulPukLen < 1 || ulPukLen > 8 || ulNewPinLen < 1 || ulNewPinLen > 8)
+    return CKR_PIN_LEN_RANGE;
 
   CK_RV beginRv = cnk_token_begin_card_operation(session);
   if (beginRv != CKR_OK)
     return beginRv;
 
+  SCARDHANDLE card = 0;
+  CK_RV rv = cnk_ensure_libcanokey_profile(session);
+  if (rv == CKR_OK)
+    rv = cnk_begin_piv_transaction(session->slotId, &card);
+  if (rv != CKR_OK)
+    goto cleanup;
+
   // Refuse the PUK path once protected management-key recovery is configured.
   // Otherwise the PUK could set a known user PIN and immediately elevate to SO.
+  // Keep the policy read and mutation in one transaction so another process
+  // cannot provision protection between the check and Reset Retry Counter.
   CK_BYTE adminData[CNK_ADMIN_DATA_MAX_LEN];
   CK_ULONG adminDataLen = sizeof(adminData);
-  CK_RV policyRv = cnk_get_piv_data_by_tag(session->slotId, CNK_ADMIN_DATA_TAG, sizeof(CNK_ADMIN_DATA_TAG), adminData,
-                                           &adminDataLen, CK_TRUE);
+  CK_RV policyRv = cnk_get_public_piv_data_on_card(session, card, CNK_ADMIN_DATA_TAG, sizeof(CNK_ADMIN_DATA_TAG),
+                                                   adminData, &adminDataLen);
+  uint32_t protectionFlags = 0;
   if (policyRv == CKR_OK)
-    policyRv = checkPinManagedAdminData(adminData, adminDataLen);
+    policyRv = readAdminProtectionFlags(adminData, adminDataLen, &protectionFlags);
   mbedtls_platform_zeroize(adminData, sizeof(adminData));
-  if (policyRv == CKR_OK) {
-    cnk_token_end_management_operation(session);
-    CNK_RETURN(CKR_ACTION_PROHIBITED, "PUK reset is disabled for PIN-managed management keys");
+  // The stored-key flag is enough to forbid PUK recovery. A missing/false
+  // PUK-blocked claim must not turn protected key retrieval into a bypass.
+  if (policyRv == CKR_OK && (protectionFlags & CNK_ADMIN_PIN_PROTECTED_BIT)) {
+    rv = CKR_ACTION_PROHIBITED;
+    CNK_DEBUG("PUK reset is disabled for PIN-managed management keys");
+    goto cleanup;
   }
-  if (policyRv != CKR_DATA_INVALID) {
-    cnk_token_end_management_operation(session);
-    return policyRv;
+  if (policyRv != CKR_OK && policyRv != CKR_DATA_INVALID) {
+    rv = policyRv;
+    goto cleanup;
   }
 
-  CK_RV rv =
-      cnk_unblock_piv_pin_with_session(session->slotId, session, pPuk, ulPukLen, pNewPin, ulNewPinLen, pPinTries);
+  rv = cnk_unblock_piv_pin_on_card(session, card, pPuk, ulPukLen, pNewPin, ulNewPinLen, pPinTries);
+cleanup:
+  if (card)
+    cnk_disconnect_card(card);
+  cnk_token_end_management_operation(session);
+  return rv;
+}
+
+static CK_BBOOL regularPivSlot(CK_BYTE slot) {
+  return (slot >= 0x82 && slot <= 0x95) || slot == 0x9a || slot == 0x9c || slot == 0x9d || slot == 0x9e;
+}
+
+CK_RV C_CNK_Attest(CK_SESSION_HANDLE hSession, CK_BYTE pivSlot, CK_BYTE_PTR certificate, CK_ULONG_PTR certificateLen) {
+  CNK_ENSURE_INITIALIZED();
+  CNK_ENSURE_NONNULL(certificateLen);
+  if (!regularPivSlot(pivSlot))
+    return CKR_ARGUMENTS_BAD;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  CK_RV rv = CNK_PIV_CREATE(session, cnk_piv_attest_new, &operation, &error, pivSlot);
+  if (rv != CKR_OK)
+    return rv;
+  SCARDHANDLE card = 0;
+  rv = cnk_begin_piv_transaction(session->slotId, &card);
+  if (rv == CKR_OK)
+    rv = cnk_run_piv_operation(card, operation, CKR_KEY_HANDLE_INVALID, NULL);
+  if (rv == CKR_OK) {
+    size_t length = 0;
+    uint32_t status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, NULL, &length);
+    if (status == CNK_OK) {
+      CK_ULONG capacity = *certificateLen;
+      *certificateLen = (CK_ULONG)length;
+      if (certificate && capacity < length)
+        rv = CKR_BUFFER_TOO_SMALL;
+      else if (certificate)
+        status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, certificate, &length);
+    }
+    if (rv == CKR_OK)
+      rv = cnk_piv_operation_status(status, NULL, CKR_DEVICE_ERROR);
+  }
+  CNK_EXTERNAL_VOID(cnk_operation_free, operation);
+  if (card)
+    cnk_disconnect_card(card);
+  return rv;
+}
+
+CK_RV C_CNK_MoveKey(CK_SESSION_HANDLE hSession, CK_BYTE source, CK_BYTE target) {
+  CNK_ENSURE_INITIALIZED();
+  if (!regularPivSlot(source) || (target != 0xff && !regularPivSlot(target)) || source == target)
+    return CKR_ARGUMENTS_BAD;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (!(session->flags & CKF_RW_SESSION))
+    return CKR_SESSION_READ_ONLY;
+  CNK_ENSURE_OK(cnk_token_begin_management_operation(session));
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  SCARDHANDLE card = 0;
+  CK_BBOOL attempted = CK_FALSE;
+  CK_RV rv = cnk_ensure_libcanokey_profile(session);
+  if (rv == CKR_OK)
+    rv = target == 0xff ? CNK_PIV_CREATE(session, cnk_piv_delete_key_new, &operation, &error, source, NULL)
+                        : CNK_PIV_CREATE(session, cnk_piv_move_key_new, &operation, &error, source, target, NULL);
+  if (rv == CKR_OK)
+    rv = cnk_authenticate_admin_for_write(session->slotId, session, &card);
+  if (rv == CKR_OK) {
+    cnk_piv_public_cache_invalidate(session);
+    rv = cnk_run_piv_operation(card, operation, CKR_KEY_HANDLE_INVALID, &attempted);
+    cnk_piv_public_cache_invalidate(session);
+  }
+  if (operation)
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
+  if (card)
+    cnk_disconnect_card(card);
+  if (attempted) {
+    CK_RV revokeRv = cnk_token_revoke_private_operations(session->token);
+    if (revokeRv != CKR_OK) {
+      // Do not release stale initialized operations after a failed callback.
+      cnk_token_forget_credentials(session);
+      if (rv == CKR_OK)
+        rv = revokeRv;
+    }
+  }
+  cnk_token_end_management_operation(session);
+  return rv;
+}
+
+// Shared lifetime for credential mutations: authorization and optional PIN stay
+// in this transaction; local credentials are revoked after any attempted command.
+static CK_RV changeManagementCredential(CNK_PKCS11_SESSION *session, cnk_operation_t *operation, const CK_BYTE *pin,
+                                        CK_ULONG pinLen, CK_BBOOL resetting) {
+  SCARDHANDLE card = 0;
+  CK_BBOOL attempted = CK_FALSE;
+  CK_RV rv = cnk_authenticate_admin_for_write(session->slotId, session, &card);
+  if (rv != CKR_OK)
+    return rv;
+  if (pinLen)
+    rv = cnk_piv_credential_on_card(session, card, CNK_PIV_CREDENTIAL_VERIFY_PIN, pin, pinLen, NULL, 0, NULL);
+  if (rv == CKR_OK && resetting) {
+    CK_BYTE admin[CNK_ADMIN_DATA_MAX_LEN];
+    cnk_operation_t *read = NULL;
+    cnk_error_v1 error = {.struct_size = sizeof(error)};
+    rv = CNK_PIV_CREATE(session, cnk_piv_read_object_container_new, &read, &error, CNK_ADMIN_DATA_TAG,
+                        sizeof(CNK_ADMIN_DATA_TAG));
+    if (rv == CKR_OK)
+      rv = cnk_run_piv_operation(card, read, CKR_DATA_INVALID, NULL);
+    if (rv == CKR_OK) {
+      size_t length = sizeof(admin);
+      rv = cnk_piv_operation_status(CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, read, admin, &length), NULL,
+                                    CKR_DEVICE_ERROR);
+      uint32_t flags = 0;
+      if (rv == CKR_OK)
+        rv = readAdminProtectionFlags(admin, (CK_ULONG)length, &flags);
+      if (rv == CKR_OK && (flags & CNK_ADMIN_PIN_PROTECTED_BIT))
+        rv = CKR_ACTION_PROHIBITED;
+    }
+    if (read)
+      CNK_EXTERNAL_VOID(cnk_operation_free, read);
+    mbedtls_platform_zeroize(admin, sizeof(admin));
+  }
+  if (rv == CKR_OK) {
+    cnk_piv_public_cache_invalidate(session);
+    rv = cnk_run_piv_operation(card, operation, CKR_DEVICE_ERROR, &attempted);
+  }
+  if (attempted)
+    atomic_store(&session->token->logoutPending, CK_TRUE);
+  cnk_disconnect_card(card);
+  if (attempted) {
+    CK_RV revokeRv = cnk_token_forget_credentials(session);
+    if (rv == CKR_OK)
+      rv = revokeRv;
+  }
+  return rv;
+}
+
+CK_RV C_CNK_SetManagementKey(CK_SESSION_HANDLE hSession, CK_ULONG algorithm, CK_BYTE_PTR key, CK_ULONG keyLen,
+                             CK_BBOOL touch) {
+  CNK_ENSURE_INITIALIZED();
+  if (!key || keyLen != 24 || (algorithm != 1 && algorithm != 2) || touch > CK_TRUE)
+    return CKR_ARGUMENTS_BAD;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (!(session->flags & CKF_RW_SESSION))
+    return CKR_SESSION_READ_ONLY;
+  CNK_ENSURE_OK(cnk_token_begin_management_operation(session));
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  CK_BYTE pin[8] = {0};
+  CK_ULONG pinLen = 0;
+  CK_RV rv = cnk_ensure_libcanokey_profile(session);
+  if (rv == CKR_OK) {
+    rv = cnk_token_copy_pin(session, pin, &pinLen);
+    if (rv == CKR_USER_NOT_LOGGED_IN)
+      rv = CKR_OK;
+  }
+  if (rv == CKR_OK)
+    rv = CNK_PIV_CREATE(session, cnk_piv_set_management_key_new, &operation, &error, algorithm, key, keyLen, touch, 1,
+                        NULL);
+  if (rv == CKR_OK)
+    rv = changeManagementCredential(session, operation, pin, pinLen, CK_FALSE);
+  if (operation)
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
+  mbedtls_platform_zeroize(pin, sizeof(pin));
+  cnk_token_end_management_operation(session);
+  return rv;
+}
+
+CK_RV C_CNK_SetPinRetries(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pin, CK_ULONG pinLen, CK_BYTE pinRetries,
+                          CK_BYTE pukRetries) {
+  CNK_ENSURE_INITIALIZED();
+  if (!pin || pinLen < 1 || pinLen > 8 || pinRetries < 1 || pinRetries > 15 || pukRetries < 1 || pukRetries > 15)
+    return CKR_ARGUMENTS_BAD;
+  CNK_PKCS11_SESSION *session CNK_SESSION_REF = NULL;
+  CNK_ENSURE_OK(cnk_session_find(hSession, &session));
+  if (!(session->flags & CKF_RW_SESSION))
+    return CKR_SESSION_READ_ONLY;
+  CNK_ENSURE_OK(cnk_token_begin_management_operation(session));
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  CK_RV rv = cnk_ensure_libcanokey_profile(session);
+  if (rv == CKR_OK)
+    rv = CNK_PIV_CREATE(session, cnk_piv_reset_pin_puk_retries_new, &operation, &error, pinRetries, pukRetries, NULL);
+  if (rv == CKR_OK)
+    rv = changeManagementCredential(session, operation, pin, pinLen, CK_TRUE);
+  if (operation)
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
   cnk_token_end_management_operation(session);
   return rv;
 }

@@ -1,6 +1,7 @@
 #include "api/session.h"
 
 #include "api/operation.h"
+#include "backend/libcanokey.h"
 #include "backend/pcsc.h"
 #include "internal/logging.h"
 #include "internal/macros.h"
@@ -264,6 +265,10 @@ CK_RV cnk_session_manager_cleanup(void) {
     CNK_DEBUG("session manager cleanup: freeing token state");
     CNK_PKCS11_TOKEN_STATE *token = token_states;
     clear_token_auth(token);
+    if (token->libcanokeyProfile != NULL) {
+      CNK_EXTERNAL_VOID(cnk_profile_free, token->libcanokeyProfile);
+      token->libcanokeyProfile = NULL;
+    }
     CK_RV destroyRv = cnk_mutex_destroy(&token->lock);
     if (destroyRv != CKR_OK) {
       cleanupRv = destroyRv;
@@ -450,7 +455,7 @@ CK_RV cnk_token_copy_management_key(CNK_PKCS11_SESSION *session, CK_BYTE key[24]
   return CKR_OK;
 }
 
-CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session) {
+CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session, CK_BBOOL refresh) {
   CNK_ENSURE_NONNULL(session, session->token);
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
   if (session->token->managementOperationPending && session->token->managementOperationOwner != session->handle) {
@@ -461,7 +466,7 @@ CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session) {
     cnk_mutex_unlock(&session->token->lock);
     return CKR_USER_NOT_LOGGED_IN;
   }
-  if (session->token->cbManagementKey == sizeof(session->token->managementKey)) {
+  if (!refresh && session->token->cbManagementKey == sizeof(session->token->managementKey)) {
     cnk_mutex_unlock(&session->token->lock);
     return CKR_USER_ALREADY_LOGGED_IN;
   }
@@ -469,9 +474,17 @@ CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session) {
     cnk_mutex_unlock(&session->token->lock);
     return CKR_OPERATION_ACTIVE;
   }
+  if (refresh) {
+    mbedtls_platform_zeroize(session->token->managementKey, sizeof(session->token->managementKey));
+    session->token->cbManagementKey = 0;
+  }
   session->token->managementLoginPending = CK_TRUE;
-  cnk_mutex_unlock(&session->token->lock);
-  return CKR_OK;
+  CK_RV unlockRv = cnk_mutex_unlock(&session->token->lock);
+  if (unlockRv != CKR_OK) {
+    atomic_store(&session->token->managementLoginPending, CK_FALSE);
+    atomic_store(&session->token->loginState, TOKEN_LOGIN_PUBLIC);
+  }
+  return unlockRv;
 }
 
 CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session, CK_BYTE_PTR key, CK_ULONG keyLen,
@@ -501,7 +514,8 @@ CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session,
   return rv;
 }
 
-static CK_RV begin_token_operation(CNK_PKCS11_SESSION *session, CK_BBOOL requireManagement, CK_BBOOL requireUser) {
+static CK_RV begin_token_operation(CNK_PKCS11_SESSION *session, CK_BBOOL requireManagement, CK_BBOOL requireUser,
+                                   CK_BBOOL allowPublic) {
   CNK_ENSURE_NONNULL(session, session->token);
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
   CK_BBOOL managementAuthorized =
@@ -514,11 +528,12 @@ static CK_RV begin_token_operation(CNK_PKCS11_SESSION *session, CK_BBOOL require
     return CKR_OPERATION_ACTIVE;
   }
   if (session->token->logoutPending || (requireManagement && !managementAuthorized) ||
-      (requireUser && session->token->loginState != TOKEN_LOGIN_USER)) {
+      (requireUser && session->token->loginState != TOKEN_LOGIN_USER &&
+       !(allowPublic && session->token->loginState == TOKEN_LOGIN_PUBLIC))) {
     cnk_mutex_unlock(&session->token->lock);
     return requireManagement || requireUser ? CKR_USER_NOT_LOGGED_IN : CKR_OPERATION_ACTIVE;
   }
-  if (session->token->managementOperationPending) {
+  if (session->token->managementOperationPending || atomic_load(&session->token->activePrivateOperations) != 0) {
     cnk_mutex_unlock(&session->token->lock);
     return CKR_OPERATION_ACTIVE;
   }
@@ -530,15 +545,21 @@ static CK_RV begin_token_operation(CNK_PKCS11_SESSION *session, CK_BBOOL require
 }
 
 CK_RV cnk_token_begin_management_operation(CNK_PKCS11_SESSION *session) {
-  return begin_token_operation(session, CK_TRUE, CK_FALSE);
+  return begin_token_operation(session, CK_TRUE, CK_FALSE, CK_FALSE);
 }
 
 CK_RV cnk_token_begin_user_operation(CNK_PKCS11_SESSION *session) {
-  return begin_token_operation(session, CK_FALSE, CK_TRUE);
+  return begin_token_operation(session, CK_FALSE, CK_TRUE, CK_FALSE);
+}
+
+CK_RV cnk_token_begin_pin_change(CNK_PKCS11_SESSION *session) {
+  // CHANGE REFERENCE DATA authenticates the supplied current PIN itself.
+  // PUBLIC must remain PUBLIC; an SO session must not change the user PIN.
+  return begin_token_operation(session, CK_FALSE, CK_TRUE, CK_TRUE);
 }
 
 CK_RV cnk_token_begin_card_operation(CNK_PKCS11_SESSION *session) {
-  return begin_token_operation(session, CK_FALSE, CK_FALSE);
+  return begin_token_operation(session, CK_FALSE, CK_FALSE, CK_FALSE);
 }
 
 void cnk_token_end_management_operation(CNK_PKCS11_SESSION *session) {
@@ -559,6 +580,19 @@ void cnk_token_end_management_operation(CNK_PKCS11_SESSION *session) {
   session->token->managementOperationOwner = CK_INVALID_HANDLE;
   session->token->managementOperationAllowsLogin = CK_FALSE;
   cnk_mutex_unlock(&session->token->lock);
+}
+
+CK_RV cnk_token_for_slot(CK_SLOT_ID slotId, CNK_PKCS11_TOKEN_STATE **token) {
+  CNK_ENSURE_NONNULL(token);
+  *token = NULL;
+  CNK_ENSURE_OK(cnk_mutex_lock(&session_mutex));
+  CK_RV rv = get_or_create_token_state(slotId, token);
+  CK_RV unlock = cnk_mutex_unlock(&session_mutex);
+  if (rv == CKR_OK)
+    rv = unlock;
+  if (rv != CKR_OK)
+    *token = NULL;
+  return rv;
 }
 
 CK_RV cnk_token_get_session_counts(CK_SLOT_ID slotId, CK_ULONG_PTR openSessions, CK_ULONG_PTR readOnlySessions) {
@@ -590,6 +624,8 @@ CK_RV cnk_token_invalidate_public_cache(CK_SLOT_ID slotId) {
     return rv;
   CNK_PKCS11_TOKEN_STATE *token = find_token_state(slotId);
   if (token != NULL) {
+    atomic_fetch_add(&token->publicCacheGeneration, 1);
+    atomic_fetch_add(&token->profileGeneration, 1);
     rv = cnk_mutex_lock(&token->lock);
     if (rv == CKR_OK) {
       memset(&token->pivPublicCache, 0, sizeof(token->pivPublicCache));
@@ -705,9 +741,8 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
                Notify, phSession);
   PKCS11_VALIDATE_INITIALIZED_AND_ARGUMENT(phSession);
 
-  // Validate the slot and read the firmware extension before taking the
-  // session-table lock. Both operations may perform a PC/SC round trip and
-  // must not stall unrelated session lookups.
+  // Validate the reader snapshot before taking the session-table lock.
+  // Session creation neither probes the card nor duplicates its profile.
   if (!g_cnk_is_managed_mode) {
     CK_RV readerLockRv = cnk_mutex_lock(&g_cnk_readers_mutex);
     if (readerLockRv != CKR_OK)
@@ -728,10 +763,6 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
 
   if (!(flags & CKF_SERIAL_SESSION))
     CNK_RETURN(CKR_SESSION_PARALLEL_NOT_SUPPORTED, "Invalid session flags");
-
-  CNK_PIV_ALGORITHM_EXTENSION_CONFIG algorithmConfig = {0};
-  CK_BBOOL extensionEnabled =
-      cnk_get_piv_algorithm_extension_cached(slotID, &algorithmConfig) == CKR_OK && algorithmConfig.enabled;
 
   CNK_ENSURE_OK(cnk_mutex_lock(&session_mutex));
 
@@ -785,28 +816,6 @@ CK_RV C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
     ck_free(session);
     cnk_mutex_unlock(&session_mutex);
     return rv;
-  }
-  // PQC and other extended algorithms remain unavailable unless the firmware
-  // extension was read successfully and explicitly enabled.
-  session->mldsa65Algorithm = 0;
-  session->mlkem768Algorithm = 0;
-  session->ed25519Algorithm = 0;
-  session->x25519Algorithm = 0;
-  session->rsa3072Algorithm = 0;
-  session->rsa4096Algorithm = 0;
-  session->secp256k1Algorithm = 0;
-  session->secp521r1Algorithm = 0;
-  session->sm2Algorithm = 0;
-  if (extensionEnabled) {
-    session->mldsa65Algorithm = algorithmConfig.mldsa65;
-    session->mlkem768Algorithm = algorithmConfig.mlkem768;
-    session->ed25519Algorithm = algorithmConfig.ed25519;
-    session->x25519Algorithm = algorithmConfig.x25519;
-    session->rsa3072Algorithm = algorithmConfig.rsa3072;
-    session->rsa4096Algorithm = algorithmConfig.rsa4096;
-    session->secp256k1Algorithm = algorithmConfig.secp256k1;
-    session->secp521r1Algorithm = algorithmConfig.secp521r1;
-    session->sm2Algorithm = algorithmConfig.sm2;
   }
   session->nextSecretKeyId = CNK_SESSION_SECRET_KEY_FIRST_ID;
 
@@ -922,7 +931,7 @@ CK_RV C_CloseSession(CK_SESSION_HANDLE hSession) {
   CK_RV cleanupRv = cnk_session_cancel_operations(session, ~(CK_FLAGS)0);
   CK_RV logoutRv = CKR_OK;
   if (lastSession && hadPin)
-    logoutRv = cnk_logout_piv_pin_with_session(session->slotId);
+    logoutRv = cnk_logout_piv_pin_with_session(session);
   if (lastSession) {
     CK_RV finalTokenLockRv = cnk_mutex_lock(&session->token->lock);
     if (finalTokenLockRv == CKR_OK) {
@@ -1106,7 +1115,7 @@ CK_RV C_CNK_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR
       CNK_RETURN(CKR_OPERATION_NOT_INITIALIZED, "No PIN-always private-key operation is active");
     if (signAlways && decryptAlways)
       CNK_RETURN(CKR_OPERATION_ACTIVE, "Context-specific login is ambiguous with two PIN-always operations");
-    rv = cnk_verify_piv_pin_for_context(session->slotId, pPin, ulPinLen, pPinTries);
+    rv = cnk_verify_piv_pin_for_context(session, pPin, ulPinLen, pPinTries);
     if (rv == CKR_OK) {
       CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
       if (session->token->logoutPending) {
@@ -1255,7 +1264,7 @@ CK_RV C_CNK_LoginProtectedManagementKey(CK_SESSION_HANDLE hSession, CK_BYTE_PTR 
   // Reserve the token authorization transition before the card round trip.
   // Logout observes this reservation and cannot clear USER state underneath
   // verification, then leave a management key cached in PUBLIC state.
-  CNK_ENSURE_OK(cnk_token_begin_protected_management_login(session));
+  CNK_ENSURE_OK(cnk_token_begin_protected_management_login(session, CK_FALSE));
 
   CK_RV rv = cnkVerifyManagementKey(session, pKey);
   rv = cnk_token_complete_protected_management_login(session, pKey, ulKeyLen, rv);
@@ -1284,7 +1293,7 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
     if (retryRv != CKR_OK)
       return retryRv;
     if (cardLogoutPending) {
-      retryRv = cnk_logout_piv_pin_with_session(session->slotId);
+      retryRv = cnk_logout_piv_pin_with_session(session);
       if (retryRv != CKR_OK)
         return retryRv;
     }
@@ -1337,7 +1346,7 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
     cnk_mutex_unlock(&session->token->lock);
     return revokeRv;
   }
-  CK_RV logoutRv = hasPin ? cnk_logout_piv_pin_with_session(session->slotId) : CKR_OK;
+  CK_RV logoutRv = hasPin ? cnk_logout_piv_pin_with_session(session) : CKR_OK;
 
   CK_RV clearRv = cnk_mutex_lock(&session->token->lock);
   if (clearRv != CKR_OK) {
@@ -1355,4 +1364,50 @@ CK_RV C_Logout(CK_SESSION_HANDLE hSession) {
   cnk_mutex_unlock(&session->token->lock);
 
   return logoutRv;
+}
+
+CK_RV cnk_token_forget_credentials(CNK_PKCS11_SESSION *session) {
+  CNK_PKCS11_TOKEN_STATE *token = session->token;
+  atomic_store(&token->logoutPending, CK_TRUE);
+  CK_RV rv = cnk_token_revoke_private_operations(token);
+  CK_RV lockRv = cnk_mutex_lock(&token->lock);
+  if (lockRv != CKR_OK) {
+    atomic_store(&token->loginState, TOKEN_LOGIN_PUBLIC);
+    atomic_store(&token->logoutRecoveryPending, CK_TRUE);
+    atomic_store(&token->logoutCardPending, CK_FALSE);
+    return lockRv;
+  }
+  // The caller still owns its management reservation until cleanup completes.
+  memset(token->pin, 0xff, sizeof(token->pin));
+  token->cbPin = 0;
+  mbedtls_platform_zeroize(token->managementKey, sizeof(token->managementKey));
+  token->cbManagementKey = 0;
+  token->loginState = TOKEN_LOGIN_PUBLIC;
+  token->logoutRecoveryPending = rv != CKR_OK;
+  token->logoutCardPending = CK_FALSE;
+  token->logoutPending = rv != CKR_OK;
+  CK_RV unlockRv = cnk_mutex_unlock(&token->lock);
+  return rv == CKR_OK ? unlockRv : rv;
+}
+
+// Multiple sign/decrypt calls may queue behind PC/SC, but a mutation must not
+// overtake an admitted private call or use its cached context after key changes.
+CK_RV cnk_token_private_operation(CNK_PKCS11_SESSION *session, CK_BBOOL begin) {
+  if (!begin) {
+    atomic_fetch_sub(&session->token->activePrivateOperations, 1);
+    return CKR_OK;
+  }
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  CK_RV rv = CKR_OK;
+  if (session->token->logoutPending || session->token->managementOperationPending ||
+      session->token->managementLoginPending)
+    rv = CKR_OPERATION_ACTIVE;
+  else
+    atomic_fetch_add(&session->token->activePrivateOperations, 1);
+  CK_RV unlockRv = cnk_mutex_unlock(&session->token->lock);
+  if (unlockRv != CKR_OK && rv == CKR_OK) {
+    atomic_fetch_sub(&session->token->activePrivateOperations, 1);
+    rv = unlockRv;
+  }
+  return rv;
 }

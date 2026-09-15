@@ -49,11 +49,10 @@ CK_BYTE CNK_DefaultPinPolicyForPivObjectId(CK_BYTE obj_id);
 // card-resident private key. Other PIV private keys require USER visibility.
 CK_BBOOL CNK_PivPrivateKeyIsPrivate(CK_BYTE pin_policy);
 
-// Translate a canonical algorithm constant to the ID configured by the card.
-// Standard PIV algorithms are returned unchanged; disabled extensions return 0.
-CK_BYTE CNK_PivConfiguredAlgorithm(const CNK_PKCS11_SESSION *session, CK_BYTE canonical_algorithm);
-CK_BBOOL CNK_PivAlgorithmIsRsa(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
-CK_BBOOL CNK_PivAlgorithmIsEc(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
+// Host PKCS#11 operation policy uses semantic algorithms, never wire IDs.
+// Firmware admission is checked separately through the Rust profile.
+CK_BBOOL CNK_PivAlgorithmIsRsa(uint32_t algorithm_type);
+CK_BBOOL CNK_PivAlgorithmIsEc(uint32_t algorithm_type);
 
 /**
  * Reports whether a stored PIV key algorithm supports PKCS#11 signing.
@@ -63,11 +62,11 @@ CK_BBOOL CNK_PivAlgorithmIsEc(const CNK_PKCS11_SESSION *session, CK_BYTE algorit
  *
  * @param algorithm_type PIV algorithm type from metadata
  */
-CK_BBOOL CNK_PivPrivateKeyCanSign(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
+CK_BBOOL CNK_PivPrivateKeyCanSign(uint32_t algorithm_type);
 
-CK_BBOOL CNK_PivPrivateKeyCanDecrypt(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
+CK_BBOOL CNK_PivPrivateKeyCanDecrypt(uint32_t algorithm_type);
 
-CK_BBOOL CNK_PivPrivateKeyCanDerive(const CNK_PKCS11_SESSION *session, CK_BYTE algorithm_type);
+CK_BBOOL CNK_PivPrivateKeyCanDerive(uint32_t algorithm_type, CK_BYTE objId);
 
 /**
  * Maps a PIV object ID to its PIV certificate data-object tag.
@@ -75,6 +74,9 @@ CK_BBOOL CNK_PivPrivateKeyCanDerive(const CNK_PKCS11_SESSION *session, CK_BYTE a
  * @param obj_id Internal object ID
  * @param data_tag PIV 0x5FC1xx data-object tag
  */
-CK_RV CNK_ObjectIdToCertificateTag(CK_BYTE obj_id, CK_BYTE *data_tag);
+
+CK_RV CNK_BuildSharedSecretPrototype(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount,
+                                     CK_MECHANISM_TYPE mechanism, CK_ULONG defaultLen, CK_ULONG maxLen,
+                                     CNK_PKCS11_SECRET_KEY_OBJECT *prototype);
 
 #endif // CNK_API_OBJECT_H

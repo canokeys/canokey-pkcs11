@@ -2,6 +2,7 @@
 #define CNK_INTERNAL_TEMPLATE_H
 
 #include "pkcs11.h"
+#include <stdint.h>
 
 CK_RV cnk_template_get_attribute(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount, CK_ATTRIBUTE_TYPE type,
                                  CK_ATTRIBUTE_PTR *attribute);
@@ -24,6 +25,6 @@ CK_RV cnk_template_get_optional_bool(CK_ATTRIBUTE_PTR attributes, CK_ULONG attri
 CK_RV cnk_template_get_optional_byte(CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount, CK_ATTRIBUTE_TYPE type,
                                      CK_BYTE defaultValue, CK_BYTE *value);
 
-CK_RV cnk_ec_params_to_piv_algorithm(const CK_BYTE *params, CK_ULONG paramsLen, CK_BYTE *algorithmType);
+CK_RV cnk_ec_params_to_piv_algorithm(const CK_BYTE *params, CK_ULONG paramsLen, uint32_t *algorithmType);
 
 #endif // CNK_INTERNAL_TEMPLATE_H

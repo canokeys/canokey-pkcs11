@@ -1,8 +1,11 @@
 // Exercise the production extension with isolated lifecycle/session/transport
 // seams. No PIN, key, or metadata write reaches a real card.
 #include "api/session.h"
+#include "backend/libcanokey.h"
 #include "backend/pcsc.h"
+#include "backend/piv_operation.h"
 #include "internal/lifecycle.h"
+#include "internal/logging.h"
 #include "pkcs11_canokey.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +19,39 @@
     }                                                                                                                  \
   } while (0)
 
+#include "profile.h"
+
 static CNK_PKCS11_SESSION session;
+static CNK_PKCS11_TOKEN_STATE token;
+_Atomic CK_ULONG g_cnk_managed_binding_epoch;
+atomic_int g_cnk_log_level = CNK_LOG_LEVEL_NONE;
+void cnk_printlogf(const int level, const char *function, const char *file, const int line, const char *format, ...) {
+  (void)level;
+  (void)function;
+  (void)file;
+  (void)line;
+  (void)format;
+}
+CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex) {
+  (void)mutex;
+  return CKR_OK;
+}
+CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex) {
+  (void)mutex;
+  return CKR_OK;
+}
+CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *s) {
+  CHECK(s == &session);
+  return CKR_OK;
+}
+
+static void create_profile(CK_BYTE minor) {
+  char firmware[] = "3.0.0";
+  firmware[2] += minor;
+  token.libcanokeyProfile = test_profile(firmware, 5);
+  session.token = &token;
+}
+
 static CK_RV admissionRv, findRv, reserveRv, authRv;
 static unsigned admissions, refs, reservations, connections, sends, invalidations;
 static CK_BYTE response[258], request[84];
@@ -25,9 +60,16 @@ static LONG transportRv;
 static CK_BBOOL isWrite;
 static CK_BBOOL v6Supported = CK_TRUE;
 static CK_RV versionRv;
-CK_RV cnk_piv_v6_supported_on_card(SCARDHANDLE card, CK_BBOOL *supported) {
-  CHECK(card == 123 && connections == 1);
-  *supported = v6Supported;
+CK_RV cnk_session_piv_capabilities(CNK_PKCS11_SESSION *s, cnk_piv_capabilities_v1 *caps) {
+  CHECK(s == &session && connections == 0);
+  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(s));
+  memset(caps, 0, sizeof(*caps));
+  caps->struct_size = sizeof(*caps);
+  CHECK(cnk_profile_piv_capabilities(token.libcanokeyProfile, caps) == CNK_OK);
+  if (v6Supported)
+    caps->features |= CNK_PIV_FEATURE_RANDOM;
+  else
+    caps->features &= ~CNK_PIV_FEATURE_RANDOM;
   return versionRv;
 }
 
@@ -87,9 +129,7 @@ void cnk_piv_public_cache_invalidate(CNK_PKCS11_SESSION *s) {
   CHECK(s == &session);
   invalidations++;
 }
-LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *send, CK_ULONG sendLen, CK_BYTE *recv, DWORD *recvLen,
-                         CK_BBOOL sensitive) {
-  (void)sensitive;
+LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *send, CK_ULONG sendLen, CK_BYTE *recv, DWORD *recvLen) {
   CHECK(card == 123 && connections == 1 && refs == 1 && admissions == 1);
   CHECK(sendLen <= sizeof(request) && send[0] == 0 && send[1] == 0xF5);
   CHECK(send[2] == (isWrite ? 1 : 0));
@@ -115,6 +155,7 @@ static void reply(unsigned sw, const CK_BYTE *data, unsigned len) {
 static void clean(void) { CHECK(admissions == 0 && refs == 0 && reservations == 0 && connections == 0); }
 
 int main(void) {
+  create_profile(1);
   session.flags = CKF_RW_SESSION;
   CK_BYTE name[] = {'t', 0, 'q', 0, '-', 0, 0x3D, 0xD8, 0, 0xDE}; // includes a surrogate pair
   CK_BYTE out[80];
@@ -214,12 +255,23 @@ int main(void) {
   reply(0x6900, NULL, 0);
   CHECK(C_CNK_SetContainerName(1, 0x82, name, sizeof(name)) == CKR_DEVICE_ERROR);
   clean();
+  // PIV 6 passed its explicit gate: a stricter profile must fail closed, not
+  // accidentally activate the minidriver's legacy-name fallback.
+  cnk_profile_free(token.libcanokeyProfile);
+  create_profile(0);
+  before = sends;
+  CHECK(C_CNK_GetContainerName(1, 0x9A, out, &len) == CKR_DEVICE_ERROR);
+  clean();
+  CHECK(C_CNK_SetContainerName(1, 0x9A, name, sizeof(name)) == CKR_DEVICE_ERROR);
+  clean();
+  CHECK(sends == before);
   findRv = CKR_SESSION_HANDLE_INVALID;
   CHECK(C_CNK_SetContainerName(1, 0x82, name, sizeof(name)) == findRv);
   clean();
   admissionRv = CKR_CRYPTOKI_NOT_INITIALIZED;
   CHECK(C_CNK_GetContainerName(1, 0x82, out, &len) == admissionRv);
   clean();
+  cnk_profile_free(token.libcanokeyProfile);
   puts("F5 container-name API/transport contract tests passed.");
   return 0;
 }

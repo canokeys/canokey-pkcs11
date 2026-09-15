@@ -294,7 +294,6 @@ CK_RV C_Finalize(CK_VOID_PTR pReserved) {
   atomic_store(&g_cnk_finalizing, true);
   cnk_lifecycle_unlock();
   lifecycleLock = NULL;
-  cnk_piv_algorithm_extension_cache_invalidate();
   // Wake a blocking C_WaitForSlotEvent before draining API admissions: that
   // call keeps its admission guard until SCardGetStatusChange returns.
   if (!g_cnk_is_managed_mode)

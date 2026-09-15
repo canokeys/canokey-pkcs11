@@ -180,7 +180,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     CK_BYTE command[] = {0x00, 0xA4, 0x04, 0x00};
     CK_BYTE response[8] = {0};
     DWORD responseLen = sizeof(response);
-    (void)cnk_transceive_apdu(card, command, sizeof(command), response, &responseLen, CK_TRUE);
+    (void)cnk_transceive_apdu(card, command, sizeof(command), response, &responseLen);
     cnk_disconnect_card(card);
   }
 

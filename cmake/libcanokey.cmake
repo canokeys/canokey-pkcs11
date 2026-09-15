@@ -1,0 +1,107 @@
+# Cargo owns the pinned Git dependency; no source checkout/submodule is needed.
+find_program(CNK_CARGO cargo HINTS "$ENV{USERPROFILE}/.cargo/bin" "$ENV{HOME}/.cargo/bin" REQUIRED)
+find_program(CNK_RUSTC rustc HINTS "$ENV{USERPROFILE}/.cargo/bin" "$ENV{HOME}/.cargo/bin" REQUIRED)
+
+# Use the ABI header from the exact Cargo dependency, never a hand-written copy.
+execute_process(COMMAND "${CNK_CARGO}" +stable metadata --locked --format-version 1
+                --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
+                OUTPUT_VARIABLE _cnk_metadata RESULT_VARIABLE _cnk_metadata_result)
+if(NOT _cnk_metadata_result EQUAL 0)
+  message(FATAL_ERROR "Could not locate the pinned libcanokey C ABI header")
+endif()
+string(JSON _cnk_packages LENGTH "${_cnk_metadata}" packages)
+math(EXPR _cnk_last_package "${_cnk_packages} - 1")
+set(_cnk_header_found FALSE)
+foreach(_cnk_index RANGE ${_cnk_last_package})
+  string(JSON _cnk_package GET "${_cnk_metadata}" packages ${_cnk_index} name)
+  if(_cnk_package STREQUAL "canokey-c")
+    string(JSON _cnk_manifest GET "${_cnk_metadata}" packages ${_cnk_index} manifest_path)
+    get_filename_component(_cnk_package_dir "${_cnk_manifest}" DIRECTORY)
+    set(_cnk_header_found TRUE)
+    configure_file("${_cnk_package_dir}/include/canokey.h" "${CMAKE_CURRENT_BINARY_DIR}/include/libcanokey/canokey.h" COPYONLY)
+  endif()
+endforeach()
+if(NOT _cnk_header_found)
+  message(FATAL_ERROR "Pinned canokey-c package is missing")
+endif()
+include_directories("${CMAKE_CURRENT_BINARY_DIR}/include")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS Cargo.toml Cargo.lock)
+
+if(NOT CNK_RUST_TARGET)
+  if(WIN32)
+    if(CMAKE_C_COMPILER_TARGET)
+      set(_cnk_arch "${CMAKE_C_COMPILER_TARGET}")
+    elseif(CMAKE_GENERATOR_PLATFORM)
+      set(_cnk_arch "${CMAKE_GENERATOR_PLATFORM}")
+    elseif(DEFINED ENV{VSCMD_ARG_TGT_ARCH})
+      set(_cnk_arch "$ENV{VSCMD_ARG_TGT_ARCH}")
+    else()
+      set(_cnk_arch "${CMAKE_SYSTEM_PROCESSOR}")
+    endif()
+    string(TOLOWER "${_cnk_arch}" _cnk_arch)
+    if(_cnk_arch MATCHES "arm64|aarch64")
+      set(CNK_RUST_TARGET aarch64-pc-windows-msvc)
+    elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
+      set(CNK_RUST_TARGET i686-pc-windows-msvc)
+    else()
+      set(CNK_RUST_TARGET x86_64-pc-windows-msvc)
+    endif()
+  else()
+    if(CMAKE_CROSSCOMPILING OR CMAKE_OSX_ARCHITECTURES)
+      message(FATAL_ERROR "Set CNK_RUST_TARGET for a single cross target; universal Rust archives are not supported")
+    endif()
+    execute_process(COMMAND "${CNK_RUSTC}" +stable -vV OUTPUT_VARIABLE _cnk_rust_version
+                    RESULT_VARIABLE _cnk_rust_result)
+    if(NOT _cnk_rust_result EQUAL 0)
+      message(FATAL_ERROR "Install the stable Rust toolchain with rustup")
+    endif()
+    string(REGEX MATCH "host: ([^\n\r]+)" _cnk_host "${_cnk_rust_version}")
+    set(CNK_RUST_TARGET "${CMAKE_MATCH_1}")
+  endif()
+endif()
+set(CNK_RUST_TARGET "${CNK_RUST_TARGET}" CACHE STRING "Rust target matching the C compiler")
+message(STATUS "libcanokey Rust target: ${CNK_RUST_TARGET}")
+
+set(_cnk_cargo_profile "$<IF:$<CONFIG:Debug>,dev,release>")
+set(_cnk_cargo_dir "$<IF:$<CONFIG:Debug>,debug,release>")
+set(_cnk_cargo_target_dir "${CMAKE_CURRENT_BINARY_DIR}/cargo")
+if(WIN32)
+  set(_cnk_rust_archive "${_cnk_cargo_target_dir}/${CNK_RUST_TARGET}/${_cnk_cargo_dir}/canokey_pkcs11_protocol.lib")
+  set(_cnk_rust_system_libs advapi32 bcrypt kernel32 ntdll userenv ws2_32 dbghelp)
+elseif(APPLE)
+  set(_cnk_rust_archive "${_cnk_cargo_target_dir}/${CNK_RUST_TARGET}/${_cnk_cargo_dir}/libcanokey_pkcs11_protocol.a")
+  set(_cnk_rust_system_libs "-framework Security" "-framework CoreFoundation" iconv)
+else()
+  set(_cnk_rust_archive "${_cnk_cargo_target_dir}/${CNK_RUST_TARGET}/${_cnk_cargo_dir}/libcanokey_pkcs11_protocol.a")
+  set(_cnk_rust_system_libs dl pthread m)
+endif()
+
+# Always let Cargo check its complete dependency graph, including local patches.
+# Keep Rust native objects (not cross-language LLVM bitcode) for ClangCL/LLD.
+add_custom_target(cnk_protocol_build
+  COMMAND "${CNK_CARGO}" +stable build --locked --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
+          --target "${CNK_RUST_TARGET}" --target-dir "${_cnk_cargo_target_dir}" --profile "${_cnk_cargo_profile}"
+  BYPRODUCTS "${_cnk_rust_archive}"
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  VERBATIM)
+add_library(cnk_protocol STATIC IMPORTED GLOBAL)
+set_target_properties(cnk_protocol PROPERTIES IMPORTED_LOCATION "${_cnk_rust_archive}"
+                      INTERFACE_LINK_LIBRARIES "${_cnk_rust_system_libs}")
+# Imported locations do not expand generator expressions.
+foreach(_cnk_config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+  if(_cnk_config STREQUAL "DEBUG")
+    string(REPLACE "${_cnk_cargo_dir}" "debug" _cnk_location "${_cnk_rust_archive}")
+  else()
+    string(REPLACE "${_cnk_cargo_dir}" "release" _cnk_location "${_cnk_rust_archive}")
+  endif()
+  set_property(TARGET cnk_protocol PROPERTY IMPORTED_LOCATION_${_cnk_config} "${_cnk_location}")
+endforeach()
+string(REPLACE "${_cnk_cargo_dir}" "release" _cnk_default_location "${_cnk_rust_archive}")
+set_property(TARGET cnk_protocol PROPERTY IMPORTED_LOCATION "${_cnk_default_location}")
+add_dependencies(cnk_protocol cnk_protocol_build)
+if(UNIX AND NOT APPLE)
+  # Rust's staticlib contains public std symbols. Keep them out of the module's
+  # dynamic ABI so they cannot interpose on another Rust library in the host.
+  target_link_options(cnk_protocol INTERFACE "LINKER:--exclude-libs,libcanokey_pkcs11_protocol.a")
+endif()
+list(APPEND CNK_PKCS_LIBS cnk_protocol)

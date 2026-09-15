@@ -52,6 +52,20 @@ extern void cnk_printlogf(const int level, const char *function, const char *fil
 #define CNK_ERROR(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_ERROR, format, ##__VA_ARGS__)
 #define CNK_FATAL(format, ...) CNK_PRINTLOGF(CNK_LOG_LEVEL_FATAL, format, ##__VA_ARGS__)
 
+// Log every external boundary after it returns, including successful Release
+// calls. Record only the function name/status, never argument or result bytes.
+#define CNK_EXTERNAL_CALL(FUNCTION, ...)                                                                               \
+  ({                                                                                                                   \
+    CNK_TYPEOF(FUNCTION(__VA_ARGS__)) _cnk_external_status = FUNCTION(__VA_ARGS__);                                    \
+    CNK_DEBUG("%s completed: status=0x%lx", #FUNCTION, (unsigned long)_cnk_external_status);                           \
+    _cnk_external_status;                                                                                              \
+  })
+#define CNK_EXTERNAL_VOID(FUNCTION, ...)                                                                               \
+  do {                                                                                                                 \
+    FUNCTION(__VA_ARGS__);                                                                                             \
+    CNK_DEBUG("%s completed", #FUNCTION);                                                                              \
+  } while (0)
+
 #ifdef CNK_VERBOSE
 // #define FUNC_TRACE(CALL) dbg(CALL)
 #define CNK_RETURN(ARG, REASON)                                                                                        \

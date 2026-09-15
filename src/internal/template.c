@@ -105,7 +105,7 @@ CK_RV cnk_template_get_optional_byte(CK_ATTRIBUTE_PTR attributes, CK_ULONG attri
   return attribute == NULL ? CKR_OK : cnk_attribute_get_byte(attribute, value);
 }
 
-CK_RV cnk_ec_params_to_piv_algorithm(const CK_BYTE *params, CK_ULONG paramsLen, CK_BYTE *algorithmType) {
+CK_RV cnk_ec_params_to_piv_algorithm(const CK_BYTE *params, CK_ULONG paramsLen, uint32_t *algorithmType) {
   static const CK_BYTE p256[] = {0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07};
   static const CK_BYTE p384[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22};
   static const CK_BYTE p521[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x23};
@@ -116,19 +116,19 @@ CK_RV cnk_ec_params_to_piv_algorithm(const CK_BYTE *params, CK_ULONG paramsLen, 
   CNK_ENSURE_NONNULL(params, algorithmType);
 
   if (paramsLen == sizeof(p256) && memcmp(params, p256, sizeof(p256)) == 0)
-    *algorithmType = PIV_ALG_ECC_256;
+    *algorithmType = CNK_ALGORITHM_P256;
   else if (paramsLen == sizeof(p384) && memcmp(params, p384, sizeof(p384)) == 0)
-    *algorithmType = PIV_ALG_ECC_384;
+    *algorithmType = CNK_ALGORITHM_P384;
   else if (paramsLen == sizeof(p521) && memcmp(params, p521, sizeof(p521)) == 0)
-    *algorithmType = PIV_ALG_ECC_521;
+    *algorithmType = CNK_ALGORITHM_P521;
   else if (paramsLen == sizeof(secp256k1) && memcmp(params, secp256k1, sizeof(secp256k1)) == 0)
-    *algorithmType = PIV_ALG_SECP256K1;
+    *algorithmType = CNK_ALGORITHM_SECP256K1;
   else if (paramsLen == sizeof(ed25519) && memcmp(params, ed25519, sizeof(ed25519)) == 0)
-    *algorithmType = PIV_ALG_ED25519;
+    *algorithmType = CNK_ALGORITHM_ED25519;
   else if (paramsLen == sizeof(x25519) && memcmp(params, x25519, sizeof(x25519)) == 0)
-    *algorithmType = PIV_ALG_X25519;
+    *algorithmType = CNK_ALGORITHM_X25519;
   else if (paramsLen == sizeof(sm2) && memcmp(params, sm2, sizeof(sm2)) == 0)
-    *algorithmType = PIV_ALG_SM2;
+    *algorithmType = CNK_ALGORITHM_SM2;
   else
     return CKR_ATTRIBUTE_VALUE_INVALID;
   return CKR_OK;

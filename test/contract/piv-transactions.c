@@ -1,0 +1,1071 @@
+// Real PKCS#11 sessions and Rust operations with a deterministic PC/SC card.
+// The fake serializes only Begin/EndTransaction, so an early release or a
+// dependent APDU on a different connection fails the per-handle transcript.
+#include "api/object.h"
+#include "api/session.h"
+#include "backend/pcsc.h"
+#include "internal/logging.h"
+#include <nsync_mu.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#ifdef _WIN32
+#define THREAD_RESULT DWORD WINAPI
+#define THREAD_DONE 0
+static void pause_ms(void) { Sleep(1); }
+#else
+#include <pthread.h>
+#include <time.h>
+#define THREAD_RESULT void *
+#define THREAD_DONE NULL
+static void pause_ms(void) {
+  struct timespec t = {0, 1000000};
+  nanosleep(&t, NULL);
+}
+#endif
+
+#define CHECK(x)                                                                                                       \
+  do {                                                                                                                 \
+    if (!(x)) {                                                                                                        \
+      fprintf(stderr, "%d: %s\n", __LINE__, #x);                                                                       \
+      exit(1);                                                                                                         \
+    }                                                                                                                  \
+  } while (0)
+enum { CONNECTED = 1, BEGUN, ENDED, DISCONNECTED };
+typedef struct {
+  unsigned stage, applet, selects, verifies, crypto, random, recoveryReads, unblocks;
+  CK_BBOOL verified;
+  CK_BYTE pending[2048];
+  size_t pendingLength, pendingOffset;
+} Card;
+static Card cards[256];
+static nsync_mu cardLock;
+static SCARDHANDLE activeCard;
+static atomic_uint connects, begins, ends, disconnects;
+static atomic_bool signPaused, releaseSign, readerWaiting, failSign;
+static SCARDHANDLE signCard;
+static atomic_bool pauseCacheRead, cacheReadPaused, releaseCacheRead;
+static atomic_uint revision;
+static const char *firmwareVersion = "3.1.0";
+static atomic_uint keyPolicy = 2;
+static atomic_bool pauseVerify, verifyPaused, releaseVerify;
+static atomic_bool failProfile, churnProfile;
+static atomic_bool teardownDone;
+static atomic_uint agreementMode;
+static unsigned recoveryMode;
+static bool rejectRecovery;
+static atomic_bool commitPaused, releaseCommit, failCommit;
+static CK_RV (*originalCommitLock)(void *);
+static const char p256PointHex[] = "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8"
+                                   "ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
+static void p256_point(CK_BYTE point[65]) {
+  for (unsigned i = 0; i < 65; i++) {
+    unsigned value;
+    CHECK(sscanf(p256PointHex + 2 * i, "%2x", &value) == 1);
+    point[i] = (CK_BYTE)value;
+  }
+}
+static const CK_BYTE pin[] = "123456";
+
+static void wait_for(atomic_bool *flag) {
+  for (unsigned i = 0; i < 10000 && !atomic_load(flag); ++i)
+    pause_ms();
+  CHECK(atomic_load(flag));
+}
+static LONG establish(DWORD scope, LPCVOID a, LPCVOID b, LPSCARDCONTEXT context) {
+  (void)scope;
+  (void)a;
+  (void)b;
+  *context = 1;
+  return SCARD_S_SUCCESS;
+}
+static LONG release_context(SCARDCONTEXT context) {
+  CHECK(context == 1 && !activeCard && atomic_load(&connects) == atomic_load(&disconnects));
+  return SCARD_S_SUCCESS;
+}
+static LONG readers(SCARDCONTEXT context, LPCSTR groups, LPSTR output, LPDWORD length) {
+  (void)groups;
+  CHECK(context == 1);
+  const char names[] = "Microsoft Smart Card\0CanoKey transaction fixture\0";
+  if (output) {
+    CHECK(*length >= sizeof(names));
+    memcpy(output, names, sizeof(names));
+  }
+  *length = sizeof(names);
+  return SCARD_S_SUCCESS;
+}
+static LONG connect_card(SCARDCONTEXT context, LPCSTR reader, DWORD share, DWORD protocols, LPSCARDHANDLE card,
+                         LPDWORD protocol) {
+  (void)share;
+  (void)protocols;
+  CHECK(context == 1 && !strcmp(reader, "CanoKey transaction fixture"));
+  *card = atomic_fetch_add(&connects, 1) + 1;
+  CHECK(*card < sizeof(cards) / sizeof(cards[0]));
+  cards[*card].stage = CONNECTED;
+  *protocol = SCARD_PROTOCOL_T1;
+  return SCARD_S_SUCCESS;
+}
+static LONG begin(SCARDHANDLE card) {
+  CHECK(cards[card].stage == CONNECTED);
+  if (atomic_load(&signPaused) || atomic_load(&verifyPaused))
+    atomic_store(&readerWaiting, true);
+  nsync_mu_lock(&cardLock);
+  CHECK(activeCard == 0);
+  activeCard = card;
+  cards[card].stage = BEGUN;
+  atomic_fetch_add(&begins, 1);
+  return SCARD_S_SUCCESS;
+}
+static LONG end(SCARDHANDLE card, DWORD disposition) {
+  (void)disposition;
+  CHECK(activeCard == card && cards[card].stage == BEGUN);
+  cards[card].stage = ENDED;
+  activeCard = 0;
+  atomic_fetch_add(&ends, 1);
+  nsync_mu_unlock(&cardLock);
+  return SCARD_S_SUCCESS;
+}
+static LONG disconnect_card(SCARDHANDLE card, DWORD disposition) {
+  (void)disposition;
+  CHECK(cards[card].stage == ENDED);
+  cards[card].stage = DISCONNECTED;
+  atomic_fetch_add(&disconnects, 1);
+  if (cards[card].selects == 2 && atomic_load(&churnProfile))
+    atomic_fetch_add(&g_cnk_managed_binding_epoch, 2);
+  if (atomic_exchange(&pauseCacheRead, false)) {
+    atomic_store(&cacheReadPaused, true);
+    wait_for(&releaseCacheRead);
+  }
+  return SCARD_S_SUCCESS;
+}
+static LONG status_change(SCARDCONTEXT context, DWORD timeout, SCARD_READERSTATE *states, DWORD count) {
+  (void)context;
+  (void)timeout;
+  (void)states;
+  (void)count;
+  pause_ms();
+  return SCARD_E_TIMEOUT;
+}
+static LONG cancel(SCARDCONTEXT context) {
+  (void)context;
+  return SCARD_S_SUCCESS;
+}
+
+static LONG transmit(SCARDHANDLE card, LPCSCARD_IO_REQUEST sendPci, LPCBYTE command, DWORD commandLen,
+                     LPSCARD_IO_REQUEST receivePci, LPBYTE output, LPDWORD length) {
+  (void)sendPci;
+  (void)receivePci;
+  CHECK(activeCard == card && cards[card].stage == BEGUN && commandLen >= 4 && *length >= 300);
+  Card *state = &cards[card];
+  size_t n = 0;
+  if (command[1] == 0xa4) {
+    CHECK(commandLen >= 10 && !state->verified && !state->crypto);
+    state->applet = command[5] == 0xf0 ? 1 : 2;
+    state->selects++;
+    state->verified = CK_FALSE;
+  } else if (state->applet == 1) {
+    if (command[1] == 0x31 && command[2] == 0) {
+      if (atomic_load(&failProfile))
+        return SCARD_E_COMM_DATA_LOST;
+      n = strlen(firmwareVersion);
+      memcpy(output, firmwareVersion, n);
+    } else {
+      output[0] = 0x6d;
+      output[1] = 0;
+      *length = 2;
+      return SCARD_S_SUCCESS;
+    }
+  } else {
+    CHECK(state->applet == 2);
+    switch (command[1]) {
+    case 0xfd:
+      output[n++] = 6;
+      output[n++] = 0;
+      output[n++] = 0;
+      break;
+    case 0xee: {
+      const CK_BYTE config[] = {0, 0xe0, 5, 0x16, 0xe1, 0x53, 0x15, 0x54, 0xe2, 0xe3};
+      memcpy(output, config, sizeof(config));
+      output[0] = atomic_load(&revision) & 1;
+      n = sizeof(config);
+    } break;
+    case 0xf7: {
+      if (command[2] == 1) {
+        const CK_BYTE directory[] = {1, 1, 1, 2, 6, 0x9c, 3, 7, 1, 2, 1};
+        memcpy(output, directory, sizeof(directory));
+        n = sizeof(directory);
+        output[8] = (CK_BYTE)atomic_load(&revision);
+        break;
+      }
+      CHECK(command[3] == 0x9c || command[3] == 0x9d);
+      if (command[3] == 0x9d && atomic_load(&agreementMode)) {
+        if (atomic_load(&agreementMode) == 1) {
+          const CK_BYTE header[] = {1, 1, 0x11, 2, 2, 2, 1, 3, 1, 1, 4, 67, 0x86, 65};
+          memcpy(output, header, sizeof(header));
+          n = sizeof(header);
+          p256_point(output + n);
+          n += 65;
+        } else {
+          const CK_BYTE header[] = {1, 1, 0xe3, 2, 2, 2, 1, 3, 1, 1, 4, 0x82, 4, 0xa4, 0x86, 0x82, 4, 0xa0};
+          memcpy(output, header, sizeof(header));
+          n = sizeof(header);
+          memset(output + n, 0x42, 1184);
+          n += 1184;
+        }
+        break;
+      }
+      const CK_BYTE header[] = {1, 1, 7, 2, 2, 2, 1, 3, 1, 1, 4, 0x82, 1, 9, 0x81, 0x82, 1, 0};
+      memcpy(output, header, sizeof(header));
+      output[5] = (CK_BYTE)atomic_load(&keyPolicy);
+      n = sizeof(header);
+      memset(output + n, atomic_load(&revision) ? (CK_BYTE)atomic_load(&revision) : command[3], 256);
+      output[n + 255] |= 1;
+      n += 256;
+      const CK_BYTE exponent[] = {0x82, 3, 1, 0, 1};
+      memcpy(output + n, exponent, sizeof(exponent));
+      n += sizeof(exponent);
+      break;
+    }
+    case 0xcb: {
+      const CK_BYTE adminTag[] = {0x5c, 3, 0x5f, 0xff, 0};
+      if (recoveryMode && commandLen >= 10 && !memcmp(command + 5, adminTag, sizeof(adminTag))) {
+        CHECK(state->selects == 1 && !state->verifies && !state->recoveryReads);
+        state->recoveryReads++;
+        if (recoveryMode == 4) {
+          output[0] = 0x6a;
+          output[1] = 0x82;
+          *length = 2;
+          return SCARD_S_SUCCESS;
+        }
+        const CK_BYTE policy[] = {0x53, 5, 0x80, 3, 0x81, 1, 2};
+        memcpy(output, policy, sizeof(policy));
+        n = recoveryMode == 1 ? 2 : sizeof(policy);
+        if (recoveryMode == 1)
+          output[1] = 0;
+        if (recoveryMode == 3)
+          output[3] = 99;
+        if (recoveryMode == 5)
+          output[6] = 3;
+        if (recoveryMode == 6) {
+          const CK_BYTE missing[] = {0x53, 4, 0x80, 2, 0x82, 0};
+          memcpy(output, missing, sizeof(missing));
+          n = sizeof(missing);
+        }
+        if (recoveryMode == 7) {
+          const CK_BYTE duplicate[] = {0x53, 8, 0x80, 6, 0x81, 1, 0, 0x81, 1, 3};
+          memcpy(output, duplicate, sizeof(duplicate));
+          n = sizeof(duplicate);
+        }
+        if (recoveryMode == 8)
+          return SCARD_E_NOT_TRANSACTED;
+        break;
+      }
+      // Framing fixture only; certificate trust/ASN.1 inspection is not involved.
+      const CK_BYTE certificate[] = {0x53, 12, 0x70, 5, 0x30, 3, 2, 1, 0, 0x71, 1, 0, 0xfe, 0};
+      memcpy(output, certificate, sizeof(certificate));
+      n = sizeof(certificate);
+      output[8] = (CK_BYTE)atomic_load(&revision);
+      break;
+    }
+    case 0x2c:
+      CHECK(recoveryMode && state->selects == 1 && state->recoveryReads == 1 && !state->verifies);
+      CHECK(commandLen >= 21 && command[3] == 0x80 && command[4] == 16);
+      CHECK(!memcmp(command + 5, "fixture8", 8) && !memcmp(command + 13, pin, 6));
+      state->unblocks++;
+      if (rejectRecovery) {
+        output[0] = 0x63;
+        output[1] = 0xc2;
+        *length = 2;
+        return SCARD_S_SUCCESS;
+      }
+      break;
+    case 0x24:
+      CHECK(state->selects == 1 && command[3] == 0x80 && commandLen >= 21 && command[4] == 16);
+      CHECK(!memcmp(command + 5, pin, 6) && !memcmp(command + 13, pin, 6));
+      break;
+    case 0x20:
+      if (command[2] == 0xff)
+        state->verified = CK_FALSE;
+      else {
+        CHECK(commandLen >= 13 && !memcmp(command + 5, pin, 6));
+        state->verifies++;
+        state->verified = CK_TRUE;
+        if (atomic_exchange(&pauseVerify, false)) {
+          atomic_store(&verifyPaused, true);
+          wait_for(&releaseVerify);
+        }
+      }
+      break;
+    case 0xc0: {
+      CHECK(state->pendingLength > state->pendingOffset);
+      size_t remaining = state->pendingLength - state->pendingOffset;
+      n = remaining > 256 ? 256 : remaining;
+      memcpy(output, state->pending + state->pendingOffset, n);
+      state->pendingOffset += n;
+      remaining -= n;
+      if (remaining) {
+        output[n++] = 0x61;
+        output[n++] = remaining >= 256 ? 0 : (CK_BYTE)remaining;
+        *length = (DWORD)n;
+        return SCARD_S_SUCCESS;
+      }
+      state->pendingLength = state->pendingOffset = 0;
+      break;
+    }
+    case 0x87: {
+      if (command[3] == 0x9d && atomic_load(&agreementMode)) {
+        CHECK(state->selects == 1 && state->verified && state->verifies == 1);
+        CHECK(command[2] == (atomic_load(&agreementMode) == 1 ? 0x11 : 0xe3));
+        if (command[0] & 0x10)
+          break;
+        const CK_BYTE header[] = {0x7c, 34, 0x82, 32};
+        memcpy(output, header, sizeof(header));
+        n = sizeof(header);
+        memset(output + n, 0x5a, 32);
+        n += 32;
+        break;
+      }
+      CHECK(state->selects == 1 && command[3] == 0x9c);
+      CHECK(atomic_load(&keyPolicy) == 1 ? state->verifies == 0 : state->verified && state->verifies == 1);
+      state->crypto++;
+      if (command[0] & 0x10)
+        break;
+      signCard = card;
+      atomic_store(&signPaused, true);
+      wait_for(&releaseSign);
+      if (atomic_load(&failSign))
+        return SCARD_E_COMM_DATA_LOST;
+      const CK_BYTE header[] = {0x7c, 0x82, 1, 4, 0x82, 0x82, 1, 0};
+      memcpy(output, header, sizeof(header));
+      n = sizeof(header);
+      memset(output + n, 0xa5, 256);
+      n += 256;
+      break;
+    }
+    case 0x84:
+      CHECK(!state->verified && state->selects == 1 && commandLen == 5 && command[4] == 32);
+      memset(output, 0x5a, 32);
+      n = 32;
+      state->random++;
+      break;
+    default:
+      CHECK(0);
+    }
+  }
+  if (n > 256) {
+    CHECK(n <= sizeof(state->pending));
+    memcpy(state->pending, output, n);
+    state->pendingLength = n;
+    state->pendingOffset = 256;
+    output[256] = 0x61;
+    output[257] = n - 256 >= 256 ? 0 : (CK_BYTE)(n - 256);
+    *length = 258;
+    return SCARD_S_SUCCESS;
+  }
+  output[n++] = 0x90;
+  output[n++] = 0;
+  CHECK(n <= *length);
+  *length = (DWORD)n;
+  return SCARD_S_SUCCESS;
+}
+
+typedef struct {
+  CK_SESSION_HANDLE session;
+  CK_RV result;
+  CK_BYTE output[256];
+  CK_ULONG length;
+} Worker;
+static THREAD_RESULT sign_worker(void *opaque) {
+  Worker *worker = opaque;
+  CK_BYTE input[256];
+  memset(input, 0x11, sizeof(input));
+  worker->length = sizeof(worker->output);
+  worker->result = C_Sign(worker->session, input, sizeof(input), worker->output, &worker->length);
+  return THREAD_DONE;
+}
+static THREAD_RESULT random_worker(void *opaque) {
+  Worker *worker = opaque;
+  worker->result = C_GenerateRandom(worker->session, worker->output, 32);
+  return THREAD_DONE;
+}
+
+typedef struct {
+  CNK_PKCS11_SESSION *session;
+  unsigned kind;
+  CK_BYTE value;
+  CK_RV result;
+} CacheWorker;
+static void read_cache(CacheWorker *worker) {
+  if (worker->kind == 0) {
+    CNK_PIV_PUBLIC_KEY key;
+    uint32_t algorithm;
+    worker->result = cnk_get_metadata_cached(worker->session, 0x9c, &algorithm, &key, NULL, NULL);
+    if (worker->result == CKR_OK)
+      worker->value = key.value[0];
+  } else if (worker->kind == 1) {
+    CK_BYTE certificate[32];
+    CK_ULONG length = sizeof(certificate);
+    worker->result = cnk_get_piv_certificate_cached(worker->session, 0x9c, certificate, &length, CK_TRUE);
+    if (worker->result == CKR_OK) {
+      CHECK(length == 5);
+      worker->value = certificate[4];
+    }
+  } else if (worker->kind == 2) {
+    CNK_PIV_METADATA_DIRECTORY_ENTRY directory[24];
+    CK_ULONG count = 24;
+    worker->result = cnk_get_piv_metadata_directory_cached(worker->session, directory, &count);
+    if (worker->result == CKR_OK) {
+      CHECK(count == 1);
+      worker->value = directory[0].origin;
+    }
+  } else {
+    cnk_piv_capabilities_v1 capabilities;
+    worker->result = cnk_session_piv_capabilities(worker->session, &capabilities);
+    if (worker->result == CKR_OK)
+      worker->value = !!(capabilities.algorithms & (1u << CNK_ALGORITHM_ED25519));
+  }
+}
+static THREAD_RESULT cache_worker(void *opaque) {
+  read_cache(opaque);
+  return THREAD_DONE;
+}
+static void invalidate_cache(CacheWorker *worker) {
+  if (worker->kind >= 3)
+    CHECK(cnk_token_invalidate_public_cache(0) == CKR_OK);
+  else
+    cnk_piv_public_cache_invalidate(worker->session);
+}
+static CK_RV reject_lock(void *opaque) {
+  (void)opaque;
+  return CKR_CANT_LOCK;
+}
+static CK_RV (*original_lock)(void *), (*original_unlock)(void *);
+static unsigned lock_call, unlock_call, reject_lock_at, reject_unlock_at;
+static CK_RV counted_lock(void *opaque) {
+  return ++lock_call == reject_lock_at ? CKR_CANT_LOCK : original_lock(opaque);
+}
+static CK_RV counted_unlock(void *opaque) {
+  CK_RV rv = original_unlock(opaque);
+  return ++unlock_call == reject_unlock_at ? CKR_CANT_LOCK : rv;
+}
+static void cache_contract(CK_SESSION_HANDLE handle) {
+#ifdef _WIN32
+  _putenv_s("CNK_PIV_METADATA_CACHE", "1");
+#else
+  setenv("CNK_PIV_METADATA_CACHE", "1", 1);
+#endif
+  cnk_config_logging_from_env();
+  CNK_PKCS11_SESSION *session = NULL;
+  CHECK(cnk_session_find(handle, &session) == CKR_OK);
+  for (unsigned kind = 0; kind < 5; kind++) {
+    CacheWorker worker = {.session = session, .kind = kind};
+    atomic_store(&revision, 0xa0);
+    invalidate_cache(&worker);
+    atomic_store(&cacheReadPaused, false);
+    atomic_store(&releaseCacheRead, false);
+    atomic_store(&pauseCacheRead, true);
+#ifdef _WIN32
+    HANDLE thread = CreateThread(NULL, 0, cache_worker, &worker, 0, NULL);
+    CHECK(thread);
+#else
+    pthread_t thread;
+    CHECK(pthread_create(&thread, NULL, cache_worker, &worker) == 0);
+#endif
+    wait_for(&cacheReadPaused);
+    // The old read has released its card transaction, but has not published.
+    // Model a concurrent writer and the production invalidation it must issue.
+    atomic_store(&revision, 0xb1);
+    if (kind == 4)
+      atomic_fetch_add(&g_cnk_managed_binding_epoch, 2);
+    else
+      invalidate_cache(&worker);
+    atomic_store(&releaseCacheRead, true);
+#ifdef _WIN32
+    CHECK(WaitForSingleObject(thread, 10000) == WAIT_OBJECT_0);
+    CloseHandle(thread);
+#else
+    CHECK(pthread_join(thread, NULL) == 0);
+#endif
+    CHECK(worker.result == CKR_OK && worker.value == (kind >= 3 ? 1 : 0xa0));
+    read_cache(&worker);
+    CHECK(worker.result == CKR_OK && worker.value == (kind >= 3 ? 1 : 0xb1));
+    unsigned before = atomic_load(&connects);
+    read_cache(&worker);
+    CHECK(worker.result == CKR_OK && atomic_load(&connects) == before);
+    if (kind < 3) {
+      original_lock = session->token->lock.lock;
+      atomic_store(&revision, 0xc2);
+      session->token->lock.lock = reject_lock;
+      invalidate_cache(&worker);
+      session->token->lock.lock = original_lock;
+      read_cache(&worker);
+      CHECK(worker.result == CKR_OK && worker.value == 0xc2);
+      atomic_store(&revision, 0xd3);
+      session->token->lock.lock = reject_lock;
+      CHECK(cnk_token_invalidate_public_cache(0) == CKR_CANT_LOCK);
+      session->token->lock.lock = original_lock;
+      read_cache(&worker);
+      CHECK(worker.result == CKR_OK && worker.value == 0xd3);
+      // Fail every token lock/unlock in a cache miss, including publication.
+      // Wrappers release before reporting an unlock failure, as a faulty host
+      // callback may do; all card transactions still have to drain correctly.
+      for (unsigned unlock = 0; unlock < 2; unlock++) {
+        for (unsigned site = 1; site <= (kind == 0 ? 5u : 4u); site++) {
+          CHECK(cnk_ensure_libcanokey_profile(session) == CKR_OK);
+          invalidate_cache(&worker);
+          worker.value = 0xcc;
+          lock_call = unlock_call = 0;
+          reject_lock_at = unlock ? 0 : site;
+          reject_unlock_at = unlock ? site : 0;
+          original_unlock = session->token->lock.unlock;
+          session->token->lock.lock = counted_lock;
+          session->token->lock.unlock = counted_unlock;
+          read_cache(&worker);
+          session->token->lock.lock = original_lock;
+          session->token->lock.unlock = original_unlock;
+          CHECK(worker.result == CKR_CANT_LOCK && worker.value == 0xcc);
+          CHECK(atomic_load(&connects) == atomic_load(&disconnects));
+        }
+      }
+      read_cache(&worker);
+      CHECK(worker.result == CKR_OK);
+      // Expiry applies independently to each public snapshot kind.
+      if (kind == 0)
+        session->token->pivPublicCache.slots[1].metadataRefreshedAtMs = 0;
+      else if (kind == 1)
+        session->token->pivPublicCache.slots[1].certificateRefreshedAtMs = 0;
+      else
+        session->token->pivPublicCache.directoryRefreshedAtMs = 0;
+      atomic_store(&revision, 0xe4);
+      before = atomic_load(&connects);
+      read_cache(&worker);
+      CHECK(worker.result == CKR_OK && worker.value == 0xe4 && atomic_load(&connects) == before + 1);
+      if (kind == 1) {
+        CK_BYTE output = 0xcc;
+        CK_ULONG length = 1;
+        CHECK(cnk_get_piv_certificate_cached(session, 0x9c, &output, &length, CK_TRUE) == CKR_BUFFER_TOO_SMALL);
+        CHECK(length == 5 && output == 0xcc);
+        CHECK(cnk_get_piv_certificate_cached(session, 0x9c, NULL, NULL, CK_FALSE) == CKR_OK);
+      } else if (kind == 2) {
+        CNK_PIV_METADATA_DIRECTORY_ENTRY output;
+        memset(&output, 0xcc, sizeof(output));
+        CK_ULONG count = 0;
+        CHECK(cnk_get_piv_metadata_directory_cached(session, &output, &count) == CKR_BUFFER_TOO_SMALL);
+        CHECK(count == 1 && output.pivSlot == 0xcc);
+      }
+    }
+  }
+  cnk_session_release_ref(&session);
+  puts("Public cache invalidation cannot republish a superseded read");
+}
+
+static THREAD_RESULT profile_worker(void *opaque) {
+  CacheWorker *worker = opaque;
+  worker->result = cnk_ensure_libcanokey_profile(worker->session);
+  return THREAD_DONE;
+}
+static void capabilities_contract(void) {
+  unsigned previousRevision = atomic_load(&revision);
+  const char *versions[] = {"3.0.0", "3.0.1", "3.1.0-dev"};
+  for (unsigned version = 0; version < 3; version++) {
+    firmwareVersion = versions[version];
+    for (unsigned enabled = 0; enabled < 2; enabled++) {
+      atomic_store(&revision, enabled);
+      CHECK(cnk_token_invalidate_public_cache(0) == CKR_OK);
+      CK_MECHANISM_TYPE mechanisms[80];
+      CK_ULONG count = 80;
+      CHECK(C_GetMechanismList(0, mechanisms, &count) == CKR_OK);
+      CK_BBOOL eddsa = CK_FALSE;
+      for (CK_ULONG i = 0; i < count; i++) {
+        CK_MECHANISM_INFO info;
+        CHECK(C_GetMechanismInfo(0, mechanisms[i], &info) == CKR_OK);
+        if (mechanisms[i] == CKM_EDDSA)
+          eddsa = CK_TRUE;
+      }
+      CHECK(eddsa == (version != 0 && enabled != 0));
+      CK_MECHANISM_INFO info;
+      CHECK(C_GetMechanismInfo(0, CKM_EDDSA, &info) == (eddsa ? CKR_OK : CKR_MECHANISM_INVALID));
+    }
+  }
+  firmwareVersion = "3.1.0";
+  atomic_store(&revision, previousRevision);
+  CHECK(cnk_token_invalidate_public_cache(0) == CKR_OK);
+  puts("Mechanism list/info share firmware and observed-configuration capability gates");
+}
+
+static void profile_contract(CK_SESSION_HANDLE a, CK_SESSION_HANDLE b) {
+  CNK_PKCS11_SESSION *first = NULL, *second = NULL;
+  CHECK(cnk_session_find(a, &first) == CKR_OK && cnk_session_find(b, &second) == CKR_OK);
+  CHECK(cnk_ensure_libcanokey_profile(first) == CKR_OK);
+  cnk_profile_t *previous = first->token->libcanokeyProfile;
+  first->token->libcanokeyProfileRefreshedAtMs = 0;
+  atomic_store(&failProfile, true);
+  for (unsigned retry = 0; retry < 2; retry++) {
+    CHECK(cnk_ensure_libcanokey_profile(first) == CKR_DEVICE_ERROR);
+    CHECK(first->token->libcanokeyProfile == previous && first->token->libcanokeyProfileRefreshedAtMs == 0);
+  }
+  atomic_store(&failProfile, false);
+  atomic_store(&churnProfile, true);
+  unsigned before = atomic_load(&connects);
+  CHECK(cnk_ensure_libcanokey_profile(first) == CKR_OPERATION_ACTIVE);
+  CHECK(atomic_load(&connects) == before + 3 && first->token->libcanokeyProfile == previous);
+  atomic_store(&churnProfile, false);
+  CHECK(cnk_ensure_libcanokey_profile(first) == CKR_OK);
+  original_lock = first->token->lock.lock;
+  original_unlock = first->token->lock.unlock;
+  for (unsigned at = 1; at <= 2; at++) {
+    if (at == 2)
+      first->token->libcanokeyProfileRefreshedAtMs = 0;
+    unlock_call = 0;
+    reject_unlock_at = at;
+    first->token->lock.unlock = counted_unlock;
+    CHECK(cnk_ensure_libcanokey_profile(first) == CKR_CANT_LOCK);
+    first->token->lock.unlock = original_unlock;
+    CHECK(cnk_ensure_libcanokey_profile(first) == CKR_OK);
+  }
+  first->token->libcanokeyProfileRefreshedAtMs = 0;
+  lock_call = 0;
+  reject_lock_at = 2;
+  first->token->lock.lock = counted_lock;
+  CHECK(cnk_ensure_libcanokey_profile(first) == CKR_CANT_LOCK);
+  first->token->lock.lock = original_lock;
+  CHECK(cnk_ensure_libcanokey_profile(first) == CKR_OK);
+
+  CK_MECHANISM mechanism = {CKM_RSA_X_509, NULL, 0};
+  CHECK(C_SignInit(a, &mechanism, CNK_MakeObjectHandle(0, CKO_PRIVATE_KEY, 2)) == CKR_OK);
+  atomic_store(&signPaused, false);
+  atomic_store(&failSign, false);
+  atomic_store(&releaseSign, true);
+  atomic_store(&verifyPaused, false);
+  atomic_store(&releaseVerify, false);
+  atomic_store(&pauseVerify, true);
+  atomic_store(&readerWaiting, false);
+  Worker signing = {.session = a};
+  CacheWorker refreshing = {.session = second};
+#ifdef _WIN32
+  HANDLE signer = CreateThread(NULL, 0, sign_worker, &signing, 0, NULL);
+  CHECK(signer);
+#else
+  pthread_t signer, refresher;
+  CHECK(pthread_create(&signer, NULL, sign_worker, &signing) == 0);
+#endif
+  wait_for(&verifyPaused);
+  CHECK(cnk_mutex_lock(&first->token->lock) == CKR_OK);
+  first->token->libcanokeyProfileRefreshedAtMs = 0;
+  CHECK(cnk_mutex_unlock(&first->token->lock) == CKR_OK);
+#ifdef _WIN32
+  HANDLE refresher = CreateThread(NULL, 0, profile_worker, &refreshing, 0, NULL);
+  CHECK(refresher);
+#else
+  CHECK(pthread_create(&refresher, NULL, profile_worker, &refreshing) == 0);
+#endif
+  wait_for(&readerWaiting);
+  CHECK(cnk_mutex_lock(&first->token->lock) == CKR_OK);
+  CHECK(first->token->libcanokeyProfile != NULL);
+  CHECK(cnk_mutex_unlock(&first->token->lock) == CKR_OK);
+  atomic_store(&releaseVerify, true);
+#ifdef _WIN32
+  CHECK(WaitForSingleObject(signer, 10000) == WAIT_OBJECT_0 && WaitForSingleObject(refresher, 10000) == WAIT_OBJECT_0);
+  CloseHandle(refresher);
+  CloseHandle(signer);
+#else
+  CHECK(pthread_join(signer, NULL) == 0 && pthread_join(refresher, NULL) == 0);
+#endif
+  CHECK(signing.result == CKR_OK && refreshing.result == CKR_OK && signing.output[0] == 0xa5);
+  cnk_session_release_ref(&second);
+  cnk_session_release_ref(&first);
+  puts("Profile expiry and failed callbacks preserve admitted transactions and ownership");
+}
+
+static THREAD_RESULT close_worker(void *opaque) {
+  Worker *worker = opaque;
+  worker->result = C_CloseSession(worker->session);
+  atomic_store(&teardownDone, true);
+  return THREAD_DONE;
+}
+static THREAD_RESULT finalize_worker(void *opaque) {
+  Worker *worker = opaque;
+  worker->result = C_Finalize(NULL);
+  atomic_store(&teardownDone, true);
+  return THREAD_DONE;
+}
+static void teardown_contract(CK_SESSION_HANDLE session, CK_BBOOL finalize) {
+  CK_MECHANISM mechanism = {CKM_RSA_X_509, NULL, 0};
+  CHECK(C_SignInit(session, &mechanism, CNK_MakeObjectHandle(0, CKO_PRIVATE_KEY, 2)) == CKR_OK);
+  atomic_store(&signPaused, false);
+  atomic_store(&releaseSign, false);
+  atomic_store(&failSign, false);
+  atomic_store(&teardownDone, false);
+  Worker signing = {.session = session}, closing = {.session = session};
+#ifdef _WIN32
+  HANDLE signer = CreateThread(NULL, 0, sign_worker, &signing, 0, NULL);
+  CHECK(signer);
+#else
+  pthread_t signer, closer;
+  CHECK(pthread_create(&signer, NULL, sign_worker, &signing) == 0);
+#endif
+  wait_for(&signPaused);
+  CNK_PKCS11_SESSION *reference = NULL;
+  CHECK(cnk_session_find(session, &reference) == CKR_OK);
+  CNK_PKCS11_SESSION *pinned = reference;
+  cnk_session_release_ref(&reference);
+  // The paused signer pins this pointer until released. Closing may reject new
+  // references now, but must not free its context, token or Rust operation.
+#ifdef _WIN32
+  HANDLE closer = CreateThread(NULL, 0, finalize ? finalize_worker : close_worker, &closing, 0, NULL);
+  CHECK(closer);
+#else
+  CHECK(pthread_create(&closer, NULL, finalize ? finalize_worker : close_worker, &closing) == 0);
+#endif
+  for (unsigned i = 0; i < 10000; i++) {
+    if (finalize ? !atomic_load(&g_cnk_is_initialized) : atomic_load(&pinned->closing))
+      break;
+    pause_ms();
+  }
+  CHECK(finalize ? !atomic_load(&g_cnk_is_initialized) : atomic_load(&pinned->closing));
+  CHECK(!atomic_load(&teardownDone) && activeCard == signCard && cards[signCard].stage == BEGUN);
+  if (finalize) {
+    CK_SESSION_HANDLE rejected = 0;
+    CHECK(C_OpenSession(0, CKF_SERIAL_SESSION, NULL, NULL, &rejected) == CKR_CRYPTOKI_NOT_INITIALIZED);
+  }
+  atomic_store(&releaseSign, true);
+#ifdef _WIN32
+  CHECK(WaitForSingleObject(signer, 10000) == WAIT_OBJECT_0 && WaitForSingleObject(closer, 10000) == WAIT_OBJECT_0);
+  CloseHandle(closer);
+  CloseHandle(signer);
+#else
+  CHECK(pthread_join(signer, NULL) == 0 && pthread_join(closer, NULL) == 0);
+#endif
+  CHECK(signing.result == CKR_OK && signing.length == 256 && signing.output[0] == 0xa5 && closing.result == CKR_OK);
+  CHECK(!activeCard && atomic_load(&connects) == atomic_load(&disconnects));
+}
+
+static void decrypt_preflight_contract(CK_SESSION_HANDLE session) {
+  CK_RSA_PKCS_PSS_PARAMS pss = {CKM_SHA384, CKG_MGF1_SHA384, 48};
+  CK_MECHANISM combined = {CKM_SHA256_RSA_PKCS_PSS, &pss, sizeof(pss)};
+  CK_OBJECT_HANDLE rsaKey = CNK_MakeObjectHandle(0, CKO_PRIVATE_KEY, 2);
+  // Matching hash/MGF is insufficient when a combined mechanism fixes another hash.
+  CHECK(C_SignInit(session, &combined, rsaKey) == CKR_MECHANISM_PARAM_INVALID);
+  combined.mechanism = CKM_RSA_PKCS_PSS;
+  CHECK(C_SignInit(session, &combined, rsaKey) == CKR_OK);
+  CHECK(C_SessionCancel(session, CKF_SIGN) == CKR_OK);
+  pss.mgf = CKG_MGF1_SHA256;
+  CHECK(C_SignInit(session, &combined, rsaKey) == CKR_MECHANISM_PARAM_INVALID);
+
+  CK_BYTE ciphertext[256], output[256];
+  memset(ciphertext, 0x11, sizeof(ciphertext));
+  CK_RSA_PKCS_OAEP_PARAMS oaep = {CKM_SHA256, CKG_MGF1_SHA256, CKZ_DATA_SPECIFIED, NULL, 0};
+  CK_MECHANISM mechanisms[] = {
+      {CKM_RSA_X_509, NULL, 0}, {CKM_RSA_PKCS, NULL, 0}, {CKM_RSA_PKCS_OAEP, &oaep, sizeof(oaep)}};
+  const CK_ULONG bounds[] = {256, 245, 190};
+  atomic_store(&releaseSign, true);
+  atomic_store(&failSign, false);
+  for (unsigned policy = 1; policy <= 3; policy++) {
+    atomic_store(&keyPolicy, policy);
+    for (unsigned kind = 0; kind < 3; kind++) {
+      CHECK(C_DecryptInit(session, &mechanisms[kind], CNK_MakeObjectHandle(0, CKO_PRIVATE_KEY, 2)) == CKR_OK);
+      unsigned before = atomic_load(&connects);
+      CK_ULONG length = 0;
+      CHECK(C_Decrypt(session, ciphertext, sizeof(ciphertext), NULL, &length) == CKR_OK && length == bounds[kind]);
+      memset(output, 0xcc, sizeof(output));
+      length = 1;
+      CHECK(C_Decrypt(session, ciphertext, sizeof(ciphertext), output, &length) == CKR_BUFFER_TOO_SMALL);
+      CHECK(length == bounds[kind] && output[0] == 0xcc && atomic_load(&connects) == before);
+      if (policy == 3)
+        CHECK(C_Login(session, CKU_CONTEXT_SPECIFIC, (CK_UTF8CHAR_PTR)pin, 6) == CKR_OK);
+      before = atomic_load(&connects);
+      length = bounds[kind] - 1;
+      CHECK(C_Decrypt(session, ciphertext, sizeof(ciphertext), output, &length) == CKR_BUFFER_TOO_SMALL);
+      CHECK(length == bounds[kind] && output[0] == 0xcc && atomic_load(&connects) == before);
+      CNK_PKCS11_SESSION *held = NULL;
+      CHECK(cnk_session_find(session, &held) == CKR_OK);
+      CHECK(held->decryptingContext.hKey != 0);
+      CHECK(held->decryptingContext.contextAuthenticated == (policy == 3));
+      cnk_session_release_ref(&held);
+      if (kind == 0) {
+        length = sizeof(output);
+        CHECK(C_Decrypt(session, ciphertext, sizeof(ciphertext), output, &length) == CKR_OK);
+        CHECK(length == 256 && output[0] == 0xa5 && atomic_load(&connects) == before + 1);
+      } else
+        CHECK(C_SessionCancel(session, CKF_DECRYPT) == CKR_OK);
+    }
+  }
+  atomic_store(&keyPolicy, 2);
+  puts("Decrypt size/short-buffer preflight preserves authentication without card I/O");
+}
+
+static CK_RV pause_secret_commit(void *opaque) {
+  atomic_store(&commitPaused, true);
+  wait_for(&releaseCommit);
+  return atomic_load(&failCommit) ? CKR_CANT_LOCK : originalCommitLock(opaque);
+}
+typedef struct {
+  CK_SESSION_HANDLE session;
+  CK_OBJECT_HANDLE key;
+  CK_RV result;
+  unsigned mode;
+} AgreementWorker;
+static THREAD_RESULT agreement_worker(void *opaque) {
+  AgreementWorker *worker = opaque;
+  CK_BBOOL no = CK_FALSE, yes = CK_TRUE;
+  CK_ULONG length = 32;
+  CK_ATTRIBUTE attributes[] = {
+      {CKA_SENSITIVE, &no, sizeof(no)}, {CKA_EXTRACTABLE, &yes, sizeof(yes)}, {CKA_VALUE_LEN, &length, sizeof(length)}};
+  CK_OBJECT_HANDLE private = CNK_MakeObjectHandle(0, CKO_PRIVATE_KEY, 3);
+  if (worker->mode == 1) {
+    CK_BYTE point[65];
+    p256_point(point);
+    CK_ECDH1_DERIVE_PARAMS params = {CKD_NULL, 0, NULL, sizeof(point), point};
+    CK_MECHANISM mechanism = {CKM_ECDH1_DERIVE, &params, sizeof(params)};
+    worker->result = C_DeriveKey(worker->session, &mechanism, private, attributes, 3, &worker->key);
+  } else {
+    CK_BYTE ciphertext[1088];
+    memset(ciphertext, 0x42, sizeof(ciphertext));
+    CK_MECHANISM mechanism = {CKM_ML_KEM, NULL, 0};
+    worker->result = C_DecapsulateKey(worker->session, &mechanism, private, attributes, 3, ciphertext,
+                                      sizeof(ciphertext), &worker->key);
+  }
+  return THREAD_DONE;
+}
+static void agreement_commit_contract(CK_SESSION_HANDLE a, CK_SESSION_HANDLE b) {
+  CNK_PKCS11_SESSION *first = NULL, *second = NULL;
+  CHECK(cnk_session_find(a, &first) == CKR_OK && cnk_session_find(b, &second) == CKR_OK);
+  originalCommitLock = first->lock.lock;
+  for (unsigned mode = 1; mode <= 2; mode++) {
+    atomic_store(&agreementMode, mode);
+    cnk_piv_public_cache_invalidate(first);
+    for (unsigned failure = 0; failure < 2; failure++) {
+      atomic_store(&commitPaused, false);
+      atomic_store(&releaseCommit, false);
+      atomic_store(&failCommit, failure != 0);
+      first->lock.lock = pause_secret_commit;
+      AgreementWorker worker = {.session = a, .mode = mode};
+#ifdef _WIN32
+      HANDLE thread = CreateThread(NULL, 0, agreement_worker, &worker, 0, NULL);
+      CHECK(thread);
+#else
+      pthread_t thread;
+      CHECK(pthread_create(&thread, NULL, agreement_worker, &worker) == 0);
+#endif
+      wait_for(&commitPaused);
+      // Card I/O has ended. The token reservation must survive until the
+      // session-owned result is committed or its publication fails.
+      CHECK(atomic_load(&g_cnk_pcsc_operations) == 0 && !activeCard && worker.key == 0);
+      CHECK(C_Logout(b) == CKR_OPERATION_ACTIVE);
+      CHECK(cnk_token_begin_user_operation(second) == CKR_OPERATION_ACTIVE);
+      atomic_store(&releaseCommit, true);
+#ifdef _WIN32
+      CHECK(WaitForSingleObject(thread, 10000) == WAIT_OBJECT_0);
+      CloseHandle(thread);
+#else
+      CHECK(pthread_join(thread, NULL) == 0);
+#endif
+      first->lock.lock = originalCommitLock;
+      CHECK(worker.result == (failure ? CKR_CANT_LOCK : CKR_OK));
+      CHECK(!first->token->managementOperationPending);
+      if (failure)
+        CHECK(worker.key == 0);
+      else {
+        CK_BYTE secret[32];
+        CK_ATTRIBUTE value = {CKA_VALUE, secret, sizeof(secret)};
+        CHECK(C_GetAttributeValue(a, worker.key, &value, 1) == CKR_OK && value.ulValueLen == sizeof(secret));
+        for (unsigned i = 0; i < sizeof(secret); i++)
+          CHECK(secret[i] == 0x5a);
+        CHECK(C_GetAttributeValue(b, worker.key, &value, 1) == CKR_OBJECT_HANDLE_INVALID);
+        CHECK(C_DestroyObject(a, worker.key) == CKR_OK);
+      }
+      CHECK(C_Logout(b) == CKR_OK);
+      CHECK(C_Login(a, CKU_USER, (CK_UTF8CHAR_PTR)pin, 6) == CKR_OK);
+    }
+  }
+  atomic_store(&agreementMode, 0);
+  cnk_piv_public_cache_invalidate(first);
+  cnk_session_release_ref(&second);
+  cnk_session_release_ref(&first);
+  puts("ECDH/ML-KEM reservations cover result publication and failed commit cleanup");
+}
+
+static void recovery_contract(CK_SESSION_HANDLE session) {
+  const CK_BYTE puk[] = "fixture8";
+  for (recoveryMode = 1; recoveryMode <= 8; recoveryMode++) {
+    for (unsigned failure = 0; failure < 2; failure++) {
+      unsigned before = atomic_load(&connects);
+      rejectRecovery = failure != 0;
+      CK_BYTE tries = 99;
+      CK_RV expected = (recoveryMode == 2 || recoveryMode == 5)   ? CKR_ACTION_PROHIBITED
+                       : (recoveryMode == 3 || recoveryMode >= 6) ? CKR_DEVICE_ERROR
+                       : rejectRecovery                           ? CKR_PIN_INCORRECT
+                                                                  : CKR_OK;
+      CHECK(C_CNK_UnblockPIN(session, (CK_UTF8CHAR_PTR)puk, 8, (CK_UTF8CHAR_PTR)pin, 6, &tries) == expected);
+      CHECK(atomic_load(&connects) == before + 1 && !activeCard);
+      Card *card = &cards[before + 1];
+      CHECK(card->stage == DISCONNECTED && card->selects == 1 && card->recoveryReads == 1 && !card->verifies);
+      CHECK(card->unblocks == (recoveryMode == 1 || recoveryMode == 4));
+      if (expected == CKR_PIN_INCORRECT)
+        CHECK(tries == 2);
+    }
+  }
+  recoveryMode = 0;
+  CHECK(C_Logout(session) == CKR_OK);
+  CHECK(C_SetPIN(session, (CK_UTF8CHAR_PTR)pin, 6, (CK_UTF8CHAR_PTR)pin, 6) == CKR_OK);
+  CNK_PKCS11_SESSION *ref = NULL;
+  CHECK(cnk_session_find(session, &ref) == CKR_OK);
+  unsigned preflight = atomic_load(&connects);
+  CHECK(C_CNK_UnblockPIN(session, (CK_UTF8CHAR_PTR)puk, 8, (CK_UTF8CHAR_PTR)pin, 0, NULL) == CKR_PIN_LEN_RANGE);
+  CK_FLAGS flags = ref->flags;
+  ref->flags &= ~CKF_RW_SESSION;
+  CHECK(C_CNK_UnblockPIN(session, (CK_UTF8CHAR_PTR)puk, 8, (CK_UTF8CHAR_PTR)pin, 6, NULL) == CKR_SESSION_READ_ONLY);
+  ref->flags = flags;
+  CHECK(cnk_token_begin_card_operation(ref) == CKR_OK);
+  CHECK(C_CNK_UnblockPIN(session, (CK_UTF8CHAR_PTR)puk, 8, (CK_UTF8CHAR_PTR)pin, 6, NULL) == CKR_OPERATION_ACTIVE);
+  cnk_token_end_management_operation(ref);
+  CHECK(atomic_load(&connects) == preflight);
+  ref->token->libcanokeyProfileRefreshedAtMs = 0;
+  atomic_store(&failProfile, true);
+  CHECK(C_CNK_UnblockPIN(session, (CK_UTF8CHAR_PTR)puk, 8, (CK_UTF8CHAR_PTR)pin, 6, NULL) == CKR_DEVICE_ERROR);
+  atomic_store(&failProfile, false);
+  CHECK(!activeCard && !ref->token->managementOperationPending);
+  CHECK(cnk_ensure_libcanokey_profile(ref) == CKR_OK);
+  CHECK(ref->token->loginState == TOKEN_LOGIN_PUBLIC && !ref->token->cbPin && !ref->token->managementOperationPending);
+  // Preserve the explicit SO rejection and the exclusion of concurrent logout.
+  ref->token->loginState = TOKEN_LOGIN_SO;
+  unsigned before = atomic_load(&connects);
+  CHECK(C_SetPIN(session, (CK_UTF8CHAR_PTR)pin, 6, (CK_UTF8CHAR_PTR)pin, 6) == CKR_USER_NOT_LOGGED_IN);
+  CHECK(atomic_load(&connects) == before);
+  ref->token->loginState = TOKEN_LOGIN_PUBLIC;
+  ref->token->logoutPending = CK_TRUE;
+  CHECK(C_SetPIN(session, (CK_UTF8CHAR_PTR)pin, 6, (CK_UTF8CHAR_PTR)pin, 6) == CKR_USER_NOT_LOGGED_IN);
+  CHECK(atomic_load(&connects) == before);
+  ref->token->logoutPending = CK_FALSE;
+  cnk_session_release_ref(&ref);
+  CHECK(C_Login(session, CKU_USER, (CK_UTF8CHAR_PTR)pin, 6) == CKR_OK);
+  puts("PUK policy read and mutation retain one selected transaction on success and failure");
+}
+
+int main(void) {
+  CNK_PCSC_TEST_TRANSPORT transport = {establish, release_context, readers,       connect_card, disconnect_card, begin,
+                                       end,       transmit,        status_change, cancel};
+  nsync_mu_init(&cardLock);
+  CHECK(cnk_pcsc_set_test_transport(&transport) == CKR_OK);
+#ifdef _WIN32
+  _putenv_s("CNK_LOG_LEVEL", "none");
+  _putenv_s("CNK_PIV_METADATA_CACHE", "0");
+#else
+  setenv("CNK_LOG_LEVEL", "none", 1);
+  setenv("CNK_PIV_METADATA_CACHE", "0", 1);
+#endif
+  CHECK(C_Initialize(NULL) == CKR_OK);
+  if (getenv("CNK_TRANSACTION_TRACE"))
+    CHECK(C_CNK_ConfigLogging(1, stderr, CK_FALSE) == CKR_OK);
+  CK_ULONG slotCount = 1;
+  CK_SLOT_ID slot = 99;
+  CHECK(C_GetSlotList(CK_FALSE, &slot, &slotCount) == CKR_OK && slotCount == 1 && slot == 0);
+  CK_SESSION_HANDLE sessions[2];
+  unsigned before = atomic_load(&connects);
+  for (unsigned i = 0; i < 2; i++)
+    CHECK(C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &sessions[i]) == CKR_OK);
+  CHECK(sessions[0] != sessions[1] && atomic_load(&connects) == before);
+  CHECK(C_Login(sessions[0], CKU_USER, (CK_UTF8CHAR_PTR)pin, 6) == CKR_OK);
+  CNK_PKCS11_SESSION *first = NULL, *second = NULL;
+  CHECK(cnk_session_find(sessions[0], &first) == CKR_OK && cnk_session_find(sessions[1], &second) == CKR_OK);
+  CHECK(first != second && first->token == second->token);
+  CHECK(cnk_token_begin_user_operation(first) == CKR_OK);
+  CHECK(cnk_token_begin_user_operation(second) == CKR_OPERATION_ACTIVE);
+  CHECK(C_Logout(sessions[1]) == CKR_OPERATION_ACTIVE);
+  CHECK(first->token->managementOperationOwner == sessions[0] && first->token->loginState == TOKEN_LOGIN_USER);
+  cnk_token_end_management_operation(first);
+  cnk_session_release_ref(&second);
+  cnk_session_release_ref(&first);
+
+  for (unsigned failure = 0; failure < 2; failure++) {
+    CK_MECHANISM mechanism = {CKM_RSA_X_509, NULL, 0};
+    CHECK(C_SignInit(sessions[0], &mechanism, CNK_MakeObjectHandle(0, CKO_PRIVATE_KEY, 2)) == CKR_OK);
+    CHECK(C_SignInit(sessions[1], &mechanism, CNK_MakeObjectHandle(0, CKO_PRIVATE_KEY, 3)) == CKR_OK);
+    atomic_store(&signPaused, false);
+    atomic_store(&releaseSign, false);
+    atomic_store(&readerWaiting, false);
+    atomic_store(&failSign, failure != 0);
+    Worker a = {.session = sessions[0]}, b = {.session = sessions[1]};
+    memset(a.output, 0xcc, sizeof(a.output));
+#ifdef _WIN32
+    HANDLE threadA = CreateThread(NULL, 0, sign_worker, &a, 0, NULL);
+    CHECK(threadA);
+    wait_for(&signPaused);
+    HANDLE threadB = CreateThread(NULL, 0, random_worker, &b, 0, NULL);
+    CHECK(threadB);
+#else
+    pthread_t threadA, threadB;
+    CHECK(pthread_create(&threadA, NULL, sign_worker, &a) == 0);
+    wait_for(&signPaused);
+    CHECK(pthread_create(&threadB, NULL, random_worker, &b) == 0);
+#endif
+    wait_for(&readerWaiting);
+    CHECK(activeCard == signCard && cards[signCard].stage == BEGUN);
+    CHECK(cnk_session_find(sessions[1], &second) == CKR_OK);
+    CHECK(cnk_mutex_lock(&second->token->lock) == CKR_OK);
+    second->token->cbManagementKey = sizeof(second->token->managementKey);
+    CHECK(cnk_mutex_unlock(&second->token->lock) == CKR_OK);
+    // An authenticated writer cannot overtake a paused sign operation.
+    CHECK(C_CNK_MoveKey(sessions[1], 0x9c, 0x9d) == CKR_OPERATION_ACTIVE);
+    CHECK(C_CNK_SetManagementKey(sessions[1], 2, second->token->managementKey, 24, CK_FALSE) == CKR_OPERATION_ACTIVE);
+    CHECK(C_CNK_SetPinRetries(sessions[1], (CK_UTF8CHAR_PTR)pin, 6, 3, 3) == CKR_OPERATION_ACTIVE);
+    CHECK(cnk_mutex_lock(&second->token->lock) == CKR_OK);
+    second->token->cbManagementKey = 0;
+    CHECK(cnk_mutex_unlock(&second->token->lock) == CKR_OK);
+    cnk_session_release_ref(&second);
+    atomic_store(&releaseSign, true);
+#ifdef _WIN32
+    CHECK(WaitForSingleObject(threadA, 10000) == WAIT_OBJECT_0 && WaitForSingleObject(threadB, 10000) == WAIT_OBJECT_0);
+    CloseHandle(threadB);
+    CloseHandle(threadA);
+#else
+    CHECK(pthread_join(threadA, NULL) == 0 && pthread_join(threadB, NULL) == 0);
+#endif
+    CHECK(a.result == (failure ? CKR_DEVICE_ERROR : CKR_OK) && b.result == CKR_OK);
+    CHECK(cards[signCard].stage == DISCONNECTED && cards[signCard].crypto == 2);
+    for (unsigned i = 0; i < 32; i++)
+      CHECK(b.output[i] == 0x5a);
+    for (unsigned i = 0; i < 256; i++)
+      CHECK(a.output[i] == (failure ? 0xcc : 0xa5));
+    CHECK(atomic_load(&connects) == atomic_load(&disconnects) && atomic_load(&begins) == atomic_load(&ends));
+    CHECK(cnk_session_find(sessions[1], &second) == CKR_OK);
+    CHECK(second->signingContext.pivSlot == 0x9d && second->signingContext.abModulus[0] == 0x9d);
+    CHECK(second->token->loginState == TOKEN_LOGIN_USER && !second->token->managementOperationPending);
+    cnk_session_release_ref(&second);
+    CK_BYTE input[256] = {0};
+    CK_ULONG length = 0;
+    CHECK(C_Sign(sessions[1], input, sizeof(input), NULL, &length) == CKR_OK && length == 256);
+    CHECK(C_Sign(sessions[0], input, sizeof(input), NULL, &length) == CKR_OPERATION_NOT_INITIALIZED);
+    CHECK(C_SessionCancel(sessions[1], CKF_SIGN) == CKR_OK);
+  }
+  decrypt_preflight_contract(sessions[0]);
+  cache_contract(sessions[0]);
+  capabilities_contract();
+  profile_contract(sessions[0], sessions[1]);
+  agreement_commit_contract(sessions[0], sessions[1]);
+  recovery_contract(sessions[0]);
+  teardown_contract(sessions[0], CK_FALSE);
+  CK_SESSION_INFO survivor;
+  CHECK(C_GetSessionInfo(sessions[1], &survivor) == CKR_OK && survivor.state == CKS_RW_USER_FUNCTIONS);
+  CHECK(C_Logout(sessions[1]) == CKR_OK);
+  for (unsigned i = 1; i < 2; i++) {
+    CK_SESSION_INFO info;
+    CHECK(C_GetSessionInfo(sessions[i], &info) == CKR_OK && info.state == CKS_RW_PUBLIC_SESSION);
+    CHECK(C_CloseSession(sessions[i]) == CKR_OK);
+  }
+  CHECK(C_Finalize(NULL) == CKR_OK);
+  CHECK(!activeCard && atomic_load(&connects) == atomic_load(&disconnects) &&
+        atomic_load(&begins) == atomic_load(&ends));
+  // Finalization must drain a card call and free both active and idle sessions.
+  CHECK(C_Initialize(NULL) == CKR_OK);
+  slotCount = 1;
+  CHECK(C_GetSlotList(CK_FALSE, &slot, &slotCount) == CKR_OK && slotCount == 1);
+  for (unsigned i = 0; i < 2; i++)
+    CHECK(C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &sessions[i]) == CKR_OK);
+  CHECK(C_Login(sessions[0], CKU_USER, (CK_UTF8CHAR_PTR)pin, 6) == CKR_OK);
+  teardown_contract(sessions[0], CK_TRUE);
+  puts("Two-session PIV transactions, cache/profile refresh, close/finalize and failure cleanup passed");
+  return 0;
+}

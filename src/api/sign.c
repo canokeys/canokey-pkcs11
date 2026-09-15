@@ -15,30 +15,6 @@
 #include <mbedtls/private/ecp.h>
 #include <string.h>
 
-static const CK_MECHANISM_TYPE rsaMechs[] = {
-    CKM_RSA_PKCS,
-    CKM_RSA_X_509,
-    CKM_RSA_PKCS_PSS,
-    CKM_SHA1_RSA_PKCS,
-    CKM_SHA1_RSA_PKCS_PSS,
-    CKM_SHA224_RSA_PKCS,
-    CKM_SHA224_RSA_PKCS_PSS,
-    CKM_SHA256_RSA_PKCS,
-    CKM_SHA256_RSA_PKCS_PSS,
-    CKM_SHA384_RSA_PKCS,
-    CKM_SHA384_RSA_PKCS_PSS,
-    CKM_SHA512_RSA_PKCS,
-    CKM_SHA512_RSA_PKCS_PSS,
-    CKM_SHA3_224_RSA_PKCS,
-    CKM_SHA3_224_RSA_PKCS_PSS,
-    CKM_SHA3_256_RSA_PKCS,
-    CKM_SHA3_256_RSA_PKCS_PSS,
-    CKM_SHA3_384_RSA_PKCS,
-    CKM_SHA3_384_RSA_PKCS_PSS,
-    CKM_SHA3_512_RSA_PKCS,
-    CKM_SHA3_512_RSA_PKCS_PSS,
-};
-
 static const CK_MECHANISM_TYPE rsaPkcsV15Mechs[] = {
     CKM_RSA_PKCS,        CKM_SHA1_RSA_PKCS,     CKM_SHA224_RSA_PKCS,   CKM_SHA256_RSA_PKCS,   CKM_SHA384_RSA_PKCS,
     CKM_SHA512_RSA_PKCS, CKM_SHA3_224_RSA_PKCS, CKM_SHA3_256_RSA_PKCS, CKM_SHA3_384_RSA_PKCS, CKM_SHA3_512_RSA_PKCS,
@@ -55,28 +31,11 @@ static const CK_MECHANISM_TYPE ecMechs[] = {
     CKM_ECDSA_SHA512, CKM_ECDSA_SHA3_224, CKM_ECDSA_SHA3_256, CKM_ECDSA_SHA3_384, CKM_ECDSA_SHA3_512,
 };
 
-static const CK_MECHANISM_TYPE requireDigesting[] = {
-    CKM_SHA1_RSA_PKCS,     CKM_SHA1_RSA_PKCS_PSS,     CKM_SHA224_RSA_PKCS,   CKM_SHA224_RSA_PKCS_PSS,
-    CKM_SHA256_RSA_PKCS,   CKM_SHA256_RSA_PKCS_PSS,   CKM_SHA384_RSA_PKCS,   CKM_SHA384_RSA_PKCS_PSS,
-    CKM_SHA512_RSA_PKCS,   CKM_SHA512_RSA_PKCS_PSS,   CKM_SHA3_224_RSA_PKCS, CKM_SHA3_224_RSA_PKCS_PSS,
-    CKM_SHA3_256_RSA_PKCS, CKM_SHA3_256_RSA_PKCS_PSS, CKM_SHA3_384_RSA_PKCS, CKM_SHA3_384_RSA_PKCS_PSS,
-    CKM_SHA3_512_RSA_PKCS, CKM_SHA3_512_RSA_PKCS_PSS, CKM_ECDSA_SHA1,        CKM_ECDSA_SHA224,
-    CKM_ECDSA_SHA256,      CKM_ECDSA_SHA384,          CKM_ECDSA_SHA512,      CKM_ECDSA_SHA3_224,
-    CKM_ECDSA_SHA3_256,    CKM_ECDSA_SHA3_384,        CKM_ECDSA_SHA3_512,
-};
-
-static CK_RV getPublicKeyComponent(const CK_BYTE *publicKey, CK_ULONG publicKeyLen, CK_BYTE tag, const CK_BYTE **value,
-                                   CK_ULONG_PTR valueLen);
-
 static CK_BBOOL mechInList(CK_MECHANISM_TYPE m, const CK_MECHANISM_TYPE *list, CK_ULONG len) {
   for (CK_ULONG i = 0; i < len; ++i)
     if (list[i] == m)
       return CK_TRUE;
   return CK_FALSE;
-}
-
-static inline CK_BBOOL isMechRSA(CK_MECHANISM_TYPE m) {
-  return mechInList(m, rsaMechs, sizeof(rsaMechs) / sizeof(CK_MECHANISM_TYPE));
 }
 
 static inline CK_BBOOL isMechRsaPss(CK_MECHANISM_TYPE m) {
@@ -91,9 +50,11 @@ static inline CK_BBOOL isMechEC(CK_MECHANISM_TYPE m) {
   return mechInList(m, ecMechs, sizeof(ecMechs) / sizeof(CK_MECHANISM_TYPE));
 }
 
-static inline CK_BBOOL isMechRequireDigesting(CK_MECHANISM_TYPE m) {
-  return mechInList(m, requireDigesting, sizeof(requireDigesting) / sizeof(CK_MECHANISM_TYPE));
+static inline CK_BBOOL isMechRSA(CK_MECHANISM_TYPE m) {
+  return m == CKM_RSA_X_509 || isMechRsaPkcsV15(m) || isMechRsaPss(m);
 }
+
+static inline CK_BBOOL isMechRequireDigesting(CK_MECHANISM_TYPE m) { return cnk_sign_mech_to_md(m) != MBEDTLS_MD_NONE; }
 
 static CK_RV validateRsaPssParams(const CK_MECHANISM *m) {
   // Check if parameters are provided
@@ -109,13 +70,8 @@ static CK_RV validateRsaPssParams(const CK_MECHANISM *m) {
   if (mbedtls_md_info_from_type(hashType) == NULL)
     CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unsupported PSS hash");
 
-  if (m->mechanism != CKM_RSA_PKCS_PSS) {
-    CK_MECHANISM_TYPE expectedHashAlg;
-    CK_RSA_PKCS_MGF_TYPE expectedMgf;
-    CNK_ENSURE_OK(cnk_rsa_pkcs_pss_mech_to_hash_mgf(m->mechanism, &expectedHashAlg, &expectedMgf));
-    if (p->hashAlg != expectedHashAlg || p->mgf != expectedMgf)
-      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS param: hashAlg or mgf");
-  }
+  if (m->mechanism != CKM_RSA_PKCS_PSS && hashType != cnk_sign_mech_to_md(m->mechanism))
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS param: hashAlg or mgf");
 
   return CKR_OK;
 }
@@ -133,9 +89,9 @@ static CK_RV validateRsaPssSaltLength(const CK_MECHANISM *mechanism, CK_ULONG mo
   return CKR_OK;
 }
 
-static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m, CK_BYTE algorithmType,
-                             const CK_BYTE *abPublicKey, CK_ULONG cbPublicKey) {
-  if (!CNK_PivAlgorithmIsRsa(session, algorithmType))
+static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m, uint32_t algorithmType,
+                             const CNK_PIV_PUBLIC_KEY *publicKey) {
+  if (!CNK_PivAlgorithmIsRsa(algorithmType))
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not RSA");
 
   if (isMechRsaPss(m->mechanism))
@@ -143,39 +99,10 @@ static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m,
   else if (m->pParameter != NULL || m->ulParameterLen != 0)
     CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unexpected RSA mechanism parameters");
 
-  session->signingContext.cbSignature = 0;
-
-  // Get modulus
-  CK_ULONG vpos = 0;
-  while (vpos < cbPublicKey) {
-    CK_BYTE itag = abPublicKey[vpos++];
-    if (vpos >= cbPublicKey)
-      break;
-    CK_LONG fail;
-    CK_ULONG lengthSize;
-    CK_ULONG ilen = tlvGetLengthSafe(&abPublicKey[vpos], cbPublicKey - vpos, &fail, &lengthSize);
-    if (fail || lengthSize > cbPublicKey - vpos)
-      CNK_RETURN(CKR_DEVICE_ERROR, "Bad length in public-key TLV");
-    vpos += lengthSize;
-    if (ilen > cbPublicKey - vpos)
-      CNK_RETURN(CKR_DEVICE_ERROR, "Public-key TLV value exceeds response");
-
-    // RSA modulus lives in tag 0x81
-    if (itag == 0x81) {
-      if (ilen > sizeof(session->signingContext.abModulus))
-        CNK_RETURN(CKR_DEVICE_ERROR, "RSA modulus exceeds operation buffer");
-      memcpy(session->signingContext.abModulus, abPublicKey + vpos, ilen);
-      session->signingContext.cbSignature = ilen;
-      break;
-    }
-
-    vpos += ilen;
-  }
-
-  CNK_DEBUG("Modulus and signature length: %lu", session->signingContext.cbSignature);
-
-  if (session->signingContext.cbSignature == 0)
-    CNK_RETURN(CKR_DEVICE_ERROR, "Modulus not found in public key");
+  if (publicKey->valueLen == 0 || publicKey->valueLen > sizeof(session->signingContext.abModulus))
+    CNK_RETURN(CKR_DEVICE_ERROR, "Invalid RSA modulus size");
+  memcpy(session->signingContext.abModulus, publicKey->value, publicKey->valueLen);
+  session->signingContext.cbSignature = publicKey->valueLen;
 
   if (isMechRsaPss(m->mechanism))
     CNK_ENSURE_OK(validateRsaPssSaltLength(m, session->signingContext.cbSignature));
@@ -183,20 +110,18 @@ static CK_RV validateRsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *m,
   return CKR_OK;
 }
 
-static CK_ULONG getEcSignatureLength(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
-  CK_BYTE secp256k1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1);
-  CK_BYTE secp521r1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521);
-  if (algorithmType == PIV_ALG_ECC_256 || (secp256k1 != 0 && algorithmType == secp256k1))
+static CK_ULONG getEcSignatureLength(uint32_t algorithmType) {
+  if (algorithmType == CNK_ALGORITHM_P256 || (algorithmType == CNK_ALGORITHM_SECP256K1))
     return 64;
-  if (algorithmType == PIV_ALG_ECC_384)
+  if (algorithmType == CNK_ALGORITHM_P384)
     return 96;
-  if (secp521r1 != 0 && algorithmType == secp521r1)
+  if (algorithmType == CNK_ALGORITHM_P521)
     return 132;
   return 0;
 }
 
-static CK_RV validateEcMech(CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
-  CK_ULONG signatureLength = getEcSignatureLength(session, algorithmType);
+static CK_RV validateEcMech(CNK_PKCS11_SESSION *session, uint32_t algorithmType) {
+  CK_ULONG signatureLength = getEcSignatureLength(algorithmType);
   if (signatureLength == 0)
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not a supported EC signing key");
 
@@ -204,8 +129,8 @@ static CK_RV validateEcMech(CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) 
   return CKR_OK;
 }
 
-static CK_RV validateEdDsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *mechanism, CK_BYTE algorithmType) {
-  if (algorithmType != session->ed25519Algorithm)
+static CK_RV validateEdDsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *mechanism, uint32_t algorithmType) {
+  if (algorithmType != CNK_ALGORITHM_ED25519)
     CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not Ed25519");
   if (mechanism->pParameter == NULL && mechanism->ulParameterLen == 0) {
     session->signingContext.cbSignature = 64;
@@ -223,8 +148,9 @@ static CK_RV validateEdDsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *
 static CK_RV initDigestingContext(CNK_PKCS11_DIGESTING_CONTEXT *context, CK_MECHANISM_TYPE mechanism) {
   if (context->mechanismType != 0)
     CNK_RETURN(CKR_OPERATION_ACTIVE, "digest context is already active");
-  mbedtls_md_type_t mdType;
-  CNK_ENSURE_OK(cnk_sign_mech_to_md(mechanism, &mdType));
+  mbedtls_md_type_t mdType = cnk_sign_mech_to_md(mechanism);
+  if (mdType == MBEDTLS_MD_NONE)
+    CNK_RETURN(CKR_MECHANISM_INVALID, "unsupported signing hash mechanism");
 
   const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(mdType);
   if (!md_info)
@@ -245,22 +171,28 @@ static CK_RV initDigestingContext(CNK_PKCS11_DIGESTING_CONTEXT *context, CK_MECH
   CNK_RET_OK;
 }
 
+static CK_BBOOL buffersSigningMessage(CK_MECHANISM_TYPE mechanism) {
+  return mechanism == CKM_EDDSA || mechanism == CKM_ML_DSA || mechanism == CKM_CNK_SM2_SM3;
+}
+
 static CK_RV appendSigningMessage(CNK_PKCS11_SESSION *session, const CK_BYTE *part, CK_ULONG partLen) {
   if (partLen == 0)
     return CKR_OK;
   CNK_ENSURE_NONNULL(part);
-  CK_ULONG messageLimit = session->signingContext.mechanism.mechanism == CKM_EDDSA ? 512 : 65520;
+  CK_ULONG messageLimit = session->signingContext.messageLimit;
   if (partLen > messageLimit - session->signingContext.messageLen)
     CNK_RETURN(CKR_DATA_LEN_RANGE, "signing message exceeds firmware limit");
 
   CK_ULONG required = session->signingContext.messageLen + partLen;
   if (required > session->signingContext.messageCapacity) {
     CK_ULONG capacity = session->signingContext.messageCapacity == 0 ? 1024 : session->signingContext.messageCapacity;
+    if (capacity > messageLimit)
+      capacity = messageLimit;
     while (capacity < required)
-      capacity = capacity > 32760 ? 65520 : capacity * 2;
+      capacity = capacity > messageLimit / 2 ? messageLimit : capacity * 2;
     CK_BYTE_PTR replacement = ck_malloc(capacity);
     if (replacement == NULL)
-      CNK_RETURN(CKR_HOST_MEMORY, "failed to grow ML-DSA message buffer");
+      CNK_RETURN(CKR_HOST_MEMORY, "failed to grow signing message buffer");
     if (session->signingContext.messageLen > 0)
       memcpy(replacement, session->signingContext.message, session->signingContext.messageLen);
     if (session->signingContext.message != NULL) {
@@ -293,10 +225,14 @@ static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData
   CNK_DEBUG("Signing with active key, PIV slot 0x%x", pivSlot);
 
   CK_BYTE_PTR pbSignRawData = NULL_PTR;
-  CK_ULONG cbSignRawData;
+  CK_ULONG cbSignRawData = 0;
 
-  if (pSession->signingContext.mechanism.mechanism == CKM_ML_DSA ||
-      pSession->signingContext.mechanism.mechanism == CKM_EDDSA) {
+  if (buffersSigningMessage(pSession->signingContext.mechanism.mechanism) ||
+      pSession->signingContext.mechanism.mechanism == CKM_CNK_SM2_RAW) {
+    if ((buffersSigningMessage(pSession->signingContext.mechanism.mechanism) &&
+         cbInputData > pSession->signingContext.messageLimit) ||
+        (pSession->signingContext.mechanism.mechanism == CKM_CNK_SM2_RAW && cbInputData != 32))
+      return CKR_DATA_LEN_RANGE;
     rv = cnk_piv_sign(pSession->slotId, pSession, pInputData, cbInputData, pSignature, pulSignatureLen);
     if (rv != CKR_BUFFER_TOO_SMALL) {
       pSession->signingContext.contextAuthenticated = CK_FALSE;
@@ -339,15 +275,20 @@ static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData
       rv = CKR_KEY_TYPE_INCONSISTENT;
       goto cleanup;
     }
-    if (cbInputData > cbSignRawData)
-      cbInputData = cbSignRawData;
+    // libcanokey owns digest normalization, including the P-521 bit shift.
+    // Preserve a short digest's length so it is not shifted after C-side padding.
+    if (cbInputData < cbSignRawData)
+      cbSignRawData = cbInputData;
+    if (cbSignRawData == 0) {
+      rv = CKR_DATA_LEN_RANGE;
+      goto cleanup;
+    }
     pbSignRawData = ck_malloc(cbSignRawData);
     if (!pbSignRawData) {
       rv = CKR_HOST_MEMORY;
       goto cleanup;
     }
-    memset(pbSignRawData, 0, cbSignRawData);
-    memcpy(pbSignRawData + cbSignRawData - cbInputData, pInputData, cbInputData);
+    memcpy(pbSignRawData, pInputData, cbSignRawData);
   } else {
     CNK_ERROR("Unexpected code path");
     rv = CKR_FUNCTION_FAILED;
@@ -366,6 +307,8 @@ static CK_RV prepareAndSign(CNK_PKCS11_SESSION *pSession, CK_BYTE_PTR pInputData
   }
 
 cleanup:
+  if (pbSignRawData != NULL)
+    mbedtls_platform_zeroize(pbSignRawData, cbSignRawData);
   ck_free(pbSignRawData);
   return rv;
 }
@@ -388,17 +331,31 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &pivTag));
 
   // Get metadata
-  CK_BYTE algorithmType;
+  uint32_t algorithmType;
   CK_BYTE pinPolicy = CNK_DefaultPinPolicyForPivObjectId(objId);
-  CK_BYTE abPublicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
-  CK_ULONG cbPublicKey = sizeof(abPublicKey);
-  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivTag, &algorithmType, abPublicKey, &cbPublicKey, &pinPolicy, NULL));
+  CNK_PIV_PUBLIC_KEY abPublicKey;
+  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivTag, &algorithmType, &abPublicKey, &pinPolicy, NULL));
 
-  if (!CNK_PivPrivateKeyCanSign(session, algorithmType))
+  if (!CNK_PivPrivateKeyCanSign(algorithmType))
     CNK_RETURN(CKR_KEY_FUNCTION_NOT_PERMITTED, "key is not usable for signing");
 
-  if (pMechanism->mechanism == CKM_ML_DSA) {
-    if (algorithmType != session->mldsa65Algorithm)
+  cnk_piv_capabilities_v1 capabilities;
+  CNK_ENSURE_OK(cnk_session_piv_capabilities(session, &capabilities));
+  if (pMechanism->mechanism == CKM_CNK_SM2_RAW || pMechanism->mechanism == CKM_CNK_SM2_SM3) {
+    if (algorithmType != CNK_ALGORITHM_SM2)
+      return CKR_KEY_TYPE_INCONSISTENT;
+    if (pMechanism->mechanism == CKM_CNK_SM2_RAW) {
+      if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
+        return CKR_MECHANISM_PARAM_INVALID;
+    } else {
+      if (!(capabilities.features & CNK_PIV_FEATURE_SM2_STREAMING))
+        return CKR_MECHANISM_INVALID;
+      if (pMechanism->ulParameterLen > 32 || ((pMechanism->ulParameterLen == 0) != (pMechanism->pParameter == NULL)))
+        return CKR_MECHANISM_PARAM_INVALID;
+    }
+    session->signingContext.cbSignature = 64;
+  } else if (pMechanism->mechanism == CKM_ML_DSA) {
+    if (algorithmType != CNK_ALGORITHM_MLDSA65)
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "key is not ML-DSA-65");
     if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "ML-DSA context is not supported by PIV");
@@ -406,7 +363,7 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
   } else if (pMechanism->mechanism == CKM_EDDSA) {
     CNK_ENSURE_OK(validateEdDsaMech(session, pMechanism, algorithmType));
   } else if (isMechRSA(pMechanism->mechanism)) {
-    CNK_ENSURE_OK(validateRsaMech(session, pMechanism, algorithmType, abPublicKey, cbPublicKey));
+    CNK_ENSURE_OK(validateRsaMech(session, pMechanism, algorithmType, &abPublicKey));
   } else if (isMechEC(pMechanism->mechanism)) {
     CNK_ENSURE_OK(validateEcMech(session, algorithmType));
   } else {
@@ -415,6 +372,11 @@ CK_RV C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJ
 
   if (pMechanism->ulParameterLen > 0)
     CNK_ENSURE_NONNULL(pMechanism->pParameter);
+
+  session->signingContext.messageLimit =
+      pMechanism->mechanism == CKM_EDDSA ? capabilities.max_ed25519_message : capabilities.max_streaming_message;
+  if (pMechanism->mechanism == CKM_CNK_SM2_SM3)
+    session->signingContext.messageLimit -= pMechanism->ulParameterLen;
 
   // Store active key and mechanism in the session
   session->signingContext.hKey = hKey;
@@ -456,11 +418,9 @@ static CK_RV signUpdate(CNK_PKCS11_SESSION *session, CK_BYTE_PTR part, CK_ULONG 
   if (session->signingContext.pinPolicy == CNK_PIV_PIN_POLICY_ALWAYS && !session->signingContext.contextAuthenticated)
     return CKR_USER_NOT_LOGGED_IN;
   if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism) &&
-      session->signingContext.mechanism.mechanism != CKM_ML_DSA &&
-      session->signingContext.mechanism.mechanism != CKM_EDDSA)
+      !buffersSigningMessage(session->signingContext.mechanism.mechanism))
     return CKR_ARGUMENTS_BAD;
-  if (session->signingContext.mechanism.mechanism == CKM_ML_DSA ||
-      session->signingContext.mechanism.mechanism == CKM_EDDSA)
+  if (buffersSigningMessage(session->signingContext.mechanism.mechanism))
     return appendSigningMessage(session, part, partLen);
   if (session->signingContext.digestingContext.mechanismType == 0)
     return CKR_OPERATION_NOT_INITIALIZED;
@@ -475,11 +435,9 @@ static CK_RV signFinal(CNK_PKCS11_SESSION *session, CK_BYTE_PTR signature, CK_UL
   if (session->signingContext.hKey == 0)
     return CKR_OPERATION_NOT_INITIALIZED;
   if (!isMechRequireDigesting(session->signingContext.mechanism.mechanism) &&
-      session->signingContext.mechanism.mechanism != CKM_ML_DSA &&
-      session->signingContext.mechanism.mechanism != CKM_EDDSA)
+      !buffersSigningMessage(session->signingContext.mechanism.mechanism))
     return CKR_ARGUMENTS_BAD;
-  if (session->signingContext.mechanism.mechanism == CKM_ML_DSA ||
-      session->signingContext.mechanism.mechanism == CKM_EDDSA) {
+  if (buffersSigningMessage(session->signingContext.mechanism.mechanism)) {
     if (signature == NULL) {
       *signatureLen = session->signingContext.cbSignature;
       return CKR_OK;
@@ -617,32 +575,6 @@ CK_RV C_SignRecover(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDa
   CNK_RET_UNSUPPORTED;
 }
 
-static CK_RV getPublicKeyComponent(const CK_BYTE *publicKey, CK_ULONG publicKeyLen, CK_BYTE tag, const CK_BYTE **value,
-                                   CK_ULONG_PTR valueLen) {
-  CNK_ENSURE_NONNULL(publicKey, value, valueLen);
-  CK_ULONG offset = 0;
-  while (offset < publicKeyLen) {
-    CK_BYTE currentTag = publicKey[offset++];
-    if (offset >= publicKeyLen)
-      break;
-    CK_LONG fail = 0;
-    CK_ULONG lengthSize = 0;
-    CK_ULONG length = tlvGetLengthSafe(publicKey + offset, publicKeyLen - offset, &fail, &lengthSize);
-    if (fail || lengthSize > publicKeyLen - offset)
-      CNK_RETURN(CKR_DEVICE_ERROR, "Malformed public-key TLV");
-    offset += lengthSize;
-    if (length > publicKeyLen - offset)
-      CNK_RETURN(CKR_DEVICE_ERROR, "Public-key TLV value exceeds response");
-    if (currentTag == tag) {
-      *value = publicKey + offset;
-      *valueLen = length;
-      CNK_RET_OK;
-    }
-    offset += length;
-  }
-  CNK_RETURN(CKR_DEVICE_ERROR, "Public-key component is missing");
-}
-
 static CK_RV appendVerifyingMessage(CNK_PKCS11_SESSION *session, const CK_BYTE *part, CK_ULONG partLen) {
   if (partLen == 0)
     return CKR_OK;
@@ -676,12 +608,9 @@ static CK_RV appendVerifyingMessage(CNK_PKCS11_SESSION *session, const CK_BYTE *
 
 static CK_RV verifyRsaSignature(CNK_PKCS11_SESSION *session, const CK_BYTE *data, CK_ULONG dataLen,
                                 const CK_BYTE *signature, CK_ULONG signatureLen) {
-  const CK_BYTE *modulus, *exponent;
-  CK_ULONG modulusLen, exponentLen;
-  CNK_ENSURE_OK(getPublicKeyComponent(session->verifyingContext.publicKey, session->verifyingContext.publicKeyLen, 0x81,
-                                      &modulus, &modulusLen));
-  CNK_ENSURE_OK(getPublicKeyComponent(session->verifyingContext.publicKey, session->verifyingContext.publicKeyLen, 0x82,
-                                      &exponent, &exponentLen));
+  const CNK_PIV_PUBLIC_KEY *key = &session->verifyingContext.publicKey;
+  const CK_BYTE *modulus = key->value, *exponent = key->exponent;
+  CK_ULONG modulusLen = key->valueLen, exponentLen = key->exponentLen;
   if (signatureLen != modulusLen)
     return CKR_SIGNATURE_LEN_RANGE;
 
@@ -733,19 +662,17 @@ static CK_RV verifyEcSignature(CNK_PKCS11_SESSION *session, const CK_BYTE *data,
                                const CK_BYTE *signature, CK_ULONG signatureLen) {
   mbedtls_ecp_group_id groupId;
   CK_ULONG coordinateLen;
-  CK_BYTE algorithmType = session->verifyingContext.algorithmType;
-  CK_BYTE secp521r1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521);
-  CK_BYTE secp256k1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1);
-  if (algorithmType == PIV_ALG_ECC_256) {
+  uint32_t algorithmType = session->verifyingContext.algorithmType;
+  if (algorithmType == CNK_ALGORITHM_P256) {
     groupId = MBEDTLS_ECP_DP_SECP256R1;
     coordinateLen = 32;
-  } else if (algorithmType == PIV_ALG_ECC_384) {
+  } else if (algorithmType == CNK_ALGORITHM_P384) {
     groupId = MBEDTLS_ECP_DP_SECP384R1;
     coordinateLen = 48;
-  } else if (secp521r1 != 0 && algorithmType == secp521r1) {
+  } else if (algorithmType == CNK_ALGORITHM_P521) {
     groupId = MBEDTLS_ECP_DP_SECP521R1;
     coordinateLen = 66;
-  } else if (secp256k1 != 0 && algorithmType == secp256k1) {
+  } else if (algorithmType == CNK_ALGORITHM_SECP256K1) {
     groupId = MBEDTLS_ECP_DP_SECP256K1;
     coordinateLen = 32;
   } else {
@@ -755,10 +682,8 @@ static CK_RV verifyEcSignature(CNK_PKCS11_SESSION *session, const CK_BYTE *data,
   if (signatureLen != 2 * coordinateLen)
     return CKR_SIGNATURE_LEN_RANGE;
 
-  const CK_BYTE *point;
-  CK_ULONG pointLen;
-  CNK_ENSURE_OK(getPublicKeyComponent(session->verifyingContext.publicKey, session->verifyingContext.publicKeyLen, 0x86,
-                                      &point, &pointLen));
+  const CK_BYTE *point = session->verifyingContext.publicKey.value;
+  CK_ULONG pointLen = session->verifyingContext.publicKey.valueLen;
 
   mbedtls_ecp_group group;
   mbedtls_ecp_point q;
@@ -791,10 +716,8 @@ static CK_RV verifyPrepared(CNK_PKCS11_SESSION *session, const CK_BYTE *data, CK
   if (session->verifyingContext.mechanism.mechanism == CKM_ML_DSA) {
     if (signatureLen != CNK_MLDSA65_SIGNATURE_BYTES)
       return CKR_SIGNATURE_LEN_RANGE;
-    const CK_BYTE *publicKey;
-    CK_ULONG publicKeyLen;
-    CNK_ENSURE_OK(getPublicKeyComponent(session->verifyingContext.publicKey, session->verifyingContext.publicKeyLen,
-                                        0x86, &publicKey, &publicKeyLen));
+    const CK_BYTE *publicKey = session->verifyingContext.publicKey.value;
+    CK_ULONG publicKeyLen = session->verifyingContext.publicKey.valueLen;
     if (publicKeyLen != CNK_MLDSA65_PUBLIC_KEY_BYTES)
       return CKR_KEY_TYPE_INCONSISTENT;
     return cnk_mldsa65_verify_signature(publicKey, data, dataLen, signature);
@@ -818,28 +741,24 @@ CK_RV C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_O
 
   // Verification is host-side. Read the immutable public key from PIV metadata
   // once and bind that snapshot to this operation.
-  CK_BYTE algorithmType;
-  CK_BYTE publicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
-  CK_ULONG publicKeyLen = sizeof(publicKey);
-  CNK_ENSURE_OK(cnk_get_metadata(session->slotId, pivSlot, &algorithmType, publicKey, &publicKeyLen, NULL, NULL));
+  uint32_t algorithmType;
+  CNK_PIV_PUBLIC_KEY publicKey;
+  CNK_ENSURE_OK(cnk_get_metadata_cached(session, pivSlot, &algorithmType, &publicKey, NULL, NULL));
   if (pMechanism->mechanism == CKM_ML_DSA) {
-    if (algorithmType != session->mldsa65Algorithm)
+    if (algorithmType != CNK_ALGORITHM_MLDSA65)
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "verify key is not ML-DSA-65");
     if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "ML-DSA context is not supported");
   } else if (isMechRSA(pMechanism->mechanism)) {
-    if (!CNK_PivAlgorithmIsRsa(session, algorithmType))
+    if (!CNK_PivAlgorithmIsRsa(algorithmType))
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "verify key is not RSA");
     if (isMechRsaPss(pMechanism->mechanism)) {
       CNK_ENSURE_OK(validateRsaPssParams(pMechanism));
-      const CK_BYTE *modulus;
-      CK_ULONG modulusLen;
-      CNK_ENSURE_OK(getPublicKeyComponent(publicKey, publicKeyLen, 0x81, &modulus, &modulusLen));
-      CNK_ENSURE_OK(validateRsaPssSaltLength(pMechanism, modulusLen));
+      CNK_ENSURE_OK(validateRsaPssSaltLength(pMechanism, publicKey.valueLen));
     } else if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unexpected RSA mechanism parameters");
   } else if (isMechEC(pMechanism->mechanism)) {
-    if (getEcSignatureLength(session, algorithmType) == 0)
+    if (getEcSignatureLength(algorithmType) == 0)
       CNK_RETURN(CKR_KEY_TYPE_INCONSISTENT, "verify key is not EC");
     if (pMechanism->pParameter != NULL || pMechanism->ulParameterLen != 0)
       CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unexpected ECDSA mechanism parameters");
@@ -850,8 +769,7 @@ CK_RV C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_O
   memset(&session->verifyingContext, 0, sizeof(session->verifyingContext));
   session->verifyingContext.hKey = hKey;
   session->verifyingContext.algorithmType = algorithmType;
-  session->verifyingContext.publicKeyLen = publicKeyLen;
-  memcpy(session->verifyingContext.publicKey, publicKey, publicKeyLen);
+  session->verifyingContext.publicKey = publicKey;
   session->verifyingContext.mechanism.mechanism = pMechanism->mechanism;
   session->verifyingContext.mechanism.ulParameterLen = pMechanism->ulParameterLen;
   // PSS parameters are copied because the caller may release its CK_MECHANISM

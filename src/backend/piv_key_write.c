@@ -1,26 +1,28 @@
 #include "backend/pcsc.h"
+#include "backend/piv_operation.h"
+#include "internal/logging.h"
 
 CK_RV cnk_begin_key_write(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pivSlot, SCARDHANDLE *card) {
   CK_RV rv = cnk_authenticate_admin_for_write(slotID, session, card);
   if (rv != CKR_OK || !g_cnk_is_managed_mode)
     return rv;
-
-  // Do not use cached metadata or reconnect after management authentication.
-  // Unknown algorithms still occupy a slot; only explicit absence permits a
-  // Windows create. Standalone provisioning retains explicit replacement.
-  CK_BYTE apdu[] = {0x00, 0xF7, 0x00, pivSlot, 0x00};
-  CK_BYTE response[4096];
-  DWORD len = sizeof(response);
-  LONG pcscRv = cnk_transceive_apdu(*card, apdu, sizeof(apdu), response, &len, CK_TRUE);
-  rv = CKR_DEVICE_ERROR;
-  if (pcscRv == SCARD_S_SUCCESS && len >= 2 && len <= sizeof(response)) {
-    unsigned sw = ((unsigned)response[len - 2] << 8) | response[len - 1];
-    if (len == 2 && (sw == 0x6A82 || sw == 0x6A88))
-      return CKR_OK;
-    if (sw == 0x9000)
-      rv = CKR_ACTION_PROHIBITED;
+  cnk_operation_t *operation = NULL;
+  cnk_error_v1 error = {.struct_size = sizeof(error)};
+  rv = CNK_PIV_CREATE(session, cnk_piv_require_empty_key_slot_new, &operation, &error, pivSlot);
+  if (rv == CKR_OK) {
+    rv = cnk_run_piv_operation(*card, operation, CKR_DEVICE_ERROR, NULL);
+    if (rv != CKR_OK) {
+      if (operation)
+        CNK_EXTERNAL_CALL(cnk_operation_error, operation, &error);
+      // A successful metadata status means occupied even for unknown key types.
+      rv = error.kind == CNK_ERROR_CONDITIONS && !(error.presence_flags & 1) ? CKR_ACTION_PROHIBITED : CKR_DEVICE_ERROR;
+    }
   }
-  cnk_disconnect_card(*card);
-  *card = 0;
+  if (operation)
+    CNK_EXTERNAL_VOID(cnk_operation_free, operation);
+  if (rv != CKR_OK) {
+    cnk_disconnect_card(*card);
+    *card = 0;
+  }
   return rv;
 }

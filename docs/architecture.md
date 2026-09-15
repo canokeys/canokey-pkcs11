@@ -1,211 +1,205 @@
-# CanoKey PKCS#11 Architecture
+# CanoKey PKCS#11 architecture
 
-The bounded F5 name extension lives in `src/api/container_name.c` and composes
-the shared PC/SC transaction and management-authentication primitives. See
-[container-names.md](container-names.md) for wire semantics and firmware fallback.
+[api-contracts.md](api-contracts.md) specifies exported API lifetime, concurrency
+and exit guarantees. [The migration plan](libcanokey-piv-migration-plan.md) records
+current adaptation and remaining acceptance gates.
 
-`docs/api-contracts.md` is the normative ownership, concurrency, progress, and
-exit-state specification for every exported entry point. This document explains
-the larger component boundaries; implementation and review must satisfy both.
+## Modules and ownership
 
-## Layers
+| Module | Responsibility |
+| --- | --- |
+| include/ | Public PKCS#11 and CanoKey declarations |
+| api/core.c | Initialization and complete, type-correct 2.40/3.2 function tables |
+| api/session.c | Session handles, active references and token authentication |
+| api/operation.c | Shared operation cleanup and cancellation |
+| api/object.c | PKCS#11 discovery, attributes and object handles |
+| api/container_name.c | F5 extension's CK_RV/version policy and reservations |
+| internal/template.c, piv_object.c | PKCS#11 template validation and typed import views |
+| internal/crypto.c and crypto helpers | Host hashing, padding, KDF and public-key crypto |
+| backend/pcsc.c | Reader/slot lifecycle, transaction ownership and raw transport |
+| backend/piv_operation.c | Borrowed profile construction, bounded Rust executor, error mapping and public-key compatibility |
+| backend/piv_metadata.c | Public snapshots and typed version/configuration/retry/RNG operations |
+| backend/piv_auth.c | Credential/cache integration using Rust credential and management operations |
+| backend/piv_crypto.c, piv_data.c | Typed private/key/data/certificate operations and compatibility adapters |
+| backend/piv_key_write.c | Fresh managed-slot occupancy guard |
+| rust/lib.rs | Static linkage of the libcanokey C ABI |
 
-`backend/piv_key_write.c` guards managed key generation/import. After management
-authentication it reads uncached F7 metadata in the same PC/SC transaction.
-Only a status-only 6A82/6A88 reply permits writing; 9000 means occupied,
-irrespective of algorithm, and all other replies/errors block writing. The
-writer inherits the open transaction on success; failure closes it. The API
-entry point owns the management reservation throughout. Standalone provisioning
-keeps its explicit replacement behavior. No PIN or management-data policy changes.
+Libcanokey owns APDU conversations, framing, parsing, typed errors and
+zeroizing temporary copies. C owns raw PC/SC exchange, PKCS#11 state, returned buffers and
+credential/reservation lifetime. Rust receives no connection lease or mutable
+application state. It performs no I/O except through caller-driven exchanges.
 
-The module has four internal layers:
+Private-key import passes semantic parameters and borrowed component views to the
+Rust constructor. C retains RSA template-width admission and one padded EC scalar;
+that descriptor cannot be copied because its view points inside it. The descriptor
+is wiped on every exit, and the Rust operation owns/wipes its copies. There is no
+C import TLV encode/reparse or certificate framing. Management-protection data
+is decoded by Rust: stored flags remain claims,
+malformed data cannot become unconfigured success, and PRINTED yields a validated,
+zeroizing 24-byte key copy. One Rust operation also validates live PUK state,
+verifies the recovered key and optionally finalizes PUK blocking. C owns logical
+USER/SO transitions, reservations and protected-cache commit.
+Backend preflight consults the Rust profile before authentication. C uses semantic
+algorithms throughout; configured wire IDs remain inside Rust. Mechanism list/info
+share a profile capability projection, including message limits. The duplicate
+algorithm-configuration cache is removed; reader events invalidate the profile by
+generation. Certificate adapters take PIV slots directly without tag roundtrips.
+F5 similarly delegates its command and UTF-16 validation to Rust; [container-names.md](container-names.md)
+defines the consumer's precise fallback and error mapping.
 
-1. Public PKCS#11 and CanoKey extension declarations live in `include/`.
-2. Entry points and PKCS#11 state machines live in `src/api/`.
-3. Reusable encoding and cryptographic helpers live in `src/internal/`.
-4. PC/SC transport and PIV commands live in `src/backend/`.
+## Transactions and shared state
 
-`src/api/core.c` owns initialization and the 2.40/3.2 function tables.
-`session.c` owns session handles and token-scoped authentication.
-`operation.c` is the single cleanup boundary for digest, sign, verify, encrypt,
-and decrypt contexts. `object.c` owns PKCS#11 object discovery and attributes;
-PIV import wire encoding is isolated in `internal/piv_object.c`, and generic
-template decoding is isolated in `internal/template.c`.
-
-`backend/piv_metadata.c` owns PIV version gates, metadata discovery, algorithm
-extensions, PIN/PUK retry metadata, permanent PUK blocking, and token
-randomness. In standalone mode it also maintains a short-lived public snapshot
-cache for metadata-directory entries, public-key metadata, and certificate
-bytes. The cache is token-lock protected, expires after 60 seconds, and is
-cleared after successful local PIV writes. It never stores credentials, card
-handles, selected applets, or authentication state. The `metadata_cache`
-configuration key and `CNK_PIV_METADATA_CACHE` override can disable it. Managed
-mode bypasses the cache on every read so the minidriver owns refresh policy.
-`backend/piv_crypto.c` owns card-backed private-key operations and
-key generation/import. `backend/piv_auth.c` owns PIN, PUK, and management-key
-authentication. `backend/piv_data.c` owns PIV data objects and legacy
-version/serial commands. `backend/pcsc.c` is limited to reader discovery, slot
-events, transaction ownership, and APDU transport. These focused modules share
-transaction helpers so managed mode continues to use the minidriver's card
-handle and every operation balances `SCardBeginTransaction` with
-`cnk_disconnect_card`.
-
-## PC/SC Transaction Boundary
-
-Every actual card-backed PIV operation is one contiguous critical section. This
-is not the lifetime of a PKCS#11 session:
+A card operation owns one contiguous transaction:
 
 ```text
-connect card -> SCardBeginTransaction -> SELECT PIV -> all dependent APDUs
--> parse/commit the result -> SCardEndTransaction -> disconnect card
+connect -> begin -> SELECT PIV -> authenticate if needed -> dependent APDUs
+-> parse/commit -> end -> disconnect (standalone) or retain caller handle (managed)
 ```
 
-The card must not be released between SELECT and the final APDU. This applies
-to command chaining, PIN verification followed by a private operation, key
-generation/import, management-key authentication, and multi-step PIV responses.
-Internal helpers should make the selected-PIV transaction explicit so callers
-cannot accidentally transmit an operation after returning the card to PC/SC.
+CanoKey 2.0+ clears PIN/PUK/management authorization on SELECT, including
+same-AID selection (1.6.2 retained it). A raw current-card check in one PC/SC
+transaction confirmed PIN status 9000 -> 63C3 and protected access 9000 -> 6982
+on re-SELECT. Probe before authentication; never reselect between authentication
+and its target. Ordinary factories use CNK_PIV_USE_EXISTING here, with no
+separate context handle. Command/result getters never advance. The bounded
+executor owns scratch; callers free operations on every exit.
 
-PC/SC serializes complete physical card transactions in a reader. Two PKCS#11
-sessions may therefore request a PIV signature and a PIV decrypt concurrently;
-their card transactions queue at the reader, while host-only work and their
-independent session contexts can still run concurrently. This physical
-serialization does not replace `token->lock`, session locks, token
-reservations, or lifecycle admission: login/logout, PIN caches, management
-authorization, operation contexts, and finalization remain shared host state.
+A session can span many transactions. Open/close and host-only Init/Update calls
+must not hold a transaction for the session's lifetime. PC/SC serializes physical
+I/O; it does not replace session locks, token reservations or lifecycle admission.
 
-`C_OpenSession`, `C_CloseSession`, `C_Login`, and operation `Init`/`Update`
-calls may only change host state and do not reserve a card transaction unless
-their implementation actually needs an APDU. A session may outlive many card
-transactions, and a multipart PKCS#11 operation may buffer data in the host
-until its card-facing final step. Holding a PC/SC transaction from
-`C_OpenSession` to `C_CloseSession` would unnecessarily block other sessions
-and would make reader removal and cancellation harder to recover.
+One CNK_PKCS11_TOKEN_STATE per slot owns login role, USER PIN, management-key cache,
+session counters and immutable profile. Its lock protects publication and synchronous factory construction.
+Binding epochs prevent stale profile publication; finalization drains active calls
+before invalidation/free and PC/SC release. Each session owns operation contexts,
+copied parameters, multipart buffers, session secrets and find state.
 
-The PIV standard permits selecting the same PIV application again without
-changing PIV security status, but the current CanoKey firmware deliberately
-resets `pin.is_validated`, PUK status, and management status in `piv_select()`.
-Therefore this backend must treat every PIV SELECT as an authorization reset:
-SELECT must precede VERIFY, and no SELECT or applet switch may occur after
-VERIFY before the dependent operation completes. This firmware behavior is
-tested as a product invariant even though it is stricter than the standard.
+Session lookup acquires an active reference. Close publishes a tombstone, drains
+calls, cleans operations/token accounting and only then removes the handle. Failed
+application-mutex destruction retains the object for cleanup retry. Never acquire
+a session lock while holding the global table lock. Last close/finalize wipe
+credential caches. Cancellation uses the same session lock as normal operations.
 
-## State Ownership
+A token reservation admits card work. Logout revokes non-admitted work; admitted
+work retains authorization through I/O and result commit. Managed key writes also
+require fresh, explicit empty-slot metadata in the same authenticated transaction.
+Occupied/unknown slots block replacement; standalone provisioning retains explicit
+replacement behavior. Dropping a Rust operation is not card rollback. Uncertain
+mutations invalidate public snapshots before transaction release.
 
-Authentication is token-scoped, not session-scoped. One
-`CNK_PKCS11_TOKEN_STATE` per slot owns the USER PIN cache, management-key cache,
-login role, and session counters. Its lock protects all of those fields.
+## Public snapshots and object model
 
-Each `CNK_PKCS11_SESSION` owns active operation contexts, copied mechanism
-parameters, bounded multipart buffers, session-only secret keys, and find
-state. It references, but does not own, token authentication state.
+Public-key snapshots contain owned modulus/exponent, EC point or raw key bytes.
+Rust validates their card representation once; C no longer encodes and reparses
+public-key TLVs. Generation validates its Rust result and publishes handles only.
+PKCS#11 CKA_EC_POINT DER wrapping remains a host attribute responsibility.
 
-Session lookup acquires an active-call reference protected by the global
-session-table mutex. Close publishes a tombstone, keeps its own active-call
-reference visible to finalization, drains existing calls, completes token
-accounting and operation cleanup, and only then removes the handle. A session
-whose application mutex destroy callback fails is retained for cleanup retry.
-Close never acquires a session lock while holding the global lock.
-Closing the last session and `C_Finalize` also zero the USER PIN and
-management-key caches owned by `CNK_PKCS11_TOKEN_STATE`.
+The standalone public cache holds only directory entries, key metadata and
+certificate bytes. Every read checks the 60-second TTL and metadata_cache /
+CNK_PIV_METADATA_CACHE controls. Managed mode bypasses it. Credentials, handles,
+selected applets and authentication state never enter the cache. Atomic invalidation
+generations prevent old reads from repopulating a cleared snapshot, including
+failed application-lock callbacks. Configuration cache publication also retains
+the binding epoch captured before I/O. Profiles refresh after 60 seconds and keep
+the previous immutable value available to already admitted transactions until
+a replacement is published; refresh errors propagate.
 
-Digest, Sign, Verify, Encrypt, and Decrypt state is protected by the per-session
-lock for the complete API call. Cancellation uses the same lock. Combined-hash
-Sign and Verify own embedded hash contexts, so either can coexist with the
-session's independent Digest operation.
+PIV handles encode slot, class and object ID; IDs 1..24 map to 9A/9C/9D/9E/82..95.
+Session-secret IDs start at 0x80. PIV objects are live views: certificate deletion
+is supported, but generic key/data deletion and token-object copying are not.
+Session secrets support copy, secure destruction and policy-limited metadata/digest.
+PIN-never keys are public objects (CKA_PRIVATE=false); PIN-once/always private
+objects become visible after USER login.
 
-USER and SO authentication use token-lock-protected pending states while their
-card verification is in flight. Read-only session creation checks and updates
-the SO/read-only counters in the same token critical section.
+NULL/short output preserves active digest/sign/encrypt/decrypt operations.
+RSA decrypt preflight reports the mechanism's conservative bound (modulus bytes,
+minus padding overhead where applicable) before card I/O; retries must provide
+that capacity, including when the actual padded plaintext is shorter. Success,
+terminal error, signature mismatch and cancellation consume their contexts. Init
+copies mechanism parameters, including OAEP labels. PIN-always sign/decrypt use an
+operation-local context PIN; derive/decapsulation remain fail-closed without a
+dedicated context-authentication boundary.
 
-PIN-managed management-key login requires both the ADMIN DATA policy bits and
-an actually blocked PUK. `C_CNK_FinalizePinManaged` is the explicit destructive
-provisioning boundary that authenticates USER and management authority before
-driving PUK retries to zero; ordinary login never mutates retry counters.
+Raw CKO_DATA consumers retain container framing. Certificates expose the decoded,
+optionally decompressed payload. P-521 accepts definite BER response envelopes but
+strict DER signatures, and normalizes digest length exactly once. Firmware support
+uses observed profiles, distinguishes unknown from unsupported, and preserves the
+original development-version identity while using its declared base version.
+RNG checks the live PIV version before producing bytes; F5 retains its PIV 6.0
+consumer gate. Logical session opening performs no card I/O and stores no algorithm mapping.
+Host policy uses semantic algorithm codes; card operations preflight support and
+encode wire identifiers through the same immutable Rust profile.
+Credential operations preserve the C raw 1..=8-byte form explicitly, without
+relaxing default Rust credential construction. Reader names retain stable slot IDs within
+one initialized lifetime; removal includes the last reader.
 
-## Card And Host Responsibilities
+## Hardware versus host crypto
 
-The card performs operations that require private or token-resident material:
+The card performs private-key operations, key generation/import, PIV object writes
+and supported token RNG. The host performs hash/padding/KDF, RSA/ECDSA/ML-DSA verify,
+RSA public encryption, ML-KEM encapsulation and session AES/generic-secret creation.
+Mixed mechanisms do not advertise CKF_HW for their host operations. SM2 uses explicit
+vendor RAW/SM3 signing and DERIVE mechanisms; it never aliases ECDSA/ECDH or claims
+host Verify. The card performs its SM3/identity hashing and agreement KDF. Agreement
+publishes a session secret with its public ephemeral point under the same reservation.
 
-- USER and management-key authentication;
-- PIV key generation/import and data-object writes;
-- private-key sign, RSA decrypt, ECDH, and ML-KEM decapsulation;
-- firmware 6.0+ random generation.
+Physical key move/delete uses one vendor function with an FF deletion target;
+certificates are independent. Attestation returns DER without a trust decision.
+Management-key rotation can maintain PIN-managed PRINTED, with explicit partial-write
+recovery; retry-limit setting resets credentials and refuses PIN-managed policy.
+Both credential mutations revoke host credentials/private contexts on attempted I/O.
 
-The host performs public or transient operations:
+## Build and diagnostics
 
-- RSA/ECDSA/ML-DSA verification and RSA public-key encryption;
-- hashing, RSA padding, OAEP, PSS verification, and X9.63 KDF;
-- ML-KEM encapsulation;
-- session AES/generic-secret generation and object lifecycle.
+Cargo.toml pins libcanokey; Cargo.lock pins its dependency closure. The private Rust
+static library is linked into the existing DLL, with no Rust DLL or submodule.
+ThinLTO and function/data section collection remove unused code. PIV-only C ABI
+features exclude unrelated applets; host crypto, curves and Rust runtime still
+contribute to size. Removing unreachable source need not shrink linked code.
+ELF links hide Rust archive symbols from the public ABI. Standard Rust Windows
+MSVC targets do not establish Windows 7/8.1 runtime compatibility.
 
-Mixed mechanisms do not advertise `CKF_HW`, because that flag would claim that
-every operation represented by the mechanism is hardware-backed.
+CNK_EXTERNAL_CALL/CNK_EXTERNAL_VOID record each completed Rust/PCSC boundary at
+DEBUG, including Release: function name and status only. The owned CnkError POD
+additionally preserves kind, phase, reference and optional SW/retries before the
+operation is freed. C maps it to CK_RV; the minidriver maps CK_RV to Windows status.
+No TLS/global last-error object is used. Raw APDUs require explicit sensitive-data
+logging. Managed logging borrows the caller's FILE and must be rebound before
+reinitializing after finalization. Detailed C function entry/return traces remain
+subject to CNK_VERBOSE.
 
-## Object Model
+Run the gates in [validation.md](validation.md) and the migration plan. Hardware
+scripts use explicit card/slot selections and generated reports. Legacy broad real
+executables can overwrite provisioned slots when destructive flags are enabled;
+they do not replace independent crypto verification or Windows propagation checks.
 
-PIV key and certificate handles encode slot, class, and a fixed object ID.
-Object IDs `1..24` map to PIV key slots `9A`, `9C`, `9D`, `9E`, and `82..95`.
-Session secret IDs start at `0x80`, outside that range.
+Agreement and KEM session-secret templates share one C prototype builder. It owns
+PKCS#11 defaults, attributes, visibility and length checks; card-side SM2 KDF and
+host-side ECDH KDF feed the same allocator. A shared private-operation admission
+counter allows queued sign/decrypt calls while excluding concurrent key/credential
+mutations. Exclusive token reservations remain responsible for one-shot result commit.
 
-PIV token objects are live views of card metadata and data objects. They are
-not copied or deleted by PKCS#11. Session secret objects are host-resident and
-support copy, secure destroy, restricted metadata updates, and digest when not
-sensitive.
+Signature classification derives RSA membership from its padding families.
+Combined-hash classification, digest setup and PSS parameter validation share one
+pure mechanism-to-hash lookup. Management challenge encryption lives in Rust.
+The shared secret-template builder validates a local prototype and publishes it
+only after all checks succeed. PIV object IDs retain the four primary slots and
+ordered retired-slot range; data objects share the PIV application label and
+management-write policy without per-entry copies of those constants.
 
-PIV private-key visibility follows the stored PIN policy. PIN-never keys are
-public PKCS#11 objects (`CKA_PRIVATE=false`) so callers can discover and use
-them without authentication. PIN-once and PIN-always keys are private objects
-and are omitted from public-session searches; USER login makes them visible.
+The bundled TF-PSA build uses a complete algorithm allowlist through
+`TF_PSA_CRYPTO_CONFIG_FILE`, not an overlay on upstream defaults. Host SHA-1/2/3,
+RSA public operations, four ECDSA verification curves, ASN.1 OID encoding and
+CTR-DRBG remain enabled. AES/ECB exists only to support the DRBG; management crypto
+stays in libcanokey. Unused ciphers, hashes, key generation, persistence and TLS
+configuration are excluded at configuration time, before linker collection.
 
-## Firmware Gates
-
-- PIV 5.7+ provides the metadata directory and runtime PQ algorithm IDs.
-- PIV 6.0+ provides unauthenticated token randomness through `00 84`.
-
-Older firmware uses per-slot probes, does not advertise PQ mechanisms, and
-does not set `CKF_RNG`.
-
-Standalone reader names retain stable slot IDs for one initialized module
-lifetime. PnP refresh compares old and new reader sets so removal reports the
-removed slot, including removal of the final reader.
-
-## Variable-Length Operations
-
-Length queries and `CKR_BUFFER_TOO_SMALL` preserve active Sign, Digest,
-Encrypt, and Decrypt operations so callers can retry. Successful final calls,
-signature mismatch, cancellation, and non-retryable errors consume their
-operation context. OAEP labels and other mechanism parameters are copied at
-Init time and never borrow caller memory.
-
-## Verification
-
-Use both build shapes:
-
-```powershell
-cmake --build build-ninja-clangcl-x64
-cmake --build build-real-ninja-clangcl-x64
-```
-
-`test_real.exe` covers established classic PIV paths. `test_pqc.exe` covers
-function-table completeness, sessions/login, session-secret lifecycle, random
-generation, PQ operations, host Verify/Encrypt, and retry/cancellation behavior
-on current hardware. Its function-table check requires every
-`CK_FUNCTION_LIST_3_2` entry declared by `pkcs11f.h` to be non-NULL; unsupported
-entries are populated by `core.c` with type-correct stubs. It requires an
-explicit slot ID and serial; destructive key writes additionally require
-`CNK_RUN_DESTRUCTIVE_REAL_TESTS=1`.
-
-## Remaining Structural Work
-
-The current large files still have identifiable future boundaries:
-
-- `api/object.c`: separate enumeration/handle validation from class-specific
-  attribute readers. Wire encoding has already moved out.
-- `api/sign.c`: separate Verify after extracting one shared signature-mechanism
-  descriptor layer; splitting first would duplicate RSA/ECDSA mechanism rules.
-- `api/slot.c` and signature/encryption dispatch: converge mechanism lists,
-  flags, key sizes, and dispatch validation on one descriptor table.
-
-These are ownership-driven splits. File length alone is not a reason to create
-another module or expose a formerly static helper.
+A 2026-09-15 x64 Release comparison measured 1,088,512 bytes before trimming and
+1,020,928 bytes with the allowlist. An isolated nine-algorithm Rust streaming-hash
+addition measured 1,089,024 bytes; this is an additive experiment, not a complete
+replacement. Replacing host ECDSA verification with RustCrypto 0.13 measured
+1,226,752 bytes, or 1,157,632 with size-optimized curve dependencies, after disabling
+C ECDSA/EC support. The direct prototype also rejected the supported P-521/SHA256
+prehash case (RustCrypto's half-field minimum is 33 bytes). These experiments were
+not retained: Rust hash/ECDSA APIs need explicit compatibility adaptation and a
+measured benefit before replacing the existing host backend. RSA and PQC stay put.
