@@ -52,11 +52,30 @@ static void create_profile(CK_BYTE minor) {
   const CK_BYTE fw[] = {'3', '.', (CK_BYTE)('0' + minor), '.', '0', 0x90, 0};
   const CK_BYTE version[] = {6, 0, 0, 0x90, 0};
   const CK_BYTE config[] = {1, 0xe0, 5, 0x16, 0xe1, 0x53, 0x15, 0x54, 0xe2, 0xe3, 0x90, 0};
-  const CK_BYTE *responses[] = {ok, fw, absent, absent, ok, version, config};
-  const size_t sizes[] = {sizeof(ok), sizeof(fw),      sizeof(absent), sizeof(absent),
-                          sizeof(ok), sizeof(version), sizeof(config)};
-  for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i)
-    CHECK(cnk_operation_advance(probe, responses[i], sizes[i], &step, NULL) == CNK_LIBCANO_OK);
+  unsigned exchanges = 0;
+  while (step == CNK_LIBCANO_STEP_EXCHANGE) {
+    CK_BYTE command[300];
+    size_t length = sizeof(command);
+    CHECK(++exchanges <= 16);
+    CHECK(cnk_operation_command(probe, command, &length) == CNK_LIBCANO_OK && length >= 4);
+    const CK_BYTE *response = absent;
+    size_t responseLen = sizeof(absent);
+    if (command[1] == 0xa4) {
+      response = ok;
+      responseLen = sizeof(ok);
+    } else if (command[1] == 0x31 && command[2] == 0) {
+      response = fw;
+      responseLen = sizeof(fw);
+    } else if (command[1] == 0xfd) {
+      response = version;
+      responseLen = sizeof(version);
+    } else if (command[1] == 0xee) {
+      response = config;
+      responseLen = sizeof(config);
+    }
+    CHECK(cnk_operation_advance(probe, response, responseLen, &step, NULL) == CNK_LIBCANO_OK);
+  }
+  CHECK(step == CNK_LIBCANO_STEP_DONE);
   void *profile = NULL;
   CHECK(cnk_operation_take_profile(probe, &profile) == CNK_LIBCANO_OK);
   cnk_operation_free(probe);
