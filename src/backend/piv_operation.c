@@ -84,26 +84,30 @@ CK_RV cnk_piv_operation_status(uint32_t status, const cnk_error_v1 *error, CK_RV
   return CKR_DEVICE_ERROR;
 }
 
-CK_RV cnk_piv_context_for_session(CNK_PKCS11_SESSION *session, uint32_t state, cnk_piv_context_t **context) {
-  if (context == NULL)
-    return CKR_ARGUMENTS_BAD;
-  *context = NULL;
-  if (session == NULL || session->token == NULL)
-    return CKR_ARGUMENTS_BAD;
-  CK_RV rv = cnk_mutex_lock(&session->token->lock);
-  if (rv != CKR_OK)
-    return rv;
-  cnk_error_v1 error = {.struct_size = sizeof(error)};
-  uint32_t status = CNK_INVALID_STATE;
-  if (session->token->libcanokeyProfile != NULL &&
-      session->token->libcanokeyProfileEpoch == atomic_load(&g_cnk_managed_binding_epoch))
-    status = CNK_EXTERNAL_CALL(cnk_piv_context_new, session->token->libcanokeyProfile, state, context, &error);
-  CK_RV unlockRv = cnk_mutex_unlock(&session->token->lock);
-  rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
-  if (rv == CKR_OK && unlockRv != CKR_OK) {
-    CNK_EXTERNAL_VOID(cnk_piv_context_free, *context);
-    *context = NULL;
-    rv = unlockRv;
+const cnk_operation_options_v1 cnk_piv_existing_options = {
+    sizeof(cnk_operation_options_v1), CNK_PIV_USE_EXISTING, 261, 258, 1024 * 1024, 4096};
+
+CK_RV cnk_piv_profile_begin(CNK_PKCS11_SESSION *session, const cnk_profile_t **profile) {
+  CNK_ENSURE_NONNULL(session, session->token, profile);
+  *profile = NULL;
+  CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
+  if (!session->token->libcanokeyProfile ||
+      session->token->libcanokeyProfileEpoch != atomic_load(&g_cnk_managed_binding_epoch)) {
+    cnk_mutex_unlock(&session->token->lock);
+    return CKR_DEVICE_ERROR;
+  }
+  *profile = session->token->libcanokeyProfile;
+  return CKR_OK;
+}
+CK_RV cnk_piv_profile_end(CNK_PKCS11_SESSION *session, cnk_operation_t **operation, uint32_t status,
+                          const cnk_error_v1 *error) {
+  CK_RV unlock = cnk_mutex_unlock(&session->token->lock);
+  CK_RV rv = cnk_piv_operation_status(status, error, CKR_DEVICE_ERROR);
+  if (rv == CKR_OK)
+    rv = unlock;
+  if (rv != CKR_OK && *operation) {
+    CNK_EXTERNAL_VOID(cnk_operation_free, *operation);
+    *operation = NULL;
   }
   return rv;
 }
@@ -196,15 +200,11 @@ cleanup:
 
 CK_RV cnk_piv_read_metadata_fields(CNK_PKCS11_SESSION *session, SCARDHANDLE card, CK_BYTE reference,
                                    cnk_metadata_v1 *metadata, CK_RV absent) {
-  cnk_piv_context_t *context = NULL;
   cnk_operation_t *operation = NULL;
   cnk_error_v1 error = {.struct_size = sizeof(error)};
-  CK_RV rv = cnk_piv_context_for_session(session, CNK_PIV_CONTEXT_SELECTED, &context);
-  if (rv != CKR_OK)
-    return rv;
-  uint32_t status =
-      CNK_EXTERNAL_CALL(cnk_piv_get_metadata_in_context_new, context, reference, NULL, &operation, &error);
-  rv = cnk_piv_operation_status(status, &error, absent);
+  CK_RV rv;
+  uint32_t status;
+  rv = CNK_PIV_CREATE(session, cnk_piv_get_metadata_new, &operation, &error, reference, NULL);
   if (rv == CKR_OK)
     rv = cnk_run_piv_operation(card, operation, absent, NULL);
   if (rv == CKR_OK) {
@@ -213,7 +213,6 @@ CK_RV cnk_piv_read_metadata_fields(CNK_PKCS11_SESSION *session, SCARDHANDLE card
   }
   if (operation)
     CNK_EXTERNAL_VOID(cnk_operation_free, operation);
-  CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   return rv;
 }
 

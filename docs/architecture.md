@@ -17,7 +17,7 @@ current adaptation and remaining acceptance gates.
 | internal/template.c, piv_object.c | PKCS#11 template validation and typed import views |
 | internal/crypto.c and crypto helpers | Host hashing, padding, KDF and public-key crypto |
 | backend/pcsc.c | Reader/slot lifecycle, transaction ownership and raw transport |
-| backend/piv_operation.c | Copied contexts, bounded Rust executor, error mapping and public-key compatibility |
+| backend/piv_operation.c | Borrowed profile construction, bounded Rust executor, error mapping and public-key compatibility |
 | backend/piv_metadata.c | Public snapshots and typed version/configuration/retry/RNG operations |
 | backend/piv_auth.c | Credential/cache integration using Rust credential and management operations |
 | backend/piv_crypto.c, piv_data.c | Typed private/key/data/certificate operations and compatibility adapters |
@@ -51,19 +51,20 @@ connect -> begin -> SELECT PIV -> authenticate if needed -> dependent APDUs
 -> parse/commit -> end -> disconnect (standalone) or retain caller handle (managed)
 ```
 
-Current CanoKey firmware resets PIN/PUK/management status on SELECT, including
-same-AID selection. Probe before authentication; never SELECT or switch applets
-between authentication and its target. Selected-context factories copy the profile
-and never select/authenticate implicitly. Command/result getters never advance.
-The bounded executor frees operations, contexts and scratch on every exit. The
-previous C APDU decoder and synchronous Rust callback loop have been removed.
+CanoKey 2.0+ clears PIN/PUK/management authorization on SELECT, including
+same-AID selection (1.6.2 retained it). A raw current-card check in one PC/SC
+transaction confirmed PIN status 9000 -> 63C3 and protected access 9000 -> 6982
+on re-SELECT. Probe before authentication; never reselect between authentication
+and its target. Ordinary factories use CNK_PIV_USE_EXISTING here, with no
+separate context handle. Command/result getters never advance. The bounded
+executor owns scratch; callers free operations on every exit.
 
 A session can span many transactions. Open/close and host-only Init/Update calls
 must not hold a transaction for the session's lifetime. PC/SC serializes physical
 I/O; it does not replace session locks, token reservations or lifecycle admission.
 
 One CNK_PKCS11_TOKEN_STATE per slot owns login role, USER PIN, management-key cache,
-session counters and immutable profile. Its lock protects publication and cloning.
+session counters and immutable profile. Its lock protects publication and synchronous factory construction.
 Binding epochs prevent stale profile publication; finalization drains active calls
 before invalidation/free and PC/SC release. Each session owns operation contexts,
 copied parameters, multipart buffers, session secrets and find state.

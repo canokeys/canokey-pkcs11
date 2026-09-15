@@ -24,7 +24,7 @@ C retains PKCS#11 admission, host crypto, caches and Windows representations.
 
 | Area | Deterministic acceptance | Current-card acceptance |
 | --- | --- | --- |
-| Profile/context | Selected-context factories, profile expiry/binding races, cache generations, lock failures, concurrent sign/RNG, close/finalize drain | Two sessions, external replacement and USB reinsert against a live cached session |
+| Profile/context | Selection option, profile expiry/binding races, cache generations, lock failures, concurrent sign/RNG, close/finalize drain | Two sessions, external replacement and USB reinsert against a live cached session |
 | Public reads | Metadata, directory, definite BER, malformed/duplicate fields, certificate decompression/limits, buffer atomicity and cache invalidation | Fresh enumeration, PRINTED roundtrip, six Windows certificate files and propagation |
 | Signing | RSA/ECDSA/Ed25519/ML-DSA formats, policy/init/cancel/short-buffer boundaries, legacy/unknown feature gates | Independent verification and all three PIN policies across supported variants |
 | Other private operations | RSA preflight retains authorization without APDUs; ECDH/ML-KEM reservations cover session-secret publication/failure | RSA raw/PKCS#1/OAEP, ECDH/X25519 and ML-KEM; Windows RSA decrypt and P-256/P-384/P-521 raw-secret byte order |
@@ -42,8 +42,8 @@ the complete exported inventory and lifetime/exit guarantees.
 
 - A card call owns one transaction from begin through SELECT, authentication,
   dependent commands and result/cache commit. CanoKey SELECT resets authentication;
-  selected-context factories neither SELECT nor probe.
-- Resolve the immutable profile before authentication. Clone it under the token
+  CNK_PIV_USE_EXISTING factories neither SELECT nor probe.
+- Resolve the immutable profile before authentication. Borrow it for factory construction under the token
   lock and reject an obsolete binding epoch. Refresh failure cannot authorize
   fallback. Finalize/binding changes stop admission and drain active calls.
 - Reservations retain authorization through card I/O and result publication.

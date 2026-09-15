@@ -42,7 +42,6 @@ static CK_RV container_name_operation(CNK_PKCS11_SESSION *session, CK_BYTE slot,
                    : cnk_begin_piv_transaction(session->slotId, &card);
   if (rv != CKR_OK)
     return rv;
-  cnk_piv_context_t *context = NULL;
   cnk_operation_t *operation = NULL;
   cnk_error_v1 error = {.struct_size = sizeof(error)};
   CK_BBOOL supported = CK_FALSE;
@@ -53,15 +52,9 @@ static CK_RV container_name_operation(CNK_PKCS11_SESSION *session, CK_BYTE slot,
     rv = CKR_FUNCTION_NOT_SUPPORTED;
     goto cleanup;
   }
-  rv = cnk_piv_context_for_session(session, write ? CNK_PIV_CONTEXT_MANAGEMENT_AUTHORIZED : CNK_PIV_CONTEXT_SELECTED,
-                                   &context);
-  if (rv != CKR_OK)
-    goto cleanup;
-  uint32_t status =
-      write ? CNK_EXTERNAL_CALL(cnk_piv_set_container_name_in_context_new, context, slot, name, nameLen, NULL,
-                                &operation, &error)
-            : CNK_EXTERNAL_CALL(cnk_piv_read_container_name_in_context_new, context, slot, NULL, &operation, &error);
-  rv = name_error(&error, cnk_piv_operation_status(status, &error, CKR_KEY_HANDLE_INVALID), write);
+  rv = write ? CNK_PIV_CREATE(session, cnk_piv_set_container_name_new, &operation, &error, slot, name, nameLen, NULL)
+             : CNK_PIV_CREATE(session, cnk_piv_read_container_name_new, &operation, &error, slot, NULL);
+  rv = name_error(&error, rv, write);
   if (rv != CKR_OK)
     goto cleanup;
   if (write)
@@ -93,8 +86,6 @@ static CK_RV container_name_operation(CNK_PKCS11_SESSION *session, CK_BYTE slot,
 cleanup:
   if (operation)
     CNK_EXTERNAL_VOID(cnk_operation_free, operation);
-  if (context)
-    CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   cnk_disconnect_card(card);
   return rv;
 }

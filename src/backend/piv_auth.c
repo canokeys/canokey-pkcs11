@@ -83,15 +83,11 @@ static CK_RV validate_piv_pin_len(CK_ULONG pinLen) {
 // Encoded credentials and command-specific status parsing belong to Rust.
 CK_RV cnk_piv_credential_on_card(CNK_PKCS11_SESSION *session, SCARDHANDLE card, uint32_t action, const CK_BYTE *old,
                                  CK_ULONG oldLen, const CK_BYTE *replacement, CK_ULONG newLen, CK_BYTE *tries) {
-  cnk_piv_context_t *context = NULL;
   cnk_operation_t *operation = NULL;
   cnk_error_v1 error = {.struct_size = sizeof(error)};
-  CK_RV rv = cnk_piv_context_for_session(session, CNK_PIV_CONTEXT_SELECTED, &context);
-  if (rv != CKR_OK)
-    return rv;
-  uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_credential_in_context_new, context, action, old, oldLen, replacement,
-                                      newLen, NULL, &operation, &error);
-  rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
+  CK_RV rv;
+  uint32_t status;
+  rv = CNK_PIV_CREATE(session, cnk_piv_credential_new, &operation, &error, action, old, oldLen, replacement, newLen);
   if (rv == CKR_OK) {
     rv = cnk_run_piv_operation(card, operation, CKR_DEVICE_ERROR, NULL);
     if (rv != CKR_OK)
@@ -110,7 +106,6 @@ CK_RV cnk_piv_credential_on_card(CNK_PKCS11_SESSION *session, SCARDHANDLE card, 
   }
   if (operation)
     CNK_EXTERNAL_VOID(cnk_operation_free, operation);
-  CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   CNK_DEBUG("PIV credential action=%u completed: CK_RV=0x%lx", action, rv);
   return rv;
 }
@@ -223,7 +218,6 @@ static CK_RV getManagementKeyAlgorithmOnCard(CNK_PKCS11_SESSION *session, SCARDH
 
 static CK_RV authenticateManagementKeyOnCard(CNK_PKCS11_SESSION *session, SCARDHANDLE card,
                                              const CK_BYTE key[PIV_MANAGEMENT_KEY_LEN]) {
-  cnk_piv_context_t *context = NULL;
   cnk_operation_t *operation = NULL;
   cnk_error_v1 error = {.struct_size = sizeof(error)};
   CK_BYTE algorithm = 0;
@@ -237,20 +231,13 @@ static CK_RV authenticateManagementKeyOnCard(CNK_PKCS11_SESSION *session, SCARDH
       .key = key,
       .key_len = PIV_MANAGEMENT_KEY_LEN,
   };
-  rv = cnk_piv_context_for_session(session, CNK_PIV_CONTEXT_SELECTED, &context);
-  if (rv != CKR_OK)
-    goto cleanup;
-  uint32_t status =
-      CNK_EXTERNAL_CALL(cnk_piv_authenticate_management_in_context_new, context, &management, NULL, &operation, &error);
-  rv = cnk_piv_operation_status(status, &error, CKR_DEVICE_ERROR);
+  rv = CNK_PIV_CREATE(session, cnk_piv_authenticate_management_key_new, &operation, &error, &management);
   if (rv != CKR_OK)
     goto cleanup;
   rv = cnk_run_piv_operation(card, operation, CKR_DEVICE_ERROR, NULL);
 cleanup:
   if (operation)
     CNK_EXTERNAL_VOID(cnk_operation_free, operation);
-  if (context)
-    CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   return rv;
 }
 

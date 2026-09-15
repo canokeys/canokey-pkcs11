@@ -90,13 +90,16 @@ a panic or ABI state/type mismatch remains a device error.
 All internal key algorithms use stable semantic codes; only Rust maps them to
 firmware wire IDs. Algorithm preflight queries the same immutable profile as the
 operation factory and preserves unsupported versus unknown errors.
-Profile probing finishes before opening the authenticated transaction. Context
-construction clones the immutable profile while holding the token lock, rejects
-an obsolete binding epoch, and never probes or selects. A failed unlock discards
-a provisional context instead of publishing success. Profile publication frees
+Profile probing finishes before opening the authenticated transaction. Factory
+construction borrows the immutable profile under the token lock and rejects an
+obsolete binding epoch. CNK_PIV_USE_EXISTING omits SELECT and implicit auth;
+no separate context handle or declared authentication state is allocated.
+Factories own copied inputs before the lock is released; card I/O starts only
+after successful unlock. Failed unlock discards the provisional operation.
+Profile publication frees
 its candidate on a failed lock and permits at most three binding retries.
 Profiles expire after 60 seconds; refresh retains the old immutable profile until
-a successful replacement, so an admitted transaction can still clone it after
+a successful replacement, so an admitted transaction can still construct an owned operation after
 VERIFY. Expired-profile refresh errors propagate; they never authorize fallback.
 Profile probing uses this same executor and error mapping; no separate callback
 loop discards its diagnostic fields. Error logs name the ABI status, semantic
@@ -261,10 +264,10 @@ errors and unexpected F5 errors on supported versions do not select fallback.
 | API | Profile | Lifetime and concurrency | Progress and exit guarantee |
 | --- | --- | --- | --- |
 | `C_CNK_GetContainerName` | `SESSION` | Admission and session reference span one fresh unauthenticated PIV transaction. Rust owns F5 framing and UTF-16 decoding. Output belongs to caller; no name/capability cache or borrowed pointer survives. | NULL queries actual length with read-only card I/O. Too-small sets length without partial copy. Empty success means unnamed; absent key returns CKR_KEY_HANDLE_INVALID. |
-| `C_CNK_SetContainerName` | `CARD-WRITE` | The pure Rust validator checks the borrowed name before card work; the context factory owns its copy. RW session and management reservation span SELECT, management authentication and one short F5 write. | Zero length clears. No retry: a failed transport can follow a committed write. Cache invalidates before transmission. Every exit releases card, reservation, reference and admission; no key/PIN/ADMIN DATA mutation. |
+| `C_CNK_SetContainerName` | `CARD-WRITE` | The pure Rust validator checks the borrowed name before card work; the operation factory owns its copy. RW session and management reservation span SELECT, management authentication and one short F5 write. | Zero length clears. No retry: a failed transport can follow a committed write. Cache invalidates before transmission. Every exit releases card, reservation, reference and admission; no key/PIN/ADMIN DATA mutation. |
 | `C_CreateObject` | `OBJECT` / `CARD-WRITE` | Template is borrowed and its class/object identity is validated before authentication. Session-secret data is copied under `session->lock`; PIV private/certificate/data writes hold a management reservation. Import component views borrow the template through the synchronous Rust constructor; only EC padding needs a C secret copy, cleared on every exit. Rust owns import and certificate framing and clears copied private material when the operation is freed. | Managed private-key import requires fresh explicit absence in the same authenticated transaction; occupied keys return CKR_ACTION_PROHIBITED, unknown state blocks the write. Standalone replacement is unchanged. Session object publishes only after full validation; a committed card mutation is never represented as rolled back. |
 | `C_CopyObject` | `OBJECT` | Source session secret is snapshotted under `session->lock`; copied value is module-owned and zeroized after allocation. | Only copyable visible session secrets succeed. Failure publishes no new handle and leaves source unchanged. |
-| `C_DestroyObject` | `OBJECT` / `CARD-WRITE` | Holds `session->lock`; secret bytes are zeroized before handle becomes inactive. Certificate deletion retains the token management reservation through the selected-context card mutation. | Private visibility and destroyable policy are rechecked. Certificate deletion requires a read-write session and holds management authorization through the card mutation. Cache invalidation follows every attempted mutation, including uncertain failures. PIV keys/data return action prohibited. |
+| `C_DestroyObject` | `OBJECT` / `CARD-WRITE` | Holds `session->lock`; secret bytes are zeroized before handle becomes inactive. Certificate deletion retains the token management reservation through the card mutation without re-SELECT. | Private visibility and destroyable policy are rechecked. Certificate deletion requires a read-write session and holds management authorization through the card mutation. Cache invalidation follows every attempted mutation, including uncertain failures. PIV keys/data return action prohibited. |
 | `C_GetObjectSize` | `OBJECT` | Uses ordinary attribute APIs; no returned pointer is retained. | Returns a coherent estimated object size or error; no object/operation state mutation. |
 | `C_GetAttributeValue` | `OBJECT` | Session secrets are read under `session->lock`; private visibility is checked at call time. Token attributes use call-local owned public components/certificate buffers, backed by the standalone public snapshot cache when fresh. | Per-attribute unavailable/sensitive errors follow PKCS#11 rules. Size query is non-consuming; metadata failure returns before touching attribute outputs; public components are copied atomically from validated Rust results. Managed mode bypasses the cache. Certificate values are the already unwrapped/decompressed payload from libcanokey. Certificates report CKA_DESTROYABLE=true; PIV keys/data remain non-destroyable. |
 | `C_SetAttributeValue` | `OBJECT` | Mutable session-secret changes apply to a temporary snapshot under `session->lock`; template pointers are borrowed. | All attributes validate before commit. PIV token attributes are read-only; failure leaves the live secret unchanged. |

@@ -255,3 +255,10 @@ cases. These use production Rust and transaction ownership, not a second mock
 implementation of the vendor API. `piv-operation` remains a separate FFI failure
 fixture because null handles, invalid statuses and allocator failures cannot be
 injected through an ordinary card transcript.
+
+Factory construction uses the token profile under its lock and the shared
+CNK_PIV_USE_EXISTING options. The lock must be released before the first card
+exchange. The FFI failure fixture asserts that boundary, injects lock/unlock
+and factory failures, and verifies provisional operations are freed without
+publishing output or issuing APDUs. API admission, reservations and cache
+invalidation remain unchanged by the removal of selected-context handles.

@@ -18,14 +18,10 @@
 struct CnkOperation {
   unsigned unused;
 };
-struct CnkPivContext {
-  unsigned unused;
-};
 static struct CnkOperation op;
-static struct CnkPivContext ctx;
 static CNK_PKCS11_TOKEN_STATE token;
 static CNK_PKCS11_SESSION session;
-static unsigned cards, operations, contexts, sends, invalidations, locked, pinCopies;
+static unsigned cards, operations, sends, invalidations, locked, pinCopies;
 static unsigned failAt, phase, endless, responseSize = 2, badCommand;
 static uint32_t errorKind, profileStatus, publicAlgorithmStatus, finalStep = CNK_STEP_DONE;
 static CK_RV lockError, unlockError;
@@ -112,22 +108,8 @@ static uint32_t status(cnk_error_v1 *error) {
   }
   return CNK_PROTOCOL_ERROR;
 }
-uint32_t cnk_piv_context_new(const cnk_profile_t *profile, uint32_t state, cnk_piv_context_t **out,
-                             cnk_error_v1 *error) {
-  CHECK(profile && locked == 1 && state);
-  uint32_t rv = status(error);
-  if (!rv) {
-    *out = &ctx;
-    contexts++;
-  }
-  return rv;
-}
-void cnk_piv_context_free(cnk_piv_context_t *context) {
-  CHECK(context == &ctx && contexts == 1);
-  contexts--;
-}
-static uint32_t construct(const cnk_piv_context_t *context, cnk_operation_t **out, cnk_error_v1 *error) {
-  CHECK(context == &ctx && cards == 1 && !operations && !locked);
+static uint32_t construct(const cnk_profile_t *context, cnk_operation_t **out, cnk_error_v1 *error) {
+  CHECK(context == (void *)1 && cards == 1 && !operations && locked == 1);
   uint32_t rv = status(error);
   if (!rv) {
     *out = &op;
@@ -175,9 +157,9 @@ uint32_t cnk_operation_key_algorithm(const cnk_operation_t *operation, uint32_t 
   *algorithm = CNK_ALGORITHM_RSA2048;
   return CNK_OK;
 }
-uint32_t cnk_piv_get_metadata_in_context_new(const cnk_piv_context_t *c, uint32_t ref,
-                                             const cnk_operation_options_v1 *o, cnk_operation_t **out,
-                                             cnk_error_v1 *e) {
+uint32_t cnk_piv_get_metadata_new(const cnk_profile_t *c, uint32_t ref, const cnk_piv_access_v1 *auth,
+                                  const cnk_operation_options_v1 *o, cnk_operation_t **out, cnk_error_v1 *e) {
+  CHECK(auth == NULL);
   (void)c;
   (void)ref;
   (void)o;
@@ -190,52 +172,57 @@ uint32_t cnk_operation_metadata(const cnk_operation_t *o, cnk_metadata_v1 *metad
   (void)metadata;
   abort();
 }
-uint32_t cnk_piv_generate_key_in_context_new(const cnk_piv_context_t *c, const cnk_piv_key_parameters_v1 *p,
-                                             const cnk_operation_options_v1 *o, cnk_operation_t **out,
-                                             cnk_error_v1 *e) {
+uint32_t cnk_piv_generate_key_new(const cnk_profile_t *c, const cnk_piv_key_parameters_v1 *p,
+                                  const cnk_piv_access_v1 *auth, const cnk_operation_options_v1 *o,
+                                  cnk_operation_t **out, cnk_error_v1 *e) {
+  CHECK(auth == NULL);
   (void)p;
-  (void)o;
+  CHECK(o && o->flags == CNK_PIV_USE_EXISTING);
   return construct(c, out, e);
 }
-uint32_t cnk_piv_import_key_in_context_new(const cnk_piv_context_t *c, const cnk_piv_key_parameters_v1 *p,
-                                           const cnk_bytes_t *b, size_t n, const cnk_operation_options_v1 *o,
-                                           cnk_operation_t **out, cnk_error_v1 *e) {
+uint32_t cnk_piv_import_key_new(const cnk_profile_t *c, const cnk_piv_key_parameters_v1 *p, const cnk_bytes_t *b,
+                                size_t n, const cnk_piv_access_v1 *auth, const cnk_operation_options_v1 *o,
+                                cnk_operation_t **out, cnk_error_v1 *e) {
+  CHECK(auth == NULL);
   CHECK(p->slot == 0x9c && p->algorithm == CNK_ALGORITHM_P256 && p->pin_policy == 1);
   CHECK(n == 1 && b[0].len == 32 && b[0].data[31] == 1);
-  (void)o;
+  CHECK(o && o->flags == CNK_PIV_USE_EXISTING);
   return construct(c, out, e);
 }
-uint32_t cnk_piv_write_object_container_in_context_new(const cnk_piv_context_t *c, const uint8_t *tag, size_t tn,
-                                                       const uint8_t *d, size_t n, const cnk_operation_options_v1 *o,
-                                                       cnk_operation_t **out, cnk_error_v1 *e) {
+uint32_t cnk_piv_write_object_container_new(const cnk_profile_t *c, const uint8_t *tag, size_t tn, const uint8_t *d,
+                                            size_t n, const cnk_piv_access_v1 *auth, const cnk_operation_options_v1 *o,
+                                            cnk_operation_t **out, cnk_error_v1 *e) {
+  CHECK(auth == NULL);
   (void)tag;
   (void)tn;
   (void)d;
   (void)n;
-  (void)o;
+  CHECK(o && o->flags == CNK_PIV_USE_EXISTING);
   return construct(c, out, e);
 }
-uint32_t cnk_piv_write_certificate_in_context_new(const cnk_piv_context_t *c, uint32_t slot, const uint8_t *der,
-                                                  size_t len, const cnk_operation_options_v1 *o, cnk_operation_t **out,
-                                                  cnk_error_v1 *e) {
+uint32_t cnk_piv_write_certificate_new(const cnk_profile_t *c, uint32_t slot, const uint8_t *der, size_t len,
+                                       const cnk_piv_access_v1 *auth, const cnk_operation_options_v1 *o,
+                                       cnk_operation_t **out, cnk_error_v1 *e) {
+  CHECK(auth == NULL);
   CHECK(slot == 0x9c && len == 3 && der[0] == 0x30 && der[1] == 1 && der[2] == 0);
-  (void)o;
+  CHECK(o && o->flags == CNK_PIV_USE_EXISTING);
   return construct(c, out, e);
 }
-uint32_t cnk_piv_delete_certificate_in_context_new(const cnk_piv_context_t *c, uint32_t slot,
-                                                   const cnk_operation_options_v1 *o, cnk_operation_t **out,
-                                                   cnk_error_v1 *e) {
+uint32_t cnk_piv_delete_certificate_new(const cnk_profile_t *c, uint32_t slot, const cnk_piv_access_v1 *auth,
+                                        const cnk_operation_options_v1 *o, cnk_operation_t **out, cnk_error_v1 *e) {
+  CHECK(auth == NULL);
   (void)slot;
-  (void)o;
+  CHECK(o && o->flags == CNK_PIV_USE_EXISTING);
   return construct(c, out, e);
 }
-uint32_t cnk_piv_set_container_name_in_context_new(const cnk_piv_context_t *c, uint32_t slot, const uint8_t *name,
-                                                   size_t len, const cnk_operation_options_v1 *o, cnk_operation_t **out,
-                                                   cnk_error_v1 *e) {
+uint32_t cnk_piv_set_container_name_new(const cnk_profile_t *c, uint32_t slot, const uint8_t *name, size_t len,
+                                        const cnk_piv_access_v1 *auth, const cnk_operation_options_v1 *o,
+                                        cnk_operation_t **out, cnk_error_v1 *e) {
+  CHECK(auth == NULL);
   (void)slot;
   (void)name;
   (void)len;
-  (void)o;
+  CHECK(o && o->flags == CNK_PIV_USE_EXISTING);
   return construct(c, out, e);
 }
 uint32_t cnk_piv_container_name_validate(const uint8_t *name, size_t len, cnk_error_v1 *e) {
@@ -244,16 +231,15 @@ uint32_t cnk_piv_container_name_validate(const uint8_t *name, size_t len, cnk_er
   (void)e;
   return CNK_OK;
 }
-uint32_t cnk_piv_read_container_name_in_context_new(const cnk_piv_context_t *c, uint32_t slot,
-                                                    const cnk_operation_options_v1 *o, cnk_operation_t **out,
-                                                    cnk_error_v1 *e) {
+uint32_t cnk_piv_read_container_name_new(const cnk_profile_t *c, uint32_t slot, const cnk_piv_access_v1 *auth,
+                                         const cnk_operation_options_v1 *o, cnk_operation_t **out, cnk_error_v1 *e) {
+  CHECK(auth == NULL);
   (void)slot;
-  (void)o;
+  CHECK(o && o->flags == CNK_PIV_USE_EXISTING);
   return construct(c, out, e);
 }
-uint32_t cnk_piv_read_object_container_in_context_new(const cnk_piv_context_t *c, const uint8_t *tag, size_t n,
-                                                      const cnk_operation_options_v1 *o, cnk_operation_t **out,
-                                                      cnk_error_v1 *e) {
+uint32_t cnk_piv_read_object_container_new(const cnk_profile_t *c, const uint8_t *tag, size_t n,
+                                           const cnk_operation_options_v1 *o, cnk_operation_t **out, cnk_error_v1 *e) {
   (void)tag;
   (void)n;
   (void)o;
@@ -340,8 +326,9 @@ CK_RV cnk_connect_for_private_key_operation(CK_SLOT_ID slot, CNK_PKCS11_SESSION 
   abort();
 }
 #define PRIVATE_STUB(name)                                                                                             \
-  uint32_t name(const cnk_piv_context_t *c, uint32_t slot, uint32_t algorithm, const uint8_t *data, size_t n,          \
-                const cnk_operation_options_v1 *options, cnk_operation_t **out, cnk_error_v1 *e) {                     \
+  uint32_t name(const cnk_profile_t *c, uint32_t slot, uint32_t algorithm, const uint8_t *data, size_t n,              \
+                const cnk_piv_access_v1 *auth, const cnk_operation_options_v1 *options, cnk_operation_t **out,         \
+                cnk_error_v1 *e) {                                                                                     \
     (void)c;                                                                                                           \
     (void)slot;                                                                                                        \
     (void)algorithm;                                                                                                   \
@@ -352,11 +339,12 @@ CK_RV cnk_connect_for_private_key_operation(CK_SLOT_ID slot, CNK_PKCS11_SESSION 
     (void)e;                                                                                                           \
     abort();                                                                                                           \
   }
-PRIVATE_STUB(cnk_piv_decrypt_in_context_new)
-PRIVATE_STUB(cnk_piv_derive_in_context_new)
-uint32_t cnk_piv_decapsulate_in_context_new(const cnk_piv_context_t *c, uint32_t slot, const uint8_t *data, size_t n,
-                                            const cnk_operation_options_v1 *options, cnk_operation_t **out,
-                                            cnk_error_v1 *e) {
+PRIVATE_STUB(cnk_piv_decrypt_new)
+PRIVATE_STUB(cnk_piv_derive_new)
+uint32_t cnk_piv_decapsulate_new(const cnk_profile_t *c, uint32_t slot, const uint8_t *data, size_t n,
+                                 const cnk_piv_access_v1 *auth, const cnk_operation_options_v1 *options,
+                                 cnk_operation_t **out, cnk_error_v1 *e) {
+  CHECK(auth == NULL);
   (void)c;
   (void)slot;
   (void)data;
@@ -366,9 +354,10 @@ uint32_t cnk_piv_decapsulate_in_context_new(const cnk_piv_context_t *c, uint32_t
   (void)e;
   abort();
 }
-uint32_t cnk_piv_sign_in_context_new(const cnk_piv_context_t *c, uint32_t slot, uint32_t algorithm, uint32_t kind,
-                                     const uint8_t *data, size_t n, const cnk_operation_options_v1 *options,
-                                     cnk_operation_t **out, cnk_error_v1 *e) {
+uint32_t cnk_piv_sign_new(const cnk_profile_t *c, uint32_t slot, uint32_t algorithm, uint32_t kind, const uint8_t *data,
+                          size_t n, const cnk_piv_access_v1 *auth, const cnk_operation_options_v1 *options,
+                          cnk_operation_t **out, cnk_error_v1 *e) {
+  CHECK(auth == NULL);
   (void)c;
   (void)slot;
   (void)algorithm;
@@ -380,10 +369,10 @@ uint32_t cnk_piv_sign_in_context_new(const cnk_piv_context_t *c, uint32_t slot, 
   (void)e;
   abort();
 }
-uint32_t cnk_piv_sign_streaming_in_context_new(const cnk_piv_context_t *c, uint32_t slot, uint32_t mode,
-                                               const uint8_t *data, size_t n, const uint8_t *context, size_t cn,
-                                               const cnk_operation_options_v1 *options, cnk_operation_t **out,
-                                               cnk_error_v1 *e) {
+uint32_t cnk_piv_sign_streaming_new(const cnk_profile_t *c, uint32_t slot, uint32_t mode, const uint8_t *data, size_t n,
+                                    const uint8_t *context, size_t cn, const cnk_piv_access_v1 *auth,
+                                    const cnk_operation_options_v1 *options, cnk_operation_t **out, cnk_error_v1 *e) {
+  CHECK(auth == NULL);
   (void)c;
   (void)slot;
   (void)mode;
@@ -439,7 +428,7 @@ CK_RV cnk_piv_v6_supported_on_card(SCARDHANDLE card, CK_BBOOL *supported) {
 }
 
 static void reset(void) {
-  CHECK(!cards && !operations && !contexts && !locked);
+  CHECK(!cards && !operations && !locked);
   sends = invalidations = phase = failAt = errorKind = endless = badCommand = 0;
   lockError = unlockError = 0;
   profileStatus = publicAlgorithmStatus = pinCopies = 0;
@@ -483,16 +472,16 @@ int main(void) {
   CK_BYTE output[512];
   CK_ULONG len;
   for (unsigned kind = 0; kind < 8; kind++) {
-    // Every failure from context construction through advance must release all
+    // Every failure from operation construction through advance must release all
     // resources and must not publish a read result or a successful mutation.
-    for (unsigned failure = 1; failure <= 7; failure++) {
+    for (unsigned failure = 1; failure <= 6; failure++) {
       reset();
       failAt = failure;
       memset(output, 0xCC, sizeof(output));
       len = sizeof(output);
       CHECK(call(kind, output, &len) == CKR_DEVICE_ERROR);
       CHECK(output[0] == 0xCC && len == sizeof(output));
-      CHECK(invalidations == (kind == 7 ? failure >= 3 : (kind < 4 || kind == 6) && sends != 0));
+      CHECK(invalidations == (kind == 7 ? failure >= 2 : (kind < 4 || kind == 6) && sends != 0));
       reset();
     }
     reset();
@@ -583,7 +572,7 @@ int main(void) {
     len = 0;
     CHECK(call(k, NULL, &len) == CKR_OK && len == 2 && sends == 1);
     reset();
-    for (unsigned failure = 8; failure <= 9; failure++) {
+    for (unsigned failure = 7; failure <= 8; failure++) {
       reset();
       failAt = failure;
       len = sizeof(output);
@@ -606,16 +595,14 @@ int main(void) {
   len = sizeof(output);
   CHECK(call(5, output, &len) == CKR_OK);
   const char *cursor = transcript;
-  const char *const boundaries[] = {"cnk_piv_context_new completed: status=0x0",
-                                    "cnk_piv_read_object_container_in_context_new completed: status=0x0",
+  const char *const boundaries[] = {"cnk_piv_read_object_container_new completed: status=0x0",
                                     "cnk_operation_start completed: status=0x0",
                                     "cnk_operation_command completed: status=0x0",
                                     "cnk_operation_command completed: status=0x0",
                                     "cnk_operation_advance completed: status=0x0",
                                     "cnk_operation_result_copy_bytes completed: status=0x0",
                                     "cnk_operation_result_copy_bytes completed: status=0x0",
-                                    "cnk_operation_free completed",
-                                    "cnk_piv_context_free completed"};
+                                    "cnk_operation_free completed"};
   for (size_t i = 0; i < sizeof(boundaries) / sizeof(boundaries[0]); ++i) {
     cursor = strstr(cursor, boundaries[i]);
     CHECK(cursor != NULL);
@@ -623,12 +610,12 @@ int main(void) {
   }
   reset();
   transcript[0] = 0;
-  failAt = 2;
+  failAt = 1;
   len = sizeof(output);
   CHECK(call(5, output, &len) == CKR_DEVICE_ERROR && sends == 0);
-  CHECK(strstr(transcript, "cnk_piv_read_object_container_in_context_new completed: status=0x5"));
+  CHECK(strstr(transcript, "cnk_piv_read_object_container_new completed: status=0x5"));
   CHECK(!strstr(transcript, "cnk_operation_start completed"));
-  CHECK(strstr(transcript, "cnk_piv_context_free completed"));
+  CHECK(!locked && !operations);
   reset();
   cnk_error_v1 e = {.struct_size = sizeof(e), .kind = CNK_ERROR_NOT_FOUND};
   CHECK(cnk_piv_operation_status(CNK_OK, &e, CKR_DATA_INVALID) == CKR_OK);

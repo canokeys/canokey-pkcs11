@@ -67,14 +67,10 @@ static CK_RV cnk_get_metadata_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pi
   CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
   SCARDHANDLE card = 0;
   CNK_ENSURE_OK(cnk_begin_piv_transaction(session->slotId, &card));
-  cnk_piv_context_t *context = NULL;
   cnk_operation_t *operation = NULL;
   cnk_error_v1 error = {.struct_size = sizeof(error)};
-  CK_RV rv = cnk_piv_context_for_session(session, CNK_PIV_CONTEXT_SELECTED, &context);
-  if (rv != CKR_OK)
-    goto cleanup;
-  uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_get_metadata_in_context_new, context, pivTag, NULL, &operation, &error);
-  rv = cnk_piv_operation_status(status, &error, CKR_DATA_INVALID);
+  CK_RV rv;
+  rv = CNK_PIV_CREATE(session, cnk_piv_get_metadata_new, &operation, &error, pivTag, NULL);
   if (rv != CKR_OK)
     goto cleanup;
   rv = cnk_run_piv_operation(card, operation, CKR_DATA_INVALID, NULL);
@@ -99,8 +95,6 @@ static CK_RV cnk_get_metadata_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE pi
 cleanup:
   if (operation)
     CNK_EXTERNAL_VOID(cnk_operation_free, operation);
-  if (context)
-    CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   cnk_disconnect_card(card);
   return rv;
 }
@@ -120,14 +114,10 @@ static CK_RV cnk_get_certificate_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE
     return CKR_ARGUMENTS_BAD;
   SCARDHANDLE card = 0;
   CNK_ENSURE_OK(cnk_begin_piv_transaction(session->slotId, &card));
-  cnk_piv_context_t *context = NULL;
   cnk_operation_t *operation = NULL;
   cnk_error_v1 error = {.struct_size = sizeof(error)};
-  CK_RV rv = cnk_piv_context_for_session(session, CNK_PIV_CONTEXT_SELECTED, &context);
-  if (rv != CKR_OK)
-    goto cleanup;
-  uint32_t status = CNK_EXTERNAL_CALL(cnk_piv_read_certificate_in_context_new, context, slot, NULL, &operation, &error);
-  rv = cnk_piv_operation_status(status, &error, CKR_DATA_INVALID);
+  CK_RV rv;
+  rv = CNK_PIV_CREATE(session, cnk_piv_read_certificate_new, &operation, &error, slot);
   if (rv != CKR_OK)
     goto cleanup;
   rv = cnk_run_piv_operation(card, operation, CKR_DATA_INVALID, NULL);
@@ -158,8 +148,6 @@ static CK_RV cnk_get_certificate_libcanokey(CNK_PKCS11_SESSION *session, CK_BYTE
 cleanup:
   if (operation)
     CNK_EXTERNAL_VOID(cnk_operation_free, operation);
-  if (context)
-    CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   cnk_disconnect_card(card);
   return rv;
 }
@@ -424,15 +412,10 @@ static CK_RV cnk_get_piv_metadata_directory_libcanokey(CNK_PKCS11_SESSION *sessi
   CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
   SCARDHANDLE card = 0;
   CNK_ENSURE_OK(cnk_begin_piv_transaction(session->slotId, &card));
-  cnk_piv_context_t *context = NULL;
   cnk_operation_t *operation = NULL;
   cnk_error_v1 error = {.struct_size = sizeof(error)};
-  CK_RV rv = cnk_piv_context_for_session(session, CNK_PIV_CONTEXT_SELECTED, &context);
-  if (rv != CKR_OK)
-    goto cleanup;
-  uint32_t status =
-      CNK_EXTERNAL_CALL(cnk_piv_read_metadata_directory_in_context_new, context, NULL, &operation, &error);
-  rv = cnk_piv_operation_status(status, &error, CKR_DATA_INVALID);
+  CK_RV rv;
+  rv = CNK_PIV_CREATE(session, cnk_piv_read_metadata_directory_new, &operation, &error, NULL);
   if (rv != CKR_OK)
     goto cleanup;
   rv = cnk_run_piv_operation(card, operation, CKR_DATA_INVALID, NULL);
@@ -463,8 +446,6 @@ static CK_RV cnk_get_piv_metadata_directory_libcanokey(CNK_PKCS11_SESSION *sessi
 cleanup:
   if (operation)
     CNK_EXTERNAL_VOID(cnk_operation_free, operation);
-  if (context)
-    CNK_EXTERNAL_VOID(cnk_piv_context_free, context);
   cnk_disconnect_card(card);
   return rv;
 }

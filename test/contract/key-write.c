@@ -28,13 +28,14 @@ void cnk_printlogf(const int l, const char *fn, const char *file, const int line
   (void)line;
   (void)format;
 }
+static CK_RV lockError, unlockError;
 CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex) {
   (void)mutex;
-  return CKR_OK;
+  return lockError;
 }
 CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex) {
   (void)mutex;
-  return CKR_OK;
+  return unlockError;
 }
 CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *session) {
   (void)session;
@@ -124,6 +125,14 @@ int main(void) {
   check(0x6A88, CKR_USER_NOT_LOGGED_IN);
   CHECK(sends == before);
   authRv = CKR_OK;
+  lockError = CKR_MUTEX_BAD;
+  check(0x6A88, CKR_MUTEX_BAD);
+  CHECK(sends == before);
+  lockError = CKR_OK;
+  unlockError = CKR_CANT_LOCK;
+  check(0x6A88, CKR_CANT_LOCK);
+  CHECK(sends == before);
+  unlockError = CKR_OK;
   g_cnk_is_managed_mode = CK_FALSE;
   check(0x9000, CKR_OK); // standalone replacement behavior is unchanged
   CHECK(sends == before);
