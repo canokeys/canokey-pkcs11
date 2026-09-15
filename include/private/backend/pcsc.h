@@ -137,7 +137,6 @@ CK_RV cnk_change_piv_secret_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
 CK_RV cnk_unblock_piv_pin_on_card(CNK_PKCS11_SESSION *session, SCARDHANDLE card, CK_UTF8CHAR_PTR pPuk,
                                   CK_ULONG ulPukLen, CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewPinLen,
                                   CK_BYTE_PTR pPinTries);
-CK_RV cnk_get_piv_pin_retries(CNK_PKCS11_SESSION *session, CK_BYTE pinReference, CK_BYTE_PTR pPinTries);
 
 // Function to verify PIN with session
 CK_RV cnk_verify_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPin,

@@ -200,33 +200,6 @@ static CK_RV cnk_copy_cached_metadata(const CNK_PIV_PUBLIC_CACHE_ENTRY *entry, u
   return CKR_OK;
 }
 
-static CK_RV readPivPinRetriesOnCard(CNK_PKCS11_SESSION *session, SCARDHANDLE card, CK_BYTE pinReference,
-                                     CK_BYTE_PTR pinTries) {
-  CNK_ENSURE_NONNULL(pinTries);
-  if (pinReference != CNK_PIV_PIN_TYPE_PIN && pinReference != CNK_PIV_PIN_TYPE_PUK)
-    return CKR_ARGUMENTS_BAD;
-  cnk_metadata_v1 metadata = {.struct_size = sizeof(metadata)};
-  CK_RV rv = cnk_piv_read_metadata_fields(session, card, pinReference, &metadata, CKR_DEVICE_ERROR);
-  if (rv != CKR_OK)
-    return rv;
-  if (!(metadata.presence_flags & CNK_METADATA_HAS_RETRIES))
-    return CKR_DEVICE_ERROR;
-  *pinTries = metadata.retries_remaining;
-  return CKR_OK;
-}
-
-CK_RV cnk_get_piv_pin_retries(CNK_PKCS11_SESSION *session, CK_BYTE pinReference, CK_BYTE_PTR pinTries) {
-  CNK_ENSURE_NONNULL(session, pinTries);
-  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
-  SCARDHANDLE card = 0;
-  CK_RV rv = cnk_begin_piv_transaction(session->slotId, &card);
-  if (rv != CKR_OK)
-    return rv;
-  rv = readPivPinRetriesOnCard(session, card, pinReference, pinTries);
-  cnk_disconnect_card(card);
-  return rv;
-}
-
 CK_RV cnk_get_metadata_cached(CNK_PKCS11_SESSION *session, CK_BYTE pivTag, uint32_t *algorithmType,
                               CNK_PIV_PUBLIC_KEY *publicKey, CK_BYTE_PTR pinPolicy, CK_BYTE_PTR touchPolicy) {
   CNK_ENSURE_NONNULL(session, session->token, algorithmType);
