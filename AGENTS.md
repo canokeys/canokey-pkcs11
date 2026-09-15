@@ -186,46 +186,14 @@ current TTL, the `metadata_cache` configuration value (or
 value. Managed mode always bypasses the cache. Diagnostics must distinguish
 cached reads from hardware reads and state the bypass reason when applicable.
 
-## Current Dev Hardware PIV State
+## Development-card state
 
-The inserted development key uses the default CanoKey PIV credentials:
-
-```text
-PIN: 123456
-PUK: 12345678
-Management Key: 010203040506070801020304050607080102030405060708
-```
-
-`piv-tool` expects the management key as colon-separated bytes through `PIV_EXT_AUTH_KEY`.
-
-Prepared objects on the current key:
-
-```text
-ID 01 -> slot 9A -> EC P-256 key
-ID 02 -> slot 9C -> EC P-256 key
-ID 03 -> slot 9D -> EC P-256 key
-ID 04 -> slot 9E -> RSA-2048 key
-ID 05 -> slot 82 -> EC P-256 key
-ID 06 -> slot 83 -> EC P-384 key
-ID 07 -> slot 84 -> EC P-521 key
-ID 08 -> slot 85 -> Ed25519 key
-ID 09 -> slot 86 -> X25519 key
-ID 23 -> slot 94 -> ML-DSA-65 key
-ID 24 -> slot 95 -> ML-KEM-768 key
-```
-
-Certificates are independent PIV data objects and may not exist for every key
-listed above. Re-enumerate metadata before relying on this table because
-destructive tests intentionally overwrite selected slots.
-
-The current firmware reports platform revision `gcdc54046`, canokey-core
-revision `3d602057`, and PIV application version `6.0.0`.
-
-OpenSC's own module is useful as an external comparison point:
-
-```text
-C:\Program Files\OpenSC Project\OpenSC\pkcs11\opensc-pkcs11.dll
-```
+The development card's key/certificate inventory changes during explicit write
+acceptance. Re-enumerate it before testing; the current fixture and restoration
+requirements are recorded in `docs/libcanokey-piv-migration-plan.md`. Credentials
+must come from the active session or explicit test environment, not historical
+probe notes. Never use an occupied slot for destructive testing without the
+user's authorization.
 
 Write-path notes:
 
@@ -380,16 +348,8 @@ Additional probes that passed:
   multipart, ECDSA, ECDSA-SHA1, and ECDSA-SHA256 with TF-PSA-Crypto's
   mbedtls-compatible verification APIs.
 
-3DES note:
-
-- PIV management-key authentication still needs 3DES-EDE single-block
-  encryption for the card challenge in `cnkVerifyManagementKey()`.
-- TF-PSA-Crypto does not provide the old `mbedtls/des.h` API, so the module
-  has a narrow internal helper in `src/internal/des.c` instead of depending on
-  another crypto library.
-- The helper has been checked against the DES known-answer vector
-  `133457799BBCDFF1` / `0123456789ABCDEF` -> `85E813540F0AB405` by using the
-  same key for all three 3DES keys.
+Management challenge-response and 3DES/AES handling belong to libcanokey.
+The former C 3DES helper and C PIV protocol parsers have been removed.
 
 ## Running Mode Notes
 
@@ -404,23 +364,13 @@ Additional probes that passed:
 
 ## Current Implementation Shape
 
-- `src/api/`: exported PKCS#11 and CanoKey extension entry points, including
-  initialization, slots, sessions, objects, digesting, signing, host-side
-  verification/encryption, card-side decryption, centralized operation cleanup,
-  and 3.x compatibility stubs.
-- `include/private/api/`: private declarations shared by the API entry-point
-  source files.
-- `src/backend/`: card/backend integrations. `pcsc.c` handles PC/SC
-  reader discovery, PIV AID selection, PIN verify/logout, GET DATA, and GENERAL
-  AUTHENTICATE signing, RSA decryption, ECDH, and ML-KEM. `piv_metadata.c`
-  handles version-gated metadata, algorithm extensions, and token randomness.
-- `include/private/backend/`: private backend-facing declarations.
-- `src/internal/`: implementation helpers that are not direct API entry points,
-  including logging, mutex wrappers, RSA padding/PSS helpers, ML-DSA/ML-KEM
-  wrappers, shared template validation, PIV object wire encoding, TLV utilities,
-  and the PIV management-key 3DES block helper.
-- `include/private/internal/`: private helper declarations for the internal
-  implementation layer.
+- `src/api/`: exported PKCS#11/vendor APIs, ownership, authorization and operation
+  state; `include/private/api/` contains their shared declarations.
+- `src/backend/`: PC/SC lifetime, the bounded synchronous libcanokey executor,
+  typed result conversion and public cache/profile coordination.
+- `src/internal/`: host hashing/padding/crypto, templates, logging and mutexes.
+- `rust/`: private static linkage to the exact pinned libcanokey C ABI. Rust owns
+  PIV APDUs, formats, credentials, management crypto and firmware compatibility.
 
 PIV object IDs map to slots as:
 
@@ -463,9 +413,9 @@ PIV object IDs map to slots as:
   use `C_CNK_ConfigLogging(level, file, unsafe_log_apdu)`. A caller-supplied
   `FILE *` remains caller-owned, while files opened from standalone
   configuration are closed by the logging lifecycle.
-- Windows CI and local native MSVC/clang-cl builds do not run unit tests for
-  now because `test/unit/CMakeLists.txt` requires `PkgConfig` and `cmocka`,
-  which are not installed in that environment.
+- Native Windows builds run the deterministic protocol/transaction contracts.
+  The CMocka suite runs on Linux, including ASan/UBSan/leak checks; Windows
+  CMocka configuration still requires a native compatible package.
 - `BUILD_REAL_TESTING=ON -DBUILD_UNIT_TESTING=OFF` builds `test_real.exe` on Windows without requiring `PkgConfig`/`cmocka`.
 - Destructive real-card write tests in `test_real.exe` are opt-in. Set
   `CNK_RUN_DESTRUCTIVE_REAL_TESTS=1` to exercise `C_GenerateKeyPair` and

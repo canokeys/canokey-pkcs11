@@ -120,6 +120,14 @@ parser.add_argument(
 )
 parser.add_argument("--public-key-id", type=lambda x: int(x, 16), action="append", default=[])
 parser.add_argument(
+    "--self-signed-certificate-id",
+    type=lambda x: int(x, 16),
+    action="append",
+    default=[],
+    help="Replace this explicit certificate using its existing card key; save the previous DER",
+)
+parser.add_argument("--certificate-backup-dir", type=Path)
+parser.add_argument(
     "--external-write-id",
     type=lambda x: int(x, 16),
     help="Replace this certificate-free test slot from a child process and verify reset invalidation",
@@ -146,6 +154,10 @@ parser.add_argument(
 )
 parser.add_argument("--report", type=Path)
 args = parser.parse_args()
+if args.self_signed_certificate_id and (
+    not args.certificate_backup_dir or "CNK_PIV_MANAGEMENT_KEY" not in os.environ
+):
+    parser.error("Certificate provisioning requires --certificate-backup-dir and CNK_PIV_MANAGEMENT_KEY")
 if (args.external_write_id is None) != (args.reset_script is None):
     parser.error("--external-write-id and --reset-script must be used together")
 if args.external_write_id is not None:
@@ -545,6 +557,72 @@ def mlkem_checks(id, private_key=None, expected_error=None):
 def pqc_checks():
     mldsa_checks(args.mldsa_id)
     mlkem_checks(args.mlkem_id)
+
+
+def provision_certificate(id):
+    from asn1crypto import x509 as asn1_x509
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
+    from datetime import timedelta
+
+    rv = lib.C_Logout(s)
+    if rv not in (0, 0x101):
+        check(rv)
+    pub = public(id)
+    if not isinstance(pub, (rsa.RSAPublicKey, ec.EllipticCurvePublicKey)):
+        raise RuntimeError("Windows certificates require RSA or NIST EC keys")
+    directory = args.certificate_backup_dir
+    directory.mkdir(parents=True, exist_ok=True)
+    existing = find(1, id)
+    backup = directory / f"original-id-{id:02x}.der"
+    if existing and not backup.exists():
+        backup.write_bytes(attr(existing[0], 17))
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"CanoKey Windows development ID {id:02x}")])
+    now = datetime.now(timezone.utc)
+    is_rsa = isinstance(pub, rsa.RSAPublicKey)
+    placeholder = (
+        rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        if is_rsa
+        else ec.generate_private_key(pub.curve)
+    )
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(pub)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=365))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), True)
+        .add_extension(x509.KeyUsage(True, False, is_rsa, False, False, False, False, False, False), True)
+        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]), False)
+        .sign(placeholder, hashes.SHA256())
+    )
+    login(1, os.environ["CNK_PIV_PIN"].encode())
+    if is_rsa:
+        signature = sign(id, Mech(0x40, None, 0), cert.tbs_certificate_bytes)
+    else:
+        raw = sign(id, Mech(0x1041, None, 0), hashlib.sha256(cert.tbs_certificate_bytes).digest())
+        width = len(raw) // 2
+        signature = utils.encode_dss_signature(
+            int.from_bytes(raw[:width], "big"), int.from_bytes(raw[width:], "big")
+        )
+    encoded = asn1_x509.Certificate.load(cert.public_bytes(serialization.Encoding.DER))
+    encoded["signature_value"] = signature
+    der = encoded.dump()
+    signed = x509.load_der_x509_certificate(der)
+    signed.verify_directly_issued_by(signed)
+    check(lib.C_Logout(s))
+    login(0, bytes.fromhex(os.environ["CNK_PIV_MANAGEMENT_KEY"]))
+    template, keep = attrs([(0, 1), (128, 0), (258, bytes([id])), (1, b"\1"), (17, der)])
+    handle = U()
+    check(lib.C_CreateObject(s, template, len(template), C.byref(handle)))
+    if attr(handle, 17) != der:
+        raise RuntimeError("Certificate readback differs from the signed DER")
+    (directory / f"certificate-id-{id:02x}.der").write_bytes(der)
+    thumbprint = signed.fingerprint(hashes.SHA1()).hex().upper()
+    check(lib.C_Logout(s))
+    print(f"PASS certificate ID {id:02x} signed by its card key; thumbprint={thumbprint}", flush=True)
 
 
 def certificate_checks():
@@ -1497,6 +1575,8 @@ def main():
             rv = lib.C_Logout(s)
             if rv not in (0, 257):
                 check(rv)
+        for id in args.self_signed_certificate_id:
+            run_case(f"card-signed Windows certificate ID {id:02x}", lambda id=id: provision_certificate(id))
         login(1, os.environ["CNK_PIV_PIN"].encode())
         for id in args.ecdsa_id:
             run_case(f"ECDSA ID {id:02x}", lambda id=id: ecdsa_checks(id))
