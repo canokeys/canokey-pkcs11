@@ -10,14 +10,6 @@
 #include <mbedtls/platform_util.h>
 #include <string.h>
 
-static CK_RV cnk_libcanokey_sign_status(uint32_t status) {
-  return cnk_piv_operation_status(status, NULL, CKR_KEY_HANDLE_INVALID);
-}
-
-static CK_RV cnk_libcanokey_status_with_error(uint32_t status, const cnk_error_v1 *error) {
-  return cnk_piv_operation_status(status, error, CKR_KEY_HANDLE_INVALID);
-}
-
 static uint32_t signing_input_kind(uint32_t algorithm) {
   // The PKCS#11 layer prepares an encoded RSA block, an EC digest or an
   // Ed/ML-DSA message. Wire-ID resolution belongs to the libcanokey profile.
@@ -85,7 +77,7 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
   size_t required = 0;
   status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, NULL, &required);
   if (status != CNK_OK) {
-    rv = cnk_libcanokey_status_with_error(status, &error);
+    rv = cnk_piv_operation_status(status, &error, CKR_KEY_HANDLE_INVALID);
     goto cleanup;
   }
   CK_ULONG capacity = *outputLen;
@@ -95,7 +87,7 @@ static CK_RV cnk_piv_private_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *s
     goto cleanup;
   }
   status = CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, output, &required);
-  rv = cnk_libcanokey_sign_status(status);
+  rv = cnk_piv_operation_status(status, NULL, CKR_KEY_HANDLE_INVALID);
 
 cleanup:
   if (operation != NULL)
@@ -145,7 +137,7 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
                ? CNK_EXTERNAL_CALL(cnk_operation_signature_p1363, operation, NULL, &required)
                : CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, NULL, &required);
   if (status != CNK_OK) {
-    rv = cnk_libcanokey_status_with_error(status, &error);
+    rv = cnk_piv_operation_status(status, &error, CKR_KEY_HANDLE_INVALID);
     goto cleanup;
   }
   CK_ULONG capacity = *signatureLen;
@@ -157,7 +149,7 @@ static CK_RV cnk_piv_sign_libcanokey(CK_SLOT_ID slotId, CNK_PKCS11_SESSION *sess
   status = !streaming && kind == CNK_SIGN_DIGEST
                ? CNK_EXTERNAL_CALL(cnk_operation_signature_p1363, operation, signature, &required)
                : CNK_EXTERNAL_CALL(cnk_operation_result_copy_bytes, operation, signature, &required);
-  rv = cnk_libcanokey_sign_status(status);
+  rv = cnk_piv_operation_status(status, NULL, CKR_KEY_HANDLE_INVALID);
 
 cleanup:
   if (operation != NULL)

@@ -14,6 +14,16 @@
 static void test_default_policy_for_slots(void **state) {
   (void)state;
 
+  const CK_BYTE slots[] = {0x9a, 0x9c, 0x9d, 0x9e, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
+                           0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95};
+  for (unsigned id = 0; id <= 255; id++) {
+    CK_BYTE slot = 0xcc;
+    CK_BBOOL valid = id >= 1 && id <= sizeof(slots);
+    assert_int_equal(C_CNK_ObjIdToPivTag((CK_BYTE)id, &slot), valid ? CKR_OK : CKR_OBJECT_HANDLE_INVALID);
+    assert_int_equal(slot, valid ? slots[id - 1] : 0xcc);
+  }
+  assert_int_equal(C_CNK_ObjIdToPivTag(1, NULL), CKR_ARGUMENTS_BAD);
+
   assert_int_equal(CNK_DefaultPinPolicyForPivObjectId(PIV_SLOT_9E), CNK_PIV_PIN_POLICY_NEVER);
   assert_int_equal(CNK_DefaultPinPolicyForPivObjectId(PIV_SLOT_9A), CNK_PIV_PIN_POLICY_ONCE);
   assert_int_equal(CNK_DefaultPinPolicyForPivObjectId(PIV_SLOT_9C), CNK_PIV_PIN_POLICY_ONCE);

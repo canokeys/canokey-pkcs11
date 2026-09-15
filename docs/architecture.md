@@ -178,3 +178,11 @@ PKCS#11 defaults, attributes, visibility and length checks; card-side SM2 KDF an
 host-side ECDH KDF feed the same allocator. A shared private-operation admission
 counter allows queued sign/decrypt calls while excluding concurrent key/credential
 mutations. Exclusive token reservations remain responsible for one-shot result commit.
+
+Signature classification derives RSA membership from its padding families.
+Combined-hash classification, digest setup and PSS parameter validation share one
+pure mechanism-to-hash lookup. Management challenge encryption lives in Rust.
+The shared secret-template builder validates a local prototype and publishes it
+only after all checks succeed. PIV object IDs retain the four primary slots and
+ordered retired-slot range; data objects share the PIV application label and
+management-write policy without per-entry copies of those constants.

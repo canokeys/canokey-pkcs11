@@ -37,36 +37,15 @@
 #define OBJECT_SLOT_SHIFT 16
 #define OBJECT_CLASS_SHIFT 8
 
-#define OBJECT_CLASS_SECRET_KEY_HANDLE ((CK_OBJECT_CLASS)CKO_SECRET_KEY)
-
-// PIV slot to tag mapping
-typedef struct {
-  CK_BYTE objId;
-  CK_BYTE pivTag;
-} PivSlotMapping;
-
 typedef struct {
   CK_BYTE objId;
   const CK_BYTE *dataTag;
   CK_ULONG dataTagLen;
   const char *label;
-  const char *application;
   const CK_BYTE *objectId;
   CK_ULONG objectIdLen;
   CK_BBOOL privateObject;
-  CK_BBOOL writable;
 } PivDataObjectMapping;
-
-static const PivSlotMapping PIV_SLOT_MAPPING[] = {
-    {PIV_SLOT_9A, 0x9A}, {PIV_SLOT_9C, 0x9C}, {PIV_SLOT_9D, 0x9D}, {PIV_SLOT_9E, 0x9E}, {PIV_SLOT_82, 0x82},
-    {PIV_SLOT_83, 0x83}, {7, 0x84},           {8, 0x85},           {9, 0x86},           {10, 0x87},
-    {11, 0x88},          {12, 0x89},          {13, 0x8A},          {14, 0x8B},          {15, 0x8C},
-    {16, 0x8D},          {17, 0x8E},          {18, 0x8F},          {19, 0x90},          {20, 0x91},
-    {21, 0x92},          {22, 0x93},          {23, 0x94},          {24, 0x95},
-};
-
-// Size of the PIV slot mapping array
-#define PIV_SLOT_MAPPING_SIZE (sizeof(PIV_SLOT_MAPPING) / sizeof(PIV_SLOT_MAPPING[0]))
 
 // CKA_OBJECT_ID is stored as ASN.1 object-identifier content octets, matching
 // the encoding OpenSC's pkcs11-tool uses for --application-id.
@@ -90,21 +69,21 @@ static const CK_BYTE OID_KEY_HISTORY[] = {0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x
 static const CK_BYTE OID_DISCOVERY[] = {0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x07, 0x02, 0x60, 0x50};
 
 static const PivDataObjectMapping PIV_DATA_OBJECT_MAPPING[] = {
-    {0x21, TAG_CHUID, sizeof(TAG_CHUID), "PIV CHUID", "PIV", OID_CHUID, sizeof(OID_CHUID), CK_FALSE, CK_TRUE},
-    {0x22, TAG_CARDHOLDER_FINGERPRINTS, sizeof(TAG_CARDHOLDER_FINGERPRINTS), "PIV Cardholder Fingerprints", "PIV",
-     OID_CARDHOLDER_FINGERPRINTS, sizeof(OID_CARDHOLDER_FINGERPRINTS), CK_TRUE, CK_TRUE},
-    {0x23, TAG_SECURITY_OBJECT, sizeof(TAG_SECURITY_OBJECT), "PIV Security Object", "PIV", OID_SECURITY_OBJECT,
-     sizeof(OID_SECURITY_OBJECT), CK_FALSE, CK_TRUE},
-    {0x24, TAG_CARD_CAPABILITY_CONTAINER, sizeof(TAG_CARD_CAPABILITY_CONTAINER), "PIV Card Capability Container", "PIV",
-     OID_CARD_CAPABILITY_CONTAINER, sizeof(OID_CARD_CAPABILITY_CONTAINER), CK_FALSE, CK_TRUE},
-    {0x25, TAG_CARDHOLDER_FACIAL_IMAGE, sizeof(TAG_CARDHOLDER_FACIAL_IMAGE), "PIV Cardholder Facial Image", "PIV",
-     OID_CARDHOLDER_FACIAL_IMAGE, sizeof(OID_CARDHOLDER_FACIAL_IMAGE), CK_TRUE, CK_TRUE},
-    {0x26, TAG_PRINTED_INFORMATION, sizeof(TAG_PRINTED_INFORMATION), "PIV Printed Information", "PIV",
-     OID_PRINTED_INFORMATION, sizeof(OID_PRINTED_INFORMATION), CK_TRUE, CK_TRUE},
-    {0x27, TAG_KEY_HISTORY, sizeof(TAG_KEY_HISTORY), "PIV Key History Object", "PIV", OID_KEY_HISTORY,
-     sizeof(OID_KEY_HISTORY), CK_FALSE, CK_TRUE},
-    {0x28, TAG_DISCOVERY, sizeof(TAG_DISCOVERY), "PIV Discovery Object", "PIV", OID_DISCOVERY, sizeof(OID_DISCOVERY),
-     CK_FALSE, CK_TRUE},
+    {0x21, TAG_CHUID, sizeof(TAG_CHUID), "PIV CHUID", OID_CHUID, sizeof(OID_CHUID), CK_FALSE},
+    {0x22, TAG_CARDHOLDER_FINGERPRINTS, sizeof(TAG_CARDHOLDER_FINGERPRINTS), "PIV Cardholder Fingerprints",
+     OID_CARDHOLDER_FINGERPRINTS, sizeof(OID_CARDHOLDER_FINGERPRINTS), CK_TRUE},
+    {0x23, TAG_SECURITY_OBJECT, sizeof(TAG_SECURITY_OBJECT), "PIV Security Object", OID_SECURITY_OBJECT,
+     sizeof(OID_SECURITY_OBJECT), CK_FALSE},
+    {0x24, TAG_CARD_CAPABILITY_CONTAINER, sizeof(TAG_CARD_CAPABILITY_CONTAINER), "PIV Card Capability Container",
+     OID_CARD_CAPABILITY_CONTAINER, sizeof(OID_CARD_CAPABILITY_CONTAINER), CK_FALSE},
+    {0x25, TAG_CARDHOLDER_FACIAL_IMAGE, sizeof(TAG_CARDHOLDER_FACIAL_IMAGE), "PIV Cardholder Facial Image",
+     OID_CARDHOLDER_FACIAL_IMAGE, sizeof(OID_CARDHOLDER_FACIAL_IMAGE), CK_TRUE},
+    {0x26, TAG_PRINTED_INFORMATION, sizeof(TAG_PRINTED_INFORMATION), "PIV Printed Information", OID_PRINTED_INFORMATION,
+     sizeof(OID_PRINTED_INFORMATION), CK_TRUE},
+    {0x27, TAG_KEY_HISTORY, sizeof(TAG_KEY_HISTORY), "PIV Key History Object", OID_KEY_HISTORY, sizeof(OID_KEY_HISTORY),
+     CK_FALSE},
+    {0x28, TAG_DISCOVERY, sizeof(TAG_DISCOVERY), "PIV Discovery Object", OID_DISCOVERY, sizeof(OID_DISCOVERY),
+     CK_FALSE},
 };
 
 #define PIV_DATA_OBJECT_MAPPING_SIZE (sizeof(PIV_DATA_OBJECT_MAPPING) / sizeof(PIV_DATA_OBJECT_MAPPING[0]))
@@ -279,7 +258,7 @@ static CK_BBOOL isSessionSecretHandle(CNK_PKCS11_SESSION *session, CK_OBJECT_HAN
   CK_BYTE objId;
 
   extractObjectInfo(hObject, &slotId, &objClass, &objId);
-  if (slotId != session->slotId || objClass != OBJECT_CLASS_SECRET_KEY_HANDLE)
+  if (slotId != session->slotId || objClass != CKO_SECRET_KEY)
     return CK_FALSE;
 
   CNK_PKCS11_SECRET_KEY_OBJECT *found = findSessionSecretKey(session, objId);
@@ -759,16 +738,15 @@ CK_RV C_CNK_ObjIdToPivTag(CK_BYTE objId, CK_BYTE *pivTag) {
     return CKR_ARGUMENTS_BAD;
   }
 
-  for (size_t i = 0; i < PIV_SLOT_MAPPING_SIZE; i++) {
-    if (PIV_SLOT_MAPPING[i].objId == objId) {
-      *pivTag = PIV_SLOT_MAPPING[i].pivTag;
-      CNK_DEBUG("Mapped object ID 0x%02X to PIV tag 0x%02X", objId, *pivTag);
-      return CKR_OK;
-    }
+  if (objId < 1 || objId > PIV_SLOT_COUNT) {
+    CNK_ERROR("Invalid object ID: 0x%02X", objId);
+    return CKR_OBJECT_HANDLE_INVALID;
   }
-
-  CNK_ERROR("Invalid object ID: 0x%02X", objId);
-  return CKR_OBJECT_HANDLE_INVALID;
+  // IDs 1..4 name the four primary slots; IDs 5..24 cover retired slots in order.
+  static const CK_BYTE primarySlots[] = {0x9a, 0x9c, 0x9d, 0x9e};
+  *pivTag = objId <= 4 ? primarySlots[objId - 1] : (CK_BYTE)(0x82 + objId - 5);
+  CNK_DEBUG("Mapped object ID 0x%02X to PIV tag 0x%02X", objId, *pivTag);
+  return CKR_OK;
 }
 
 CK_BYTE CNK_DefaultPinPolicyForPivObjectId(CK_BYTE objId) {
@@ -831,7 +809,7 @@ CK_RV CNK_ValidateObject(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, 
     return CKR_KEY_TYPE_INCONSISTENT;
   }
 
-  if (obj_class == OBJECT_CLASS_SECRET_KEY_HANDLE) {
+  if (obj_class == CKO_SECRET_KEY) {
     if (findSessionSecretKey(session, localObjId) == NULL)
       return CKR_OBJECT_HANDLE_INVALID;
     return CKR_OK;
@@ -894,8 +872,6 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
     CK_ATTRIBUTE_PTR valueAttr;
 
     CNK_ENSURE_NONNULL(mapping);
-    if (!mapping->writable)
-      CNK_RETURN(CKR_ACTION_PROHIBITED, "PIV data object is not writable");
     CNK_ENSURE_OK(cnk_template_get_attribute(pTemplate, ulCount, CKA_VALUE, &valueAttr));
     if (valueAttr->pValue == NULL || valueAttr->ulValueLen == 0 || valueAttr->ulValueLen > MAX_PIV_DATA_OBJECT_SIZE)
       CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad PIV data object value");
@@ -986,7 +962,7 @@ CK_RV C_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTR
   if (rv != CKR_OK) {
     CK_OBJECT_CLASS objectClass;
     extractObjectInfo(hObject, NULL, &objectClass, NULL);
-    if (objectClass == OBJECT_CLASS_SECRET_KEY_HANDLE)
+    if (objectClass == CKO_SECRET_KEY)
       CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid session secret-key handle");
     CNK_ENSURE_OK(CNK_ValidateObject(hObject, session, 0, NULL));
     CNK_RETURN(CKR_ACTION_PROHIBITED, "PIV token objects are not copyable");
@@ -1066,7 +1042,7 @@ CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_U
     break;
   case CKO_PUBLIC_KEY:
   case CKO_PRIVATE_KEY:
-  case OBJECT_CLASS_SECRET_KEY_HANDLE:
+  case CKO_SECRET_KEY:
     break;
   default:
     CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid object class");
@@ -1133,7 +1109,7 @@ CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_U
       if (dataAttrs[i].ulValueLen != CK_UNAVAILABLE_INFORMATION)
         size += sizeof(CK_ATTRIBUTE) + dataAttrs[i].ulValueLen;
     }
-  } else if (objClass == OBJECT_CLASS_SECRET_KEY_HANDLE) {
+  } else if (objClass == CKO_SECRET_KEY) {
     CK_ATTRIBUTE secretAttrs[] = {
         {CKA_VALUE_LEN, NULL_PTR, 0}, {CKA_SENSITIVE, NULL_PTR, 0}, {CKA_EXTRACTABLE, NULL_PTR, 0},
         {CKA_ENCRYPT, NULL_PTR, 0},   {CKA_DECRYPT, NULL_PTR, 0},   {CKA_SIGN, NULL_PTR, 0},
@@ -1169,7 +1145,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
   CK_OBJECT_CLASS requestedClass;
   extractObjectInfo(hObject, NULL, &requestedClass, NULL);
-  if (requestedClass == OBJECT_CLASS_SECRET_KEY_HANDLE) {
+  if (requestedClass == CKO_SECRET_KEY) {
     CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
     CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
     CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
@@ -1405,7 +1381,7 @@ CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
   CK_OBJECT_CLASS requestedClass;
   extractObjectInfo(hObject, NULL, &requestedClass, NULL);
-  if (requestedClass == OBJECT_CLASS_SECRET_KEY_HANDLE) {
+  if (requestedClass == CKO_SECRET_KEY) {
     CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
     CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
     CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
@@ -1725,7 +1701,7 @@ static CK_RV handleDataAttribute(CK_ATTRIBUTE_PTR attribute, const PivDataObject
 
   switch (attribute->type) {
   case CKA_APPLICATION:
-    return setSingleAttributeValue(attribute, mapping->application, (CK_ULONG)strlen(mapping->application));
+    return setSingleAttributeValue(attribute, "PIV", 3);
   case CKA_OBJECT_ID:
     return setSingleAttributeValue(attribute, mapping->objectId, mapping->objectIdLen);
   case CKA_VALUE:
@@ -2191,14 +2167,15 @@ CK_RV CNK_BuildSharedSecretPrototype(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_P
   // Agreement and KEM share template semantics before card I/O or publication.
   CNK_ENSURE_NONNULL(session, prototype);
   CK_OBJECT_CLASS objectClass = CKO_SECRET_KEY;
-  CK_KEY_TYPE keyType = CKK_GENERIC_SECRET;
-  CK_ULONG valueLen = defaultLen;
-  CK_BBOOL token = CK_FALSE;
-  CK_BBOOL privateObject = CK_TRUE;
-  CK_BBOOL sensitive = CK_FALSE;
-  CK_BBOOL extractable = CK_TRUE;
-  CK_BBOOL encrypt = CK_FALSE, decrypt = CK_FALSE, sign = CK_FALSE, verify = CK_FALSE;
-  CK_BBOOL wrap = CK_FALSE, unwrap = CK_FALSE, derive = CK_FALSE;
+  CNK_PKCS11_SECRET_KEY_OBJECT value = {.keyType = CKK_GENERIC_SECRET,
+                                        .valueLen = defaultLen,
+                                        .private = CK_TRUE,
+                                        .extractable = CK_TRUE,
+                                        .local = CK_TRUE,
+                                        .modifiable = CK_TRUE,
+                                        .copyable = CK_TRUE,
+                                        .destroyable = CK_TRUE,
+                                        .keyGenMechanism = mechanism};
   const CK_BYTE *label = NULL;
   CK_ULONG labelLen = 0;
 
@@ -2211,47 +2188,47 @@ CK_RV CNK_BuildSharedSecretPrototype(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_P
       objectClass = *(CK_OBJECT_CLASS *)attribute->pValue;
       break;
     case CKA_KEY_TYPE:
-      if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(keyType))
+      if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(value.keyType))
         return CKR_ATTRIBUTE_VALUE_INVALID;
-      keyType = *(CK_KEY_TYPE *)attribute->pValue;
+      value.keyType = *(CK_KEY_TYPE *)attribute->pValue;
       break;
     case CKA_VALUE_LEN:
-      if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(valueLen))
+      if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(value.valueLen))
         return CKR_ATTRIBUTE_VALUE_INVALID;
-      valueLen = *(CK_ULONG *)attribute->pValue;
+      value.valueLen = *(CK_ULONG *)attribute->pValue;
       break;
     case CKA_TOKEN:
-      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &token));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.token));
       break;
     case CKA_PRIVATE:
-      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &privateObject));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.private));
       break;
     case CKA_SENSITIVE:
-      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &sensitive));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.sensitive));
       break;
     case CKA_EXTRACTABLE:
-      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &extractable));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.extractable));
       break;
     case CKA_ENCRYPT:
-      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &encrypt));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.encrypt));
       break;
     case CKA_DECRYPT:
-      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &decrypt));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.decrypt));
       break;
     case CKA_SIGN:
-      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &sign));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.sign));
       break;
     case CKA_VERIFY:
-      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &verify));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.verify));
       break;
     case CKA_WRAP:
-      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &wrap));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.wrap));
       break;
     case CKA_UNWRAP:
-      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &unwrap));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.unwrap));
       break;
     case CKA_DERIVE:
-      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &derive));
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.derive));
       break;
     case CKA_LABEL:
       if (attribute->pValue == NULL && attribute->ulValueLen != 0)
@@ -2264,47 +2241,30 @@ CK_RV CNK_BuildSharedSecretPrototype(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_P
     }
   }
 
-  if (objectClass != CKO_SECRET_KEY || (keyType != CKK_GENERIC_SECRET && keyType != CKK_AES) || token)
+  if (objectClass != CKO_SECRET_KEY || (value.keyType != CKK_GENERIC_SECRET && value.keyType != CKK_AES) || value.token)
     return CKR_TEMPLATE_INCONSISTENT;
-  if (valueLen == 0 || valueLen > maxLen || (mechanism == CKM_ML_KEM && valueLen != defaultLen) ||
-      (keyType == CKK_AES && valueLen != 16 && valueLen != 24 && valueLen != 32))
+  if (value.valueLen == 0 || value.valueLen > maxLen || (mechanism == CKM_ML_KEM && value.valueLen != defaultLen) ||
+      (value.keyType == CKK_AES && value.valueLen != 16 && value.valueLen != 24 && value.valueLen != 32))
     return CKR_KEY_SIZE_RANGE;
   if (labelLen > sizeof(session->secretKeys[0].label))
     return CKR_ATTRIBUTE_VALUE_INVALID;
-  if (privateObject) {
+  if (value.private) {
     CK_BBOOL pinCached = CK_FALSE;
     CNK_ENSURE_OK(cnk_token_pin_is_cached(session, &pinCached));
     if (!pinCached)
       return CKR_USER_NOT_LOGGED_IN;
   }
 
-  memset(prototype, 0, sizeof(*prototype));
-  prototype->keyType = keyType;
-  prototype->valueLen = valueLen;
-  prototype->extractable = extractable;
-  prototype->sensitive = sensitive;
-  prototype->private = privateObject;
-  prototype->encrypt = encrypt;
-  prototype->decrypt = decrypt;
-  prototype->sign = sign;
-  prototype->verify = verify;
-  prototype->wrap = wrap;
-  prototype->unwrap = unwrap;
-  prototype->derive = derive;
-  prototype->local = CK_TRUE;
-  prototype->modifiable = CK_TRUE;
-  prototype->copyable = CK_TRUE;
-  prototype->destroyable = CK_TRUE;
-  prototype->keyGenMechanism = mechanism;
   if (label != NULL && labelLen > 0) {
-    prototype->labelLen = labelLen;
-    memcpy(prototype->label, label, labelLen);
+    value.labelLen = labelLen;
+    memcpy(value.label, label, labelLen);
   } else {
     const char *defaultLabel = mechanism == CKM_ML_KEM           ? "ML-KEM Shared Secret"
                                : mechanism == CKM_CNK_SM2_DERIVE ? "PIV SM2 Shared Secret"
                                                                  : "PIV ECDH Shared Secret";
-    prototype->labelLen = (CK_ULONG)strlen(defaultLabel);
-    memcpy(prototype->label, defaultLabel, prototype->labelLen);
+    value.labelLen = (CK_ULONG)strlen(defaultLabel);
+    memcpy(value.label, defaultLabel, value.labelLen);
   }
+  *prototype = value;
   return CKR_OK;
 }

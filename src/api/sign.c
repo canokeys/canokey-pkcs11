@@ -15,30 +15,6 @@
 #include <mbedtls/private/ecp.h>
 #include <string.h>
 
-static const CK_MECHANISM_TYPE rsaMechs[] = {
-    CKM_RSA_PKCS,
-    CKM_RSA_X_509,
-    CKM_RSA_PKCS_PSS,
-    CKM_SHA1_RSA_PKCS,
-    CKM_SHA1_RSA_PKCS_PSS,
-    CKM_SHA224_RSA_PKCS,
-    CKM_SHA224_RSA_PKCS_PSS,
-    CKM_SHA256_RSA_PKCS,
-    CKM_SHA256_RSA_PKCS_PSS,
-    CKM_SHA384_RSA_PKCS,
-    CKM_SHA384_RSA_PKCS_PSS,
-    CKM_SHA512_RSA_PKCS,
-    CKM_SHA512_RSA_PKCS_PSS,
-    CKM_SHA3_224_RSA_PKCS,
-    CKM_SHA3_224_RSA_PKCS_PSS,
-    CKM_SHA3_256_RSA_PKCS,
-    CKM_SHA3_256_RSA_PKCS_PSS,
-    CKM_SHA3_384_RSA_PKCS,
-    CKM_SHA3_384_RSA_PKCS_PSS,
-    CKM_SHA3_512_RSA_PKCS,
-    CKM_SHA3_512_RSA_PKCS_PSS,
-};
-
 static const CK_MECHANISM_TYPE rsaPkcsV15Mechs[] = {
     CKM_RSA_PKCS,        CKM_SHA1_RSA_PKCS,     CKM_SHA224_RSA_PKCS,   CKM_SHA256_RSA_PKCS,   CKM_SHA384_RSA_PKCS,
     CKM_SHA512_RSA_PKCS, CKM_SHA3_224_RSA_PKCS, CKM_SHA3_256_RSA_PKCS, CKM_SHA3_384_RSA_PKCS, CKM_SHA3_512_RSA_PKCS,
@@ -55,25 +31,11 @@ static const CK_MECHANISM_TYPE ecMechs[] = {
     CKM_ECDSA_SHA512, CKM_ECDSA_SHA3_224, CKM_ECDSA_SHA3_256, CKM_ECDSA_SHA3_384, CKM_ECDSA_SHA3_512,
 };
 
-static const CK_MECHANISM_TYPE requireDigesting[] = {
-    CKM_SHA1_RSA_PKCS,     CKM_SHA1_RSA_PKCS_PSS,     CKM_SHA224_RSA_PKCS,   CKM_SHA224_RSA_PKCS_PSS,
-    CKM_SHA256_RSA_PKCS,   CKM_SHA256_RSA_PKCS_PSS,   CKM_SHA384_RSA_PKCS,   CKM_SHA384_RSA_PKCS_PSS,
-    CKM_SHA512_RSA_PKCS,   CKM_SHA512_RSA_PKCS_PSS,   CKM_SHA3_224_RSA_PKCS, CKM_SHA3_224_RSA_PKCS_PSS,
-    CKM_SHA3_256_RSA_PKCS, CKM_SHA3_256_RSA_PKCS_PSS, CKM_SHA3_384_RSA_PKCS, CKM_SHA3_384_RSA_PKCS_PSS,
-    CKM_SHA3_512_RSA_PKCS, CKM_SHA3_512_RSA_PKCS_PSS, CKM_ECDSA_SHA1,        CKM_ECDSA_SHA224,
-    CKM_ECDSA_SHA256,      CKM_ECDSA_SHA384,          CKM_ECDSA_SHA512,      CKM_ECDSA_SHA3_224,
-    CKM_ECDSA_SHA3_256,    CKM_ECDSA_SHA3_384,        CKM_ECDSA_SHA3_512,
-};
-
 static CK_BBOOL mechInList(CK_MECHANISM_TYPE m, const CK_MECHANISM_TYPE *list, CK_ULONG len) {
   for (CK_ULONG i = 0; i < len; ++i)
     if (list[i] == m)
       return CK_TRUE;
   return CK_FALSE;
-}
-
-static inline CK_BBOOL isMechRSA(CK_MECHANISM_TYPE m) {
-  return mechInList(m, rsaMechs, sizeof(rsaMechs) / sizeof(CK_MECHANISM_TYPE));
 }
 
 static inline CK_BBOOL isMechRsaPss(CK_MECHANISM_TYPE m) {
@@ -88,9 +50,11 @@ static inline CK_BBOOL isMechEC(CK_MECHANISM_TYPE m) {
   return mechInList(m, ecMechs, sizeof(ecMechs) / sizeof(CK_MECHANISM_TYPE));
 }
 
-static inline CK_BBOOL isMechRequireDigesting(CK_MECHANISM_TYPE m) {
-  return mechInList(m, requireDigesting, sizeof(requireDigesting) / sizeof(CK_MECHANISM_TYPE));
+static inline CK_BBOOL isMechRSA(CK_MECHANISM_TYPE m) {
+  return m == CKM_RSA_X_509 || isMechRsaPkcsV15(m) || isMechRsaPss(m);
 }
+
+static inline CK_BBOOL isMechRequireDigesting(CK_MECHANISM_TYPE m) { return cnk_sign_mech_to_md(m) != MBEDTLS_MD_NONE; }
 
 static CK_RV validateRsaPssParams(const CK_MECHANISM *m) {
   // Check if parameters are provided
@@ -106,13 +70,8 @@ static CK_RV validateRsaPssParams(const CK_MECHANISM *m) {
   if (mbedtls_md_info_from_type(hashType) == NULL)
     CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "unsupported PSS hash");
 
-  if (m->mechanism != CKM_RSA_PKCS_PSS) {
-    CK_MECHANISM_TYPE expectedHashAlg;
-    CK_RSA_PKCS_MGF_TYPE expectedMgf;
-    CNK_ENSURE_OK(cnk_rsa_pkcs_pss_mech_to_hash_mgf(m->mechanism, &expectedHashAlg, &expectedMgf));
-    if (p->hashAlg != expectedHashAlg || p->mgf != expectedMgf)
-      CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS param: hashAlg or mgf");
-  }
+  if (m->mechanism != CKM_RSA_PKCS_PSS && hashType != cnk_sign_mech_to_md(m->mechanism))
+    CNK_RETURN(CKR_MECHANISM_PARAM_INVALID, "bad PSS param: hashAlg or mgf");
 
   return CKR_OK;
 }
@@ -189,8 +148,9 @@ static CK_RV validateEdDsaMech(CNK_PKCS11_SESSION *session, const CK_MECHANISM *
 static CK_RV initDigestingContext(CNK_PKCS11_DIGESTING_CONTEXT *context, CK_MECHANISM_TYPE mechanism) {
   if (context->mechanismType != 0)
     CNK_RETURN(CKR_OPERATION_ACTIVE, "digest context is already active");
-  mbedtls_md_type_t mdType;
-  CNK_ENSURE_OK(cnk_sign_mech_to_md(mechanism, &mdType));
+  mbedtls_md_type_t mdType = cnk_sign_mech_to_md(mechanism);
+  if (mdType == MBEDTLS_MD_NONE)
+    CNK_RETURN(CKR_MECHANISM_INVALID, "unsupported signing hash mechanism");
 
   const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(mdType);
   if (!md_info)

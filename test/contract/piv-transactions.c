@@ -743,6 +743,17 @@ static void teardown_contract(CK_SESSION_HANDLE session, CK_BBOOL finalize) {
 }
 
 static void decrypt_preflight_contract(CK_SESSION_HANDLE session) {
+  CK_RSA_PKCS_PSS_PARAMS pss = {CKM_SHA384, CKG_MGF1_SHA384, 48};
+  CK_MECHANISM combined = {CKM_SHA256_RSA_PKCS_PSS, &pss, sizeof(pss)};
+  CK_OBJECT_HANDLE rsaKey = CNK_MakeObjectHandle(0, CKO_PRIVATE_KEY, 2);
+  // Matching hash/MGF is insufficient when a combined mechanism fixes another hash.
+  CHECK(C_SignInit(session, &combined, rsaKey) == CKR_MECHANISM_PARAM_INVALID);
+  combined.mechanism = CKM_RSA_PKCS_PSS;
+  CHECK(C_SignInit(session, &combined, rsaKey) == CKR_OK);
+  CHECK(C_SessionCancel(session, CKF_SIGN) == CKR_OK);
+  pss.mgf = CKG_MGF1_SHA256;
+  CHECK(C_SignInit(session, &combined, rsaKey) == CKR_MECHANISM_PARAM_INVALID);
+
   CK_BYTE ciphertext[256], output[256];
   memset(ciphertext, 0x11, sizeof(ciphertext));
   CK_RSA_PKCS_OAEP_PARAMS oaep = {CKM_SHA256, CKG_MGF1_SHA256, CKZ_DATA_SPECIFIED, NULL, 0};

@@ -282,7 +282,7 @@ errors and unexpected F5 errors on supported versions do not select fallback.
 | `C_FindObjectsFinal` | `OP(FIND)` | Owns no caller data; clears session find state under lock. | Success/terminal failure leaves no active find operation and no queued handles. |
 | `C_CNK_GetPivData` | `SESSION` | Tag/output are borrowed; returned bytes preserve the validated raw 53/7E object container and belong to the caller. Private reads may use a copied cached PIN for that card transaction only. | NULL output is size query. Logout/pending auth blocks private access; card/parse failure leaves token state unchanged. |
 | `C_CNK_GetPivMetadataDirectory` | `SLOT-READ` | Entries and count are caller-owned; standalone mode may serve a token-lock-protected public directory snapshot, while managed mode performs a fresh read. No card/session pointer is retained. | A cache miss uses one version-gated metadata-directory APDU and one PIV transaction. A NULL entries pointer is always a count query; too-small follows two-stage rules; firmware before 5.7 returns `CKR_FUNCTION_NOT_SUPPORTED`. |
-| `C_CNK_ObjIdToPivTag` | `STATIC` | Pure fixed-table mapping; output belongs to caller. | Valid ID writes exactly one tag; invalid ID leaves no module state and returns object-handle error. |
+| `C_CNK_ObjIdToPivTag` | `STATIC` | Pure primary-slot/retired-range mapping; output belongs to caller. | Valid IDs 1..24 write exactly one slot byte; invalid IDs leave output unchanged and return object-handle error. |
 
 ## Encrypt and Decrypt APIs
 
