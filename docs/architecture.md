@@ -186,3 +186,20 @@ The shared secret-template builder validates a local prototype and publishes it
 only after all checks succeed. PIV object IDs retain the four primary slots and
 ordered retired-slot range; data objects share the PIV application label and
 management-write policy without per-entry copies of those constants.
+
+The bundled TF-PSA build uses a complete algorithm allowlist through
+`TF_PSA_CRYPTO_CONFIG_FILE`, not an overlay on upstream defaults. Host SHA-1/2/3,
+RSA public operations, four ECDSA verification curves, ASN.1 OID encoding and
+CTR-DRBG remain enabled. AES/ECB exists only to support the DRBG; management crypto
+stays in libcanokey. Unused ciphers, hashes, key generation, persistence and TLS
+configuration are excluded at configuration time, before linker collection.
+
+A 2026-09-15 x64 Release comparison measured 1,088,512 bytes before trimming and
+1,020,928 bytes with the allowlist. An isolated nine-algorithm Rust streaming-hash
+addition measured 1,089,024 bytes; this is an additive experiment, not a complete
+replacement. Replacing host ECDSA verification with RustCrypto 0.13 measured
+1,226,752 bytes, or 1,157,632 with size-optimized curve dependencies, after disabling
+C ECDSA/EC support. The direct prototype also rejected the supported P-521/SHA256
+prehash case (RustCrypto's half-field minimum is 33 bytes). These experiments were
+not retained: Rust hash/ECDSA APIs need explicit compatibility adaptation and a
+measured benefit before replacing the existing host backend. RSA and PQC stay put.
