@@ -152,9 +152,10 @@ CK_RV cnkVerifyManagementKey(CNK_PKCS11_SESSION *session, CK_BYTE_PTR pKey);
 CK_RV cnk_change_piv_secret_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_BYTE pinReference,
                                          CK_UTF8CHAR_PTR pOldPin, CK_ULONG ulOldPinLen, CK_UTF8CHAR_PTR pNewPin,
                                          CK_ULONG ulNewPinLen, CK_BYTE_PTR pPinTries);
-CK_RV cnk_unblock_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR pPuk,
-                                       CK_ULONG ulPukLen, CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewPinLen,
-                                       CK_BYTE_PTR pPinTries);
+// Borrow the caller's selected transaction through mutation and credential commit.
+CK_RV cnk_unblock_piv_pin_on_card(CNK_PKCS11_SESSION *session, SCARDHANDLE card, CK_UTF8CHAR_PTR pPuk,
+                                  CK_ULONG ulPukLen, CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewPinLen,
+                                  CK_BYTE_PTR pPinTries);
 CK_RV cnk_get_piv_pin_retries(CNK_PKCS11_SESSION *session, CK_BYTE pinReference, CK_BYTE_PTR pPinTries);
 CK_RV cnk_block_piv_puk(CNK_PKCS11_SESSION *session);
 
@@ -198,8 +199,9 @@ CK_RV cnk_get_version(CK_SLOT_ID slotID, CK_BYTE *fw_major, CK_BYTE *fw_minor, c
 CK_RV cnk_get_serial_number(CK_SLOT_ID slotID, CK_ULONG *serial_number);
 
 // Read public recovery-policy data without submitting a cached USER PIN.
-CK_RV cnk_get_public_piv_data(CNK_PKCS11_SESSION *session, const CK_BYTE *tag, CK_ULONG tagLen, CK_BYTE *data,
-                              CK_ULONG *dataLen);
+// Borrow a selected transaction; never verify a cached PIN or release the card.
+CK_RV cnk_get_public_piv_data_on_card(CNK_PKCS11_SESSION *session, SCARDHANDLE card, const CK_BYTE *tag,
+                                      CK_ULONG tagLen, CK_BYTE *data, CK_ULONG *dataLen);
 
 // Get a PIV data object by its full BER-TLV tag, verifying the cached user PIN first when available.
 CK_RV cnk_get_piv_data_by_tag_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, const CK_BYTE *tag,

@@ -360,8 +360,8 @@ CK_RV C_CNK_SetPIN(CK_SESSION_HANDLE hSession, CK_BYTE pinType, CK_UTF8CHAR_PTR 
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
 
-  CK_RV beginRv = pinType == CNK_PIV_PIN_TYPE_PIN ? cnk_token_begin_user_operation(session)
-                                                  : cnk_token_begin_card_operation(session);
+  CK_RV beginRv =
+      pinType == CNK_PIV_PIN_TYPE_PIN ? cnk_token_begin_pin_change(session) : cnk_token_begin_card_operation(session);
   if (beginRv != CKR_OK)
     return beginRv;
   CK_RV rv = cnk_change_piv_secret_with_session(session->slotId, session, pinType, pOldPin, ulOldLen, pNewPin, ulNewLen,
@@ -382,17 +382,28 @@ CK_RV C_CNK_UnblockPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULON
   CNK_ENSURE_OK(cnk_session_find(hSession, &session));
   if (!(session->flags & CKF_RW_SESSION))
     CNK_RETURN(CKR_SESSION_READ_ONLY, "write session is required");
+  if (ulPukLen < 1 || ulPukLen > 8 || ulNewPinLen < 1 || ulNewPinLen > 8)
+    return CKR_PIN_LEN_RANGE;
 
   CK_RV beginRv = cnk_token_begin_card_operation(session);
   if (beginRv != CKR_OK)
     return beginRv;
 
+  SCARDHANDLE card = 0;
+  CK_RV rv = cnk_ensure_libcanokey_profile(session);
+  if (rv == CKR_OK)
+    rv = cnk_begin_piv_transaction(session->slotId, &card);
+  if (rv != CKR_OK)
+    goto cleanup;
+
   // Refuse the PUK path once protected management-key recovery is configured.
   // Otherwise the PUK could set a known user PIN and immediately elevate to SO.
+  // Keep the policy read and mutation in one transaction so another process
+  // cannot provision protection between the check and Reset Retry Counter.
   CK_BYTE adminData[CNK_ADMIN_DATA_MAX_LEN];
   CK_ULONG adminDataLen = sizeof(adminData);
-  CK_RV policyRv =
-      cnk_get_public_piv_data(session, CNK_ADMIN_DATA_TAG, sizeof(CNK_ADMIN_DATA_TAG), adminData, &adminDataLen);
+  CK_RV policyRv = cnk_get_public_piv_data_on_card(session, card, CNK_ADMIN_DATA_TAG, sizeof(CNK_ADMIN_DATA_TAG),
+                                                   adminData, &adminDataLen);
   uint32_t protectionFlags = 0;
   if (policyRv == CKR_OK)
     policyRv = readAdminProtectionFlags(adminData, adminDataLen, &protectionFlags);
@@ -400,16 +411,19 @@ CK_RV C_CNK_UnblockPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPuk, CK_ULON
   // The stored-key flag is enough to forbid PUK recovery. A missing/false
   // PUK-blocked claim must not turn protected key retrieval into a bypass.
   if (policyRv == CKR_OK && (protectionFlags & CNK_ADMIN_PIN_PROTECTED_BIT)) {
-    cnk_token_end_management_operation(session);
-    CNK_RETURN(CKR_ACTION_PROHIBITED, "PUK reset is disabled for PIN-managed management keys");
+    rv = CKR_ACTION_PROHIBITED;
+    CNK_DEBUG("PUK reset is disabled for PIN-managed management keys");
+    goto cleanup;
   }
   if (policyRv != CKR_OK && policyRv != CKR_DATA_INVALID) {
-    cnk_token_end_management_operation(session);
-    return policyRv;
+    rv = policyRv;
+    goto cleanup;
   }
 
-  CK_RV rv =
-      cnk_unblock_piv_pin_with_session(session->slotId, session, pPuk, ulPukLen, pNewPin, ulNewPinLen, pPinTries);
+  rv = cnk_unblock_piv_pin_on_card(session, card, pPuk, ulPukLen, pNewPin, ulNewPinLen, pPinTries);
+cleanup:
+  if (card)
+    cnk_disconnect_card(card);
   cnk_token_end_management_operation(session);
   return rv;
 }

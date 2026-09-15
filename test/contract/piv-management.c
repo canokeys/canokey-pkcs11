@@ -342,7 +342,8 @@ int main(void) {
         rv = cnk_change_piv_secret_with_session(0, &session, CNK_PIV_PIN_TYPE_PUK, puk, 8, nextPuk, 8, &tries);
         break;
       default:
-        rv = cnk_unblock_piv_pin_with_session(0, &session, puk, 8, replacement, 6, &tries);
+        CHECK(cnk_begin_piv_transaction(0, &card) == CKR_OK);
+        rv = cnk_unblock_piv_pin_on_card(&session, card, puk, 8, replacement, 6, &tries);
         break;
       }
       CK_RV expected = !failure                                ? CKR_OK
@@ -352,7 +353,7 @@ int main(void) {
       CHECK(rv == expected && sends == 1);
       CHECK(cacheWrites == (!failure && (credentialAction == 1 || credentialAction == 3 || credentialAction == 5)));
       if (card) {
-        CHECK(!failure && credentialAction == 1);
+        CHECK((!failure && credentialAction == 1) || credentialAction == 5);
         cnk_disconnect_card(card);
       }
       CHECK(!cards && !locked);

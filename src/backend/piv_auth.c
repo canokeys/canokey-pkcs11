@@ -188,14 +188,11 @@ CK_RV cnk_change_piv_secret_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *
   return rv;
 }
 
-CK_RV cnk_unblock_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR puk,
-                                       CK_ULONG pukLen, CK_UTF8CHAR_PTR pin, CK_ULONG pinLen, CK_BYTE_PTR tries) {
+CK_RV cnk_unblock_piv_pin_on_card(CNK_PKCS11_SESSION *session, SCARDHANDLE card, CK_UTF8CHAR_PTR puk, CK_ULONG pukLen,
+                                  CK_UTF8CHAR_PTR pin, CK_ULONG pinLen, CK_BYTE_PTR tries) {
   CNK_ENSURE_NONNULL(session, puk, pin);
   CNK_ENSURE_OK(validate_piv_pin_len(pukLen));
   CNK_ENSURE_OK(validate_piv_pin_len(pinLen));
-  CNK_ENSURE_OK(cnk_ensure_libcanokey_profile(session));
-  SCARDHANDLE card = 0;
-  CNK_ENSURE_OK(cnk_begin_piv_transaction(slotID, &card));
   CK_RV rv =
       cnk_piv_credential_on_card(session, card, CNK_LIBCANO_CREDENTIAL_UNBLOCK_PIN, puk, pukLen, pin, pinLen, tries);
   if (rv == CKR_OK)
@@ -207,7 +204,6 @@ CK_RV cnk_unblock_piv_pin_with_session(CK_SLOT_ID slotID, CNK_PKCS11_SESSION *se
       rv = cnk_mutex_unlock(&session->token->lock);
     }
   }
-  cnk_disconnect_card(card);
   return rv;
 }
 

@@ -20,8 +20,8 @@
     }                                                                                                                  \
   } while (0)
 static CNK_PKCS11_SESSION session;
-static unsigned admissions, refs, reservations, mutations, reads;
-static CK_RV readStatus, reserveStatus;
+static unsigned admissions, refs, reservations, mutations, reads, cards;
+static CK_RV readStatus, reserveStatus, profileStatus, connectStatus, mutationStatus;
 static const CK_BYTE *policy;
 static CK_ULONG policyLen;
 atomic_int g_cnk_log_level = CNK_LOG_LEVEL_NONE;
@@ -56,8 +56,20 @@ CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex) {
   abort();
 }
 CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *s) {
-  (void)s;
-  abort();
+  CHECK(s == &session && reservations == 1 && !cards);
+  return profileStatus;
+}
+CK_RV cnk_begin_piv_transaction(CK_SLOT_ID slot, SCARDHANDLE *card) {
+  CHECK(slot == session.slotId && reservations == 1 && !cards);
+  if (connectStatus)
+    return connectStatus;
+  cards++;
+  *card = 1;
+  return CKR_OK;
+}
+void cnk_disconnect_card(SCARDHANDLE card) {
+  CHECK(card == 1 && cards == 1 && reservations == 1);
+  cards--;
 }
 LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *command, CK_ULONG commandLen, CK_BYTE *response,
                          DWORD *responseLen) {
@@ -100,9 +112,10 @@ void cnk_token_end_management_operation(CNK_PKCS11_SESSION *s) {
   CHECK(s == &session && reservations == 1);
   reservations--;
 }
-CK_RV cnk_get_public_piv_data(CNK_PKCS11_SESSION *s, const CK_BYTE *tag, CK_ULONG tagLen, CK_BYTE *out, CK_ULONG *len) {
+CK_RV cnk_get_public_piv_data_on_card(CNK_PKCS11_SESSION *s, SCARDHANDLE card, const CK_BYTE *tag, CK_ULONG tagLen,
+                                      CK_BYTE *out, CK_ULONG *len) {
   const CK_BYTE expected[] = {0x5f, 0xff, 0};
-  CHECK(s == &session && reservations == 1 && tagLen == 3 && !memcmp(tag, expected, 3));
+  CHECK(s == &session && reservations == 1 && card == 1 && cards == 1 && tagLen == 3 && !memcmp(tag, expected, 3));
   reads++;
   if (readStatus)
     return readStatus;
@@ -111,19 +124,19 @@ CK_RV cnk_get_public_piv_data(CNK_PKCS11_SESSION *s, const CK_BYTE *tag, CK_ULON
   *len = policyLen;
   return CKR_OK;
 }
-CK_RV cnk_unblock_piv_pin_with_session(CK_SLOT_ID slot, CNK_PKCS11_SESSION *s, CK_UTF8CHAR_PTR puk, CK_ULONG pukLen,
-                                       CK_UTF8CHAR_PTR pin, CK_ULONG pinLen, CK_BYTE_PTR tries) {
-  (void)slot;
+CK_RV cnk_unblock_piv_pin_on_card(CNK_PKCS11_SESSION *s, SCARDHANDLE card, CK_UTF8CHAR_PTR puk, CK_ULONG pukLen,
+                                  CK_UTF8CHAR_PTR pin, CK_ULONG pinLen, CK_BYTE_PTR tries) {
   (void)tries;
-  CHECK(s == &session && reservations == 1 && pukLen == 8 && pinLen == 6 && puk && pin);
+  CHECK(s == &session && reservations == 1 && card == 1 && cards == 1 && reads == 1 && pukLen == 8 && pinLen == 6 &&
+        puk && pin);
   mutations++;
-  return CKR_OK;
+  return mutationStatus;
 }
 static void run(CK_RV expected, unsigned expectedMutations) {
   CK_BYTE puk[] = "fixture8", pin[] = "123456";
   reads = mutations = 0;
   CHECK(C_CNK_UnblockPIN(1, puk, 8, pin, 6, NULL) == expected);
-  CHECK(mutations == expectedMutations && !admissions && !refs && !reservations);
+  CHECK(mutations == expectedMutations && !admissions && !refs && !reservations && !cards);
 }
 int main(void) {
   session.flags = CKF_RW_SESSION;
@@ -131,6 +144,17 @@ int main(void) {
   policy = empty;
   policyLen = sizeof(empty);
   run(CKR_OK, 1);
+  mutationStatus = CKR_PIN_INCORRECT;
+  run(CKR_PIN_INCORRECT, 1);
+  mutationStatus = CKR_OK;
+  profileStatus = CKR_DEVICE_ERROR;
+  run(CKR_DEVICE_ERROR, 0);
+  CHECK(!reads);
+  profileStatus = CKR_OK;
+  connectStatus = CKR_DEVICE_ERROR;
+  run(CKR_DEVICE_ERROR, 0);
+  CHECK(!reads);
+  connectStatus = CKR_OK;
   readStatus = CKR_DATA_INVALID;
   run(CKR_OK, 1);
   readStatus = CKR_OK;

@@ -25,6 +25,13 @@ mechanisms; NULL/short buffers must preserve authentication without card I/O.
 ECDH/ML-KEM cases pause after card I/O but before session-secret publication:
 logout and another reservation must remain blocked, and failed publication must
 release the reservation without returning a handle.
+PUK recovery reads ADMIN DATA and executes Reset Retry Counter in one selected
+transaction; the fixture rejects an intervening SELECT or transaction release.
+PIN changes accept PUBLIC sessions without implicitly logging in, and retain SO
+and concurrent-logout rejection. The hardware `--puk-roundtrip-id` check changes
+and restores the confirmed PUK, resets the PIN, changes it back from PUBLIC, and
+verifies fresh-login signatures. Credentials come from explicit environment
+variables; restoration is part of the test.
 
 ## State Invariants
 

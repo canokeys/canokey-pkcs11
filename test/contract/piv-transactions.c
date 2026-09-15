@@ -35,7 +35,7 @@ static void pause_ms(void) {
   } while (0)
 enum { CONNECTED = 1, BEGUN, ENDED, DISCONNECTED };
 typedef struct {
-  unsigned stage, applet, selects, verifies, crypto, random;
+  unsigned stage, applet, selects, verifies, crypto, random, recoveryReads, unblocks;
   CK_BBOOL verified;
   CK_BYTE pending[2048];
   size_t pendingLength, pendingOffset;
@@ -53,6 +53,8 @@ static atomic_bool pauseVerify, verifyPaused, releaseVerify;
 static atomic_bool failProfile, churnProfile;
 static atomic_bool teardownDone;
 static atomic_uint agreementMode;
+static unsigned recoveryMode;
+static bool rejectRecovery;
 static atomic_bool commitPaused, releaseCommit, failCommit;
 static CK_RV (*originalCommitLock)(void *);
 static const char p256PointHex[] = "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8"
@@ -226,6 +228,25 @@ static LONG transmit(SCARDHANDLE card, LPCSCARD_IO_REQUEST sendPci, LPCBYTE comm
       break;
     }
     case 0xcb: {
+      const CK_BYTE adminTag[] = {0x5c, 3, 0x5f, 0xff, 0};
+      if (recoveryMode && commandLen >= 10 && !memcmp(command + 5, adminTag, sizeof(adminTag))) {
+        CHECK(state->selects == 1 && !state->verifies && !state->recoveryReads);
+        state->recoveryReads++;
+        if (recoveryMode == 4) {
+          output[0] = 0x6a;
+          output[1] = 0x82;
+          *length = 2;
+          return SCARD_S_SUCCESS;
+        }
+        const CK_BYTE policy[] = {0x53, 5, 0x80, 3, 0x81, 1, 2};
+        memcpy(output, policy, sizeof(policy));
+        n = recoveryMode == 1 ? 2 : sizeof(policy);
+        if (recoveryMode == 1)
+          output[1] = 0;
+        if (recoveryMode == 3)
+          output[3] = 99;
+        break;
+      }
       // Framing fixture only; certificate trust/ASN.1 inspection is not involved.
       const CK_BYTE certificate[] = {0x53, 12, 0x70, 5, 0x30, 3, 2, 1, 0, 0x71, 1, 0, 0xfe, 0};
       memcpy(output, certificate, sizeof(certificate));
@@ -233,6 +254,22 @@ static LONG transmit(SCARDHANDLE card, LPCSCARD_IO_REQUEST sendPci, LPCBYTE comm
       output[8] = (CK_BYTE)atomic_load(&revision);
       break;
     }
+    case 0x2c:
+      CHECK(recoveryMode && state->selects == 1 && state->recoveryReads == 1 && !state->verifies);
+      CHECK(commandLen >= 21 && command[3] == 0x80 && command[4] == 16);
+      CHECK(!memcmp(command + 5, "fixture8", 8) && !memcmp(command + 13, pin, 6));
+      state->unblocks++;
+      if (rejectRecovery) {
+        output[0] = 0x63;
+        output[1] = 0xc2;
+        *length = 2;
+        return SCARD_S_SUCCESS;
+      }
+      break;
+    case 0x24:
+      CHECK(state->selects == 1 && command[3] == 0x80 && commandLen >= 21 && command[4] == 16);
+      CHECK(!memcmp(command + 5, pin, 6) && !memcmp(command + 13, pin, 6));
+      break;
     case 0x20:
       if (command[2] == 0xff)
         state->verified = CK_FALSE;
@@ -795,6 +832,47 @@ static void agreement_commit_contract(CK_SESSION_HANDLE a, CK_SESSION_HANDLE b) 
   puts("ECDH/ML-KEM reservations cover result publication and failed commit cleanup");
 }
 
+static void recovery_contract(CK_SESSION_HANDLE session) {
+  const CK_BYTE puk[] = "fixture8";
+  for (recoveryMode = 1; recoveryMode <= 4; recoveryMode++) {
+    for (unsigned failure = 0; failure < 2; failure++) {
+      unsigned before = atomic_load(&connects);
+      rejectRecovery = failure != 0;
+      CK_BYTE tries = 99;
+      CK_RV expected = recoveryMode == 2   ? CKR_ACTION_PROHIBITED
+                       : recoveryMode == 3 ? CKR_DEVICE_ERROR
+                       : rejectRecovery    ? CKR_PIN_INCORRECT
+                                           : CKR_OK;
+      CHECK(C_CNK_UnblockPIN(session, (CK_UTF8CHAR_PTR)puk, 8, (CK_UTF8CHAR_PTR)pin, 6, &tries) == expected);
+      CHECK(atomic_load(&connects) == before + 1 && !activeCard);
+      Card *card = &cards[before + 1];
+      CHECK(card->stage == DISCONNECTED && card->selects == 1 && card->recoveryReads == 1 && !card->verifies);
+      CHECK(card->unblocks == (recoveryMode == 1 || recoveryMode == 4));
+      if (expected == CKR_PIN_INCORRECT)
+        CHECK(tries == 2);
+    }
+  }
+  recoveryMode = 0;
+  CHECK(C_Logout(session) == CKR_OK);
+  CHECK(C_SetPIN(session, (CK_UTF8CHAR_PTR)pin, 6, (CK_UTF8CHAR_PTR)pin, 6) == CKR_OK);
+  CNK_PKCS11_SESSION *ref = NULL;
+  CHECK(cnk_session_find(session, &ref) == CKR_OK);
+  CHECK(ref->token->loginState == TOKEN_LOGIN_PUBLIC && !ref->token->cbPin && !ref->token->managementOperationPending);
+  // Preserve the explicit SO rejection and the exclusion of concurrent logout.
+  ref->token->loginState = TOKEN_LOGIN_SO;
+  unsigned before = atomic_load(&connects);
+  CHECK(C_SetPIN(session, (CK_UTF8CHAR_PTR)pin, 6, (CK_UTF8CHAR_PTR)pin, 6) == CKR_USER_NOT_LOGGED_IN);
+  CHECK(atomic_load(&connects) == before);
+  ref->token->loginState = TOKEN_LOGIN_PUBLIC;
+  ref->token->logoutPending = CK_TRUE;
+  CHECK(C_SetPIN(session, (CK_UTF8CHAR_PTR)pin, 6, (CK_UTF8CHAR_PTR)pin, 6) == CKR_USER_NOT_LOGGED_IN);
+  CHECK(atomic_load(&connects) == before);
+  ref->token->logoutPending = CK_FALSE;
+  cnk_session_release_ref(&ref);
+  CHECK(C_Login(session, CKU_USER, (CK_UTF8CHAR_PTR)pin, 6) == CKR_OK);
+  puts("PUK policy read and mutation retain one selected transaction on success and failure");
+}
+
 int main(void) {
   CNK_PCSC_TEST_TRANSPORT transport = {establish, release_context, readers,       connect_card, disconnect_card, begin,
                                        end,       transmit,        status_change, cancel};
@@ -883,6 +961,7 @@ int main(void) {
   cache_contract(sessions[0]);
   profile_contract(sessions[0], sessions[1]);
   agreement_commit_contract(sessions[0], sessions[1]);
+  recovery_contract(sessions[0]);
   teardown_contract(sessions[0], CK_FALSE);
   CK_SESSION_INFO survivor;
   CHECK(C_GetSessionInfo(sessions[1], &survivor) == CKR_OK && survivor.state == CKS_RW_USER_FUNCTIONS);

@@ -506,7 +506,8 @@ CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session,
   return rv;
 }
 
-static CK_RV begin_token_operation(CNK_PKCS11_SESSION *session, CK_BBOOL requireManagement, CK_BBOOL requireUser) {
+static CK_RV begin_token_operation(CNK_PKCS11_SESSION *session, CK_BBOOL requireManagement, CK_BBOOL requireUser,
+                                   CK_BBOOL allowPublic) {
   CNK_ENSURE_NONNULL(session, session->token);
   CNK_ENSURE_OK(cnk_mutex_lock(&session->token->lock));
   CK_BBOOL managementAuthorized =
@@ -519,7 +520,8 @@ static CK_RV begin_token_operation(CNK_PKCS11_SESSION *session, CK_BBOOL require
     return CKR_OPERATION_ACTIVE;
   }
   if (session->token->logoutPending || (requireManagement && !managementAuthorized) ||
-      (requireUser && session->token->loginState != TOKEN_LOGIN_USER)) {
+      (requireUser && session->token->loginState != TOKEN_LOGIN_USER &&
+       !(allowPublic && session->token->loginState == TOKEN_LOGIN_PUBLIC))) {
     cnk_mutex_unlock(&session->token->lock);
     return requireManagement || requireUser ? CKR_USER_NOT_LOGGED_IN : CKR_OPERATION_ACTIVE;
   }
@@ -535,15 +537,21 @@ static CK_RV begin_token_operation(CNK_PKCS11_SESSION *session, CK_BBOOL require
 }
 
 CK_RV cnk_token_begin_management_operation(CNK_PKCS11_SESSION *session) {
-  return begin_token_operation(session, CK_TRUE, CK_FALSE);
+  return begin_token_operation(session, CK_TRUE, CK_FALSE, CK_FALSE);
 }
 
 CK_RV cnk_token_begin_user_operation(CNK_PKCS11_SESSION *session) {
-  return begin_token_operation(session, CK_FALSE, CK_TRUE);
+  return begin_token_operation(session, CK_FALSE, CK_TRUE, CK_FALSE);
+}
+
+CK_RV cnk_token_begin_pin_change(CNK_PKCS11_SESSION *session) {
+  // CHANGE REFERENCE DATA authenticates the supplied current PIN itself.
+  // PUBLIC must remain PUBLIC; an SO session must not change the user PIN.
+  return begin_token_operation(session, CK_FALSE, CK_TRUE, CK_TRUE);
 }
 
 CK_RV cnk_token_begin_card_operation(CNK_PKCS11_SESSION *session) {
-  return begin_token_operation(session, CK_FALSE, CK_FALSE);
+  return begin_token_operation(session, CK_FALSE, CK_FALSE, CK_FALSE);
 }
 
 void cnk_token_end_management_operation(CNK_PKCS11_SESSION *session) {

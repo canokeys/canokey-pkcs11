@@ -35,7 +35,7 @@ C now passes semantic import parameters and component views directly to Rust.
 C retains PKCS#11 RSA-width admission and one bounded, zeroized EC-padding buffer.
 No C import/public-key TLV encode/reparse or certificate framing remains. C uses semantic algorithm codes throughout; the immutable Rust profile owns
 support checks and wire-ID resolution. Logical sessions keep no algorithm maps. ADMIN DATA/PRINTED use Rust parsing, with empty policy distinguished
-from malformed data and PIN protection forbidding PUK recovery independently of
+  from malformed data and PIN protection forbidding PUK recovery independently of
 the stored PUK-blocked claim. Public recovery reads never submit a cached PIN. Host crypto and
 PKCS#11 state are intentional C responsibilities, not migration leftovers.
 
@@ -98,7 +98,7 @@ emulation. Passing a selected subset does not close the remaining gates.
 Reader: canokeys.org OpenPGP PIV OATH 0; serial 0; firmware
 3.1.0-dev+gaa408988; PIV 6.0.0. Re-enumerate before any provisioning.
 
-- x64 Debug/Release: 53 selected groups pass using scripts/hardware-crypto-test.py:
+- x64 Debug/Release: 55 selected groups pass using scripts/hardware-crypto-test.py:
   PIN change/cache/fresh-login/restore, F5 read/write/clear/restore, unconfigured
   protection rollback, all supported key types' generation/import, independent private-operation
   verification, host RSA encryption and RSA/ECDSA verification, concurrent ECDSA/RNG
@@ -114,9 +114,12 @@ Reader: canokeys.org OpenPGP PIV OATH 0; serial 0; firmware
   Ed25519 with PIN-once policy; temporary certificates use slot 87.
 - A separate empty-PRINTED CKO_DATA roundtrip preserves full container framing,
   rejects PUBLIC/USER writes, and restores the original bytes after SO writes.
-- Unconfigured PIN-managed login returns its expected policy error and rolls back
-  USER state on the actual card. Malformed/protected PUK recovery uses a counted
-  mutation seam with the real Rust parser; real PUK mutation remains unverified.
+- Real PUK change/restore and PIN recovery pass. A PIN change from PUBLIC retains
+  PUBLIC state and does not cache the new PIN. PUK policy read, mutation and local
+  credential commit retain one selected transaction. Malformed/protected policy,
+  failed mutations and reservation cleanup also pass deterministic contracts.
+  Unconfigured PIN-managed login returns its expected policy error and rolls back
+  USER state on the actual card.
 - Native x64 minidriver: two DDI lifetimes pass certificate read/write, PUBLIC
   write rejection, ADMIN authorization and USER signatures on 9A/9C/82.
   Direct DDI ECDH on these P-256/P-384 keys matches Windows BCrypt raw-secret
@@ -131,9 +134,9 @@ Reader: canokeys.org OpenPGP PIV OATH 0; serial 0; firmware
 - Current original 9D/9E RSA metadata/certificate associations, 85 X25519 material
   and 86 metadata have independent anomalies. Slot 83 is SM2 and outside the
   Windows view. These prevent claiming complete card/Windows acceptance.
-- Native ARM64 runtime, real PUK mutation and Windows RSA/P-521 provisioning
-  remain unverified and need suitable hardware/credentials. Remaining software
-  acceptance in the stage table can proceed independently of those prerequisites.
+- Native ARM64 runtime is excluded from the current hardware acceptance scope.
+  Windows RSA/P-521 provisioning and the remaining software acceptance in the
+  stage table are in progress with the authorized development fixtures.
   The minidriver must rebind logging before each C_Initialize.
 
 The test scripts write machine-readable reports with explicit selections and DLL

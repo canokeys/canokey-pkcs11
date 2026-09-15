@@ -109,6 +109,11 @@ parser.add_argument(
     help="Temporarily change PIN to CNK_PIV_TEST_PIN, verify this EC key, then restore PIN",
 )
 parser.add_argument(
+    "--puk-roundtrip-id",
+    type=lambda x: int(x, 16),
+    help="Change/restore the confirmed PUK, reset PIN with it, and verify this EC key",
+)
+parser.add_argument(
     "--concurrent-id",
     type=lambda x: int(x, 16),
     help="Sign with this EC key while another session reads token RNG",
@@ -164,6 +169,10 @@ if (
     parser.error("Card write tests require CNK_PIV_MANAGEMENT_KEY")
 if args.pin_roundtrip_id is not None and "CNK_PIV_TEST_PIN" not in os.environ:
     parser.error("PIN roundtrip requires CNK_PIV_TEST_PIN")
+if args.puk_roundtrip_id is not None and any(
+    name not in os.environ for name in ("CNK_PIV_PUK", "CNK_PIV_TEST_PUK", "CNK_PIV_TEST_PIN")
+):
+    parser.error("PUK roundtrip requires CNK_PIV_PUK, CNK_PIV_TEST_PUK and CNK_PIV_TEST_PIN")
 if (args.mldsa_id is None) != (args.mlkem_id is None):
     parser.error("Specify both --mldsa-id and --mlkem-id")
 args.module = args.module.resolve()
@@ -219,6 +228,8 @@ for name, types in {
     "C_Login": [U, U, P, U],
     "C_Logout": [U],
     "C_SetPIN": [U, P, U, P, U],
+    "C_CNK_SetPIN": [U, B, P, U, P, U, P],
+    "C_CNK_UnblockPIN": [U, P, U, P, U, P],
     "C_GetAttributeValue": [U, U, C.POINTER(Attr), U],
     "C_FindObjectsInit": [U, C.POINTER(Attr), U],
     "C_FindObjects": [U, C.POINTER(U), U, C.POINTER(U)],
@@ -822,6 +833,48 @@ def pin_roundtrip(id):
     print("PASS PIN change, cached-PIN signing, fresh login and original-PIN restoration", flush=True)
 
 
+def puk_roundtrip(id):
+    original = os.environ["CNK_PIV_PIN"].encode()
+    temporary = os.environ["CNK_PIV_TEST_PIN"].encode()
+    puk = os.environ["CNK_PIV_PUK"].encode()
+    next_puk = os.environ["CNK_PIV_TEST_PUK"].encode()
+    if any(not 6 <= len(value) <= 8 for value in (original, temporary, puk, next_puk)):
+        raise RuntimeError("Test credentials must contain 6 to 8 bytes")
+    if puk == next_puk or original == temporary:
+        raise RuntimeError("Temporary credentials must differ from the originals")
+    login(1, original)
+    public(id)
+    check(lib.C_Logout(s))
+    changed_puk = changed_pin = False
+    try:
+        check(lib.C_CNK_SetPIN(s, 0x81, puk, len(puk), next_puk, len(next_puk), None))
+        changed_puk = True
+        check(lib.C_CNK_UnblockPIN(s, next_puk, len(next_puk), temporary, len(temporary), None))
+        changed_pin = True
+        ecdsa_checks(id)
+        check(lib.C_Logout(s))
+        check(lib.C_SetPIN(s, temporary, len(temporary), original, len(original)))
+        changed_pin = False
+        state = SessionInfo()
+        check(lib.C_GetSessionInfo(s, C.byref(state)))
+        if state.state != 2:  # CKS_RW_PUBLIC_SESSION
+            raise RuntimeError("Changing a PIN from PUBLIC implicitly logged in")
+        login(1, original)
+        ecdsa_checks(id)
+        check(lib.C_CNK_SetPIN(s, 0x81, next_puk, len(next_puk), puk, len(puk), None))
+        changed_puk = False
+    finally:
+        if changed_pin:
+            current_puk = next_puk if changed_puk else puk
+            check(lib.C_CNK_UnblockPIN(s, current_puk, len(current_puk), original, len(original), None))
+        if changed_puk:
+            check(lib.C_CNK_SetPIN(s, 0x81, next_puk, len(next_puk), puk, len(puk), None))
+        lib.C_Logout(s)
+        login(1, original)
+        check(lib.C_Logout(s))
+    print("PASS PUK change/restore, PIN reset, PUBLIC PIN change and fresh-login signatures", flush=True)
+
+
 def unconfigured_management_check():
     pin = os.environ["CNK_PIV_PIN"].encode()
     if lib.C_CNK_LoginPinManaged(s, pin, len(pin)) != 0x20:
@@ -1409,6 +1462,10 @@ def main():
         opened = True
         if args.pin_roundtrip_id is not None:
             run_case("PIN change/cache/restore", lambda: pin_roundtrip(args.pin_roundtrip_id))
+        if args.puk_roundtrip_id is not None:
+            run_case(
+                "PUK change/restore and PUBLIC PIN recovery", lambda: puk_roundtrip(args.puk_roundtrip_id)
+            )
         if args.pin_managed_unconfigured:
             run_case("unconfigured PIN-managed login rollback", unconfigured_management_check)
         if args.name_slot:

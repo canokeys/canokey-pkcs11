@@ -257,6 +257,7 @@ CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session,
                                                     CK_RV verificationRv);
 CK_RV cnk_token_begin_management_operation(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_begin_user_operation(CNK_PKCS11_SESSION *session);
+CK_RV cnk_token_begin_pin_change(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_begin_card_operation(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_allow_owner_login(CNK_PKCS11_SESSION *session, CK_BBOOL allow);
 void cnk_token_end_management_operation(CNK_PKCS11_SESSION *session);

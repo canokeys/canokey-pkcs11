@@ -475,7 +475,7 @@ static CK_RV call(unsigned kind, CK_BYTE *out, CK_ULONG *len) {
     return cnk_write_piv_certificate(0, &session, 0x9c, der, sizeof(der));
   }
   default:
-    return cnk_get_piv_data_libcanokey(0, &session, tag, 3, out, len, CK_TRUE, CK_TRUE);
+    return cnk_get_piv_data_by_tag_with_session(0, &session, tag, 3, out, len, CK_TRUE);
   }
 }
 int main(void) {
@@ -594,8 +594,11 @@ int main(void) {
   reset();
   const CK_BYTE adminTag[] = {0x5f, 0xff, 0};
   len = sizeof(output);
-  CHECK(cnk_get_public_piv_data(&session, adminTag, sizeof(adminTag), output, &len) == CKR_OK);
-  CHECK(pinCopies == 0 && sends == 1);
+  SCARDHANDLE recoveryCard = 0;
+  CHECK(cnk_begin_piv_transaction(0, &recoveryCard) == CKR_OK);
+  CHECK(cnk_get_public_piv_data_on_card(&session, recoveryCard, adminTag, sizeof(adminTag), output, &len) == CKR_OK);
+  CHECK(pinCopies == 0 && sends == 1 && cards == 1);
+  cnk_disconnect_card(recoveryCard);
   reset();
   atomic_store(&g_cnk_log_level, CNK_LOG_LEVEL_DEBUG);
   transcript[0] = 0;
