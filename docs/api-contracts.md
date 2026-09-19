@@ -109,7 +109,8 @@ a successful replacement, so an admitted transaction can still construct an owne
 VERIFY. Expired-profile refresh errors propagate; they never authorize fallback.
 Profile probing uses this same executor and error mapping; no separate callback
 loop discards its diagnostic fields. Error logs name the ABI status, semantic
-kind, phase and reference, with explicit absence for unreported SW/retry fields.
+kind, phase and reference, with explicit absence for unreported SW/retry/applet-status fields. Applet status
+is diagnostic data distinct from ISO SW; it does not alter PIV CK_RV mapping.
 SO login, protected management login, and write authorization share the same
 libcanokey challenge-response implementation; verification alone never caches
 the key. The caller commits credentials only after successful verification.

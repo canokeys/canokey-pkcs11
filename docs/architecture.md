@@ -203,3 +203,9 @@ C ECDSA/EC support. The direct prototype also rejected the supported P-521/SHA25
 prehash case (RustCrypto's half-field minimum is 33 bytes). These experiments were
 not retained: Rust hash/ECDSA APIs need explicit compatibility adaptation and a
 measured benefit before replacing the existing host backend. RSA and PQC stay put.
+
+The dependency follows merged libcanokey main (b709b3d). PIV-only C ABI features
+remain selected; NDEF/CTAP facade modules do not opt this consumer into ClientPIN
+or expose additional PKCS11 operations. The error POD retains its size and uses
+its formerly reserved byte for optional applet status; diagnostics preserve that
+field separately from ISO status words and credential retry counts.

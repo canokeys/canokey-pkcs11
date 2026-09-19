@@ -42,17 +42,20 @@ static void log_libcanokey_error(uint32_t status, const cnk_error_v1 *error) {
               status);
     return;
   }
-  char sw[16] = "absent", retries[16] = "absent";
-  if (error->presence_flags & 1)
+  char sw[16] = "absent", retries[16] = "absent", appStatus[16] = "absent";
+  if (error->presence_flags & CNK_ERROR_HAS_SW)
     snprintf(sw, sizeof(sw), "%04X", (unsigned)error->status_word);
-  if (error->presence_flags & 2)
+  if (error->presence_flags & CNK_ERROR_HAS_RETRIES)
     snprintf(retries, sizeof(retries), "%u", (unsigned)error->retries_remaining);
-  CNK_DEBUG("libcanokey failure: ABI=%s (%u), kind=%s (%u), phase=%s (%u), reference=%s (%u), SW=%s, retries=%s",
+  if (error->presence_flags & CNK_ERROR_HAS_APP_STATUS)
+    snprintf(appStatus, sizeof(appStatus), "%02X", (unsigned)error->application_status);
+  CNK_DEBUG("libcanokey failure: ABI=%s (%u), kind=%s (%u), phase=%s (%u), reference=%s (%u), SW=%s, retries=%s, "
+            "app_status=%s",
             code_name(status, statuses, sizeof(statuses) / sizeof(statuses[0])), status,
             code_name(error->kind, kinds, sizeof(kinds) / sizeof(kinds[0])), error->kind,
             code_name(error->phase, phases, sizeof(phases) / sizeof(phases[0])), error->phase,
             code_name(error->reference, references, sizeof(references) / sizeof(references[0])), error->reference, sw,
-            retries);
+            retries, appStatus);
 }
 
 CK_RV cnk_piv_operation_status(uint32_t status, const cnk_error_v1 *error, CK_RV absent) {

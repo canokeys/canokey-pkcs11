@@ -9,7 +9,7 @@ P, U, Z, B = C.c_void_p, C.c_uint32, C.c_size_t, C.c_ubyte
 
 class Error(C.Structure):
     _fields_ = [(n, U) for n in ("size", "kind", "phase", "reference", "presence")]
-    _fields_ += [("sw", C.c_uint16), ("tries", B), ("reserved", B)]
+    _fields_ += [("sw", C.c_uint16), ("tries", B), ("application_status", B)]
 
 
 class Metadata(C.Structure):

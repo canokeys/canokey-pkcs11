@@ -633,6 +633,14 @@ int main(void) {
   CHECK(cnk_piv_operation_status(CNK_PROTOCOL_ERROR, &e, CKR_DATA_INVALID) == CKR_DEVICE_ERROR);
   CHECK(strstr(lastLog, "InvalidResponse") && strstr(lastLog, "Parsing"));
   CHECK(strstr(lastLog, "SW=absent") && strstr(lastLog, "retries=absent"));
+  CHECK(strstr(lastLog, "app_status=absent"));
+  e.application_status = 0x2e;
+  e.presence_flags = CNK_ERROR_HAS_APP_STATUS;
+  CHECK(cnk_piv_operation_status(CNK_PROTOCOL_ERROR, &e, CKR_DATA_INVALID) == CKR_DEVICE_ERROR);
+  CHECK(strstr(lastLog, "app_status=2E") && strstr(lastLog, "SW=absent") && strstr(lastLog, "retries=absent"));
+  e.presence_flags = 0;
+  CHECK(cnk_piv_operation_status(CNK_PROTOCOL_ERROR, &e, CKR_DATA_INVALID) == CKR_DEVICE_ERROR);
+  CHECK(strstr(lastLog, "app_status=absent"));
   e.kind = 6;
   e.phase = 3;
   e.reference = 1;
