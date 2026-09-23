@@ -151,7 +151,7 @@ Both credential mutations revoke host credentials/private contexts on attempted 
 
 ## Build and diagnostics
 
-Cargo.toml pins libcanokey; Cargo.lock pins its dependency closure. The private Rust
+Cargo.toml selects the published crates.io canokey-c crate; Cargo.lock pins its dependency closure. The private Rust
 static library is linked into the existing DLL, with no Rust DLL or submodule.
 ThinLTO and function/data section collection remove unused code. PIV-only C ABI
 features exclude unrelated applets; host crypto, curves and Rust runtime still
@@ -204,7 +204,7 @@ prehash case (RustCrypto's half-field minimum is 33 bytes). These experiments we
 not retained: Rust hash/ECDSA APIs need explicit compatibility adaptation and a
 measured benefit before replacing the existing host backend. RSA and PQC stay put.
 
-The dependency follows merged libcanokey main (b709b3d). PIV-only C ABI features
+The dependency is the published crates.io canokey-c release (currently 0.1.0). PIV-only C ABI features
 remain selected; NDEF/CTAP facade modules do not opt this consumer into ClientPIN
 or expose additional PKCS11 operations. The error POD retains its size and uses
 its formerly reserved byte for optional applet status; diagnostics preserve that

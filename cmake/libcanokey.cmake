@@ -1,4 +1,4 @@
-# Cargo owns the pinned Git dependency; no source checkout/submodule is needed.
+# Cargo owns the crates.io canokey-c dependency; no source checkout/submodule is needed.
 find_program(CNK_CARGO cargo HINTS "$ENV{USERPROFILE}/.cargo/bin" "$ENV{HOME}/.cargo/bin" REQUIRED)
 find_program(CNK_RUSTC rustc HINTS "$ENV{USERPROFILE}/.cargo/bin" "$ENV{HOME}/.cargo/bin" REQUIRED)
 
