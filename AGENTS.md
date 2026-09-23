@@ -365,8 +365,9 @@ The former C 3DES helper and C PIV protocol parsers have been removed.
 - `src/backend/`: PC/SC lifetime, the bounded synchronous libcanokey executor,
   typed result conversion and public cache/profile coordination.
 - `src/internal/`: host hashing/padding/crypto, templates, logging and mutexes.
-- `rust/`: private static linkage to the exact pinned libcanokey C ABI. Rust owns
-  PIV APDUs, formats, credentials, management crypto and firmware compatibility.
+- `rust/`: private static linkage to the published crates.io canokey-c C ABI.
+  Rust owns PIV APDUs, formats, credentials, management crypto and firmware
+  compatibility.
 
 PIV object IDs map to slots as:
 

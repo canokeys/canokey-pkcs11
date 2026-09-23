@@ -21,8 +21,8 @@ GCC should be supported, but is not tested.
 
 This experimental branch also requires CMake 3.20+ and the latest stable Rust
 via rustup. Cargo builds the private protocol adapter as a static library;
-`Cargo.toml` pins libcanokey by Git revision and `Cargo.lock` pins its transitive
-dependencies. There is no libcanokey submodule or Rust DLL. Existing C crypto
+`Cargo.toml` selects the published `canokey-c` crate from crates.io and
+`Cargo.lock` pins its transitive dependencies. There is no libcanokey submodule or Rust DLL. Existing C crypto
 and synchronization submodules are still needed. See
 [the migration status and acceptance plan](docs/libcanokey-piv-migration-plan.md) for the remaining PIV work.
 
