@@ -1,6 +1,7 @@
 #ifndef CNK_API_SESSION_H
 #define CNK_API_SESSION_H
 
+#include "internal/public_key.h"
 #include "pkcs11.h"
 
 #include "internal/mutex.h"
@@ -26,7 +27,6 @@ typedef enum {
 } CNK_TOKEN_LOGIN_STATE;
 
 #define CNK_PIV_PUBLIC_CACHE_SLOT_COUNT 24
-#define CNK_PIV_PUBLIC_CACHE_MAX_PUBLIC_KEY 2048
 #define CNK_PIV_PUBLIC_CACHE_MAX_CERTIFICATE 8192
 
 // Public PIV data is safe to cache, unlike the credential fields below. The
@@ -35,25 +35,26 @@ typedef enum {
 // handle or a selected applet between API calls.
 typedef struct {
   CK_BBOOL metadataValid;
-  uint64_t metadataRefreshedAtMs;
-  CK_BYTE algorithmType;
+  uint64_t metadataRefreshedAtMs, metadataGeneration;
+  uint32_t algorithmType;
   CK_BYTE pinPolicy;
   CK_BYTE touchPolicy;
-  CK_BYTE publicKey[CNK_PIV_PUBLIC_CACHE_MAX_PUBLIC_KEY];
-  CK_ULONG publicKeyLen;
+  CNK_PIV_PUBLIC_KEY publicKey;
   CK_BBOOL certificateValid;
-  uint64_t certificateRefreshedAtMs;
+  uint64_t certificateRefreshedAtMs, certificateGeneration;
   CK_BYTE certificate[CNK_PIV_PUBLIC_CACHE_MAX_CERTIFICATE];
   CK_ULONG certificateLen;
 } CNK_PIV_PUBLIC_CACHE_ENTRY;
 
 typedef struct {
   CK_BBOOL directoryValid;
-  uint64_t directoryRefreshedAtMs;
+  uint64_t directoryRefreshedAtMs, directoryGeneration;
   CK_ULONG directoryCount;
   CK_BYTE directory[CNK_PIV_PUBLIC_CACHE_SLOT_COUNT][6];
   CNK_PIV_PUBLIC_CACHE_ENTRY slots[CNK_PIV_PUBLIC_CACHE_SLOT_COUNT];
 } CNK_PIV_PUBLIC_CACHE;
+
+typedef struct CnkProfile cnk_profile_t;
 
 // Login credentials are shared by every session for one slot, as required by
 // PKCS#11. The lock protects state and both sensitive caches.
@@ -66,6 +67,7 @@ typedef struct CNK_PKCS11_TOKEN_STATE {
   CK_ULONG cbManagementKey;
   _Atomic CK_BBOOL managementLoginPending;
   _Atomic CK_BBOOL managementOperationPending;
+  _Atomic CK_ULONG activePrivateOperations;
   _Atomic CK_SESSION_HANDLE managementOperationOwner;
   _Atomic CK_BBOOL managementOperationAllowsLogin;
   _Atomic CK_BBOOL logoutRecoveryPending;
@@ -73,7 +75,14 @@ typedef struct CNK_PKCS11_TOKEN_STATE {
   _Atomic CK_BBOOL logoutPending;
   _Atomic CK_ULONG openSessions;
   _Atomic CK_ULONG readOnlySessions;
+  // Advances even when a failed application mutex prevents clearing storage.
+  _Atomic uint64_t publicCacheGeneration;
   CNK_PIV_PUBLIC_CACHE pivPublicCache;
+  cnk_profile_t *libcanokeyProfile;
+  CK_ULONG libcanokeyProfileEpoch;
+  uint64_t libcanokeyProfileRefreshedAtMs;
+  _Atomic uint64_t profileGeneration;
+  uint64_t loadedProfileGeneration;
   CNK_PKCS11_MUTEX lock;
   struct CNK_PKCS11_TOKEN_STATE *next;
 } CNK_PKCS11_TOKEN_STATE;
@@ -95,6 +104,8 @@ typedef struct {
   CK_BYTE id;
   CK_KEY_TYPE keyType;
   CK_BYTE value[128];
+  // Public protocol output, retained with SM2-derived session secrets only.
+  CK_BYTE sm2Ephemeral[65];
   CK_ULONG valueLen;
   CK_BBOOL extractable;
   CK_BBOOL sensitive;
@@ -133,7 +144,7 @@ typedef struct {
   CK_OBJECT_HANDLE hKey;
   CK_MECHANISM mechanism;
   CK_BYTE pivSlot;
-  CK_BYTE algorithmType;
+  uint32_t algorithmType;
   CK_BYTE pinPolicy;
   mbedtls_md_type_t mdType;
   CK_BYTE abModulus[512];
@@ -141,6 +152,7 @@ typedef struct {
   CK_BYTE_PTR message;
   CK_ULONG messageLen;
   CK_ULONG messageCapacity;
+  CK_ULONG messageLimit;
   CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
   CK_BBOOL contextAuthenticated;
   CK_BYTE contextPin[8];
@@ -151,7 +163,7 @@ typedef struct {
   CK_OBJECT_HANDLE hKey;
   CK_MECHANISM mechanism;
   CK_BYTE pivSlot;
-  CK_BYTE algorithmType;
+  uint32_t algorithmType;
   CK_BYTE pinPolicy;
   CK_ULONG cbModulus;
   CK_BBOOL contextAuthenticated;
@@ -164,11 +176,10 @@ typedef struct {
 typedef struct {
   CK_OBJECT_HANDLE hKey;
   CK_MECHANISM mechanism;
-  CK_BYTE algorithmType;
+  uint32_t algorithmType;
   mbedtls_md_type_t mdType;
   CNK_PKCS11_DIGESTING_CONTEXT digestingContext;
-  CK_BYTE publicKey[2048];
-  CK_ULONG publicKeyLen;
+  CNK_PIV_PUBLIC_KEY publicKey;
   CK_BYTE_PTR message;
   CK_ULONG messageLen;
   CK_ULONG messageCapacity;
@@ -177,8 +188,7 @@ typedef struct {
 typedef struct {
   CK_OBJECT_HANDLE hKey;
   CK_MECHANISM mechanism;
-  CK_BYTE publicKey[2048];
-  CK_ULONG publicKeyLen;
+  CNK_PIV_PUBLIC_KEY publicKey;
   CK_ULONG modulusLen;
 } CNK_PKCS11_ENCRYPTING_CONTEXT;
 
@@ -192,15 +202,6 @@ typedef struct CNK_PKCS11_SESSION {
   CK_BBOOL isOpen;          // Flag indicating if the session is open
   _Atomic CK_BBOOL closing; // Close has started; reject new session references
   CNK_PKCS11_TOKEN_STATE *token;
-  CK_BYTE mldsa65Algorithm;  // Runtime PIV algorithm-extension ID
-  CK_BYTE mlkem768Algorithm; // Runtime PIV algorithm-extension ID
-  CK_BYTE ed25519Algorithm;  // Runtime PIV algorithm-extension ID
-  CK_BYTE x25519Algorithm;   // Runtime PIV algorithm-extension ID
-  CK_BYTE rsa3072Algorithm;  // Runtime PIV algorithm-extension ID
-  CK_BYTE rsa4096Algorithm;  // Runtime PIV algorithm-extension ID
-  CK_BYTE secp256k1Algorithm;
-  CK_BYTE secp521r1Algorithm;
-  CK_BYTE sm2Algorithm;
   CNK_PKCS11_MUTEX lock; // Session lock using abstract mutex
 
   // Object finding fields
@@ -257,14 +258,19 @@ CK_RV cnk_token_update_cached_pin(CNK_PKCS11_SESSION *session, CK_UTF8CHAR_PTR o
                                   CK_UTF8CHAR_PTR newPin, CK_ULONG newPinLen);
 CK_RV cnk_token_management_key_is_cached(CNK_PKCS11_SESSION *session, CK_BBOOL *cached);
 CK_RV cnk_token_copy_management_key(CNK_PKCS11_SESSION *session, CK_BYTE key[24]);
-CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session);
+CK_RV cnk_token_begin_protected_management_login(CNK_PKCS11_SESSION *session, CK_BBOOL refresh);
 CK_RV cnk_token_complete_protected_management_login(CNK_PKCS11_SESSION *session, CK_BYTE_PTR key, CK_ULONG keyLen,
                                                     CK_RV verificationRv);
 CK_RV cnk_token_begin_management_operation(CNK_PKCS11_SESSION *session);
+CK_RV cnk_token_private_operation(CNK_PKCS11_SESSION *session, CK_BBOOL begin);
 CK_RV cnk_token_begin_user_operation(CNK_PKCS11_SESSION *session);
+CK_RV cnk_token_begin_pin_change(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_begin_card_operation(CNK_PKCS11_SESSION *session);
 CK_RV cnk_token_allow_owner_login(CNK_PKCS11_SESSION *session, CK_BBOOL allow);
 void cnk_token_end_management_operation(CNK_PKCS11_SESSION *session);
+CK_RV cnk_token_forget_credentials(CNK_PKCS11_SESSION *session);
+/* The active API admission pins token lifetime until this borrowed view is unused. */
+CK_RV cnk_token_for_slot(CK_SLOT_ID slotId, CNK_PKCS11_TOKEN_STATE **token);
 CK_RV cnk_token_get_session_counts(CK_SLOT_ID slotId, CK_ULONG_PTR openSessions, CK_ULONG_PTR readOnlySessions);
 // Card replacement events invalidate public snapshots associated with a slot.
 CK_RV cnk_token_invalidate_public_cache(CK_SLOT_ID slotId);

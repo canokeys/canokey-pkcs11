@@ -25,9 +25,6 @@
 // Maximum size for certificate data buffer
 #define MAX_PIV_CERTIFICATE_OBJECT_SIZE 8192
 
-// Maximum size for PIV asymmetric key import data.
-#define MAX_PIV_IMPORT_KEY_SIZE 1400
-
 // Maximum size for generic PIV data objects exposed as CKO_DATA.
 #define MAX_PIV_DATA_OBJECT_SIZE 8192
 
@@ -40,56 +37,15 @@
 #define OBJECT_SLOT_SHIFT 16
 #define OBJECT_CLASS_SHIFT 8
 
-#define OBJECT_CLASS_SECRET_KEY_HANDLE ((CK_OBJECT_CLASS)CKO_SECRET_KEY)
-
-// PIV slot to tag mapping
-typedef struct {
-  CK_BYTE objId;
-  CK_BYTE pivTag;
-  CK_BYTE certTag;
-} PivSlotMapping;
-
 typedef struct {
   CK_BYTE objId;
   const CK_BYTE *dataTag;
   CK_ULONG dataTagLen;
   const char *label;
-  const char *application;
   const CK_BYTE *objectId;
   CK_ULONG objectIdLen;
   CK_BBOOL privateObject;
-  CK_BBOOL writable;
 } PivDataObjectMapping;
-
-static const PivSlotMapping PIV_SLOT_MAPPING[] = {
-    {PIV_SLOT_9A, 0x9A, PIV_OBJECT_TAG_CERT_9A},
-    {PIV_SLOT_9C, 0x9C, PIV_OBJECT_TAG_CERT_9C},
-    {PIV_SLOT_9D, 0x9D, PIV_OBJECT_TAG_CERT_9D},
-    {PIV_SLOT_9E, 0x9E, PIV_OBJECT_TAG_CERT_9E},
-    {PIV_SLOT_82, 0x82, PIV_OBJECT_TAG_CERT_82},
-    {PIV_SLOT_83, 0x83, PIV_OBJECT_TAG_CERT_83},
-    {7, 0x84, 0x0F},
-    {8, 0x85, 0x10},
-    {9, 0x86, 0x11},
-    {10, 0x87, 0x12},
-    {11, 0x88, 0x13},
-    {12, 0x89, 0x14},
-    {13, 0x8A, 0x15},
-    {14, 0x8B, 0x16},
-    {15, 0x8C, 0x17},
-    {16, 0x8D, 0x18},
-    {17, 0x8E, 0x19},
-    {18, 0x8F, 0x1A},
-    {19, 0x90, 0x1B},
-    {20, 0x91, 0x1C},
-    {21, 0x92, 0x1D},
-    {22, 0x93, 0x1E},
-    {23, 0x94, 0x1F},
-    {24, 0x95, 0x20},
-};
-
-// Size of the PIV slot mapping array
-#define PIV_SLOT_MAPPING_SIZE (sizeof(PIV_SLOT_MAPPING) / sizeof(PIV_SLOT_MAPPING[0]))
 
 // CKA_OBJECT_ID is stored as ASN.1 object-identifier content octets, matching
 // the encoding OpenSC's pkcs11-tool uses for --application-id.
@@ -113,21 +69,21 @@ static const CK_BYTE OID_KEY_HISTORY[] = {0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x
 static const CK_BYTE OID_DISCOVERY[] = {0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x07, 0x02, 0x60, 0x50};
 
 static const PivDataObjectMapping PIV_DATA_OBJECT_MAPPING[] = {
-    {0x21, TAG_CHUID, sizeof(TAG_CHUID), "PIV CHUID", "PIV", OID_CHUID, sizeof(OID_CHUID), CK_FALSE, CK_TRUE},
-    {0x22, TAG_CARDHOLDER_FINGERPRINTS, sizeof(TAG_CARDHOLDER_FINGERPRINTS), "PIV Cardholder Fingerprints", "PIV",
-     OID_CARDHOLDER_FINGERPRINTS, sizeof(OID_CARDHOLDER_FINGERPRINTS), CK_TRUE, CK_TRUE},
-    {0x23, TAG_SECURITY_OBJECT, sizeof(TAG_SECURITY_OBJECT), "PIV Security Object", "PIV", OID_SECURITY_OBJECT,
-     sizeof(OID_SECURITY_OBJECT), CK_FALSE, CK_TRUE},
-    {0x24, TAG_CARD_CAPABILITY_CONTAINER, sizeof(TAG_CARD_CAPABILITY_CONTAINER), "PIV Card Capability Container", "PIV",
-     OID_CARD_CAPABILITY_CONTAINER, sizeof(OID_CARD_CAPABILITY_CONTAINER), CK_FALSE, CK_TRUE},
-    {0x25, TAG_CARDHOLDER_FACIAL_IMAGE, sizeof(TAG_CARDHOLDER_FACIAL_IMAGE), "PIV Cardholder Facial Image", "PIV",
-     OID_CARDHOLDER_FACIAL_IMAGE, sizeof(OID_CARDHOLDER_FACIAL_IMAGE), CK_TRUE, CK_TRUE},
-    {0x26, TAG_PRINTED_INFORMATION, sizeof(TAG_PRINTED_INFORMATION), "PIV Printed Information", "PIV",
-     OID_PRINTED_INFORMATION, sizeof(OID_PRINTED_INFORMATION), CK_TRUE, CK_TRUE},
-    {0x27, TAG_KEY_HISTORY, sizeof(TAG_KEY_HISTORY), "PIV Key History Object", "PIV", OID_KEY_HISTORY,
-     sizeof(OID_KEY_HISTORY), CK_FALSE, CK_TRUE},
-    {0x28, TAG_DISCOVERY, sizeof(TAG_DISCOVERY), "PIV Discovery Object", "PIV", OID_DISCOVERY, sizeof(OID_DISCOVERY),
-     CK_FALSE, CK_TRUE},
+    {0x21, TAG_CHUID, sizeof(TAG_CHUID), "PIV CHUID", OID_CHUID, sizeof(OID_CHUID), CK_FALSE},
+    {0x22, TAG_CARDHOLDER_FINGERPRINTS, sizeof(TAG_CARDHOLDER_FINGERPRINTS), "PIV Cardholder Fingerprints",
+     OID_CARDHOLDER_FINGERPRINTS, sizeof(OID_CARDHOLDER_FINGERPRINTS), CK_TRUE},
+    {0x23, TAG_SECURITY_OBJECT, sizeof(TAG_SECURITY_OBJECT), "PIV Security Object", OID_SECURITY_OBJECT,
+     sizeof(OID_SECURITY_OBJECT), CK_FALSE},
+    {0x24, TAG_CARD_CAPABILITY_CONTAINER, sizeof(TAG_CARD_CAPABILITY_CONTAINER), "PIV Card Capability Container",
+     OID_CARD_CAPABILITY_CONTAINER, sizeof(OID_CARD_CAPABILITY_CONTAINER), CK_FALSE},
+    {0x25, TAG_CARDHOLDER_FACIAL_IMAGE, sizeof(TAG_CARDHOLDER_FACIAL_IMAGE), "PIV Cardholder Facial Image",
+     OID_CARDHOLDER_FACIAL_IMAGE, sizeof(OID_CARDHOLDER_FACIAL_IMAGE), CK_TRUE},
+    {0x26, TAG_PRINTED_INFORMATION, sizeof(TAG_PRINTED_INFORMATION), "PIV Printed Information", OID_PRINTED_INFORMATION,
+     sizeof(OID_PRINTED_INFORMATION), CK_TRUE},
+    {0x27, TAG_KEY_HISTORY, sizeof(TAG_KEY_HISTORY), "PIV Key History Object", OID_KEY_HISTORY, sizeof(OID_KEY_HISTORY),
+     CK_FALSE},
+    {0x28, TAG_DISCOVERY, sizeof(TAG_DISCOVERY), "PIV Discovery Object", OID_DISCOVERY, sizeof(OID_DISCOVERY),
+     CK_FALSE},
 };
 
 #define PIV_DATA_OBJECT_MAPPING_SIZE (sizeof(PIV_DATA_OBJECT_MAPPING) / sizeof(PIV_DATA_OBJECT_MAPPING[0]))
@@ -195,36 +151,21 @@ static void extractObjectInfo(CK_OBJECT_HANDLE hObject, CK_SLOT_ID *slotId, CK_O
  * @param algorithmType The algorithm type
  * @return CK_KEY_TYPE The corresponding key type
  */
-static CK_KEY_TYPE algoType2KeyType(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
-  if (session->mldsa65Algorithm != 0 && algorithmType == session->mldsa65Algorithm)
-    return CKK_ML_DSA;
-  if (session->mlkem768Algorithm != 0 && algorithmType == session->mlkem768Algorithm)
-    return CKK_ML_KEM;
-  if (session->ed25519Algorithm != 0 && algorithmType == session->ed25519Algorithm)
-    return CKK_EC_EDWARDS;
-  if (session->x25519Algorithm != 0 && algorithmType == session->x25519Algorithm)
-    return CKK_EC_MONTGOMERY;
-  if (session->rsa3072Algorithm != 0 && algorithmType == session->rsa3072Algorithm)
+static CK_KEY_TYPE algoType2KeyType(uint32_t algorithmType) {
+  if (CNK_PivAlgorithmIsRsa(algorithmType))
     return CKK_RSA;
-  if (session->rsa4096Algorithm != 0 && algorithmType == session->rsa4096Algorithm)
-    return CKK_RSA;
-  if (session->secp256k1Algorithm != 0 && algorithmType == session->secp256k1Algorithm)
-    return CKK_EC;
-  if (session->secp521r1Algorithm != 0 && algorithmType == session->secp521r1Algorithm)
-    return CKK_EC;
-  if (session->sm2Algorithm != 0 && algorithmType == session->sm2Algorithm)
+  if (CNK_PivAlgorithmIsEc(algorithmType))
     return CKK_EC;
   switch (algorithmType) {
-  case PIV_ALG_RSA_2048:
-    return CKK_RSA;
-
-  case PIV_ALG_ECC_256:
-  case PIV_ALG_ECC_384:
-  case PIV_ALG_ECC_521:
-    return CKK_EC;
-
+  case CNK_ALGORITHM_MLDSA65:
+    return CKK_ML_DSA;
+  case CNK_ALGORITHM_MLKEM768:
+    return CKK_ML_KEM;
+  case CNK_ALGORITHM_ED25519:
+    return CKK_EC_EDWARDS;
+  case CNK_ALGORITHM_X25519:
+    return CKK_EC_MONTGOMERY;
   default:
-    CNK_WARN("Unknown algorithm type: 0x%02X", algorithmType);
     return CKK_VENDOR_DEFINED;
   }
 }
@@ -247,12 +188,11 @@ static CK_RV handleDataAttribute(CK_ATTRIBUTE_PTR attribute, const PivDataObject
  *
  * @param attribute The attribute to handle
  * @param algorithmType The key algorithm type
- * @param pbPublicKey Public key data
- * @param cbPublicKey Length of public key data
+ * @param publicKey Owned, validated public components
  * @return CK_RV CKR_OK on success, error code otherwise
  */
-static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithmType,
-                                      CK_BYTE_PTR pbPublicKey, CK_ULONG cbPublicKey);
+static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithmType, CK_BYTE objId,
+                                      const CNK_PIV_PUBLIC_KEY *publicKey);
 
 /**
  * @brief Handle private key attributes
@@ -262,8 +202,8 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
  * @param pinPolicy The stored PIV PIN policy
  * @return CK_RV CKR_OK on success, error code otherwise
  */
-static CK_RV handlePrivateKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithmType,
-                                       CK_BYTE pinPolicy);
+static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithmType, CK_BYTE pinPolicy,
+                                       CK_BYTE objId);
 
 /**
  * @brief Handle session secret-key attributes
@@ -318,7 +258,7 @@ static CK_BBOOL isSessionSecretHandle(CNK_PKCS11_SESSION *session, CK_OBJECT_HAN
   CK_BYTE objId;
 
   extractObjectInfo(hObject, &slotId, &objClass, &objId);
-  if (slotId != session->slotId || objClass != OBJECT_CLASS_SECRET_KEY_HANDLE)
+  if (slotId != session->slotId || objClass != CKO_SECRET_KEY)
     return CK_FALSE;
 
   CNK_PKCS11_SECRET_KEY_OBJECT *found = findSessionSecretKey(session, objId);
@@ -560,7 +500,7 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
       return CKR_OK;
     }
 
-    rv = CNK_ObjectIdToCertificateTag(objectId, &certTag);
+    rv = C_CNK_ObjIdToPivTag(objectId, &certTag);
     if (rv == CKR_OBJECT_HANDLE_INVALID) {
       return CKR_OK;
     }
@@ -568,7 +508,7 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
       return rv;
     }
 
-    rv = cnk_get_piv_data_cached(session, certTag, NULL, NULL, CK_FALSE);
+    rv = cnk_get_piv_certificate_cached(session, certTag, NULL, NULL, CK_FALSE);
     if (rv == CKR_OK) {
       *exists = CK_TRUE;
       return CKR_OK;
@@ -592,10 +532,9 @@ static CK_RV checkPivObjectExists(CNK_PKCS11_SESSION *session, CK_OBJECT_CLASS o
       return rv;
     }
 
-    CK_BYTE algorithmType = 0;
-    CK_BYTE publicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
-    CK_ULONG publicKeyLen = sizeof(publicKey);
-    rv = cnk_get_metadata_cached(session, pivTag, &algorithmType, publicKey, &publicKeyLen, pinPolicy, NULL);
+    uint32_t algorithmType = 0;
+    CNK_PIV_PUBLIC_KEY publicKey;
+    rv = cnk_get_metadata_cached(session, pivTag, &algorithmType, &publicKey, pinPolicy, NULL);
     if (rv == CKR_OK) {
       *exists = CK_TRUE;
       return CKR_OK;
@@ -799,105 +738,39 @@ CK_RV C_CNK_ObjIdToPivTag(CK_BYTE objId, CK_BYTE *pivTag) {
     return CKR_ARGUMENTS_BAD;
   }
 
-  for (size_t i = 0; i < PIV_SLOT_MAPPING_SIZE; i++) {
-    if (PIV_SLOT_MAPPING[i].objId == objId) {
-      *pivTag = PIV_SLOT_MAPPING[i].pivTag;
-      CNK_DEBUG("Mapped object ID 0x%02X to PIV tag 0x%02X", objId, *pivTag);
-      return CKR_OK;
-    }
+  if (objId < 1 || objId > PIV_SLOT_COUNT) {
+    CNK_ERROR("Invalid object ID: 0x%02X", objId);
+    return CKR_OBJECT_HANDLE_INVALID;
   }
-
-  CNK_ERROR("Invalid object ID: 0x%02X", objId);
-  return CKR_OBJECT_HANDLE_INVALID;
+  // IDs 1..4 name the four primary slots; IDs 5..24 cover retired slots in order.
+  static const CK_BYTE primarySlots[] = {0x9a, 0x9c, 0x9d, 0x9e};
+  *pivTag = objId <= 4 ? primarySlots[objId - 1] : (CK_BYTE)(0x82 + objId - 5);
+  CNK_DEBUG("Mapped object ID 0x%02X to PIV tag 0x%02X", objId, *pivTag);
+  return CKR_OK;
 }
 
 CK_BYTE CNK_DefaultPinPolicyForPivObjectId(CK_BYTE objId) {
   return objId == PIV_SLOT_9E ? CNK_PIV_PIN_POLICY_NEVER : CNK_PIV_PIN_POLICY_ONCE;
 }
 
-CK_BYTE CNK_PivConfiguredAlgorithm(const CNK_PKCS11_SESSION *session, CK_BYTE canonicalAlgorithm) {
-  if (session == NULL)
-    return 0;
-  switch (canonicalAlgorithm) {
-  case PIV_ALG_RSA_3072:
-    return session->rsa3072Algorithm;
-  case PIV_ALG_RSA_4096:
-    return session->rsa4096Algorithm;
-  case PIV_ALG_ED25519:
-    return session->ed25519Algorithm;
-  case PIV_ALG_X25519:
-    return session->x25519Algorithm;
-  case PIV_ALG_SECP256K1:
-    return session->secp256k1Algorithm;
-  case PIV_ALG_ECC_521:
-    return session->secp521r1Algorithm;
-  case PIV_ALG_SM2:
-    return session->sm2Algorithm;
-  case PIV_ALG_MLDSA65:
-    return session->mldsa65Algorithm;
-  case PIV_ALG_MLKEM768:
-    return session->mlkem768Algorithm;
-  default:
-    return canonicalAlgorithm;
-  }
+CK_BBOOL CNK_PivAlgorithmIsRsa(uint32_t algorithmType) {
+  return algorithmType == CNK_ALGORITHM_RSA2048 || algorithmType == CNK_ALGORITHM_RSA3072 ||
+         algorithmType == CNK_ALGORITHM_RSA4096;
 }
-
-CK_BBOOL CNK_PivAlgorithmIsRsa(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
-  CK_BYTE rsa3072 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_RSA_3072);
-  CK_BYTE rsa4096 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_RSA_4096);
-  return algorithmType == PIV_ALG_RSA_2048 || (rsa3072 != 0 && algorithmType == rsa3072) ||
-         (rsa4096 != 0 && algorithmType == rsa4096);
+CK_BBOOL CNK_PivAlgorithmIsEc(uint32_t algorithmType) {
+  return algorithmType >= CNK_ALGORITHM_P256 && algorithmType <= CNK_ALGORITHM_SM2;
 }
-
-CK_BBOOL CNK_PivAlgorithmIsEc(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
-  CK_BYTE p521 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521);
-  CK_BYTE secp256k1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1);
-  CK_BYTE sm2 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SM2);
-  return algorithmType == PIV_ALG_ECC_256 || algorithmType == PIV_ALG_ECC_384 || algorithmType == PIV_ALG_ECC_521 ||
-         (p521 != 0 && algorithmType == p521) || (secp256k1 != 0 && algorithmType == secp256k1) ||
-         (sm2 != 0 && algorithmType == sm2);
+CK_BBOOL CNK_PivPrivateKeyCanSign(uint32_t algorithmType) {
+  return CNK_PivAlgorithmIsRsa(algorithmType) ||
+         (algorithmType >= CNK_ALGORITHM_P256 && algorithmType <= CNK_ALGORITHM_SECP256K1) ||
+         algorithmType == CNK_ALGORITHM_ED25519 || algorithmType == CNK_ALGORITHM_MLDSA65 ||
+         algorithmType == CNK_ALGORITHM_SM2;
 }
-
-CK_BBOOL CNK_PivPrivateKeyCanSign(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
-  CK_BYTE mldsa = CNK_PivConfiguredAlgorithm(session, PIV_ALG_MLDSA65);
-  CK_BYTE ed25519 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ED25519);
-  CK_BYTE p521 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521);
-  CK_BYTE secp256k1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1);
-  return CNK_PivAlgorithmIsRsa(session, algorithmType) || algorithmType == PIV_ALG_ECC_256 ||
-         algorithmType == PIV_ALG_ECC_384 || algorithmType == PIV_ALG_ECC_521 || (p521 != 0 && algorithmType == p521) ||
-         (secp256k1 != 0 && algorithmType == secp256k1) || (mldsa != 0 && algorithmType == mldsa) ||
-         (ed25519 != 0 && algorithmType == ed25519);
-}
-
-CK_BBOOL CNK_PivPrivateKeyCanDecrypt(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
-  return CNK_PivAlgorithmIsRsa(session, algorithmType);
-}
-
-CK_BBOOL CNK_PivPrivateKeyCanDerive(const CNK_PKCS11_SESSION *session, CK_BYTE algorithmType) {
-  CK_BYTE p521 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521);
-  CK_BYTE secp256k1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1);
-  CK_BYTE x25519 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_X25519);
-  return algorithmType == PIV_ALG_ECC_256 || algorithmType == PIV_ALG_ECC_384 || algorithmType == PIV_ALG_ECC_521 ||
-         (p521 != 0 && algorithmType == p521) || (secp256k1 != 0 && algorithmType == secp256k1) ||
-         (x25519 != 0 && algorithmType == x25519);
-}
-
-CK_RV CNK_ObjectIdToCertificateTag(CK_BYTE objId, CK_BYTE *dataTag) {
-  if (!dataTag) {
-    CNK_ERROR("dataTag cannot be NULL");
-    return CKR_ARGUMENTS_BAD;
-  }
-
-  for (size_t i = 0; i < PIV_SLOT_MAPPING_SIZE; i++) {
-    if (PIV_SLOT_MAPPING[i].objId == objId) {
-      *dataTag = PIV_SLOT_MAPPING[i].certTag;
-      CNK_DEBUG("Mapped object ID 0x%02X to PIV certificate tag 0x%02X", objId, *dataTag);
-      return CKR_OK;
-    }
-  }
-
-  CNK_ERROR("Invalid object ID: 0x%02X", objId);
-  return CKR_OBJECT_HANDLE_INVALID;
+CK_BBOOL CNK_PivPrivateKeyCanDecrypt(uint32_t algorithmType) { return CNK_PivAlgorithmIsRsa(algorithmType); }
+CK_BBOOL CNK_PivPrivateKeyCanDerive(uint32_t algorithmType, CK_BYTE objId) {
+  return (algorithmType >= CNK_ALGORITHM_P256 && algorithmType <= CNK_ALGORITHM_SECP256K1) ||
+         algorithmType == CNK_ALGORITHM_X25519 ||
+         (algorithmType == CNK_ALGORITHM_SM2 && (objId == 3 || (objId >= 5 && objId <= 24)));
 }
 
 /**
@@ -936,7 +809,7 @@ CK_RV CNK_ValidateObject(CK_OBJECT_HANDLE hObject, CNK_PKCS11_SESSION *session, 
     return CKR_KEY_TYPE_INCONSISTENT;
   }
 
-  if (obj_class == OBJECT_CLASS_SECRET_KEY_HANDLE) {
+  if (obj_class == CKO_SECRET_KEY) {
     if (findSessionSecretKey(session, localObjId) == NULL)
       return CKR_OBJECT_HANDLE_INVALID;
     return CKR_OK;
@@ -999,8 +872,6 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
     CK_ATTRIBUTE_PTR valueAttr;
 
     CNK_ENSURE_NONNULL(mapping);
-    if (!mapping->writable)
-      CNK_RETURN(CKR_ACTION_PROHIBITED, "PIV data object is not writable");
     CNK_ENSURE_OK(cnk_template_get_attribute(pTemplate, ulCount, CKA_VALUE, &valueAttr));
     if (valueAttr->pValue == NULL || valueAttr->ulValueLen == 0 || valueAttr->ulValueLen > MAX_PIV_DATA_OBJECT_SIZE)
       CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad PIV data object value");
@@ -1021,14 +892,17 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
     if (valueAttr->pValue == NULL || valueAttr->ulValueLen == 0)
       CNK_RETURN(CKR_ATTRIBUTE_VALUE_INVALID, "bad certificate value");
 
-    CK_BYTE certTag;
-    CK_BYTE certObject[MAX_PIV_CERTIFICATE_OBJECT_SIZE];
-    CK_ULONG certObjectLen = 0;
-    CNK_ENSURE_OK(CNK_ObjectIdToCertificateTag(objId, &certTag));
-    CNK_ENSURE_OK(cnk_build_piv_certificate_object((CK_BYTE_PTR)valueAttr->pValue, valueAttr->ulValueLen, certObject,
-                                                   sizeof(certObject), &certObjectLen));
+    // Preserve the historical 8192-byte encoded-object limit. PIV framing is
+    // produced only by libcanokey; the largest payload needs 13 framing bytes.
+    if (valueAttr->ulValueLen > 0xFFFF)
+      return CKR_DATA_LEN_RANGE;
+    if (valueAttr->ulValueLen > MAX_PIV_CERTIFICATE_OBJECT_SIZE - 13)
+      return CKR_BUFFER_TOO_SMALL;
+    CK_BYTE pivSlot;
+    CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &pivSlot));
     CNK_ENSURE_OK(cnk_token_begin_management_operation(session));
-    CK_RV writeRv = cnk_put_piv_data(session->slotId, session, certTag, certObject, certObjectLen);
+    CK_RV writeRv =
+        cnk_write_piv_certificate(session->slotId, session, pivSlot, valueAttr->pValue, valueAttr->ulValueLen);
     cnk_token_end_management_operation(session);
     CNK_ENSURE_OK(writeRv);
 
@@ -1038,59 +912,17 @@ CK_RV C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate, CK_
 
   case CKO_PRIVATE_KEY: {
     CK_KEY_TYPE keyType;
-    CK_BYTE pivTag;
-    CK_BYTE algorithmType;
-    CK_BYTE importData[MAX_PIV_IMPORT_KEY_SIZE];
-    CK_ULONG importDataLen = 0;
-    CK_RV rv = CKR_OK;
-
-    rv = cnk_template_get_key_type(pTemplate, ulCount, CKA_KEY_TYPE, &keyType);
-    if (rv != CKR_OK)
-      goto cleanup_import;
-    rv = C_CNK_ObjIdToPivTag(objId, &pivTag);
-    if (rv != CKR_OK)
-      goto cleanup_import;
-
-    switch (keyType) {
-    case CKK_RSA:
-      rv = cnk_build_piv_rsa_import(pTemplate, ulCount, objId, importData, sizeof(importData), &importDataLen,
-                                    &algorithmType);
-      break;
-    case CKK_EC:
-      rv = cnk_build_piv_ec_import(pTemplate, ulCount, objId, importData, sizeof(importData), &importDataLen,
-                                   &algorithmType);
-      break;
-    case CKK_EC_EDWARDS:
-    case CKK_EC_MONTGOMERY:
-      rv = cnk_build_piv_25519_import(session, pTemplate, ulCount, objId, keyType, importData, sizeof(importData),
-                                      &importDataLen, &algorithmType);
-      break;
-    case CKK_ML_DSA:
-    case CKK_ML_KEM:
-      rv = cnk_build_piv_pqc_import(session, pTemplate, ulCount, objId, keyType, importData, sizeof(importData),
-                                    &importDataLen, &algorithmType);
-      break;
-    default:
-      rv = CKR_KEY_TYPE_INCONSISTENT;
-      goto cleanup_import;
-    }
-    if (rv != CKR_OK)
-      goto cleanup_import;
-
-    if (keyType == CKK_RSA || keyType == CKK_EC)
-      algorithmType = CNK_PivConfiguredAlgorithm(session, algorithmType);
-    if (algorithmType == 0) {
-      rv = CKR_MECHANISM_INVALID;
-      goto cleanup_import;
-    }
-
-    rv = cnk_token_begin_management_operation(session);
+    CNK_PIV_IMPORT material = {0};
+    CK_RV rv = cnk_template_get_key_type(pTemplate, ulCount, CKA_KEY_TYPE, &keyType);
+    if (rv == CKR_OK)
+      rv = cnk_prepare_piv_import(pTemplate, ulCount, objId, keyType, &material);
+    if (rv == CKR_OK)
+      rv = cnk_token_begin_management_operation(session);
     if (rv == CKR_OK) {
-      rv = cnk_piv_import_key(session->slotId, session, algorithmType, pivTag, importData, importDataLen);
+      rv = cnk_piv_import_key(session->slotId, session, &material);
       cnk_token_end_management_operation(session);
     }
-  cleanup_import:
-    mbedtls_platform_zeroize(importData, sizeof(importData));
+    mbedtls_platform_zeroize(&material, sizeof(material));
     if (rv != CKR_OK)
       return rv;
 
@@ -1130,7 +962,7 @@ CK_RV C_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_ATTR
   if (rv != CKR_OK) {
     CK_OBJECT_CLASS objectClass;
     extractObjectInfo(hObject, NULL, &objectClass, NULL);
-    if (objectClass == OBJECT_CLASS_SECRET_KEY_HANDLE)
+    if (objectClass == CKO_SECRET_KEY)
       CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid session secret-key handle");
     CNK_ENSURE_OK(CNK_ValidateObject(hObject, session, 0, NULL));
     CNK_RETURN(CKR_ACTION_PROHIBITED, "PIV token objects are not copyable");
@@ -1170,8 +1002,22 @@ CK_RV C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
     CNK_RET_OK;
   }
 
+  CK_OBJECT_CLASS objectClass;
+  CK_BYTE objectId;
+  extractObjectInfo(hObject, NULL, &objectClass, &objectId);
+  if (objectClass == CKO_CERTIFICATE) {
+    if (!(session->flags & CKF_RW_SESSION))
+      CNK_RETURN(CKR_SESSION_READ_ONLY, "Certificate deletion requires a read-write session");
+    CNK_ENSURE_OK(CNK_ValidateObject(hObject, session, 0, NULL));
+    CK_BYTE pivSlot;
+    CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objectId, &pivSlot));
+    CNK_ENSURE_OK(cnk_token_begin_management_operation(session));
+    CK_RV deleteRv = cnk_delete_piv_certificate_libcanokey(session->slotId, session, pivSlot);
+    cnk_token_end_management_operation(session);
+    CNK_RETURN(deleteRv, "certificate deletion");
+  }
   CNK_ENSURE_OK(CNK_ValidateObject(hObject, session, 0, NULL));
-  // PIV token objects have no general PKCS#11 deletion semantics.
+  // PIV key and data token objects have no general PKCS#11 deletion semantics.
   CNK_RETURN(CKR_ACTION_PROHIBITED, "PIV token objects are not destroyable");
 }
 
@@ -1196,7 +1042,7 @@ CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_U
     break;
   case CKO_PUBLIC_KEY:
   case CKO_PRIVATE_KEY:
-  case OBJECT_CLASS_SECRET_KEY_HANDLE:
+  case CKO_SECRET_KEY:
     break;
   default:
     CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "Invalid object class");
@@ -1263,7 +1109,7 @@ CK_RV C_GetObjectSize(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, CK_U
       if (dataAttrs[i].ulValueLen != CK_UNAVAILABLE_INFORMATION)
         size += sizeof(CK_ATTRIBUTE) + dataAttrs[i].ulValueLen;
     }
-  } else if (objClass == OBJECT_CLASS_SECRET_KEY_HANDLE) {
+  } else if (objClass == CKO_SECRET_KEY) {
     CK_ATTRIBUTE secretAttrs[] = {
         {CKA_VALUE_LEN, NULL_PTR, 0}, {CKA_SENSITIVE, NULL_PTR, 0}, {CKA_EXTRACTABLE, NULL_PTR, 0},
         {CKA_ENCRYPT, NULL_PTR, 0},   {CKA_DECRYPT, NULL_PTR, 0},   {CKA_SIGN, NULL_PTR, 0},
@@ -1299,7 +1145,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
   CK_OBJECT_CLASS requestedClass;
   extractObjectInfo(hObject, NULL, &requestedClass, NULL);
-  if (requestedClass == OBJECT_CLASS_SECRET_KEY_HANDLE) {
+  if (requestedClass == CKO_SECRET_KEY) {
     CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
     CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
     CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
@@ -1349,11 +1195,10 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
   // Fetch the PIV data for this object
   CK_BYTE data[MAX_PIV_CERTIFICATE_OBJECT_SIZE];
   CK_ULONG cbData = sizeof(data);
-  CK_BYTE bAlgorithmType = 0;
+  uint32_t bAlgorithmType = 0;
   CK_BYTE bPinPolicy = 0;
   CK_BYTE bTouchPolicy = 0;
-  CK_BYTE abPublicKey[CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE];
-  CK_ULONG cbPublicKey = sizeof(abPublicKey);
+  CNK_PIV_PUBLIC_KEY abPublicKey;
 
   switch (objClass) {
   case CKO_DATA:
@@ -1366,20 +1211,21 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
   case CKO_PUBLIC_KEY:
   case CKO_PRIVATE_KEY: {
-    CK_RV rvMeta = cnk_get_metadata_cached(session, bPivSlot, &bAlgorithmType, abPublicKey, &cbPublicKey, &bPinPolicy,
-                                           &bTouchPolicy);
+    CK_RV rvMeta =
+        cnk_get_metadata_cached(session, bPivSlot, &bAlgorithmType, &abPublicKey, &bPinPolicy, &bTouchPolicy);
     if (rvMeta != CKR_OK) {
       CNK_DEBUG("Failed to get metadata for PIV slot 0x%02X: %lu", bPivSlot, rvMeta);
+      return rvMeta;
     } else {
       CNK_DEBUG("Retrieved algorithm type %u for PIV slot 0x%02X with public key size %lu", bAlgorithmType, bPivSlot,
-                cbPublicKey);
+                abPublicKey.valueLen);
     }
     break;
   }
 
   case CKO_CERTIFICATE:
-    CNK_ENSURE_OK(CNK_ObjectIdToCertificateTag(objId, &bPivSlot));
-    CNK_ENSURE_OK(cnk_get_piv_data_cached(session, bPivSlot, data, &cbData, CK_TRUE));
+    CNK_ENSURE_OK(C_CNK_ObjIdToPivTag(objId, &bPivSlot));
+    CNK_ENSURE_OK(cnk_get_piv_certificate_cached(session, bPivSlot, data, &cbData, CK_TRUE));
     if (cbData == 0) {
       CNK_RETURN(CKR_OBJECT_HANDLE_INVALID, "No data found for PIV slot");
     }
@@ -1460,7 +1306,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
     case CKA_COPYABLE:
     case CKA_DESTROYABLE: {
-      bbool = CK_FALSE;
+      bbool = pTemplate[i].type == CKA_DESTROYABLE && objClass == CKO_CERTIFICATE;
       rv = setSingleAttributeValue(&pTemplate[i], &bbool, sizeof(bbool));
       break;
     }
@@ -1492,7 +1338,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       } else if (pTemplate[i].type == CKA_CNK_PIV_TOUCH_POLICY) {
         rv = setSingleAttributeValue(&pTemplate[i], &bTouchPolicy, sizeof(bTouchPolicy));
       } else {
-        rv = handlePublicKeyAttribute(session, &pTemplate[i], bAlgorithmType, abPublicKey, cbPublicKey);
+        rv = handlePublicKeyAttribute(&pTemplate[i], bAlgorithmType, objId, &abPublicKey);
       }
       break;
 
@@ -1502,7 +1348,7 @@ CK_RV C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
       } else if (pTemplate[i].type == CKA_CNK_PIV_TOUCH_POLICY) {
         rv = setSingleAttributeValue(&pTemplate[i], &bTouchPolicy, sizeof(bTouchPolicy));
       } else {
-        rv = handlePrivateKeyAttribute(session, &pTemplate[i], bAlgorithmType, bPinPolicy);
+        rv = handlePrivateKeyAttribute(&pTemplate[i], bAlgorithmType, bPinPolicy, objId);
       }
       break;
 
@@ -1535,7 +1381,7 @@ CK_RV C_SetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject, 
 
   CK_OBJECT_CLASS requestedClass;
   extractObjectInfo(hObject, NULL, &requestedClass, NULL);
-  if (requestedClass == OBJECT_CLASS_SECRET_KEY_HANDLE) {
+  if (requestedClass == CKO_SECRET_KEY) {
     CNK_PKCS11_MUTEX_GUARD sessionLock CNK_MUTEX_GUARD = {.mutex = &session->lock};
     CNK_ENSURE_OK(cnk_mutex_lock_guard(&sessionLock));
     CNK_PKCS11_SECRET_KEY_OBJECT *secret = NULL;
@@ -1837,58 +1683,8 @@ static CK_RV handleCertificateAttribute(CK_ATTRIBUTE_PTR attribute, CK_BYTE_PTR 
   }
 
   case CKA_VALUE:
-    // Extract X.509 certificate from the encoded data
-    // Format: 53 L1 70 L2 [cert] 71 01 00 FE 00
-    if (data_len > 0 && data[0] == 0x53) {
-      CK_ULONG offset = 1; // Start at the length byte after tag 0x53
-      CK_LONG fail = 0;
-      CK_ULONG length_size = 0;
-
-      // Parse L1 (length of the entire structure)
-      // We don't actually use l1_len for validation since tlv_get_length_safe already checks buffer bounds
-      tlvGetLengthSafe(data + offset, data_len - offset, &fail, &length_size);
-      if (fail) {
-        CNK_DEBUG("Failed to parse L1 length field");
-        rv = CKR_DATA_INVALID;
-        break;
-      }
-
-      // Move offset past the length field
-      offset += length_size;
-
-      // Check for tag 0x70 (certificate data)
-      if (offset < data_len && data[offset] == 0x70) {
-        offset += 1; // Move to L2
-
-        // Parse L2 (length of the certificate)
-        fail = 0;
-        length_size = 0;
-        uint16_t cert_len = tlvGetLengthSafe(data + offset, data_len - offset, &fail, &length_size);
-        if (fail) {
-          CNK_DEBUG("Failed to parse L2 length field");
-          rv = CKR_DATA_INVALID;
-          break;
-        }
-
-        // Move offset past the length field
-        offset += length_size;
-
-        // Check if we have enough data for the certificate
-        if (offset + cert_len <= data_len) {
-          rv = setSingleAttributeValue(attribute, data + offset, cert_len);
-        } else {
-          CNK_DEBUG("Certificate data exceeds available buffer");
-          rv = CKR_DATA_INVALID;
-        }
-      } else {
-        CNK_DEBUG("Expected tag 0x70 not found");
-        rv = CKR_DATA_INVALID;
-      }
-    } else {
-      // Fallback to sending the entire data if format is unexpected
-      CNK_DEBUG("Unexpected format, using entire data as certificate");
-      rv = setSingleAttributeValue(attribute, data, data_len);
-    }
+    // The backend already unwraps and decompresses the certificate payload.
+    rv = setSingleAttributeValue(attribute, data, data_len);
     break;
 
   default:
@@ -1905,7 +1701,7 @@ static CK_RV handleDataAttribute(CK_ATTRIBUTE_PTR attribute, const PivDataObject
 
   switch (attribute->type) {
   case CKA_APPLICATION:
-    return setSingleAttributeValue(attribute, mapping->application, (CK_ULONG)strlen(mapping->application));
+    return setSingleAttributeValue(attribute, "PIV", 3);
   case CKA_OBJECT_ID:
     return setSingleAttributeValue(attribute, mapping->objectId, mapping->objectIdLen);
   case CKA_VALUE:
@@ -1915,37 +1711,31 @@ static CK_RV handleDataAttribute(CK_ATTRIBUTE_PTR attribute, const PivDataObject
   }
 }
 
-static CK_RV setEcParamsAttribute(const CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attribute,
-                                  CK_BYTE algorithmType) {
+static CK_RV setEcParamsAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithmType) {
   const char *oid = NULL;
   size_t oidLen = 0;
   CK_BYTE encoded[16];
-  CK_BYTE ed25519 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ED25519);
-  CK_BYTE x25519 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_X25519);
-  CK_BYTE p521 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_ECC_521);
-  CK_BYTE secp256k1 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SECP256K1);
-  CK_BYTE sm2 = CNK_PivConfiguredAlgorithm(session, PIV_ALG_SM2);
 
-  if (ed25519 != 0 && algorithmType == ed25519) {
+  if (algorithmType == CNK_ALGORITHM_ED25519) {
     oid = "\x2B\x65\x70"; // id-Ed25519, 1.3.101.112
     oidLen = 3;
-  } else if (x25519 != 0 && algorithmType == x25519) {
+  } else if (algorithmType == CNK_ALGORITHM_X25519) {
     oid = "\x2B\x65\x6E"; // id-X25519, 1.3.101.110
     oidLen = 3;
   } else {
-    if (algorithmType == PIV_ALG_ECC_256) {
+    if (algorithmType == CNK_ALGORITHM_P256) {
       oid = "\x2A\x86\x48\xCE\x3D\x03\x01\x07";
       oidLen = 8;
-    } else if (algorithmType == PIV_ALG_ECC_384) {
+    } else if (algorithmType == CNK_ALGORITHM_P384) {
       oid = "\x2B\x81\x04\x00\x22";
       oidLen = 5;
-    } else if (algorithmType == PIV_ALG_ECC_521 || (p521 != 0 && algorithmType == p521)) {
+    } else if (algorithmType == CNK_ALGORITHM_P521) {
       oid = "\x2B\x81\x04\x00\x23";
       oidLen = 5;
-    } else if (secp256k1 != 0 && algorithmType == secp256k1) {
+    } else if (algorithmType == CNK_ALGORITHM_SECP256K1) {
       oid = "\x2B\x81\x04\x00\x0A";
       oidLen = 5;
-    } else if (sm2 != 0 && algorithmType == sm2) {
+    } else if (algorithmType == CNK_ALGORITHM_SM2) {
       oid = "\x2A\x81\x1C\xCF\x55\x01\x82\x2D";
       oidLen = 8;
     } else {
@@ -1962,53 +1752,19 @@ static CK_RV setEcParamsAttribute(const CNK_PKCS11_SESSION *session, CK_ATTRIBUT
 }
 
 // Handle public key specific attributes
-static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithm_type,
-                                      CK_BYTE_PTR pbPublicKey, CK_ULONG cbPublicKey) {
+static CK_RV handlePublicKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithm_type, CK_BYTE objId,
+                                      const CNK_PIV_PUBLIC_KEY *publicKey) {
   CNK_LOG_FUNC(" attribute = 0x%x, algorithm_type = 0x%x", attribute->type, algorithm_type);
 
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
-  CK_KEY_TYPE keyType = algoType2KeyType(session, algorithm_type);
+  CK_KEY_TYPE keyType = algoType2KeyType(algorithm_type);
 
-  CK_BYTE_PTR pbModulus = NULL;
-  CK_ULONG cbModulus = 0;
-  CK_BYTE_PTR pbPublicExponent = NULL;
-  CK_ULONG cbPublicExponent = 0;
-  CK_BYTE_PTR pbPublicPoint = NULL;
-  CK_ULONG cbPublicPoint = 0;
-
-  // Parse the public key data. The public key data is encoded in TLV.
-  CK_ULONG vpos = 0; /* cursor inside the value buffer   */
-  while (vpos < cbPublicKey) {
-    /* ---- read inner tag --------------------------------------- */
-    CK_BYTE itag = pbPublicKey[vpos++];
-    if (vpos >= cbPublicKey)
-      break; /* malformed */
-    /* ---- read inner length (DER) ------------------------------ */
-    CK_LONG fail;
-    CK_ULONG lengthSize;
-    CK_ULONG ilen = tlvGetLengthSafe(&pbPublicKey[vpos], cbPublicKey - vpos, &fail, &lengthSize);
-    if (fail || lengthSize > cbPublicKey - vpos)
-      CNK_RETURN(CKR_DEVICE_ERROR, "Bad length in public-key TLV");
-    vpos += lengthSize;
-    if (ilen > cbPublicKey - vpos)
-      CNK_RETURN(CKR_DEVICE_ERROR, "Public-key TLV value exceeds response");
-    /* ---- RSA modulus lives in tag 0x81 ------------------------ */
-    if (itag == 0x81) {
-      pbModulus = pbPublicKey + vpos;
-      cbModulus = ilen;
-    }
-    /* ---- RSA public exponent lives in tag 0x82 ---------------- */
-    if (itag == 0x82) {
-      pbPublicExponent = pbPublicKey + vpos;
-      cbPublicExponent = ilen;
-    }
-    /* ---- ECC public point lives in tag 0x86 ---------------- */
-    if (itag == 0x86) {
-      pbPublicPoint = pbPublicKey + vpos;
-      cbPublicPoint = ilen;
-    }
-    vpos += ilen; /* advance to next inner TLV        */
-  }
+  const CK_BYTE *pbModulus = publicKey->value;
+  CK_ULONG cbModulus = publicKey->valueLen;
+  const CK_BYTE *pbPublicExponent = publicKey->exponent;
+  CK_ULONG cbPublicExponent = publicKey->exponentLen;
+  const CK_BYTE *pbPublicPoint = publicKey->value;
+  CK_ULONG cbPublicPoint = publicKey->valueLen;
 
   switch (attribute->type) {
   case CKA_KEY_TYPE:
@@ -2018,7 +1774,8 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
   case CKA_VERIFY: {
     // Ed25519 currently has card-side signing only; do not advertise host
     // verification for its public key even though the private key can sign.
-    CK_BBOOL value = keyType != CKK_EC_EDWARDS && CNK_PivPrivateKeyCanSign(session, algorithm_type);
+    CK_BBOOL value =
+        keyType != CKK_EC_EDWARDS && algorithm_type != CNK_ALGORITHM_SM2 && CNK_PivPrivateKeyCanSign(algorithm_type);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -2048,7 +1805,7 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
   }
 
   case CKA_DERIVE: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(session, algorithm_type);
+    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type, objId);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -2148,7 +1905,7 @@ static CK_RV handlePublicKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_
 
   case CKA_EC_PARAMS:
     if (keyType == CKK_EC || keyType == CKK_EC_EDWARDS || keyType == CKK_EC_MONTGOMERY) {
-      rv = setEcParamsAttribute(session, attribute, algorithm_type);
+      rv = setEcParamsAttribute(attribute, algorithm_type);
     } else {
       // Not applicable for non-ECC keys
       rv = CKR_ATTRIBUTE_TYPE_INVALID;
@@ -2217,6 +1974,20 @@ static CK_RV handleSecretKeyAttribute(CK_ATTRIBUTE_PTR attribute, const CNK_PKCS
 }
 
 static CK_RV handleSessionSecretAttribute(CK_ATTRIBUTE_PTR attribute, const CNK_PKCS11_SECRET_KEY_OBJECT *secret) {
+  if (attribute->type == CKA_CNK_SM2_EPHEMERAL_PUBLIC) {
+    if (secret->keyGenMechanism != CKM_CNK_SM2_DERIVE) {
+      attribute->ulValueLen = CK_UNAVAILABLE_INFORMATION;
+      return CKR_ATTRIBUTE_TYPE_INVALID;
+    }
+    CK_ULONG capacity = attribute->ulValueLen;
+    attribute->ulValueLen = sizeof(secret->sm2Ephemeral);
+    if (attribute->pValue == NULL)
+      return CKR_OK;
+    if (capacity < sizeof(secret->sm2Ephemeral))
+      return CKR_BUFFER_TOO_SMALL;
+    memcpy(attribute->pValue, secret->sm2Ephemeral, sizeof(secret->sm2Ephemeral));
+    return CKR_OK;
+  }
   switch (attribute->type) {
   case CKA_TOKEN:
     return setSingleAttributeValue(attribute, &secret->token, sizeof(secret->token));
@@ -2267,12 +2038,12 @@ static CK_BBOOL matchSessionSecretTemplate(const CNK_PKCS11_SECRET_KEY_OBJECT *s
 }
 
 // Handle private key specific attributes
-static CK_RV handlePrivateKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attribute, CK_BYTE algorithm_type,
-                                       CK_BYTE pinPolicy) {
+static CK_RV handlePrivateKeyAttribute(CK_ATTRIBUTE_PTR attribute, uint32_t algorithm_type, CK_BYTE pinPolicy,
+                                       CK_BYTE objId) {
   CNK_LOG_FUNC(" attribute = %d, algorithm_type = %d", attribute->type, algorithm_type);
 
   CK_RV rv = CKR_ATTRIBUTE_TYPE_INVALID;
-  CK_KEY_TYPE key_type = algoType2KeyType(session, algorithm_type);
+  CK_KEY_TYPE key_type = algoType2KeyType(algorithm_type);
 
   switch (attribute->type) {
   case CKA_KEY_TYPE:
@@ -2280,7 +2051,7 @@ static CK_RV handlePrivateKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE
     break;
 
   case CKA_SIGN: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanSign(session, algorithm_type);
+    CK_BBOOL value = CNK_PivPrivateKeyCanSign(algorithm_type);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -2292,7 +2063,7 @@ static CK_RV handlePrivateKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE
   }
 
   case CKA_DECRYPT: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanDecrypt(session, algorithm_type);
+    CK_BBOOL value = CNK_PivPrivateKeyCanDecrypt(algorithm_type);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
@@ -2372,14 +2143,14 @@ static CK_RV handlePrivateKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE
   }
 
   case CKA_DERIVE: {
-    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(session, algorithm_type);
+    CK_BBOOL value = CNK_PivPrivateKeyCanDerive(algorithm_type, objId);
     rv = setSingleAttributeValue(attribute, &value, sizeof(value));
     break;
   }
 
   case CKA_EC_PARAMS:
     if (key_type == CKK_EC || key_type == CKK_EC_EDWARDS || key_type == CKK_EC_MONTGOMERY)
-      rv = setEcParamsAttribute(session, attribute, algorithm_type);
+      rv = setEcParamsAttribute(attribute, algorithm_type);
     break;
 
   default:
@@ -2388,4 +2159,112 @@ static CK_RV handlePrivateKeyAttribute(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE
   }
 
   return rv;
+}
+
+CK_RV CNK_BuildSharedSecretPrototype(CNK_PKCS11_SESSION *session, CK_ATTRIBUTE_PTR attributes, CK_ULONG attributeCount,
+                                     CK_MECHANISM_TYPE mechanism, CK_ULONG defaultLen, CK_ULONG maxLen,
+                                     CNK_PKCS11_SECRET_KEY_OBJECT *prototype) {
+  // Agreement and KEM share template semantics before card I/O or publication.
+  CNK_ENSURE_NONNULL(session, prototype);
+  CK_OBJECT_CLASS objectClass = CKO_SECRET_KEY;
+  CNK_PKCS11_SECRET_KEY_OBJECT value = {.keyType = CKK_GENERIC_SECRET,
+                                        .valueLen = defaultLen,
+                                        .private = CK_TRUE,
+                                        .extractable = CK_TRUE,
+                                        .local = CK_TRUE,
+                                        .modifiable = CK_TRUE,
+                                        .copyable = CK_TRUE,
+                                        .destroyable = CK_TRUE,
+                                        .keyGenMechanism = mechanism};
+  const CK_BYTE *label = NULL;
+  CK_ULONG labelLen = 0;
+
+  for (CK_ULONG i = 0; i < attributeCount; i++) {
+    CK_ATTRIBUTE_PTR attribute = &attributes[i];
+    switch (attribute->type) {
+    case CKA_CLASS:
+      if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(objectClass))
+        return CKR_ATTRIBUTE_VALUE_INVALID;
+      objectClass = *(CK_OBJECT_CLASS *)attribute->pValue;
+      break;
+    case CKA_KEY_TYPE:
+      if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(value.keyType))
+        return CKR_ATTRIBUTE_VALUE_INVALID;
+      value.keyType = *(CK_KEY_TYPE *)attribute->pValue;
+      break;
+    case CKA_VALUE_LEN:
+      if (attribute->pValue == NULL || attribute->ulValueLen != sizeof(value.valueLen))
+        return CKR_ATTRIBUTE_VALUE_INVALID;
+      value.valueLen = *(CK_ULONG *)attribute->pValue;
+      break;
+    case CKA_TOKEN:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.token));
+      break;
+    case CKA_PRIVATE:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.private));
+      break;
+    case CKA_SENSITIVE:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.sensitive));
+      break;
+    case CKA_EXTRACTABLE:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.extractable));
+      break;
+    case CKA_ENCRYPT:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.encrypt));
+      break;
+    case CKA_DECRYPT:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.decrypt));
+      break;
+    case CKA_SIGN:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.sign));
+      break;
+    case CKA_VERIFY:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.verify));
+      break;
+    case CKA_WRAP:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.wrap));
+      break;
+    case CKA_UNWRAP:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.unwrap));
+      break;
+    case CKA_DERIVE:
+      CNK_ENSURE_OK(cnk_attribute_get_bool(attribute, &value.derive));
+      break;
+    case CKA_LABEL:
+      if (attribute->pValue == NULL && attribute->ulValueLen != 0)
+        return CKR_ATTRIBUTE_VALUE_INVALID;
+      label = attribute->pValue;
+      labelLen = attribute->ulValueLen;
+      break;
+    default:
+      return CKR_ATTRIBUTE_TYPE_INVALID;
+    }
+  }
+
+  if (objectClass != CKO_SECRET_KEY || (value.keyType != CKK_GENERIC_SECRET && value.keyType != CKK_AES) || value.token)
+    return CKR_TEMPLATE_INCONSISTENT;
+  if (value.valueLen == 0 || value.valueLen > maxLen || (mechanism == CKM_ML_KEM && value.valueLen != defaultLen) ||
+      (value.keyType == CKK_AES && value.valueLen != 16 && value.valueLen != 24 && value.valueLen != 32))
+    return CKR_KEY_SIZE_RANGE;
+  if (labelLen > sizeof(session->secretKeys[0].label))
+    return CKR_ATTRIBUTE_VALUE_INVALID;
+  if (value.private) {
+    CK_BBOOL pinCached = CK_FALSE;
+    CNK_ENSURE_OK(cnk_token_pin_is_cached(session, &pinCached));
+    if (!pinCached)
+      return CKR_USER_NOT_LOGGED_IN;
+  }
+
+  if (label != NULL && labelLen > 0) {
+    value.labelLen = labelLen;
+    memcpy(value.label, label, labelLen);
+  } else {
+    const char *defaultLabel = mechanism == CKM_ML_KEM           ? "ML-KEM Shared Secret"
+                               : mechanism == CKM_CNK_SM2_DERIVE ? "PIV SM2 Shared Secret"
+                                                                 : "PIV ECDH Shared Secret";
+    value.labelLen = (CK_ULONG)strlen(defaultLabel);
+    memcpy(value.label, defaultLabel, value.labelLen);
+  }
+  *prototype = value;
+  return CKR_OK;
 }

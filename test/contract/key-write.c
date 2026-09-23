@@ -1,4 +1,8 @@
+#include "api/session.h"
+#include "backend/libcanokey.h"
 #include "backend/pcsc.h"
+#include "backend/piv_operation.h"
+#include "internal/logging.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +15,36 @@
     }                                                                                                                  \
   } while (0)
 
+#include "profile.h"
+
+static CNK_PKCS11_TOKEN_STATE token;
+static CNK_PKCS11_SESSION keySession;
+_Atomic CK_ULONG g_cnk_managed_binding_epoch;
+atomic_int g_cnk_log_level = CNK_LOG_LEVEL_NONE;
+void cnk_printlogf(const int l, const char *fn, const char *file, const int line, const char *format, ...) {
+  (void)l;
+  (void)fn;
+  (void)file;
+  (void)line;
+  (void)format;
+}
+static CK_RV lockError, unlockError;
+CK_RV cnk_mutex_lock(CNK_PKCS11_MUTEX *mutex) {
+  (void)mutex;
+  return lockError;
+}
+CK_RV cnk_mutex_unlock(CNK_PKCS11_MUTEX *mutex) {
+  (void)mutex;
+  return unlockError;
+}
+CK_RV cnk_ensure_libcanokey_profile(CNK_PKCS11_SESSION *session) {
+  (void)session;
+  abort();
+}
+static void make_profile(void) {
+  token.libcanokeyProfile = test_profile("3.1.0", 5);
+  keySession.token = &token;
+}
 _Atomic CK_BBOOL g_cnk_is_managed_mode = CK_TRUE;
 static CK_RV authRv;
 static LONG transportRv;
@@ -34,10 +68,9 @@ void cnk_disconnect_card(SCARDHANDLE card) {
   connections--;
 }
 
-LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *apdu, CK_ULONG len, CK_BYTE *out, DWORD *outLen,
-                         CK_BBOOL getResponse) {
+LONG cnk_transceive_apdu(SCARDHANDLE card, const CK_BYTE *apdu, CK_ULONG len, CK_BYTE *out, DWORD *outLen) {
   const CK_BYTE expected[] = {0, 0xF7, 0, 0x9C, 0};
-  CHECK(card == 123 && connections == 1 && getResponse);
+  CHECK(card == 123 && connections == 1);
   CHECK(len == sizeof(expected) && memcmp(apdu, expected, len) == 0);
   sends++;
   if (transportRv != SCARD_S_SUCCESS)
@@ -53,7 +86,7 @@ static void check(unsigned sw, CK_RV expected) {
   response[1] = (CK_BYTE)sw;
   responseLen = 2;
   SCARDHANDLE card = 0;
-  CHECK(cnk_begin_key_write(0, NULL, 0x9C, &card) == expected);
+  CHECK(cnk_begin_key_write(0, &keySession, 0x9C, &card) == expected);
   if (expected == CKR_OK) {
     // Ownership transfers to the writer without ending the transaction.
     CHECK(card == 123 && connections == 1);
@@ -64,6 +97,7 @@ static void check(unsigned sw, CK_RV expected) {
 }
 
 int main(void) {
+  make_profile();
   check(0x6A88, CKR_OK);
   check(0x6A82, CKR_OK);                // legacy empty-key status
   check(0x9000, CKR_ACTION_PROHIBITED); // no algorithm parsing can grant access
@@ -72,14 +106,14 @@ int main(void) {
     check(unknown[i], CKR_DEVICE_ERROR);
   SCARDHANDLE card = 0;
   responseLen = 1;
-  CHECK(cnk_begin_key_write(0, NULL, 0x9C, &card) == CKR_DEVICE_ERROR);
+  CHECK(cnk_begin_key_write(0, &keySession, 0x9C, &card) == CKR_DEVICE_ERROR);
   CHECK(card == 0 && connections == 0);
   // A malformed reply with an absence suffix is not proof of an empty slot.
   response[0] = 0x01;
   response[1] = 0x6A;
   response[2] = 0x88;
   responseLen = 3;
-  CHECK(cnk_begin_key_write(0, NULL, 0x9C, &card) == CKR_DEVICE_ERROR);
+  CHECK(cnk_begin_key_write(0, &keySession, 0x9C, &card) == CKR_DEVICE_ERROR);
   CHECK(card == 0 && connections == 0);
   transportRv = SCARD_E_COMM_DATA_LOST;
   unsigned before = sends;
@@ -91,9 +125,18 @@ int main(void) {
   check(0x6A88, CKR_USER_NOT_LOGGED_IN);
   CHECK(sends == before);
   authRv = CKR_OK;
+  lockError = CKR_MUTEX_BAD;
+  check(0x6A88, CKR_MUTEX_BAD);
+  CHECK(sends == before);
+  lockError = CKR_OK;
+  unlockError = CKR_CANT_LOCK;
+  check(0x6A88, CKR_CANT_LOCK);
+  CHECK(sends == before);
+  unlockError = CKR_OK;
   g_cnk_is_managed_mode = CK_FALSE;
   check(0x9000, CKR_OK); // standalone replacement behavior is unchanged
   CHECK(sends == before);
+  cnk_profile_free(token.libcanokeyProfile);
   puts("Managed key-write occupancy contract tests passed.");
   return 0;
 }

@@ -14,6 +14,16 @@
 static void test_default_policy_for_slots(void **state) {
   (void)state;
 
+  const CK_BYTE slots[] = {0x9a, 0x9c, 0x9d, 0x9e, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
+                           0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95};
+  for (unsigned id = 0; id <= 255; id++) {
+    CK_BYTE slot = 0xcc;
+    CK_BBOOL valid = id >= 1 && id <= sizeof(slots);
+    assert_int_equal(C_CNK_ObjIdToPivTag((CK_BYTE)id, &slot), valid ? CKR_OK : CKR_OBJECT_HANDLE_INVALID);
+    assert_int_equal(slot, valid ? slots[id - 1] : 0xcc);
+  }
+  assert_int_equal(C_CNK_ObjIdToPivTag(1, NULL), CKR_ARGUMENTS_BAD);
+
   assert_int_equal(CNK_DefaultPinPolicyForPivObjectId(PIV_SLOT_9E), CNK_PIV_PIN_POLICY_NEVER);
   assert_int_equal(CNK_DefaultPinPolicyForPivObjectId(PIV_SLOT_9A), CNK_PIV_PIN_POLICY_ONCE);
   assert_int_equal(CNK_DefaultPinPolicyForPivObjectId(PIV_SLOT_9C), CNK_PIV_PIN_POLICY_ONCE);
@@ -128,63 +138,50 @@ static void test_reject_invalid_touch_policy(void **state) {
 
 static void test_key_capabilities_by_algorithm(void **state) {
   (void)state;
-  CNK_PKCS11_SESSION session = {0};
 
-  assert_true(CNK_PivPrivateKeyCanSign(&session, PIV_ALG_RSA_2048));
-  assert_true(CNK_PivPrivateKeyCanDecrypt(&session, PIV_ALG_RSA_2048));
-  assert_false(CNK_PivPrivateKeyCanDerive(&session, PIV_ALG_RSA_2048));
+  assert_true(CNK_PivPrivateKeyCanSign(CNK_ALGORITHM_RSA2048));
+  assert_true(CNK_PivPrivateKeyCanDecrypt(CNK_ALGORITHM_RSA2048));
+  assert_false(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_RSA2048, 1));
 
-  assert_true(CNK_PivPrivateKeyCanSign(&session, PIV_ALG_ECC_256));
-  assert_false(CNK_PivPrivateKeyCanDecrypt(&session, PIV_ALG_ECC_256));
-  assert_true(CNK_PivPrivateKeyCanDerive(&session, PIV_ALG_ECC_256));
+  assert_true(CNK_PivPrivateKeyCanSign(CNK_ALGORITHM_P256));
+  assert_false(CNK_PivPrivateKeyCanDecrypt(CNK_ALGORITHM_P256));
+  assert_true(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_P256, 1));
 
-  assert_true(CNK_PivPrivateKeyCanSign(&session, PIV_ALG_ECC_521));
-  assert_false(CNK_PivPrivateKeyCanDecrypt(&session, PIV_ALG_ECC_521));
-  assert_true(CNK_PivPrivateKeyCanDerive(&session, PIV_ALG_ECC_521));
+  assert_true(CNK_PivPrivateKeyCanSign(CNK_ALGORITHM_P521));
+  assert_false(CNK_PivPrivateKeyCanDecrypt(CNK_ALGORITHM_P521));
+  assert_true(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_P521, 1));
 }
 
-static void test_configured_extension_algorithm_ids(void **state) {
+static void test_semantic_key_capabilities(void **state) {
   (void)state;
-  CNK_PKCS11_SESSION session = {0};
-  session.rsa3072Algorithm = 0x22;
-  session.rsa4096Algorithm = 0x50;
-  session.secp256k1Algorithm = 0x53;
-  session.secp521r1Algorithm = 0x15;
-  session.sm2Algorithm = 0x54;
-
-  assert_int_equal(CNK_PivConfiguredAlgorithm(&session, PIV_ALG_RSA_3072), 0x22);
-  assert_true(CNK_PivAlgorithmIsRsa(&session, 0x22));
-  assert_true(CNK_PivAlgorithmIsEc(&session, 0x15));
-  assert_true(CNK_PivPrivateKeyCanDerive(&session, 0x53));
-  assert_false(CNK_PivPrivateKeyCanSign(&session, 0x54));
-  assert_false(CNK_PivAlgorithmIsRsa(&session, PIV_ALG_RSA_3072));
+  assert_true(CNK_PivAlgorithmIsRsa(CNK_ALGORITHM_RSA3072));
+  assert_true(CNK_PivAlgorithmIsRsa(CNK_ALGORITHM_RSA4096));
+  assert_true(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_X25519, 1));
+  assert_true(CNK_PivPrivateKeyCanSign(CNK_ALGORITHM_SM2));
+  for (CK_BYTE id = 1; id <= 24; id++)
+    assert_int_equal(CNK_PivPrivateKeyCanDerive(CNK_ALGORITHM_SM2, id), id == 3 || id >= 5);
+  assert_false(CNK_PivAlgorithmIsRsa(0xD1));
 }
 
 static void test_p521_named_curve_parameters(void **state) {
   (void)state;
   static const CK_BYTE p521[] = {0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x23};
-  CK_BYTE algorithmType = 0;
+  uint32_t algorithmType = 0;
 
   assert_int_equal(cnk_ec_params_to_piv_algorithm(p521, sizeof(p521), &algorithmType), CKR_OK);
-  assert_int_equal(algorithmType, PIV_ALG_ECC_521);
-}
-
-static void test_public_key_metadata_capacity_includes_rsa4096(void **state) {
-  (void)state;
-  // RSA-4096 metadata contains a 512-byte modulus plus the 0x81/0x82 TLVs.
-  assert_true(CNK_PIV_MAX_PUBLIC_KEY_DATA_SIZE >= 521);
+  assert_int_equal(algorithmType, CNK_ALGORITHM_P521);
 }
 
 static void test_25519_named_curve_parameters(void **state) {
   (void)state;
   static const CK_BYTE ed25519[] = {0x06, 0x03, 0x2B, 0x65, 0x70};
   static const CK_BYTE x25519[] = {0x06, 0x03, 0x2B, 0x65, 0x6E};
-  CK_BYTE algorithmType = 0;
+  uint32_t algorithmType = 0;
 
   assert_int_equal(cnk_ec_params_to_piv_algorithm(ed25519, sizeof(ed25519), &algorithmType), CKR_OK);
-  assert_int_equal(algorithmType, PIV_ALG_ED25519);
+  assert_int_equal(algorithmType, CNK_ALGORITHM_ED25519);
   assert_int_equal(cnk_ec_params_to_piv_algorithm(x25519, sizeof(x25519), &algorithmType), CKR_OK);
-  assert_int_equal(algorithmType, PIV_ALG_X25519);
+  assert_int_equal(algorithmType, CNK_ALGORITHM_X25519);
 }
 
 int main(void) {
@@ -198,9 +195,8 @@ int main(void) {
       cmocka_unit_test(test_reject_invalid_pin_policy),
       cmocka_unit_test(test_reject_invalid_touch_policy),
       cmocka_unit_test(test_key_capabilities_by_algorithm),
-      cmocka_unit_test(test_configured_extension_algorithm_ids),
+      cmocka_unit_test(test_semantic_key_capabilities),
       cmocka_unit_test(test_p521_named_curve_parameters),
-      cmocka_unit_test(test_public_key_metadata_capacity_includes_rsa4096),
       cmocka_unit_test(test_25519_named_curve_parameters),
   };
 

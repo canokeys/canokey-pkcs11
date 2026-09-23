@@ -10,6 +10,32 @@ guarantee. If a change cannot be described by the existing row/profile, update
 the contract before changing code. Run `python scripts/check-api-contracts.py`
 to verify that the exported inventory remains complete.
 
+For every card-backed path, verify the PC/SC transaction boundary:
+`connect -> SCardBeginTransaction -> SELECT PIV -> all dependent APDUs ->
+SCardEndTransaction -> disconnect`. No test may split SELECT from the operation
+it authorizes. Test two sessions performing different PIV operations: their
+physical card transactions must serialize, while their independent session
+contexts remain valid and their token-wide login/logout reservations remain
+consistent. `piv-transactions-contract` runs the production PKCS#11/Rust paths
+against a transaction-enforcing PC/SC fixture, with concurrent sign/RNG and
+injected sign transport failure. The selected real-card script can repeat
+concurrent ECDSA/RNG using the fixture `credential_key`. The same fixture counts card
+connections during RSA decrypt preflight across all three PIN policies and
+mechanisms; NULL/short buffers must preserve authentication without card I/O.
+ECDH/ML-KEM cases pause after card I/O but before session-secret publication:
+logout and another reservation must remain blocked, and failed publication must
+release the reservation without returning a handle.
+PUK recovery reads ADMIN DATA and executes Reset Retry Counter in one selected
+transaction; the fixture rejects an intervening SELECT or transaction release.
+PIN changes accept PUBLIC sessions without implicitly logging in, and retain SO
+and concurrent-logout rejection. The hardware `test --suite credentials` check changes
+and restores the confirmed PUK, resets the PIN, changes it back from PUBLIC, and
+verifies fresh-login signatures. Credentials come from explicit environment
+variables; restoration is part of the test.
+The PIN-managed fixture's `malformed-policy` mode writes salt/date-only ADMIN
+DATA, verifies a device error with unchanged PUK retries, and restores the empty
+policy. Nonempty ADMIN DATA must include flags; empty 53/80 remains unconfigured.
+
 ## State Invariants
 
 Review the token state as a state machine. The relevant states are `PUBLIC`,
@@ -44,7 +70,16 @@ current TTL, the `metadata_cache` configuration switch (or
 Managed mode must always read hardware. Tests and logs must distinguish cached
 reads from hardware reads and identify cache-disabled or managed bypasses.
 Successful local key, certificate, and PIV data writes must invalidate the
-snapshot. External mutations are expected to become visible after the 60-second
+snapshot. Invalidation generations must also reject reads that finish after a
+concurrent invalidation, even if a mutex callback prevented clearing storage.
+The transaction fixture tests metadata, certificates, directory and configuration
+races, every token lock/unlock in their public-cache misses, profile expiry and
+refresh racing VERIFY, and close/finalize draining an in-flight card call.
+`test --suite policy` exercises explicit replaceable slots under every PIN
+policy; the script leaves PIN-once fixtures. PQC verification uses independent
+cryptography/OpenSSL implementations; SM2 signing/provisioning uses OpenSSL; agreement uses an independently built GmSSL shared library (`--gmssl`).
+A replaceable RSA fixture with an explicit `--reset-script`
+checks a real external replacement and USB reinsert against a still-live cache. External mutations are expected to become visible after the 60-second
 TTL; no credential, card handle, selected applet, or authentication state may
 ever be retained in this cache.
 
@@ -164,3 +199,68 @@ must never be treated as substitutes for deterministic unit tests.
    comment or document why it is invalid.
 6. Repeat steps 2-5 after each non-trivial fix. Record residual architectural
    limitations explicitly instead of silently relying on a mitigation.
+
+## Real-card entry points
+
+Build `test_abi` for native ABI/function-table, shared session login, cancellation,
+buffer retries and session-secret copy/update/destroy checks. It replaces the
+native algorithm/provisioning programs. The single Python entry point is
+`test/real/hardware.py`; `pkcs11.py` owns binding/session cleanup and `fixtures.py`
+owns explicit card preparation. Install `cryptography>=50` for the independent
+OpenSSL-backed RSA/EC/Ed25519/X25519/ML-DSA/ML-KEM oracle. Only certificate
+provisioning additionally requires `asn1crypto`; SM2 requires an OpenSSL CLI and a GmSSL shared library exposing `sm2_key_exchange`
+(`--gmssl`). Build GmSSL with `CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON` on Windows;
+this is an independent test oracle, never a production or CMake dependency.
+
+All commands require `--module`, `--slot` and `--serial`. Credentials come from
+`CNK_PIV_PIN` and, for writes, `CNK_PIV_MANAGEMENT_KEY`. Credential tests also
+require `CNK_PIV_PUK`, `CNK_PIV_TEST_PIN` and `CNK_PIV_TEST_PUK`. Never commit
+credentials, reports or a local fixture inventory. Example fixture schema:
+
+```json
+{
+  "keys": ["01", "02", "03", "04", "05", "06", "0c", "0d", "17", "18"],
+  "replaceable": {"rsa": "0a", "ec": "0b", "x25519": "0c", "ed25519": "0d"},
+  "credential_key": "01",
+  "name_slots": ["87", "88"]
+}
+```
+
+IDs are hexadecimal PKCS#11 IDs (01..18); `name_slots` are physical PIV slots.
+Replace these examples with a freshly verified card inventory. `credential_key`
+must be an EC signing key. Only declared replaceable IDs may be overwritten.
+Global arguments precede the subcommand:
+
+```text
+python test/real/hardware.py --module <dll> --slot 0 --serial <serial> --fixture <json> --report <result.json> test --suite all --openssl <openssl>
+python test/real/hardware.py --module <dll> --slot 0 --serial <serial> --fixture <json> fixture certificate --id <replaceable-id> --output <backup-directory>
+```
+
+`crypto` covers raw/combined/multipart RSA hash families and ECDSA, independent
+signature checks, RSA decrypt, raw ECDH and X9.63 SHA256 KDF, Ed25519 and PQC.
+`policy` covers every supported private-key family under never/once/always PIN
+policies. `write` covers generation/import, SM2 sign/agreement, physical key move/delete and certificate roundtrips; attestation requires an installed signer and reports its absence explicitly;
+`credentials` covers PIN/PUK mutation and restoration; `management` covers names,
+PRINTED and unconfigured protected login. `all` combines these suites.
+
+`fixture prepare|restore|check-reset|clear-slot|malformed-policy` additionally
+requires `--libcanokey <C-ABI-dll> --reader <reader>` on Windows. Preparation and
+restoration are explicit steps outside regression suites; callers must restore
+in `finally`. `clear-slot`, `generate` and `certificate` require a declared
+replaceable `--id`; `generate` also takes `--kind`. Certificate provisioning
+backs up existing DER. The fixture reports retry/protection state after cleanup.
+
+Deterministic coverage is retained in the existing hosts: `piv-management`
+includes chained-response/result-buffer ABI checks; `piv-transactions` includes
+PUK malformed/missing/duplicate/protected policy and transport/preflight failure
+cases. These use production Rust and transaction ownership, not a second mock
+implementation of the vendor API. `piv-operation` remains a separate FFI failure
+fixture because null handles, invalid statuses and allocator failures cannot be
+injected through an ordinary card transcript.
+
+Factory construction uses the token profile under its lock and the shared
+CNK_PIV_USE_EXISTING options. The lock must be released before the first card
+exchange. The FFI failure fixture asserts that boundary, injects lock/unlock
+and factory failures, and verifies provisional operations are freed without
+publishing output or issuing APDUs. API admission, reservations and cache
+invalidation remain unchanged by the removal of selected-context handles.

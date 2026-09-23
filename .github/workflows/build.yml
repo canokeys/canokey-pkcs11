@@ -63,6 +63,17 @@ jobs:
           python-version: '3.14'
           cache: 'pip'
           cache-dependency-path: cmake/tf-psa-crypto-generator-requirements.txt
+      - name: Set up stable Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Check Rust formatting
+        run: cargo fmt --check
+      - name: Test Rust adapter
+        run: cargo test --locked
+      - name: Lint Rust adapter
+        run: cargo clippy --all-targets --locked -- -D warnings
       - name: Pre-build script
         run: ${{ matrix.pre-build-script }}
         if: matrix.pre-build-script != ''
@@ -142,4 +153,4 @@ jobs:
             build/libcanokey-pkcs11.so*
             build/libcanokey-pkcs11.dylib*
             build/**/canokey-pkcs11.dll
-            build/**/test_pqc.exe
+            build/**/test_abi.exe

@@ -1,0 +1,30 @@
+[package]
+name = "canokey-pkcs11-protocol"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Private synchronous libcanokey adapter for the C PKCS11 backend"
+
+[lib]
+path = "rust/lib.rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+canokey-c = { git = "https://github.com/canokeys/libcanokey", rev = "b709b3dfe30402e4c6224949b20185bc809ec7e8", default-features = false, features = ["piv"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 16
+# Catch ordinary Rust panics at the C boundary instead of aborting the host.
+panic = "unwind"
+
+[profile.dev]
+opt-level = 1
+panic = "unwind"
+
+# Keep the unified selection/authentication glue compact; host crypto stays optimized.
+[profile.release.package.canokey-piv]
+opt-level = "s"
+
+[profile.release.package.canokey-c]
+opt-level = "s"

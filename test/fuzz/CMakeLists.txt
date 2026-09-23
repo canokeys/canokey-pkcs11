@@ -9,8 +9,8 @@ else()
   set(CNK_REPLAY_MAIN)
 endif()
 
-add_executable(cnk_fuzz_tlv fuzz_tlv.c ${CNK_REPLAY_MAIN}
-                                      ${CMAKE_CURRENT_SOURCE_DIR}/../../src/internal/util.c)
+add_executable(cnk_fuzz_tlv fuzz_tlv.c ${CNK_REPLAY_MAIN})
+target_link_libraries(cnk_fuzz_tlv PRIVATE cnk_protocol)
 target_include_directories(cnk_fuzz_tlv PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../include
                                                   ${CMAKE_CURRENT_SOURCE_DIR}/../../include/private)
 target_compile_options(cnk_fuzz_tlv PRIVATE ${CNK_FUZZ_FLAGS})
